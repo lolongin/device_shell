@@ -3,19 +3,20 @@ from __future__ import annotations
 import shutil
 import subprocess
 
+from rich.cells import cell_len, set_cell_size
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, HorizontalScroll, Vertical
+from textual.binding import Binding
+from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
+from textual.suggester import SuggestFromList
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 
 from data import CURRENT_USER, Device, sample_devices
 
 
-ALL_DOMAINS = "\u5168\u90e8\u9886\u57df"
 ALL_STATUS = "\u5168\u90e8\u72b6\u6001"
-ALL_CPUS = "\u5168\u90e8CPU"
 STATUS_OCCUPIED = "\u5df2\u88ab\u5360\u7528"
 STATUS_IDLE = "\u7a7a\u95f2"
 STATUS_PIPELINE = "\u6d41\u6c34\u7ebf\u5360\u7528"
@@ -45,16 +46,30 @@ Screen {
 }
 
 .panel {
-    height: 1fr;
     border: tall #24415f;
     background: #0d1726;
     padding: 1;
 }
 
+#device-panel {
+    height: 3fr;
+    min-height: 16;
+}
+
+#occupancy-panel {
+    height: 2fr;
+    min-height: 11;
+    margin-top: 1;
+}
+
+#occupancy-meta {
+    margin-bottom: 0;
+}
+
 .panel-title {
     color: #8ac6ff;
     text-style: bold;
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 
 .section-copy {
@@ -62,12 +77,19 @@ Screen {
     margin-bottom: 1;
 }
 
-#stats-row {
+#toolbar-row {
     height: auto;
     margin-bottom: 1;
 }
 
+#toolbar-row #filter-input {
+    width: 1fr;
+    margin-bottom: 0;
+    margin-right: 1;
+}
+
 #stats-strip {
+    width: auto;
     color: #9cb4ce;
     background: #091422;
     border: round #16314d;
@@ -75,8 +97,6 @@ Screen {
 }
 
 #filter-input {
-    width: 1fr;
-    margin-bottom: 1;
     background: #08111f;
     color: #e8f0ff;
     border: round #16314d;
@@ -86,30 +106,59 @@ Screen {
     border: round #5db4ff;
 }
 
-#filter-ribbon {
-    height: 3;
+#filter-row {
+    height: auto;
     margin-bottom: 1;
-    scrollbar-size-horizontal: 1;
-    scrollbar-background: #0d1726;
-    scrollbar-color: #355f8c;
-    scrollbar-color-hover: #5db4ff;
 }
 
-#filter-ribbon-inner {
-    width: auto;
+#status-row {
     height: auto;
+    align: left middle;
+    margin-bottom: 1;
+}
+
+#keyword-row {
+    height: auto;
+    align: left middle;
+}
+
+.keyword-filter {
+    width: 1fr;
+    margin-right: 1;
+    border: round #16314d;
+    background: #08111f;
+    color: #e8f0ff;
+}
+
+.keyword-filter:focus {
+    border: round #5db4ff;
+}
+
+#cpu-filter-input {
+    margin-right: 0;
+}
+
+.list-header {
+    color: #7d93ad;
+    background: #091422;
+    border-bottom: solid #16314d;
+    padding: 0 1;
+    margin-bottom: 0;
+    height: 1;
 }
 
 .chip-section {
     width: auto;
+    height: auto;
     margin-right: 2;
+    align: left middle;
 }
 
 .chip-group-title {
     width: auto;
     min-width: 5;
     color: #7d93ad;
-    padding: 1 1 0 0;
+    padding: 0 1 0 0;
 }
 
 .filter-chip {
@@ -138,18 +187,20 @@ ListView {
     scrollbar-color: #5db4ff;
     scrollbar-color-hover: #8ac6ff;
     background: #08111f;
-    border: round #16314d;
+    border: none;
+    height: 1fr;
 }
 
 ListView:focus {
-    border: round #5db4ff;
+    border: none;
 }
 
 ListItem {
     padding: 0 1;
-    margin: 0 0 1 0;
-    background: #0e1b2c;
+    margin: 0;
+    background: transparent;
     color: #d9e8ff;
+    height: 1;
 }
 
 ListItem.--highlight {
@@ -167,30 +218,72 @@ ListItem.--highlight {
 
 def status_color(status: str) -> str:
     palette = {
-        STATUS_OCCUPIED: "#35d07f",
-        STATUS_IDLE: "#5db4ff",
+        STATUS_OCCUPIED: "#f4c861",
+        STATUS_IDLE: "#35d07f",
         STATUS_PIPELINE: "#ffb65c",
         STATUS_OTHER: "#b88cff",
     }
     return palette.get(status, "#88a0ba")
 
 
+def fit_cell(value: str, width: int, pad: bool = True) -> str:
+    if width <= 0:
+        return ""
+    if cell_len(value) <= width:
+        return set_cell_size(value, width) if pad else value
+    if width <= 3:
+        return "." * width
+
+    trimmed = ""
+    for char in value:
+        if cell_len(trimmed + char) > width - 3:
+            break
+        trimmed += char
+    fitted = f"{trimmed}..."
+    return set_cell_size(fitted, width) if pad else fitted
+
+
+def status_badge(status: str) -> str:
+    labels = {
+        STATUS_IDLE: "[空闲]",
+        STATUS_OCCUPIED: "[占用]",
+        STATUS_PIPELINE: "[流水线]",
+        STATUS_OTHER: "[其他]",
+    }
+    return labels.get(status, f"[{status}]")
+
+
 class DeviceListItem(ListItem):
-    def __init__(self, device: Device, sequence: int, emphasis: bool = False) -> None:
+    def __init__(self, device: Device, row: Text, emphasis: bool = False) -> None:
         self.device = device
-        self.sequence = sequence
-        super().__init__(Label(self.render_text(), markup=True))
+        self.row_label = Label(row)
+        super().__init__(self.row_label)
         if emphasis:
             self.add_class("--highlight")
 
-    def render_text(self) -> str:
-        color = status_color(self.device.status)
-        return (
-            f"[#7d93ad]{self.sequence:04d}[/] [b]{self.device.name}[/b]\n"
-            f"[#88a0ba]{self.device.domain}[/]  "
-            f"[#5db4ff]CPU {self.device.cpu}[/]  "
-            f"[{color}]{self.device.status}[/]"
-        )
+    def update_row(self, row: Text) -> None:
+        self.row_label.update(row)
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button != 1 or event.chain != 2:
+            return
+
+        app = self.app
+        if isinstance(app, DeviceDashboard):
+            app.select_device(self.device)
+            app.call_after_refresh(app.toggle_occupancy_for_device, self.device)
+            event.stop()
+
+
+class SuggestInput(Input):
+    BINDINGS = [Binding("tab", "accept_suggestion", "Accept Suggestion", show=False)]
+
+    def action_accept_suggestion(self) -> None:
+        if self.cursor_at_end and self._suggestion:
+            self.action_cursor_right()
+        app = self.app
+        if app is not None and hasattr(app, "action_focus_next"):
+            app.action_focus_next()
 
 
 class DeviceDashboard(App[None]):
@@ -212,9 +305,9 @@ class DeviceDashboard(App[None]):
 
     selected_device_id = reactive("")
     filter_text = reactive("")
-    filter_domain = reactive(ALL_DOMAINS)
+    filter_domain = reactive("")
     filter_status = reactive(ALL_STATUS)
-    filter_cpu = reactive(ALL_CPUS)
+    filter_cpu = reactive("")
     show_password = reactive(False)
 
     def __init__(self) -> None:
@@ -225,14 +318,9 @@ class DeviceDashboard(App[None]):
                 [
                     device.id,
                     device.name,
-                    device.domain,
-                    device.device_type,
-                    device.cpu,
-                    device.status,
-                    device.vendor,
+                    device.ssh_ip,
+                    device.telnet_ip,
                     device.model,
-                    device.site,
-                    device.rack,
                 ]
             ).lower()
             for device in self.devices
@@ -241,46 +329,49 @@ class DeviceDashboard(App[None]):
         self.visible_owned_devices: list[Device] = []
         self.device_items: dict[str, DeviceListItem] = {}
         self.my_items: dict[str, DeviceListItem] = {}
-        self.domain_button_ids: dict[str, str] = {}
         self.status_button_ids: dict[str, str] = {}
-        self.cpu_button_ids: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="shell"):
             with Vertical(id="left-pane"):
-                with Container(classes="panel"):
+                with Container(id="device-panel", classes="panel"):
                     yield Label("Device List", classes="panel-title")
-                    yield Static("\u8bbe\u5907 / \u9886\u57df / CPU / \u72b6\u6001", classes="section-copy")
-                    with Horizontal(id="stats-row"):
+                    yield Static("\u5e8f\u53f7 / \u8bbe\u5907 / \u9886\u57df / CPU / \u72b6\u6001 / \u5360\u7528\u4eba", classes="section-copy")
+                    with Horizontal(id="toolbar-row"):
+                        yield Input(
+                            placeholder="\u641c\u7d22\u8bbe\u5907 / ID / SSH IP / Telnet IP / \u578b\u53f7",
+                            id="filter-input",
+                        )
                         yield Static(id="stats-strip")
-                    yield Input(
-                        placeholder="\u641c\u7d22\u8bbe\u5907\u540d / \u9886\u57df / CPU / \u72b6\u6001",
-                        id="filter-input",
-                    )
-                    with HorizontalScroll(id="filter-ribbon"):
-                        with Horizontal(id="filter-ribbon-inner"):
-                            yield from self.compose_domain_chips()
+                    with Vertical(id="filter-row"):
+                        with Horizontal(id="status-row"):
                             yield from self.compose_status_chips()
-                            yield from self.compose_cpu_chips()
+                        with Horizontal(id="keyword-row"):
+                            yield SuggestInput(
+                                placeholder="\u9886\u57df\u5173\u952e\u5b57\uff0c\u4f8b\u5982 RTN / \u4ea4\u4f01 / \u6d4b\u8bd5",
+                                id="domain-filter-input",
+                                classes="keyword-filter",
+                                suggester=SuggestFromList(self.domain_values(), case_sensitive=False),
+                            )
+                            yield SuggestInput(
+                                placeholder="CPU \u5173\u952e\u5b57\uff0c\u4f8b\u5982 hi12 / kunpeng / x86",
+                                id="cpu-filter-input",
+                                classes="keyword-filter",
+                                suggester=SuggestFromList(self.cpu_values(), case_sensitive=False),
+                            )
+                    yield Static(id="device-header", classes="list-header")
                     yield ListView(id="device-list")
-                with Container(classes="panel"):
+                with Container(id="occupancy-panel", classes="panel"):
                     yield Label("My Occupancy", classes="panel-title")
-                    yield Static(f"Current User: {CURRENT_USER}", classes="section-copy")
+                    yield Static(f"Current User: {CURRENT_USER}", id="occupancy-meta", classes="section-copy")
+                    yield Static(id="my-header", classes="list-header")
                     yield ListView(id="my-list")
             with Container(id="right-pane", classes="panel"):
                 yield Label("Device Detail", classes="panel-title")
                 yield Static("\u8fde\u63a5 / \u8d44\u4ea7 / \u4f4d\u7f6e", classes="section-copy")
                 yield Static(id="detail-card")
         yield Footer()
-
-    def compose_domain_chips(self) -> ComposeResult:
-        with Horizontal(classes="chip-section"):
-            yield Static("\u9886\u57df", classes="chip-group-title")
-            for index, domain in enumerate([ALL_DOMAINS, *self.domain_values()]):
-                button_id = f"domain_chip_{index}"
-                self.domain_button_ids[domain] = button_id
-                yield Button(domain, id=button_id, classes="filter-chip")
 
     def compose_status_chips(self) -> ComposeResult:
         with Horizontal(classes="chip-section"):
@@ -290,22 +381,22 @@ class DeviceDashboard(App[None]):
                 self.status_button_ids[status] = button_id
                 yield Button(status, id=button_id, classes="filter-chip")
 
-    def compose_cpu_chips(self) -> ComposeResult:
-        with Horizontal(classes="chip-section"):
-            yield Static("CPU", classes="chip-group-title")
-            for index, cpu in enumerate([ALL_CPUS, *self.cpu_values()]):
-                button_id = f"cpu_chip_{index}"
-                self.cpu_button_ids[cpu] = button_id
-                yield Button(cpu, id=button_id, classes="filter-chip")
-
     def on_mount(self) -> None:
         self.selected_device_id = self.devices[0].id
         self.compute_visible_devices()
+        self.refresh_filter_suggestions()
         self.refresh_filter_chips()
+        self.refresh_headers()
         self.refresh_lists()
         self.ensure_valid_selection()
         self.update_detail(self.get_selected_device())
         self.query_one("#device-list", ListView).focus()
+
+    def on_resize(self) -> None:
+        self.refresh_headers()
+        self.refresh_lists()
+        if self.selected_device_id:
+            self.update_detail(self.get_selected_device())
 
     def domain_values(self) -> list[str]:
         return sorted({device.domain for device in self.devices})
@@ -313,15 +404,29 @@ class DeviceDashboard(App[None]):
     def cpu_values(self) -> list[str]:
         return sorted({device.cpu for device in self.devices})
 
+    def refresh_filter_suggestions(self) -> None:
+        domain_candidates = sorted({device.domain for device in self.visible_devices})
+        cpu_candidates = sorted({device.cpu for device in self.visible_devices})
+        self.query_one("#domain-filter-input", Input).suggester = SuggestFromList(
+            domain_candidates or self.domain_values(),
+            case_sensitive=False,
+        )
+        self.query_one("#cpu-filter-input", Input).suggester = SuggestFromList(
+            cpu_candidates or self.cpu_values(),
+            case_sensitive=False,
+        )
+
     def compute_visible_devices(self) -> None:
         keyword = self.filter_text.strip().lower()
+        domain_keyword = self.filter_domain.strip().lower()
+        cpu_keyword = self.filter_cpu.strip().lower()
         filtered: list[Device] = []
         for device in self.devices:
-            if self.filter_domain != ALL_DOMAINS and device.domain != self.filter_domain:
+            if domain_keyword and domain_keyword not in device.domain.lower():
                 continue
             if self.filter_status != ALL_STATUS and device.status != self.filter_status:
                 continue
-            if self.filter_cpu != ALL_CPUS and device.cpu != self.filter_cpu:
+            if cpu_keyword and cpu_keyword not in device.cpu.lower():
                 continue
             if keyword and keyword not in self.search_index[device.id]:
                 continue
@@ -333,31 +438,8 @@ class DeviceDashboard(App[None]):
         ]
 
     def refresh_filter_chips(self) -> None:
-        for domain, button_id in self.domain_button_ids.items():
-            self.query_one(f"#{button_id}", Button).set_class(domain == self.filter_domain, "-active")
         for status, button_id in self.status_button_ids.items():
             self.query_one(f"#{button_id}", Button).set_class(status == self.filter_status, "-active")
-        for cpu, button_id in self.cpu_button_ids.items():
-            self.query_one(f"#{button_id}", Button).set_class(cpu == self.filter_cpu, "-active")
-        self.scroll_active_chip_into_view()
-
-    def active_chip_id(self) -> str | None:
-        if self.filter_cpu != ALL_CPUS:
-            return self.cpu_button_ids.get(self.filter_cpu)
-        if self.filter_status != ALL_STATUS:
-            return self.status_button_ids.get(self.filter_status)
-        return self.domain_button_ids.get(self.filter_domain)
-
-    def scroll_active_chip_into_view(self) -> None:
-        button_id = self.active_chip_id()
-        if not button_id:
-            return
-        ribbon = self.query_one("#filter-ribbon", HorizontalScroll)
-        ribbon.scroll_to_widget(
-            self.query_one(f"#{button_id}", Button),
-            animate=False,
-            center=False,
-        )
 
     def update_stats(self) -> None:
         counts = {status: 0 for status in STATUS_ORDER}
@@ -367,12 +449,94 @@ class DeviceDashboard(App[None]):
 
         stats_text = (
             f"[bold #8ac6ff]\u603b\u6570[/] {len(self.visible_devices)}    "
-            f"[bold #35d07f]\u5df2\u5360\u7528[/] {counts[STATUS_OCCUPIED]}    "
-            f"[bold #5db4ff]\u7a7a\u95f2[/] {counts[STATUS_IDLE]}    "
+            f"[bold #f4c861]\u5df2\u5360\u7528[/] {counts[STATUS_OCCUPIED]}    "
+            f"[bold #35d07f]\u7a7a\u95f2[/] {counts[STATUS_IDLE]}    "
             f"[bold #ffb65c]\u6d41\u6c34\u7ebf[/] {counts[STATUS_PIPELINE]}    "
             f"[bold #b88cff]\u5176\u4ed6[/] {counts[STATUS_OTHER]}"
         )
         self.query_one("#stats-strip", Static).update(Text.from_markup(stats_text))
+
+    def main_columns(self) -> list[tuple[str, int]]:
+        width = self.query_one("#device-list", ListView).size.width or 84
+        if width < 62:
+            no_width = 4
+            domain_width = 6
+            cpu_width = 6
+            status_width = 8
+            device_width = min(
+                22,
+                max(10, width - (no_width + domain_width + cpu_width + status_width + 4)),
+            )
+            return [
+                ("No", no_width),
+                ("Device", device_width),
+                ("Domain", domain_width),
+                ("CPU", cpu_width),
+                ("Status", status_width),
+            ]
+
+        no_width = 4
+        domain_width = 6
+        cpu_width = 6
+        status_width = 10
+        owner_width = 10
+        device_width = min(
+            28,
+            max(12, width - (no_width + domain_width + cpu_width + status_width + owner_width + 5)),
+        )
+        return [
+            ("No", no_width),
+            ("Device", device_width),
+            ("Domain", domain_width),
+            ("CPU", cpu_width),
+            ("Status", status_width),
+            ("Owner", owner_width),
+        ]
+
+    def occupancy_columns(self) -> list[tuple[str, int]]:
+        width = self.query_one("#my-list", ListView).size.width or 64
+        no_width = 4
+        domain_width = 8
+        device_width = min(26, max(12, width - (no_width + domain_width + 2)))
+        return [
+            ("No", no_width),
+            ("Device", device_width),
+            ("Domain", domain_width),
+        ]
+
+    def render_header(self, compact: bool = False) -> Text:
+        columns = self.occupancy_columns() if compact else self.main_columns()
+        header = Text()
+        for index, (name, width) in enumerate(columns):
+            if index:
+                header.append(" ")
+            header.append(fit_cell(name, width), style="bold #7d93ad")
+        return header
+
+    def render_row(self, device: Device, sequence: int, compact: bool = False) -> Text:
+        columns = self.occupancy_columns() if compact else self.main_columns()
+        owner = device.owner or "-"
+        value_map = {
+            "No": (str(sequence), "#7d93ad"),
+            "ID": (device.id, "#c9d8ea"),
+            "Device": (device.name, "#ffffff"),
+            "Domain": (device.domain, "#88a0ba"),
+            "CPU": (device.cpu, "#5db4ff"),
+            "Status": (status_badge(device.status), status_color(device.status)),
+            "Owner": (owner, "#5db4ff" if owner == CURRENT_USER else "#9cb4ce"),
+        }
+
+        row = Text()
+        for index, (name, width) in enumerate(columns):
+            value, tone = value_map[name]
+            if index:
+                row.append(" ")
+            row.append(fit_cell(value, width), style=tone)
+        return row
+
+    def refresh_headers(self) -> None:
+        self.query_one("#device-header", Static).update(self.render_header())
+        self.query_one("#my-header", Static).update(self.render_header(compact=True))
 
     def refresh_lists(self) -> None:
         device_list = self.query_one("#device-list", ListView)
@@ -385,12 +549,20 @@ class DeviceDashboard(App[None]):
         self.my_items.clear()
 
         for index, device in enumerate(self.visible_devices, start=1):
-            item = DeviceListItem(device, sequence=index, emphasis=device.id == self.selected_device_id)
+            item = DeviceListItem(
+                device,
+                row=self.render_row(device, sequence=index),
+                emphasis=device.id == self.selected_device_id,
+            )
             self.device_items[device.id] = item
             device_list.append(item)
 
         for index, device in enumerate(self.visible_owned_devices, start=1):
-            item = DeviceListItem(device, sequence=index, emphasis=device.id == self.selected_device_id)
+            item = DeviceListItem(
+                device,
+                row=self.render_row(device, sequence=index, compact=True),
+                emphasis=device.id == self.selected_device_id,
+            )
             self.my_items[device.id] = item
             my_list.append(item)
 
@@ -551,11 +723,28 @@ class DeviceDashboard(App[None]):
 
     def refresh_filtered_view(self) -> None:
         self.compute_visible_devices()
+        self.refresh_filter_suggestions()
         self.refresh_filter_chips()
+        self.refresh_headers()
         self.refresh_lists()
         self.ensure_valid_selection()
         if self.selected_device_id:
             self.update_detail(self.get_selected_device())
+
+    def toggle_occupancy_for_device(self, device: Device) -> None:
+        if device.owner == CURRENT_USER and device.status == STATUS_OCCUPIED:
+            device.owner = None
+            device.status = STATUS_IDLE
+            message = f"Released {device.name}"
+        elif device.owner is None and device.status == STATUS_IDLE:
+            device.owner = CURRENT_USER
+            device.status = STATUS_OCCUPIED
+            message = f"Claimed {device.name}"
+        else:
+            message = f"{device.name} is {device.status}"
+
+        self.refresh_filtered_view()
+        self.notify(message, timeout=2)
 
     @on(Input.Changed, "#filter-input")
     def handle_filter_changed(self, event: Input.Changed) -> None:
@@ -565,21 +754,25 @@ class DeviceDashboard(App[None]):
     @on(Button.Pressed, ".filter-chip")
     def handle_filter_chip_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
-        for domain, domain_button_id in self.domain_button_ids.items():
-            if button_id == domain_button_id:
-                self.filter_domain = domain
-                self.refresh_filtered_view()
-                return
         for status, status_button_id in self.status_button_ids.items():
             if button_id == status_button_id:
                 self.filter_status = status
                 self.refresh_filtered_view()
                 return
-        for cpu, cpu_button_id in self.cpu_button_ids.items():
-            if button_id == cpu_button_id:
-                self.filter_cpu = cpu
-                self.refresh_filtered_view()
-                return
+
+    @on(Input.Changed, "#domain-filter-input")
+    def handle_domain_changed(self, event: Input.Changed) -> None:
+        if event.value == self.filter_domain:
+            return
+        self.filter_domain = event.value
+        self.refresh_filtered_view()
+
+    @on(Input.Changed, "#cpu-filter-input")
+    def handle_cpu_changed(self, event: Input.Changed) -> None:
+        if event.value == self.filter_cpu:
+            return
+        self.filter_cpu = event.value
+        self.refresh_filtered_view()
 
     @on(ListView.Selected, "#device-list")
     def handle_device_selected(self, event: ListView.Selected) -> None:
@@ -605,20 +798,7 @@ class DeviceDashboard(App[None]):
         if not self.selected_device_id:
             return
 
-        device = self.get_selected_device()
-        if device.owner == CURRENT_USER and device.status == STATUS_OCCUPIED:
-            device.owner = None
-            device.status = STATUS_IDLE
-            message = f"Released {device.name}"
-        elif device.owner is None and device.status == STATUS_IDLE:
-            device.owner = CURRENT_USER
-            device.status = STATUS_OCCUPIED
-            message = f"Claimed {device.name}"
-        else:
-            message = f"{device.name} is {device.status}"
-
-        self.refresh_filtered_view()
-        self.notify(message, timeout=2)
+        self.toggle_occupancy_for_device(self.get_selected_device())
 
 
 def main() -> None:
