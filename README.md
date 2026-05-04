@@ -30,6 +30,132 @@ or after install
 device-tui
 ```
 
+## Web API Mode
+
+Default mode uses the in-memory sample dataset.
+
+To run the local browser page and HTTP APIs:
+
+```bash
+python src/web_api.py --host 127.0.0.1 --port 8765
+```
+
+After installation you can also run:
+
+```bash
+device-tui-web
+```
+
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser to view the page.
+
+To make the TUI read and write through the HTTP APIs instead of the local sample repository:
+
+```bash
+set DEVICE_TUI_DATA_SOURCE=api
+set DEVICE_TUI_API_BASE_URL=http://127.0.0.1:8765
+set DEVICE_TUI_REFRESH_SECONDS=30
+python src/app.py
+```
+
+In API mode, the web page and TUI use the `/api/events` long-poll endpoint for near-real-time state sync, with periodic refresh kept as a fallback.
+The TUI does not decide claim vs release from local state in API mode; it sends a backend-authoritative `toggle` request and then refreshes from the server.
+
+## Mock Huawei Device
+
+You can start a local mock Huawei Telnet device for CLI testing:
+
+```bash
+python src/mock_huawei_device.py --host 127.0.0.1 --port 2323
+```
+
+After installation you can also run:
+
+```bash
+device-tui-mock-huawei
+```
+
+Default mock credentials:
+
+- Host: `127.0.0.1`
+- Port: `2323`
+- Username: `lon`
+- Password: `202188`
+
+The right-side `CLI Session` pane in the TUI can connect to this mock device and test:
+
+- Username / password login
+- Huawei prompt detection
+- `screen-length 0 temporary`
+- `display version`
+- `display current-configuration`
+- `display ip interface brief`
+- `system-view`
+- `quit` / `return`
+
+## Mock Linux SSH
+
+You can start a local mock Linux SSH backend for workflow testing:
+
+```bash
+python src/mock_linux_ssh.py --host 127.0.0.1 --port 2200
+```
+
+After installation you can also run:
+
+```bash
+device-tui-mock-linux
+```
+
+Default mock credentials:
+
+- Host: `127.0.0.1`
+- Port: `2200`
+- Username: `ops`
+- Password: `ops123`
+
+The mock SSH server supports:
+
+- Username / password login
+- Normal SSH command execution
+- A small in-memory Linux filesystem
+- Workflow-friendly commands such as `mkdir -p`, `echo ... > file`, `cat`, `ls`, `pwd`, `whoami`
+
+Recommended pairing for local dual-channel testing:
+
+- Device Telnet: `python src/mock_huawei_device.py --host 127.0.0.1 --port 2323`
+- Linux SSH: `python src/mock_linux_ssh.py --host 127.0.0.1 --port 2200`
+
+## Dual-Channel CLI
+
+The right-side `CLI Session` pane now supports two execution channels:
+
+- `device`: Telnet login to the selected Huawei device
+- `linux`: SSH login to a backend Linux host using `asyncssh`
+
+Routing rules:
+
+- Normal commands are sent directly to the connected `device` channel
+- Commands starting with `/` are treated as local workflows and run step-by-step across `device` and `linux`
+
+Built-in workflow stubs:
+
+- `/collect_log`
+- `/change_cc <value>`
+
+Current implementation notes:
+
+- The device target still follows the selected device in the list
+- Device username / password can be overridden in the TUI before connecting
+- Linux host / port / username / password are entered separately in the TUI
+- Workflow output, Linux output, and device output are merged into one log window with source tags
+
+Optional environment variables:
+
+- `DEVICE_TUI_CURRENT_USER`: override the current user used by the sample mode and web service
+- `DEVICE_TUI_API_BASE_URL`: base URL for the HTTP API
+- `DEVICE_TUI_API_TIMEOUT_SECONDS`: HTTP timeout for API requests
+- `DEVICE_TUI_REFRESH_SECONDS`: polling interval used by the API-backed repository
+
 ## Dashboard
 
 设备列表上方增加了运维统计条，统计当前筛选结果中的：

@@ -5,11 +5,15 @@ description = "Modern device dashboard TUI built with Textual."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "asyncssh>=2.22,<3",
     "textual>=0.61,<0.70",
 ]
 
 [project.scripts]
 device-tui = "src.app:main"
+device-tui-web = "src.web_api:main"
+device-tui-mock-huawei = "src.mock_huawei_device:main"
+device-tui-mock-linux = "src.mock_linux_ssh:main"
 
 [build-system]
 requires = ["setuptools>=68"]

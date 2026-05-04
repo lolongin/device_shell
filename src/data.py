@@ -7,6 +7,14 @@ CURRENT_USER = "li.wei"
 LOCAL_TEST_SSH_IP = "192.168.1.15"
 LOCAL_TEST_SSH_USER = "lon"
 LOCAL_TEST_SSH_PASSWORD = "202188"
+MOCK_DEVICE_HOST = "127.0.0.1"
+MOCK_DEVICE_TELNET_USER = "lon"
+MOCK_DEVICE_TELNET_PASSWORD = "202188"
+
+STATUS_OCCUPIED = "\u5df2\u88ab\u5360\u7528"
+STATUS_IDLE = "\u7a7a\u95f2"
+STATUS_PIPELINE = "\u6d41\u6c34\u7ebf\u5360\u7528"
+STATUS_OTHER = "\u5176\u4ed6"
 
 
 @dataclass(slots=True)
@@ -28,10 +36,33 @@ class Device:
     rack: str
     version: str
     notes: str
+    ssh_port: int = 22
+    telnet_port: int = 23
 
 
 def sample_devices() -> list[Device]:
     return [
+        Device(
+            id="MOCK-LAB-000",
+            name="Mock-Huawei-Lab",
+            domain="测试",
+            device_type="Mock Device",
+            cpu="mock-cpu",
+            status="空闲",
+            owner=None,
+            ssh_ip=MOCK_DEVICE_HOST,
+            telnet_ip=MOCK_DEVICE_HOST,
+            username=MOCK_DEVICE_TELNET_USER,
+            password=MOCK_DEVICE_TELNET_PASSWORD,
+            vendor="Huawei / Mock Linux",
+            model="Local Dual-Channel Lab",
+            site="Localhost",
+            rack="Mock-R01",
+            version="Telnet:2323 / SSH:2200",
+            notes="Local integration target. Device Telnet mock uses 127.0.0.1:2323 with lon/202188. Linux SSH mock uses 127.0.0.1:2200 with ops/ops123.",
+            ssh_port=2200,
+            telnet_port=2323,
+        ),
         Device(
             id="LOCAL-SSH-001",
             name="本机测试设备",
