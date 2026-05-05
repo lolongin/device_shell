@@ -1,4 +1,14 @@
-# Network Device TUI
+# Network Device Desktop
+
+A Python desktop tool for managing network devices, now using a PySide6 / Qt widgets UI.
+
+Core areas:
+
+- Device inventory with keyword, domain, status, and CPU filters
+- Occupancy management for claiming and releasing devices
+- Device detail view with connection and asset metadata
+- Embedded Telnet and Linux SSH channels for command execution
+- Workflow command support such as `/collect_log` and `/change_cc <value>`
 
 一个用于管理网络设备的现代化终端看板。
 
@@ -15,19 +25,31 @@ pip install -e .
 or
 
 ```bash
-pip install textual
+pip install PySide6 asyncssh pyte
 ```
 
 ## Run
 
 ```bash
-python src/app.py
+python src/desktop_app.py
 ```
 
 or after install
 
 ```bash
 device-tui
+```
+
+Legacy Textual TUI:
+
+```bash
+python src/app.py
+```
+
+or
+
+```bash
+device-tui-textual
 ```
 
 ## Web API Mode
@@ -48,17 +70,18 @@ device-tui-web
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser to view the page.
 
-To make the TUI read and write through the HTTP APIs instead of the local sample repository:
+To make the desktop app read and write through the HTTP APIs instead of the local sample repository:
 
 ```bash
 set DEVICE_TUI_DATA_SOURCE=api
 set DEVICE_TUI_API_BASE_URL=http://127.0.0.1:8765
 set DEVICE_TUI_REFRESH_SECONDS=30
-python src/app.py
+python src/desktop_app.py
 ```
 
-In API mode, the web page and TUI use the `/api/events` long-poll endpoint for near-real-time state sync, with periodic refresh kept as a fallback.
-The TUI does not decide claim vs release from local state in API mode; it sends a backend-authoritative `toggle` request and then refreshes from the server.
+In API mode, the web page and desktop app share the same backend data source, with periodic refresh used to keep the GUI in sync.
+
+The desktop shell is implemented with PySide6. The legacy terminal UI is still available through `device-tui-textual`.
 
 ## Mock Huawei Device
 

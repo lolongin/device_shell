@@ -11,16 +11,18 @@ except ImportError:
 
 
 class LinuxSshSession:
-    """Async SSH session for Linux-side workflow steps."""
+    """Interactive async SSH session backed by a persistent shell."""
 
     def __init__(self, callbacks: SessionCallbacks) -> None:
         self.callbacks = callbacks
         self._connection: asyncssh.SSHClientConnection | None = None
-        self._command_lock = asyncio.Lock()
+        self._process: asyncssh.SSHClientProcess | None = None
+        self._reader_tasks: list[asyncio.Task[None]] = []
+        self._write_lock = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:
-        return self._connection is not None
+        return self._connection is not None and self._process is not None
 
     async def connect(
         self,
@@ -48,12 +50,52 @@ class LinuxSshSession:
             self.callbacks.on_status("Disconnected")
             raise SessionUnavailableError(str(exc)) from exc
 
+        try:
+            self._process = await self._connection.create_process(
+                term_type="xterm",
+                term_size=(160, 40),
+            )
+        except (asyncssh.Error, OSError) as exc:
+            connection = self._connection
+            self._connection = None
+            if connection is not None:
+                connection.close()
+                try:
+                    await connection.wait_closed()
+                except asyncssh.Error:
+                    pass
+            self.callbacks.on_status("Disconnected")
+            raise SessionUnavailableError(str(exc)) from exc
+
+        self._reader_tasks = [
+            asyncio.create_task(self._pump_stream(self._process.stdout)),
+            asyncio.create_task(self._pump_stream(self._process.stderr)),
+        ]
         self.callbacks.on_status("Connected")
         self.callbacks.on_output("=== Linux SSH connected ===\n")
 
     async def disconnect(self, message: str = "Disconnected.") -> None:
+        process = self._process
         connection = self._connection
+        self._process = None
         self._connection = None
+
+        for task in self._reader_tasks:
+            task.cancel()
+        if self._reader_tasks:
+            await asyncio.gather(*self._reader_tasks, return_exceptions=True)
+        self._reader_tasks.clear()
+
+        if process is not None:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+            try:
+                await process.wait_closed()
+            except (asyncssh.Error, OSError):
+                pass
+
         if connection is not None:
             connection.close()
             try:
@@ -66,40 +108,30 @@ class LinuxSshSession:
             self.callbacks.on_output(f"\n=== {message} ===\n")
 
     async def send_command(self, command: str) -> None:
-        connection = self._connection
-        if connection is None:
+        process = self._process
+        if process is None:
             raise SessionUnavailableError("Linux SSH session is not connected.")
 
-        line = command.strip()
-        if not line:
-            return
+        line = command.rstrip()
+        await self.send_text(line + "\n")
 
-        async with self._command_lock:
-            self.callbacks.on_status("Running")
-            self.callbacks.on_output(f"\n$ {line}\n")
-            process = await connection.create_process(line)
-            try:
-                await asyncio.gather(
-                    self._pump_stream(process.stdout),
-                    self._pump_stream(process.stderr),
-                )
-                await process.wait_closed()
-            finally:
-                try:
-                    process.stdin.close()
-                except Exception:
-                    pass
+    async def send_text(self, text: str) -> None:
+        process = self._process
+        if process is None:
+            raise SessionUnavailableError("Linux SSH session is not connected.")
 
-            exit_status = process.exit_status
-            self.callbacks.on_status("Connected")
-            if exit_status not in (0, None):
-                raise SessionUnavailableError(
-                    f"Linux command exited with status {exit_status}: {line}"
-                )
+        async with self._write_lock:
+            process.stdin.write(text)
+            await process.stdin.drain()
 
     async def _pump_stream(self, stream: asyncssh.SSHReader[str]) -> None:
-        while True:
-            chunk = await stream.read(4096)
-            if not chunk:
-                return
-            self.callbacks.on_output(chunk)
+        try:
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    return
+                self.callbacks.on_output(chunk)
+        except asyncio.CancelledError:
+            raise
+        except (asyncssh.Error, OSError) as exc:
+            self.callbacks.on_output(f"\n=== Linux stream error: {exc} ===\n")

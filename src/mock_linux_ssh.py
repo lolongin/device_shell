@@ -10,6 +10,11 @@ from pathlib import PurePosixPath
 
 import asyncssh
 
+try:
+    from .mock_terminal import AnsiKeyParser, InputToken, TerminalLineEditor
+except ImportError:
+    from mock_terminal import AnsiKeyParser, InputToken, TerminalLineEditor
+
 
 DEFAULT_HOST = os.getenv("MOCK_LINUX_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("MOCK_LINUX_PORT", "2200"))
@@ -97,6 +102,7 @@ class MockLinuxCommandProcessor:
         self.state = state
         self.username = username
         self.cwd = state.ensure_home(username)
+        self._input_parser = AnsiKeyParser()
 
     async def handle_process(self, process: asyncssh.SSHServerProcess[str]) -> None:
         if process.command is None:
@@ -112,15 +118,14 @@ class MockLinuxCommandProcessor:
 
     async def _run_shell(self, process: asyncssh.SSHServerProcess[str]) -> None:
         process.stdout.write(
-            f"Welcome to {self.state.hostname} mock Linux shell.\n"
-            "Use this for workflow testing only.\n"
+            f"Welcome to {self.state.hostname} mock Linux shell.\r\n"
+            "Use this for workflow testing only.\r\n"
         )
         while not process.stdout.is_closing():
             process.stdout.write(self._prompt())
-            line = await process.stdin.readline()
-            if not line:
+            command = await self._read_command(process)
+            if command is None:
                 break
-            command = line.strip()
             if not command:
                 continue
             if command in {"exit", "quit", "logout"}:
@@ -132,6 +137,80 @@ class MockLinuxCommandProcessor:
                 process.stderr.write(stderr)
 
         process.exit(0)
+
+    async def _read_command(self, process: asyncssh.SSHServerProcess[str]) -> str | None:
+        editor = TerminalLineEditor()
+        while not process.stdout.is_closing():
+            chunk = await process.stdin.read(1)
+            if not chunk:
+                return None
+            for token in self._input_parser.feed(chunk):
+                command = await self._handle_input_token(process, editor, token)
+                if command is not None:
+                    return command
+        return None
+
+    async def _handle_input_token(
+        self,
+        process: asyncssh.SSHServerProcess[str],
+        editor: TerminalLineEditor,
+        token: InputToken,
+    ) -> str | None:
+        if token.kind == "char":
+            redraw = editor.insert(token.value, echo=True)
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "backspace":
+            redraw = editor.backspace(echo=True)
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "delete":
+            redraw = editor.delete(echo=True)
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "left":
+            redraw = editor.move_left()
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "right":
+            redraw = editor.move_right()
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "home":
+            redraw = editor.move_home()
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "end":
+            redraw = editor.move_end()
+            if redraw:
+                process.stdout.write(redraw)
+            return None
+
+        if token.kind == "enter":
+            process.stdout.write("\r\n")
+            return editor.submit().strip()
+
+        if token.kind == "interrupt":
+            editor.clear()
+            process.stdout.write("^C\r\n")
+            return ""
+
+        if token.kind == "eof":
+            return None
+
+        return None
 
     def _prompt(self) -> str:
         return f"{self.username}@{self.state.hostname}:{self.cwd}$ "

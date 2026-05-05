@@ -5,6 +5,11 @@ import asyncio
 import contextlib
 import os
 
+try:
+    from .mock_terminal import AnsiKeyParser, InputToken, TerminalLineEditor
+except ImportError:
+    from mock_terminal import AnsiKeyParser, InputToken, TerminalLineEditor
+
 
 IAC = 255
 DO = 253
@@ -56,6 +61,7 @@ class MockHuaweiCliSession:
         self.screen_length_disabled = False
         self.current_user = username
         self._iac_buffer = bytearray()
+        self._input_parser = AnsiKeyParser()
         self._closed = False
 
     async def run(self) -> None:
@@ -95,7 +101,7 @@ class MockHuaweiCliSession:
         return value
 
     async def _read_command(self, mask_input: bool = False) -> str | None:
-        buffer = bytearray()
+        editor = TerminalLineEditor()
         while True:
             chunk = await self.reader.read(1024)
             if not chunk:
@@ -104,22 +110,10 @@ class MockHuaweiCliSession:
             if not incoming:
                 continue
             for byte in incoming:
-                if byte in (10,):
-                    continue
-                if byte == 13:
-                    if mask_input:
-                        await self._write("\r\n")
-                    else:
-                        await self._write("\r\n")
-                    return buffer.decode("utf-8", errors="ignore").strip()
-                if byte in (8, 127):
-                    if buffer:
-                        buffer.pop()
-                    continue
-                buffer.append(byte)
-                if not mask_input:
-                    self.writer.write(bytes([byte]))
-                    await self.writer.drain()
+                for token in self._input_parser.feed(chr(byte)):
+                    command = await self._handle_input_token(editor, token, echo=not mask_input)
+                    if command is not None:
+                        return command
 
     async def _handle_command(self, command: str) -> None:
         if not command:
@@ -184,6 +178,64 @@ class MockHuaweiCliSession:
     async def _write(self, text: str) -> None:
         self.writer.write(text.encode("utf-8"))
         await self.writer.drain()
+
+    async def _handle_input_token(
+        self,
+        editor: TerminalLineEditor,
+        token: InputToken,
+        *,
+        echo: bool,
+    ) -> str | None:
+        if token.kind == "char":
+            redraw = editor.insert(token.value, echo=echo)
+            if redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "backspace":
+            redraw = editor.backspace(echo=echo)
+            if redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "delete":
+            redraw = editor.delete(echo=echo)
+            if redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "left":
+            redraw = editor.move_left()
+            if echo and redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "right":
+            redraw = editor.move_right()
+            if echo and redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "home":
+            redraw = editor.move_home()
+            if echo and redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "end":
+            redraw = editor.move_end()
+            if echo and redraw:
+                await self._write(redraw)
+            return None
+
+        if token.kind == "enter":
+            await self._write("\r\n")
+            return editor.submit().strip()
+
+        if token.kind in {"interrupt", "eof"}:
+            return editor.submit().strip()
+
+        return None
 
     def _strip_telnet_bytes(self, data: bytes) -> bytes:
         visible = bytearray()

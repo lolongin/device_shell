@@ -25,6 +25,9 @@ class CommandSession(Protocol):
     async def disconnect(self, message: str = "Disconnected.") -> None:
         ...
 
+    async def send_text(self, text: str) -> None:
+        ...
+
     async def send_command(self, command: str) -> None:
         ...
 
@@ -37,4 +40,3 @@ class CommandSession(Protocol):
 class SessionCallbacks:
     on_output: OutputEmitter
     on_status: StatusEmitter
-

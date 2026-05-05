@@ -1,16 +1,20 @@
 [project]
 name = "device-tui"
 version = "0.1.0"
-description = "Modern device dashboard TUI built with Textual."
+description = "Desktop device dashboard with device inventory, occupancy, and dual-channel CLI."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "asyncssh>=2.22,<3",
+    "PySide6>=6.7,<7",
+    "pyte>=0.8,<1",
     "textual>=0.61,<0.70",
 ]
 
 [project.scripts]
-device-tui = "src.app:main"
+device-tui = "src.desktop_app:main"
+device-tui-desktop = "src.desktop_app:main"
+device-tui-textual = "src.app:main"
 device-tui-web = "src.web_api:main"
 device-tui-mock-huawei = "src.mock_huawei_device:main"
 device-tui-mock-linux = "src.mock_linux_ssh:main"

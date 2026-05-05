@@ -14,6 +14,8 @@ SB = 250
 SE = 240
 
 NEGOTIATION_COMMANDS = {DO, DONT, WILL, WONT}
+OPTION_ECHO = 1
+OPTION_SUPPRESS_GO_AHEAD = 3
 
 USERNAME_PATTERNS = ("username:", "login:")
 PASSWORD_PATTERNS = ("password:",)
@@ -99,9 +101,14 @@ class HuaweiTelnetSession:
             raise TelnetSessionError("Not connected.")
 
         line = command.rstrip()
-        if line:
-            self._on_output(f"\n> {line}\n")
-        self._writer.write((line + "\r\n").encode("utf-8"))
+        await self.send_text(line + "\n")
+
+    async def send_text(self, text: str) -> None:
+        if not self.is_connected or self._writer is None:
+            raise TelnetSessionError("Not connected.")
+
+        payload = text.replace("\r\n", "\n").replace("\n", "\r\n")
+        self._writer.write(payload.encode("utf-8"))
         await self._writer.drain()
 
     async def _login(
@@ -216,10 +223,7 @@ class HuaweiTelnetSession:
                     self._pending_iac.extend(payload[index:])
                     break
                 option = payload[index + 2]
-                if command in (DO, DONT):
-                    outgoing.extend((IAC, WONT, option))
-                else:
-                    outgoing.extend((IAC, DONT, option))
+                outgoing.extend(self._negotiate_option(command, option))
                 index += 3
                 continue
 
@@ -244,6 +248,22 @@ class HuaweiTelnetSession:
 
         text = visible.replace(b"\r\x00", b"\r").replace(b"\x00", b"").decode("utf-8", errors="ignore")
         return text
+
+    def _negotiate_option(self, command: int, option: int) -> tuple[int, int, int]:
+        if command == WILL:
+            if option in {OPTION_ECHO, OPTION_SUPPRESS_GO_AHEAD}:
+                return (IAC, DO, option)
+            return (IAC, DONT, option)
+
+        if command == DO:
+            if option == OPTION_SUPPRESS_GO_AHEAD:
+                return (IAC, WILL, option)
+            return (IAC, WONT, option)
+
+        if command == WONT:
+            return (IAC, DONT, option)
+
+        return (IAC, WONT, option)
 
     async def _drain_writer(self) -> None:
         if self._writer is None:
