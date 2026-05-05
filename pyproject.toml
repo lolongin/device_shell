@@ -1,0 +1,20 @@
+[project]
+name = "device-tui"
+version = "0.1.0"
+description = "Modern device dashboard TUI built with Textual."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.61,<0.70",
+]
+
+[project.scripts]
+device-tui = "src.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src"]
