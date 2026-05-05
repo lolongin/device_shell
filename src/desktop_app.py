@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
+import os
 import queue
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 try:
@@ -121,6 +124,7 @@ except ImportError:
 ALL_DOMAINS = "全部领域"
 ALL_STATUS = "全部状态"
 FILTERABLE_STATUSES = [ALL_STATUS, STATUS_OCCUPIED, STATUS_IDLE, STATUS_PIPELINE, STATUS_OTHER]
+DESKTOP_STATE_VERSION = 1
 
 STATUS_COLORS = {
     STATUS_IDLE: "#34d399",
@@ -149,6 +153,7 @@ QFrame#navStatsBar,
 QFrame#myOccupancyCard,
 QFrame#activeFilterBar,
 QFrame#sessionHeaderBar,
+QFrame#commandRecordDock,
 QGroupBox {
     background: #111820;
     border: 1px solid #202a36;
@@ -229,7 +234,8 @@ QFrame#myOccupancyCard {
     border-color: #253444;
 }
 QFrame#activeFilterBar,
-QFrame#sessionHeaderBar {
+QFrame#sessionHeaderBar,
+QFrame#commandRecordDock {
     background: #0c1218;
     border-color: #273242;
 }
@@ -487,6 +493,136 @@ QPlainTextEdit#terminalLog {
     font-size: 14px;
     padding: 12px;
 }
+QFrame#commandRecordDock {
+    background: #0b1117;
+    border: 1px solid #1f3b49;
+    border-radius: 8px;
+}
+QFrame#commandRecordHintBar {
+    background: #0f1720;
+    border: none;
+    border-bottom: 1px solid #1d3341;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    min-height: 27px;
+    max-height: 27px;
+}
+QLabel#commandRecordHint {
+    background: transparent;
+    color: #90a9c2;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPlainTextEdit#commandRecordEditor {
+    background: #071018;
+    color: #d9f3ef;
+    border: none;
+    border-radius: 0px;
+    padding: 7px 8px;
+    selection-background-color: #0f766e;
+    selection-color: #f8fbff;
+    font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei";
+    font-size: 14px;
+}
+QPlainTextEdit#commandRecordEditor:focus {
+    border: none;
+}
+QFrame#commandRecordFooter {
+    background: #0f1720;
+    border: none;
+    border-top: 1px solid #1d3341;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+    min-height: 29px;
+    max-height: 29px;
+}
+QToolButton#commandTabButton {
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+    color: #96a6b8;
+    padding: 5px 10px;
+    min-height: 24px;
+    font-weight: 600;
+}
+QToolButton#commandTabButton[selected="true"] {
+    background: #12313a;
+    color: #8ff7d2;
+}
+QToolButton#commandTabButton:hover {
+    background: #172532;
+    color: #e5edf6;
+}
+QWidget#commandTabItem {
+    background: transparent;
+}
+QToolButton#commandTabCloseButton {
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    color: #7f92a6;
+    padding: 0px;
+    margin: 0px;
+    min-width: 16px;
+    max-width: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QToolButton#commandTabCloseButton[selected="true"] {
+    color: #b9fff0;
+}
+QToolButton#commandTabCloseButton:hover {
+    background: #7f1d1d;
+    color: #ffffff;
+}
+QToolButton#commandActionButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: #c3d3e4;
+    padding: 4px 7px;
+    font-weight: 600;
+}
+QToolButton#commandActionButton:hover {
+    background: #13242d;
+    border-color: #0f766e;
+    color: #8ff7d2;
+}
+QToolButton#commandEnterModeButton {
+    background: #13242d;
+    border: 1px solid #2b4252;
+    border-radius: 5px;
+    color: #8ff7d2;
+    padding: 1px 7px;
+    min-height: 19px;
+    font-size: 13px;
+    font-weight: 700;
+}
+QToolButton#commandEnterModeButton[enterSends="true"] {
+    background: #0f766e;
+    border-color: #14b8a6;
+    color: #f6fffd;
+}
+QToolButton#commandEnterModeButton:hover {
+    background: #12313a;
+    border-color: #14b8a6;
+    color: #d7fff2;
+}
+QToolButton#commandCollapseButton {
+    background: #101c26;
+    border: 1px solid #2b4252;
+    border-radius: 5px;
+    color: #c3d3e4;
+    padding: 3px 8px;
+    font-weight: 700;
+}
+QToolButton#commandCollapseButton:hover {
+    background: #13242d;
+    border-color: #14b8a6;
+    color: #d7fff2;
+}
 QStatusBar {
     background: #0b1117;
     color: #96a6b8;
@@ -662,6 +798,8 @@ if PYSIDE6_IMPORT_ERROR is None:
         def __init__(self) -> None:
             super().__init__()
             self._raw_sender: Callable[[str], None] | None = None
+            self._command_recorder: Callable[[str], None] | None = None
+            self._pending_command_chars: list[str] = []
             self._pyte_screen: Any | None = None
             self._pyte_stream: Any | None = None
             self._buffer_lines: list[list[str]] = [[]]
@@ -691,6 +829,22 @@ if PYSIDE6_IMPORT_ERROR is None:
             if self._raw_sender is None:
                 return
             self._raw_sender(text)
+
+        def _record_local_text(self, text: str) -> None:
+            for char in text:
+                if char in ("\r", "\n"):
+                    self._commit_pending_command()
+                elif char in ("\b", "\x7f"):
+                    if self._pending_command_chars:
+                        self._pending_command_chars.pop()
+                elif char >= " ":
+                    self._pending_command_chars.append(char)
+
+        def _commit_pending_command(self) -> None:
+            command = "".join(self._pending_command_chars).strip()
+            self._pending_command_chars.clear()
+            if command and self._command_recorder is not None:
+                self._command_recorder(command)
 
         def append_output(self, message: str) -> None:
             if self._pyte_stream is not None:
@@ -867,6 +1021,9 @@ if PYSIDE6_IMPORT_ERROR is None:
         def set_raw_sender(self, sender: Callable[[str], None]) -> None:
             self._raw_sender = sender
 
+        def set_command_recorder(self, recorder: Callable[[str], None]) -> None:
+            self._command_recorder = recorder
+
         def keyPressEvent(self, event: Any) -> None:  # noqa: N802
             if self._raw_sender is None:
                 return super().keyPressEvent(event)
@@ -881,6 +1038,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if key == Qt.Key_V:
                     clipboard_text = QApplication.clipboard().text()
                     if clipboard_text:
+                        self._record_local_text(clipboard_text)
                         self._forward_text(clipboard_text)
                     return
 
@@ -891,6 +1049,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if key == Qt.Key_V:
                     clipboard_text = QApplication.clipboard().text()
                     if clipboard_text:
+                        self._record_local_text(clipboard_text)
                         self._forward_text(clipboard_text)
                     return
                 return super().keyPressEvent(event)
@@ -898,13 +1057,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             if modifiers == Qt.ShiftModifier and key == Qt.Key_Insert:
                 clipboard_text = QApplication.clipboard().text()
                 if clipboard_text:
+                    self._record_local_text(clipboard_text)
                     self._forward_text(clipboard_text)
                 return
 
             if key in (Qt.Key_Return, Qt.Key_Enter):
+                self._commit_pending_command()
                 self._forward_text("\r")
                 return
             if key == Qt.Key_Backspace:
+                self._record_local_text("\x7f")
                 self._forward_text("\x7f")
                 return
             if key == Qt.Key_Delete:
@@ -940,7 +1102,40 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             text = event.text()
             if text:
+                self._record_local_text(text)
                 self._forward_text(text)
+                return
+            super().keyPressEvent(event)
+
+    class CommandRecordInput(QPlainTextEdit):
+        def __init__(self) -> None:
+            super().__init__()
+            self._submit_handler: Callable[[str], None] | None = None
+            self._enter_sends = False
+            self.setObjectName("commandRecordEditor")
+            self.setMinimumHeight(132)
+            self.setMaximumHeight(180)
+            self.setTabChangesFocus(True)
+            self.setPlaceholderText("在此输入命令...")
+
+        def set_submit_handler(self, handler: Callable[[str], None]) -> None:
+            self._submit_handler = handler
+
+        def set_enter_sends(self, enter_sends: bool) -> None:
+            self._enter_sends = enter_sends
+
+        def keyPressEvent(self, event: Any) -> None:  # noqa: N802
+            key = event.key()
+            modifiers = event.modifiers()
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                ctrl_pressed = bool(modifiers & Qt.ControlModifier)
+                should_submit = not ctrl_pressed if self._enter_sends else ctrl_pressed
+                if should_submit:
+                    command = self.toPlainText().strip()
+                    if command and self._submit_handler is not None:
+                        self._submit_handler(command)
+                    return
+                self.insertPlainText("\n")
                 return
             super().keyPressEvent(event)
 
@@ -961,16 +1156,29 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.closed = False
             self.loading_snapshot = False
             self.recent_device_ids: list[str] = []
+            self.command_record_groups: list[dict[str, object]] = [
+                {"name": "终端", "content": ""},
+            ]
+            self.current_command_group = 0
+            self.command_record_collapsed = False
+            self.command_enter_sends = False
+            self.command_tab_buttons: list[QToolButton] = []
+            self.command_tab_close_buttons: list[QToolButton] = []
+            self.state_path = self.desktop_state_path()
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
             self.session_tabs_by_key: dict[str, str] = {}
 
             self.refresh_timer = QTimer(self)
             self.refresh_timer.setSingleShot(True)
             self.refresh_timer.timeout.connect(self.refresh_snapshot)
+            self.state_save_timer = QTimer(self)
+            self.state_save_timer.setSingleShot(True)
+            self.state_save_timer.timeout.connect(self.save_desktop_state)
             self.ui_timer = QTimer(self)
             self.ui_timer.setInterval(50)
             self.ui_timer.timeout.connect(self._drain_ui_queue)
 
+            self.load_desktop_state()
             self._build_window()
             self._build_layout()
             self._wire_events()
@@ -1193,6 +1401,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_widget.tabBar().setUsesScrollButtons(True)
             self.center_stage_stack.addWidget(empty_state)
             self.center_stage_stack.addWidget(self.session_tab_widget)
+            layout.addWidget(self._build_command_record_panel())
             self.update_center_stage_state()
             return panel
 
@@ -1254,7 +1463,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_form.setLabelAlignment(Qt.AlignRight)
             self.device_username_input = QLineEdit()
             self.device_password_input = QLineEdit()
-            self.device_password_input.setEchoMode(QLineEdit.Password)
             device_form.addRow("用户名", self.device_username_input)
             device_form.addRow("密码", self.device_password_input)
 
@@ -1267,7 +1475,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             linux_form.setLabelAlignment(Qt.AlignRight)
             self.linux_username_input = QLineEdit()
             self.linux_password_input = QLineEdit()
-            self.linux_password_input.setEchoMode(QLineEdit.Password)
             linux_form.addRow("用户名", self.linux_username_input)
             linux_form.addRow("密码", self.linux_password_input)
 
@@ -1278,6 +1485,76 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addStretch(1)
             scroll.setWidget(panel)
             return scroll
+
+        def _build_command_record_panel(self) -> QWidget:
+            frame = QFrame()
+            frame.setObjectName("commandRecordDock")
+            self.command_record_frame = frame
+            frame.setMinimumHeight(196)
+            frame.setMaximumHeight(240)
+            layout = QVBoxLayout(frame)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            hint_bar = QFrame()
+            hint_bar.setObjectName("commandRecordHintBar")
+            hint_bar.setFixedHeight(27)
+            hint_layout = QHBoxLayout(hint_bar)
+            hint_layout.setContentsMargins(10, 0, 10, 0)
+            hint_layout.setSpacing(8)
+            self.command_record_hint_label = QLabel("")
+            self.command_record_hint_label.setObjectName("commandRecordHint")
+            hint_layout.addWidget(self.command_record_hint_label)
+            self.command_enter_mode_button = QToolButton()
+            self.command_enter_mode_button.setObjectName("commandEnterModeButton")
+            self.command_enter_mode_button.setText("↵")
+            self.command_enter_mode_button.setToolTip("切换 Enter 行为")
+            hint_layout.addWidget(self.command_enter_mode_button)
+            hint_layout.addStretch(1)
+            self.command_record_toggle_button = QToolButton()
+            self.command_record_toggle_button.setObjectName("commandCollapseButton")
+            self.command_record_toggle_button.setText("收起")
+            hint_layout.addWidget(self.command_record_toggle_button)
+            layout.addWidget(hint_bar)
+
+            self.command_record_input = CommandRecordInput()
+            self.command_record_input.set_submit_handler(self.submit_command_record_input)
+            self.command_record_input.textChanged.connect(self.schedule_desktop_state_save)
+            self.update_command_enter_mode()
+            layout.addWidget(self.command_record_input)
+
+            footer = QFrame()
+            footer.setObjectName("commandRecordFooter")
+            self.command_record_footer = footer
+            footer.setFixedHeight(29)
+            footer_layout = QHBoxLayout(footer)
+            footer_layout.setContentsMargins(8, 0, 8, 0)
+            footer_layout.setSpacing(4)
+
+            self.command_tab_row = QHBoxLayout()
+            self.command_tab_row.setContentsMargins(0, 0, 0, 0)
+            self.command_tab_row.setSpacing(2)
+            footer_layout.addLayout(self.command_tab_row)
+            footer_layout.addStretch(1)
+
+            self.command_broadcast_button = QToolButton()
+            self.command_broadcast_button.setObjectName("commandActionButton")
+            self.command_broadcast_button.setText("⇄ 广播发送")
+            self.command_send_button = QToolButton()
+            self.command_send_button.setObjectName("commandActionButton")
+            self.command_send_button.setText("▶ 发送到终端")
+            self.command_clear_button = QToolButton()
+            self.command_clear_button.setObjectName("commandActionButton")
+            self.command_clear_button.setText("⌫ 清除")
+            footer_layout.addWidget(self.command_broadcast_button)
+            footer_layout.addWidget(self.command_send_button)
+            footer_layout.addWidget(self.command_clear_button)
+            layout.addWidget(footer)
+
+            self.rebuild_command_record_tabs()
+            self._load_current_command_content(move_cursor_to_end=False)
+            self.apply_command_record_panel_state()
+            return frame
 
         def _section_label(self, text: str) -> QLabel:
             label = QLabel(text)
@@ -1335,6 +1612,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.open_device_button.clicked.connect(self.open_device_session)
             self.open_linux_button.clicked.connect(self.open_linux_session)
             self.toggle_occupancy_button.clicked.connect(self.toggle_occupancy)
+            self.command_send_button.clicked.connect(self.submit_current_command_record)
+            self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
+            self.command_clear_button.clicked.connect(self.clear_current_command_record)
+            self.command_enter_mode_button.clicked.connect(self.toggle_command_enter_mode)
+            self.command_record_toggle_button.clicked.connect(self.toggle_command_record_panel)
 
             self.session_tab_widget.currentChanged.connect(self.handle_session_tab_changed)
             self.session_tab_widget.tabCloseRequested.connect(self.close_session_tab_at_index)
@@ -1349,6 +1631,320 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.status_combo.setCurrentText(ALL_STATUS)
             self.cpu_input.clear()
             self.apply_filters()
+
+        @staticmethod
+        def desktop_state_path() -> Path:
+            configured = os.getenv("DEVICE_TUI_DESKTOP_STATE_PATH", "").strip()
+            if configured:
+                return Path(configured).expanduser()
+            appdata = os.getenv("APPDATA", "").strip()
+            if appdata:
+                return Path(appdata) / "device_tui" / "desktop_state.json"
+            return Path.home() / ".device_tui" / "desktop_state.json"
+
+        @staticmethod
+        def default_command_record_groups() -> list[dict[str, object]]:
+            return [{"name": "终端", "content": ""}]
+
+        def load_desktop_state(self) -> None:
+            try:
+                if not self.state_path.exists():
+                    return
+                payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return
+            if not isinstance(payload, dict):
+                return
+
+            groups: list[dict[str, object]] = []
+            raw_groups = payload.get("command_record_groups", [])
+            if isinstance(raw_groups, list):
+                for index, item in enumerate(raw_groups, start=1):
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or f"分组 {index}").strip()
+                    content = str(item.get("content") or "")
+                    groups.append({"name": name or f"分组 {index}", "content": content})
+            self.command_record_groups = groups or self.default_command_record_groups()
+
+            try:
+                loaded_index = int(payload.get("current_command_group", 0))
+            except (TypeError, ValueError):
+                loaded_index = 0
+            self.current_command_group = min(max(loaded_index, 0), len(self.command_record_groups) - 1)
+            self.command_record_collapsed = bool(payload.get("command_record_collapsed", False))
+            self.command_enter_sends = bool(payload.get("command_enter_sends", False))
+
+        def schedule_desktop_state_save(self) -> None:
+            if hasattr(self, "state_save_timer"):
+                self.state_save_timer.start(450)
+
+        def save_desktop_state(self) -> None:
+            try:
+                self._save_current_command_content()
+                payload = {
+                    "version": DESKTOP_STATE_VERSION,
+                    "command_record_groups": self.command_record_groups,
+                    "current_command_group": self.current_command_group_index(),
+                    "command_record_collapsed": self.command_record_collapsed,
+                    "command_enter_sends": self.command_enter_sends,
+                }
+                self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path = self.state_path.with_suffix(f"{self.state_path.suffix}.tmp")
+                temp_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temp_path.replace(self.state_path)
+            except OSError as exc:
+                if self.statusBar() is not None:
+                    self.statusBar().showMessage(f"常用命令保存失败: {exc}")
+
+        def submit_command_record_input(self, command: str) -> None:
+            self._save_current_command_content()
+            self.schedule_desktop_state_save()
+            self.send_command_text_to_current_session(command)
+
+        def submit_current_command_record(self) -> None:
+            command = self.command_record_input.toPlainText().strip()
+            if not command:
+                self.set_status_message("请先输入要发送的命令。")
+                return
+            self.submit_command_record_input(command)
+
+        def send_command_text_to_current_session(self, command: str) -> None:
+            state = self.current_session_state()
+            if state is None:
+                self.set_status_message("命令已记录，当前没有打开的终端会话。")
+                return
+            self.send_session_text(state.tab_id, self.command_record_payload(command))
+            state.terminal.setFocus()
+
+        def broadcast_command_record_input(self) -> None:
+            command = self.command_record_input.toPlainText().strip()
+            if not command:
+                self.set_status_message("请先输入要广播发送的命令。")
+                return
+            self._save_current_command_content()
+            connected_states = [
+                state for state in self.session_tabs_by_id.values() if state.session.is_connected
+            ]
+            if not connected_states:
+                self.set_status_message("命令已记录，当前没有已连接的终端会话。")
+                return
+            payload = self.command_record_payload(command)
+            for state in connected_states:
+                self.send_session_text(state.tab_id, payload)
+            self.set_status_message(f"已广播发送到 {len(connected_states)} 个终端会话。")
+
+        def command_record_payload(self, command: str) -> str:
+            normalized = command.replace("\r\n", "\n").replace("\r", "\n")
+            payload = normalized.replace("\n", "\r")
+            return f"{payload}\r"
+
+        def add_command_record(self, command: str) -> None:
+            normalized = command.strip()
+            if not normalized:
+                return
+            self._save_current_command_content()
+            records = self.current_command_records()
+            if normalized in records:
+                return
+            group = self.command_record_groups[self.current_command_group_index()]
+            content = str(group.get("content", "")).rstrip()
+            group["content"] = f"{content}\n{normalized}" if content else normalized
+            self._load_current_command_content(move_cursor_to_end=True)
+            self.schedule_desktop_state_save()
+
+        def current_command_group_index(self) -> int:
+            index = self.current_command_group
+            if index < 0 or index >= len(self.command_record_groups):
+                return 0
+            return index
+
+        def current_command_records(self) -> list[str]:
+            group = self.command_record_groups[self.current_command_group_index()]
+            content = str(group.get("content", ""))
+            return [line.strip() for line in content.splitlines() if line.strip()]
+
+        def rebuild_command_record_tabs(self) -> None:
+            while self.command_tab_row.count():
+                item = self.command_tab_row.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self.command_tab_buttons = []
+            self.command_tab_close_buttons = []
+
+            for index, group in enumerate(self.command_record_groups):
+                tab_item = QWidget()
+                tab_item.setObjectName("commandTabItem")
+                tab_layout = QHBoxLayout(tab_item)
+                tab_layout.setContentsMargins(0, 0, 2, 0)
+                tab_layout.setSpacing(0)
+
+                button = QToolButton()
+                button.setObjectName("commandTabButton")
+                button.setText(str(group["name"]))
+                button.setCheckable(True)
+                button.setAutoRaise(True)
+                button.clicked.connect(lambda _checked=False, tab_index=index: self.switch_command_group(tab_index))
+                self.command_tab_buttons.append(button)
+                tab_layout.addWidget(button)
+
+                close_button = QToolButton()
+                close_button.setObjectName("commandTabCloseButton")
+                close_button.setText("×")
+                close_button.setAutoRaise(True)
+                close_button.setToolTip("删除页签")
+                close_button.clicked.connect(lambda _checked=False, tab_index=index: self.remove_command_group(tab_index))
+                self.command_tab_close_buttons.append(close_button)
+                tab_layout.addWidget(close_button)
+                self.command_tab_row.addWidget(tab_item)
+
+            plus_button = QToolButton()
+            plus_button.setObjectName("commandTabButton")
+            plus_button.setText("+")
+            plus_button.setAutoRaise(True)
+            plus_button.clicked.connect(self.add_command_group)
+            self.command_tab_row.addWidget(plus_button)
+            self.refresh_command_tab_styles()
+
+        def switch_command_group(self, index: int) -> None:
+            if index < 0 or index >= len(self.command_record_groups):
+                return
+            self._save_current_command_content()
+            self.current_command_group = index
+            self._load_current_command_content(move_cursor_to_end=False)
+            self.refresh_command_tab_styles()
+            self.schedule_desktop_state_save()
+
+        def add_command_group(self) -> None:
+            existing_names = {str(group["name"]) for group in self.command_record_groups}
+            next_index = max(len(self.command_record_groups), 1)
+            name = f"分组 {next_index}"
+            while name in existing_names:
+                next_index += 1
+                name = f"分组 {next_index}"
+            self._save_current_command_content()
+            self.command_record_groups.append({"name": name, "content": ""})
+            self.rebuild_command_record_tabs()
+            self.switch_command_group(len(self.command_record_groups) - 1)
+            self.schedule_desktop_state_save()
+
+        def remove_command_group(self, index: int) -> None:
+            if len(self.command_record_groups) <= 1:
+                self.set_status_message("至少保留一个常用命令页签。")
+                return
+            if index < 0 or index >= len(self.command_record_groups):
+                return
+            self._save_current_command_content()
+            removed_name = str(self.command_record_groups[index]["name"])
+            del self.command_record_groups[index]
+            if index < self.current_command_group:
+                self.current_command_group -= 1
+            elif index == self.current_command_group:
+                self.current_command_group = min(index, len(self.command_record_groups) - 1)
+            self.rebuild_command_record_tabs()
+            self._load_current_command_content(move_cursor_to_end=False)
+            self.set_status_message(f"已删除常用命令页签: {removed_name}")
+            self.schedule_desktop_state_save()
+
+        def refresh_command_tab_styles(self) -> None:
+            for index, button in enumerate(self.command_tab_buttons):
+                selected = index == self.current_command_group_index()
+                button.setChecked(selected)
+                button.setProperty("selected", selected)
+                button.style().unpolish(button)
+                button.style().polish(button)
+                button.update()
+                if index < len(self.command_tab_close_buttons):
+                    close_button = self.command_tab_close_buttons[index]
+                    close_button.setVisible(len(self.command_record_groups) > 1)
+                    close_button.setProperty("selected", selected)
+                    close_button.style().unpolish(close_button)
+                    close_button.style().polish(close_button)
+                    close_button.update()
+
+        def _save_current_command_content(self) -> None:
+            if not hasattr(self, "command_record_input"):
+                return
+            self.command_record_groups[self.current_command_group_index()]["content"] = (
+                self.command_record_input.toPlainText()
+            )
+
+        def _load_current_command_content(self, move_cursor_to_end: bool) -> None:
+            if not hasattr(self, "command_record_input"):
+                return
+            content = str(self.command_record_groups[self.current_command_group_index()].get("content", ""))
+            self.command_record_input.setPlainText(content)
+            if move_cursor_to_end:
+                cursor = self.command_record_input.textCursor()
+                cursor.movePosition(QTextCursor.End)
+                self.command_record_input.setTextCursor(cursor)
+
+        def clear_current_command_record(self) -> None:
+            self.command_record_input.clear()
+            self.command_record_groups[self.current_command_group_index()]["content"] = ""
+            self.command_record_input.setFocus()
+            self.schedule_desktop_state_save()
+
+        def toggle_command_enter_mode(self) -> None:
+            self.command_enter_sends = not self.command_enter_sends
+            self.update_command_enter_mode()
+            message = "Enter 发送，Ctrl+Enter 换行" if self.command_enter_sends else "Enter 换行，Ctrl+Enter 发送"
+            self.set_status_message(f"常用命令已切换为: {message}")
+            self.schedule_desktop_state_save()
+
+        def update_command_enter_mode(self) -> None:
+            if not hasattr(self, "command_record_input"):
+                return
+            self.command_record_input.set_enter_sends(self.command_enter_sends)
+            hint = (
+                "</>  常用命令已隐藏"
+                if self.command_record_collapsed
+                else (
+                    "</>  常用命令    Enter: 发送 | Ctrl+Enter: 换行"
+                    if self.command_enter_sends
+                    else "</>  常用命令    Enter: 换行 | Ctrl+Enter: 发送"
+                )
+            )
+            self.command_record_hint_label.setText(hint)
+            self.command_enter_mode_button.setProperty("enterSends", self.command_enter_sends)
+            self.command_enter_mode_button.setToolTip(
+                "切换为 Ctrl+Enter 发送" if self.command_enter_sends else "切换为 Enter 发送"
+            )
+            self.command_enter_mode_button.style().unpolish(self.command_enter_mode_button)
+            self.command_enter_mode_button.style().polish(self.command_enter_mode_button)
+            self.command_enter_mode_button.update()
+
+        def toggle_command_record_panel(self) -> None:
+            self._save_current_command_content()
+            self.command_record_collapsed = not self.command_record_collapsed
+            self.apply_command_record_panel_state()
+            self.schedule_desktop_state_save()
+
+        def apply_command_record_panel_state(self) -> None:
+            collapsed = self.command_record_collapsed
+            self.command_record_input.setVisible(not collapsed)
+            self.command_record_footer.setVisible(not collapsed)
+            self.command_record_frame.setMinimumHeight(29 if collapsed else 196)
+            self.command_record_frame.setMaximumHeight(29 if collapsed else 240)
+            self.command_record_toggle_button.setText("展开" if collapsed else "收起")
+            self.command_record_hint_label.setText(
+                "</>  常用命令已隐藏"
+                if collapsed
+                else (
+                    "</>  常用命令    Enter: 发送 | Ctrl+Enter: 换行"
+                    if self.command_enter_sends
+                    else "</>  常用命令    Enter: 换行 | Ctrl+Enter: 发送"
+                )
+            )
+            if collapsed:
+                self.set_status_message("常用命令区域已隐藏。")
+            else:
+                self._load_current_command_content(move_cursor_to_end=False)
+                self.command_record_input.setFocus()
 
         def dispatch_ui(self, callback: Callable[..., None], *args: object) -> None:
             self.ui_queue.put((callback, args))
@@ -2004,6 +2600,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
+            terminal.set_command_recorder(self.add_command_record)
             disconnect_button.clicked.connect(lambda _checked=False, tab_id=tab_id: self.disconnect_session_tab(tab_id))
             reconnect_button.clicked.connect(lambda _checked=False, tab_id=tab_id: self.reconnect_session_tab(tab_id))
             self.refresh_session_header(state)
@@ -2369,6 +2966,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
 
             self.closed = True
+            self.save_desktop_state()
+            self.state_save_timer.stop()
             self.ui_timer.stop()
             self.refresh_timer.stop()
 
