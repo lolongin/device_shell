@@ -121,21 +121,21 @@ ALL_STATUS = "全部状态"
 FILTERABLE_STATUSES = [ALL_STATUS, STATUS_OCCUPIED, STATUS_IDLE, STATUS_PIPELINE, STATUS_OTHER]
 
 STATUS_COLORS = {
-    STATUS_IDLE: "#22c55e",
-    STATUS_OCCUPIED: "#f97316",
-    STATUS_PIPELINE: "#facc15",
-    STATUS_OTHER: "#94a3b8",
+    STATUS_IDLE: "#34d399",
+    STATUS_OCCUPIED: "#fb923c",
+    STATUS_PIPELINE: "#fbbf24",
+    STATUS_OTHER: "#a8b5c4",
 }
 
 APP_STYLE = """
 QWidget {
-    background: #0a1018;
-    color: #dbe7f5;
+    background: #0b0f14;
+    color: #e5edf6;
     font-family: "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
     font-size: 13px;
 }
 QMainWindow {
-    background: #0a1018;
+    background: #0b0f14;
 }
 QFrame#toolbarFrame,
 QFrame#workspaceHeader,
@@ -144,9 +144,10 @@ QFrame#sessionInfoCard,
 QFrame#sessionInputBar,
 QFrame#navFilterBar,
 QFrame#navStatsBar,
+QFrame#myOccupancyCard,
 QGroupBox {
-    background: #0e1622;
-    border: 1px solid #162535;
+    background: #111820;
+    border: 1px solid #202a36;
     border-radius: 10px;
 }
 QGroupBox {
@@ -161,12 +162,13 @@ QGroupBox::title {
     padding: 0 4px;
 }
 QWidget#centerStage,
-QWidget#inspectorRail {
+QWidget#inspectorRail,
+QWidget#leftRail {
     background: transparent;
 }
 QFrame#sessionEmptyState {
-    background: #0b131d;
-    border: 1px dashed #22394f;
+    background: #0f141a;
+    border: 1px dashed #334155;
     border-radius: 14px;
 }
 QLabel#sessionEmptyTitle {
@@ -192,27 +194,31 @@ QGroupBox#deviceDetailCard {
     background: #0d1621;
 }
 QGroupBox#quickActionCard {
-    border-color: #223e5e;
-    background: #0c141e;
+    border-color: #315042;
+    background: #101820;
 }
 QGroupBox#authCard,
 QGroupBox#statusCard {
-    background: #0c141e;
+    background: #101820;
 }
 QGroupBox#navShell {
-    border-color: #203449;
+    border-color: #2a3644;
 }
 QFrame#navFilterBar {
-    background: #0a121b;
-    border-color: #1e3144;
+    background: #0c1218;
+    border-color: #273242;
 }
 QFrame#navStatsBar {
-    background: #0a121b;
-    border-color: #173149;
+    background: #0c1218;
+    border-color: #233548;
+}
+QFrame#myOccupancyCard {
+    background: #101820;
+    border-color: #253444;
 }
 QGroupBox#authCard QGroupBox {
-    background: #0a121b;
-    border: 1px solid #162838;
+    background: #0c1218;
+    border: 1px solid #273242;
     border-radius: 10px;
     margin-top: 12px;
     padding-top: 8px;
@@ -226,18 +232,18 @@ QGroupBox#statusCard QLabel {
     color: #b8c7d9;
 }
 QPushButton {
-    background: #132034;
-    border: 1px solid #233a55;
+    background: #17212c;
+    border: 1px solid #2d3a49;
     border-radius: 8px;
     padding: 8px 14px;
-    color: #dbe7f5;
+    color: #e5edf6;
 }
 QPushButton:hover {
-    background: #18304d;
-    border-color: #315781;
+    background: #1d2b38;
+    border-color: #3f5267;
 }
 QPushButton:pressed {
-    background: #0f1a2a;
+    background: #101820;
 }
 QPushButton:disabled {
     color: #64748b;
@@ -245,9 +251,9 @@ QPushButton:disabled {
     border-color: #15212e;
 }
 QPushButton#primaryButton {
-    background: #175cd3;
-    border-color: #2b74ef;
-    color: white;
+    background: #0f766e;
+    border-color: #14b8a6;
+    color: #f6fffd;
 }
 QPushButton#dangerButton {
     background: #4a1f23;
@@ -256,22 +262,22 @@ QPushButton#dangerButton {
 }
 QPushButton#ghostButton {
     background: transparent;
-    border-color: #223446;
+    border-color: #303d4d;
 }
 QLineEdit,
 QComboBox,
 QPlainTextEdit {
-    background: #09121b;
-    border: 1px solid #1b3146;
+    background: #0b1117;
+    border: 1px solid #263544;
     border-radius: 8px;
     padding: 8px 10px;
-    color: #e7f1ff;
-    selection-background-color: #1f5ba6;
+    color: #e5edf6;
+    selection-background-color: #0f766e;
 }
 QLineEdit:focus,
 QComboBox:focus,
 QPlainTextEdit:focus {
-    border-color: #3b82f6;
+    border-color: #14b8a6;
 }
 QComboBox::drop-down {
     border: none;
@@ -332,12 +338,12 @@ QScrollBar::sub-page:horizontal {
     background: transparent;
 }
 QTableWidget {
-    background: #0a121b;
-    alternate-background-color: #0d1722;
-    border: 1px solid #162535;
+    background: #0c1218;
+    alternate-background-color: #101820;
+    border: 1px solid #253140;
     border-radius: 10px;
-    gridline-color: #112030;
-    selection-background-color: #17345b;
+    gridline-color: #172231;
+    selection-background-color: #164e63;
     selection-color: #ffffff;
 }
 QTableWidget::item {
@@ -345,42 +351,42 @@ QTableWidget::item {
     border-bottom: 1px solid #0f1b29;
 }
 QTableWidget::item:selected {
-    background: #17345b;
+    background: #164e63;
 }
 QTableWidget#deviceTable {
-    border-color: #1e3144;
+    border-color: #2a3644;
 }
 QHeaderView::section {
-    background: #0d1722;
-    color: #8ea7c2;
+    background: #101820;
+    color: #96a6b8;
     padding: 8px;
     border: none;
     border-bottom: 1px solid #162535;
     font-weight: 600;
 }
 QSplitter::handle {
-    background: #0b131d;
+    background: #0b0f14;
 }
 QSplitter::handle:horizontal {
     width: 10px;
     margin: 8px 0;
 }
 QSplitter::handle:horizontal:hover {
-    background: #122033;
+    background: #1a2531;
 }
 QTabWidget::pane {
-    border: 1px solid #162535;
+    border: 1px solid #253140;
     border-radius: 10px;
-    background: #09111a;
+    background: #0b1117;
     top: -1px;
 }
 QTabWidget::tab-bar {
     left: 10px;
 }
 QTabBar::tab {
-    background: #0b131d;
-    color: #8ea7c2;
-    border: 1px solid #162535;
+    background: #101820;
+    color: #96a6b8;
+    border: 1px solid #253140;
     border-bottom: none;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
@@ -390,13 +396,13 @@ QTabBar::tab {
     margin-right: 6px;
 }
 QTabBar::tab:selected {
-    background: #101a28;
+    background: #16212c;
     color: #f8fbff;
-    border-color: #2f5f8e;
+    border-color: #0f766e;
 }
 QTabBar::tab:hover {
-    color: #dbe7f5;
-    background: #101c2b;
+    color: #e5edf6;
+    background: #16212c;
 }
 QWidget#tabHeader {
     background: transparent;
@@ -419,7 +425,7 @@ QLabel#tabStatusDot[connectionState="error"] {
 }
 QLabel#tabHeaderLabel {
     background: transparent;
-    color: #9fb5cc;
+    color: #a8b5c4;
     font-size: 13px;
     font-weight: 600;
 }
@@ -453,18 +459,18 @@ QToolButton#tabCloseButton:pressed {
     border-color: #b84351;
 }
 QPlainTextEdit#terminalLog {
-    background: #02070c;
-    color: #90f77b;
-    border: 1px solid #14311f;
+    background: #05080c;
+    color: #8ff7d2;
+    border: 1px solid #17443b;
     border-radius: 10px;
     font-family: "Consolas";
     font-size: 14px;
     padding: 12px;
 }
 QStatusBar {
-    background: #09111a;
-    color: #8ea7c2;
-    border-top: 1px solid #152433;
+    background: #0b1117;
+    color: #96a6b8;
+    border-top: 1px solid #253140;
 }
 QLabel#brandLabel {
     color: #f8fbff;
@@ -479,7 +485,7 @@ QLabel#sectionTitle {
     font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
 }
 QLabel#sectionCopy {
-    color: #7d93ad;
+    color: #96a6b8;
     font-size: 12px;
 }
 QLabel#navStatsText {
@@ -489,27 +495,37 @@ QLabel#navStatsText {
     font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
 }
 QLabel#statChip {
-    border: 1px solid #1b3146;
+    border: 1px solid #283747;
     border-radius: 8px;
     padding: 8px 12px;
-    background: #0a121c;
-    color: #dbe7f5;
+    background: #0f161d;
+    color: #e5edf6;
 }
 QLabel#detailCard {
-    border: 1px solid #193049;
+    border: 1px solid #273747;
     border-radius: 10px;
     padding: 16px;
-    background: #0b131c;
-    color: #dbe7f5;
+    background: #0f161d;
+    color: #e5edf6;
     line-height: 1.55;
 }
 QLabel#footerMetric {
-    color: #7d93ad;
+    color: #96a6b8;
     font-size: 12px;
     font-weight: 600;
     font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
     padding-left: 8px;
     padding-right: 8px;
+}
+QLabel#railTitle {
+    color: #f8fbff;
+    font-size: 15px;
+    font-weight: 700;
+    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+}
+QLabel#railCopy {
+    color: #96a6b8;
+    font-size: 12px;
 }
 """
 
@@ -883,6 +899,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.search_index: dict[str, str] = {}
             self.devices: list[Device] = []
             self.visible_devices: list[Device] = []
+            self.owned_visible_devices: list[Device] = []
             self.selected_device_id = ""
             self.current_user = ""
             self.refresh_generation = 0
@@ -931,8 +948,8 @@ if PYSIDE6_IMPORT_ERROR is None:
         def _build_layout(self) -> None:
             root = QWidget(self)
             root_layout = QVBoxLayout(root)
-            root_layout.setContentsMargins(10, 10, 10, 6)
-            root_layout.setSpacing(10)
+            root_layout.setContentsMargins(14, 14, 14, 8)
+            root_layout.setSpacing(12)
             root_layout.addWidget(self._build_toolbar())
 
             splitter = QSplitter(Qt.Horizontal, root)
@@ -941,7 +958,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter.addWidget(self._build_left_panel())
             splitter.addWidget(self._build_center_panel())
             splitter.addWidget(self._build_right_panel())
-            splitter.setSizes([340, 980, 360])
+            splitter.setSizes([390, 940, 380])
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
             splitter.setStretchFactor(2, 0)
@@ -952,14 +969,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             frame = QFrame()
             frame.setObjectName("toolbarFrame")
             layout = QHBoxLayout(frame)
-            layout.setContentsMargins(16, 12, 16, 12)
-            layout.setSpacing(10)
+            layout.setContentsMargins(18, 14, 18, 14)
+            layout.setSpacing(12)
 
             title_col = QVBoxLayout()
             title_col.setSpacing(2)
-            brand = QLabel("设备工作台")
+            brand = QLabel("设备运维工作台")
             brand.setObjectName("brandLabel")
-            copy = QLabel("设备管理与设备访问合并为统一工作区，多终端会话围绕设备展开")
+            copy = QLabel("资产筛选、占用管理、Telnet / SSH 会话集中在同一个桌面工作区")
             copy.setObjectName("sectionCopy")
             title_col.addWidget(brand)
             title_col.addWidget(copy)
@@ -968,9 +985,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addStretch(1)
 
             self.global_search_input = QLineEdit()
-            self.global_search_input.setPlaceholderText("全局搜索设备、IP、型号、站点")
-            self.global_search_input.setMinimumWidth(340)
-            self.toolbar_refresh_button = QPushButton("刷新设备")
+            self.global_search_input.setPlaceholderText("搜索设备、IP、型号、站点")
+            self.global_search_input.setMinimumWidth(360)
+            self.toolbar_refresh_button = QPushButton("刷新")
             self.toolbar_refresh_button.setObjectName("ghostButton")
             layout.addWidget(self.global_search_input)
             layout.addWidget(self.toolbar_refresh_button)
@@ -978,7 +995,8 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def _build_left_panel(self) -> QWidget:
             panel = QWidget()
-            panel.setMaximumWidth(380)
+            panel.setObjectName("leftRail")
+            panel.setMaximumWidth(430)
             layout = QVBoxLayout(panel)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(10)
@@ -988,8 +1006,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             nav_layout = QVBoxLayout(navigation_group)
             nav_layout.setSpacing(10)
 
+            nav_title = QLabel("设备池")
+            nav_title.setObjectName("railTitle")
+            nav_copy = QLabel("按关键词、领域、状态和 CPU 快速定位目标设备")
+            nav_copy.setObjectName("railCopy")
+            nav_layout.addWidget(nav_title)
+            nav_layout.addWidget(nav_copy)
+
             self.search_input = QLineEdit()
-            self.search_input.setPlaceholderText("搜索设备名称、ID、IP")
+            self.search_input.setPlaceholderText("搜索名称、ID、IP、型号")
             nav_layout.addWidget(self.search_input)
 
             filter_frame = QFrame()
@@ -1023,10 +1048,39 @@ if PYSIDE6_IMPORT_ERROR is None:
             nav_layout.addWidget(stats_frame)
 
             self.device_table = self._new_table(["设备", "领域", "CPU", "状态"])
-            self.device_table.setMinimumHeight(430)
+            self.device_table.setMinimumHeight(420)
             nav_layout.addWidget(self.device_table, 1)
-            layout.addWidget(navigation_group, 1)
+            layout.addWidget(navigation_group, 3)
+            layout.addWidget(self._build_occupancy_panel(), 1)
             return panel
+
+        def _build_occupancy_panel(self) -> QWidget:
+            frame = QFrame()
+            frame.setObjectName("myOccupancyCard")
+            layout = QVBoxLayout(frame)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(8)
+
+            header_row = QHBoxLayout()
+            title_col = QVBoxLayout()
+            title_col.setSpacing(2)
+            title = QLabel("我的占用")
+            title.setObjectName("railTitle")
+            copy = QLabel("随当前筛选结果联动")
+            copy.setObjectName("railCopy")
+            title_col.addWidget(title)
+            title_col.addWidget(copy)
+            header_row.addLayout(title_col)
+            header_row.addStretch(1)
+            self.owned_count_label = QLabel("0")
+            self.owned_count_label.setObjectName("navStatsText")
+            header_row.addWidget(self.owned_count_label, 0, Qt.AlignTop)
+            layout.addLayout(header_row)
+
+            self.owned_table = self._new_table(["设备", "领域", "状态"])
+            self.owned_table.setMinimumHeight(150)
+            layout.addWidget(self.owned_table, 1)
+            return frame
 
         def _build_center_panel(self) -> QWidget:
             panel = QWidget()
@@ -1080,6 +1134,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             detail_group = QGroupBox("当前设备")
             detail_group.setObjectName("deviceDetailCard")
             detail_layout = QVBoxLayout(detail_group)
+            detail_layout.setContentsMargins(12, 16, 12, 12)
+            detail_layout.setSpacing(10)
             self.device_summary_card = QLabel("请选择一台设备。")
             self.device_summary_card.setObjectName("detailCard")
             self.device_summary_card.setWordWrap(True)
@@ -1092,9 +1148,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             action_layout = QVBoxLayout(action_group)
             action_layout.setContentsMargins(12, 14, 12, 12)
             action_layout.setSpacing(10)
-            self.open_device_button = QPushButton("打开设备终端")
+            self.open_device_button = QPushButton("连接设备 Telnet")
             self.open_device_button.setObjectName("primaryButton")
-            self.open_linux_button = QPushButton("打开Linux后台")
+            self.open_linux_button = QPushButton("连接 Linux SSH")
             self.open_linux_button.setObjectName("primaryButton")
             self.toggle_occupancy_button = QPushButton("占用 / 释放")
             self.toggle_occupancy_button.setObjectName("ghostButton")
@@ -1112,11 +1168,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             auth_layout.setSpacing(10)
 
             device_form_group = QGroupBox("设备 Telnet")
-            
-            device_form_title = QLabel("设备 Telnet")
-            device_form_title.setObjectName("groupRowLabel")
-            device_form_copy = QLabel("使用当前选中设备的默认认证。")
-            device_form_copy.setObjectName("subtleLabel")
             device_form = QFormLayout(device_form_group)
             device_form.setLabelAlignment(Qt.AlignRight)
             self.device_username_input = QLineEdit()
@@ -1127,10 +1178,6 @@ if PYSIDE6_IMPORT_ERROR is None:
 
 
             linux_form_group = QGroupBox("Linux SSH")
-            linux_form_title = QLabel("Linux SSH")
-            linux_form_title.setObjectName("groupRowLabel")
-            linux_form_copy = QLabel("可独立指定 SSH host / port / credentials。")
-            linux_form_copy.setObjectName("subtleLabel")
             linux_form = QFormLayout(linux_form_group)
             linux_form.setLabelAlignment(Qt.AlignRight)
             self.linux_host_input = QLineEdit()
@@ -1213,6 +1260,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
             self.device_table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.device_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
+            self.owned_table.itemSelectionChanged.connect(self.handle_owned_table_selected)
+            self.owned_table.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.owned_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
 
             self.open_device_button.clicked.connect(self.open_device_session)
             self.open_linux_button.clicked.connect(self.open_linux_session)
@@ -1348,6 +1398,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.refresh_stats()
             self.refresh_device_table()
+            self.refresh_owned_table()
             self.ensure_valid_selection()
             self.refresh_device_context()
             self.refresh_workspace_context()
@@ -1379,6 +1430,18 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self._set_table_item(self.device_table, row, 3, device.status, device.id, color=status_color(device.status))
                 self.device_table.setRowHeight(row, 38)
 
+        def refresh_owned_table(self) -> None:
+            self.owned_visible_devices = [
+                device for device in self.visible_devices if device.owner == self.current_user
+            ]
+            self.owned_count_label.setText(str(len(self.owned_visible_devices)))
+            self.owned_table.setRowCount(len(self.owned_visible_devices))
+            for row, device in enumerate(self.owned_visible_devices):
+                self._set_table_item(self.owned_table, row, 0, device.name, device.id)
+                self._set_table_item(self.owned_table, row, 1, device.domain, device.id)
+                self._set_table_item(self.owned_table, row, 2, device.status, device.id, color=status_color(device.status))
+                self.owned_table.setRowHeight(row, 36)
+
         def _set_table_item(
             self,
             table: QTableWidget,
@@ -1409,13 +1472,18 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.sync_auth_fields_from_selected()
 
         def select_device_in_table(self, device_id: str) -> None:
-            for row in range(self.device_table.rowCount()):
-                item = self.device_table.item(row, 0)
+            self._select_device_row(self.device_table, device_id)
+            self._select_device_row(self.owned_table, device_id)
+
+        def _select_device_row(self, table: QTableWidget, device_id: str) -> None:
+            table.blockSignals(True)
+            table.clearSelection()
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
                 if item is not None and item.data(Qt.UserRole) == device_id:
-                    self.device_table.blockSignals(True)
-                    self.device_table.selectRow(row)
-                    self.device_table.blockSignals(False)
-                    return
+                    table.selectRow(row)
+                    break
+            table.blockSignals(False)
 
         def get_selected_device(self) -> Device | None:
             if not self.selected_device_id:
@@ -1445,16 +1513,27 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             self.activate_device(device_id)
 
+        def handle_owned_table_selected(self) -> None:
+            device_id = self._device_id_from_table(self.owned_table, 0)
+            if not device_id:
+                return
+            self.activate_device(device_id)
+
         def activate_device(self, device_id: str) -> None:
             self.selected_device_id = device_id
             self._mark_recent_device(device_id)
+            self.select_device_in_table(device_id)
             self.sync_auth_fields_from_selected()
             self.refresh_device_context()
             self.refresh_workspace_context()
             self.update_controls()
 
         def show_device_table_context_menu(self, pos: Any) -> None:
-            item = self.device_table.itemAt(pos)
+            table = self.sender()
+            if not isinstance(table, QTableWidget):
+                table = self.device_table
+
+            item = table.itemAt(pos)
             if item is None:
                 return
 
@@ -1465,13 +1544,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.select_device_in_table(device_id)
             self.activate_device(device_id)
 
-            menu = QMenu(self.device_table)
+            menu = QMenu(table)
             toggle_action = menu.addAction("占用 / 释放")
             menu.addSeparator()
             open_device_action = menu.addAction("打开设备终端")
             open_linux_action = menu.addAction("打开 Linux 后台")
 
-            chosen = menu.exec(self.device_table.viewport().mapToGlobal(pos))
+            chosen = menu.exec(table.viewport().mapToGlobal(pos))
             if chosen is None:
                 return
             if chosen == toggle_action:
@@ -1502,25 +1581,25 @@ if PYSIDE6_IMPORT_ERROR is None:
             protocol_hint = "Telnet 优先" if device.telnet_ip else "SSH 优先"
             self.device_summary_card.setText(
                 (
-                    f"<div style='font-size:18px;font-weight:700;color:#f8fbff'>{html.escape(device.name)}</div>"
-                    f"<div style='margin-top:6px;color:#8ea7c2;font-size:12px'>"
-                    f"ID {html.escape(device.id)} &nbsp;&nbsp; {html.escape(device.domain)} &nbsp;&nbsp; {html.escape(device.device_type)}"
+                    f"<div style='font-size:19px;font-weight:700;color:#f8fbff'>{html.escape(device.name)}</div>"
+                    f"<div style='margin-top:6px;color:#96a6b8;font-size:12px'>"
+                    f"{html.escape(device.id)} &nbsp;/&nbsp; {html.escape(device.domain)} &nbsp;/&nbsp; {html.escape(device.device_type)}"
                     f"</div>"
                     f"<div style='margin-top:10px'>"
-                    f"<span style='display:inline-block;padding:3px 10px;border-radius:11px;background:#102033;"
+                    f"<span style='display:inline-block;padding:4px 10px;border-radius:10px;background:#111827;"
                     f"color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span>"
-                    f"<span style='display:inline-block;margin-left:8px;padding:3px 10px;border-radius:11px;"
-                    f"background:#101b28;color:#dbe7f5'>占用 {html.escape(owner)}</span>"
-                    f"<span style='display:inline-block;margin-left:8px;padding:3px 10px;border-radius:11px;"
-                    f"background:#0f1d2b;color:#8ea7c2'>{html.escape(protocol_hint)}</span>"
+                    f"<span style='display:inline-block;margin-left:8px;padding:4px 10px;border-radius:10px;"
+                    f"background:#0f161d;color:#e5edf6'>占用 {html.escape(owner)}</span>"
+                    f"<span style='display:inline-block;margin-left:8px;padding:4px 10px;border-radius:10px;"
+                    f"background:#10251f;color:#8ff7d2'>{html.escape(protocol_hint)}</span>"
                     f"</div>"
-                    f"<div style='margin-top:14px;color:#dbe7f5;line-height:1.8'>"
-                    f"<span style='color:#7d93ad'>SSH</span> {html.escape(device.ssh_ip)}:{device.ssh_port}<br>"
-                    f"<span style='color:#7d93ad'>Telnet</span> {html.escape(device.telnet_ip)}:{device.telnet_port}<br>"
-                    f"<span style='color:#7d93ad'>账号</span> {html.escape(device.username)} / {html.escape(mask_password(device.password))}<br>"
-                    f"<span style='color:#7d93ad'>厂商</span> {html.escape(device.vendor)} / {html.escape(device.model)}<br>"
-                    f"<span style='color:#7d93ad'>位置</span> {html.escape(device.site)} / {html.escape(device.rack)}<br>"
-                    f"<span style='color:#7d93ad'>版本</span> {html.escape(device.version)}"
+                    f"<div style='margin-top:14px;color:#e5edf6;line-height:1.85'>"
+                    f"<span style='color:#96a6b8'>SSH</span>&nbsp;&nbsp;{html.escape(device.ssh_ip)}:{device.ssh_port}<br>"
+                    f"<span style='color:#96a6b8'>Telnet</span>&nbsp;&nbsp;{html.escape(device.telnet_ip)}:{device.telnet_port}<br>"
+                    f"<span style='color:#96a6b8'>账号</span>&nbsp;&nbsp;{html.escape(device.username)} / {html.escape(mask_password(device.password))}<br>"
+                    f"<span style='color:#96a6b8'>厂商</span>&nbsp;&nbsp;{html.escape(device.vendor)} / {html.escape(device.model)}<br>"
+                    f"<span style='color:#96a6b8'>位置</span>&nbsp;&nbsp;{html.escape(device.site)} / {html.escape(device.rack)}<br>"
+                    f"<span style='color:#96a6b8'>版本</span>&nbsp;&nbsp;{html.escape(device.version)}"
                     f"</div>"
                 )
             )
