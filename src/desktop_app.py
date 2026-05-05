@@ -33,6 +33,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QSplitter,
         QStackedLayout,
         QStatusBar,
@@ -62,6 +63,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QMessageBox = None
     QPlainTextEdit = None
     QPushButton = None
+    QScrollArea = None
     QSplitter = None
     QStackedLayout = None
     QStatusBar = None
@@ -131,7 +133,7 @@ APP_STYLE = """
 QWidget {
     background: #0b0f14;
     color: #e5edf6;
-    font-family: "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
     font-size: 13px;
 }
 QMainWindow {
@@ -145,6 +147,8 @@ QFrame#sessionInputBar,
 QFrame#navFilterBar,
 QFrame#navStatsBar,
 QFrame#myOccupancyCard,
+QFrame#activeFilterBar,
+QFrame#sessionHeaderBar,
 QGroupBox {
     background: #111820;
     border: 1px solid #202a36;
@@ -160,6 +164,7 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 12px;
     padding: 0 4px;
+    background: transparent;
 }
 QWidget#centerStage,
 QWidget#inspectorRail,
@@ -171,13 +176,22 @@ QFrame#sessionEmptyState {
     border: 1px dashed #334155;
     border-radius: 14px;
 }
+QScrollArea#inspectorScroll {
+    background: transparent;
+    border: none;
+}
+QScrollArea#inspectorScroll > QWidget > QWidget {
+    background: transparent;
+}
 QLabel#sessionEmptyTitle {
+    background: transparent;
     color: #f8fbff;
     font-size: 24px;
     font-weight: 700;
-    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 QLabel#sessionEmptyCopy {
+    background: transparent;
     color: #8ea7c2;
     font-size: 13px;
     line-height: 1.7;
@@ -216,12 +230,17 @@ QFrame#myOccupancyCard {
     background: #101820;
     border-color: #253444;
 }
+QFrame#activeFilterBar,
+QFrame#sessionHeaderBar {
+    background: #0c1218;
+    border-color: #273242;
+}
 QGroupBox#authCard QGroupBox {
     background: #0c1218;
     border: 1px solid #273242;
     border-radius: 10px;
-    margin-top: 12px;
-    padding-top: 8px;
+    margin-top: 18px;
+    padding-top: 18px;
 }
 QGroupBox#authCard QGroupBox::title {
     color: #8ea7c2;
@@ -438,7 +457,7 @@ QToolButton#tabCloseButton {
     color: #dbe7f5;
     border: 1px solid rgba(148, 163, 184, 0.22);
     border-radius: 8px;
-    font-family: "Bahnschrift", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
     font-size: 12px;
     font-weight: 700;
     padding: 0px;
@@ -463,7 +482,7 @@ QPlainTextEdit#terminalLog {
     color: #8ff7d2;
     border: 1px solid #17443b;
     border-radius: 10px;
-    font-family: "Consolas";
+    font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
     font-size: 14px;
     padding: 12px;
 }
@@ -473,26 +492,30 @@ QStatusBar {
     border-top: 1px solid #253140;
 }
 QLabel#brandLabel {
+    background: transparent;
     color: #f8fbff;
     font-size: 24px;
     font-weight: 700;
-    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 QLabel#sectionTitle {
+    background: transparent;
     color: #f8fbff;
     font-size: 16px;
     font-weight: 700;
-    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 QLabel#sectionCopy {
+    background: transparent;
     color: #96a6b8;
     font-size: 12px;
 }
 QLabel#navStatsText {
+    background: transparent;
     color: #edf5ff;
     font-size: 14px;
     font-weight: 700;
-    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 QLabel#statChip {
     border: 1px solid #283747;
@@ -510,22 +533,38 @@ QLabel#detailCard {
     line-height: 1.55;
 }
 QLabel#footerMetric {
+    background: transparent;
     color: #96a6b8;
     font-size: 12px;
     font-weight: 600;
-    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
     padding-left: 8px;
     padding-right: 8px;
 }
 QLabel#railTitle {
+    background: transparent;
     color: #f8fbff;
     font-size: 15px;
     font-weight: 700;
-    font-family: "Bahnschrift", "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI";
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 QLabel#railCopy {
+    background: transparent;
     color: #96a6b8;
     font-size: 12px;
+}
+QLabel#activeFilterText,
+QLabel#sessionMetaLabel {
+    background: transparent;
+    color: #a8b5c4;
+    font-size: 12px;
+}
+QLabel#sessionTitleLabel {
+    background: transparent;
+    color: #f8fbff;
+    font-size: 14px;
+    font-weight: 700;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 """
 
@@ -581,6 +620,9 @@ class SessionTabState:
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
     tab_close_button: QToolButton | None = None
+    session_meta_label: QLabel | None = None
+    session_disconnect_button: QPushButton | None = None
+    session_reconnect_button: QPushButton | None = None
     connecting: bool = False
     status_text: str = "Disconnected"
 
@@ -683,11 +725,13 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             history = getattr(self._pyte_screen, "history", None)
             history_top = list(getattr(history, "top", []))
-            display_lines = [self._line_to_text(line) for line in self._pyte_screen.display]
-            all_lines = [self._line_to_text(line) for line in history_top] + display_lines
-
             cursor_row = len(history_top) + int(self._pyte_screen.cursor.y)
             cursor_col = int(self._pyte_screen.cursor.x)
+            display_lines = [
+                self._line_to_text(line, cursor_col if index == self._pyte_screen.cursor.y else None)
+                for index, line in enumerate(self._pyte_screen.display)
+            ]
+            all_lines = [self._line_to_text(line) for line in history_top] + display_lines
             lines, cursor_row = self._trim_terminal_lines(all_lines, cursor_row)
 
             text = "\n".join(lines)
@@ -716,10 +760,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             trimmed = lines[start:end]
             return trimmed, cursor_row - start
 
-        def _line_to_text(self, line: Any) -> str:
+        def _line_to_text(self, line: Any, preserve_to_column: int | None = None) -> str:
             if isinstance(line, str):
-                return line.rstrip()
-            return "".join(getattr(cell, "data", str(cell)) for cell in line).rstrip()
+                text = line
+            else:
+                text = "".join(getattr(cell, "data", str(cell)) for cell in line)
+            if preserve_to_column is not None:
+                return text[:preserve_to_column].ljust(preserve_to_column)
+            return text.rstrip()
 
         def _cursor_position_for_lines(self, lines: list[str], row: int, column: int) -> int:
             safe_row = max(0, min(row, len(lines) - 1))
@@ -950,7 +998,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             root_layout = QVBoxLayout(root)
             root_layout.setContentsMargins(14, 14, 14, 8)
             root_layout.setSpacing(12)
-            root_layout.addWidget(self._build_toolbar())
 
             splitter = QSplitter(Qt.Horizontal, root)
             root_layout.addWidget(splitter, 1)
@@ -984,12 +1031,8 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             layout.addStretch(1)
 
-            self.global_search_input = QLineEdit()
-            self.global_search_input.setPlaceholderText("搜索设备、IP、型号、站点")
-            self.global_search_input.setMinimumWidth(360)
             self.toolbar_refresh_button = QPushButton("刷新")
             self.toolbar_refresh_button.setObjectName("ghostButton")
-            layout.addWidget(self.global_search_input)
             layout.addWidget(self.toolbar_refresh_button)
             return frame
 
@@ -1006,12 +1049,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             nav_layout = QVBoxLayout(navigation_group)
             nav_layout.setSpacing(10)
 
+            nav_header = QHBoxLayout()
+            nav_header.setSpacing(10)
+            nav_title_col = QVBoxLayout()
+            nav_title_col.setSpacing(2)
             nav_title = QLabel("设备池")
             nav_title.setObjectName("railTitle")
             nav_copy = QLabel("按关键词、领域、状态和 CPU 快速定位目标设备")
             nav_copy.setObjectName("railCopy")
-            nav_layout.addWidget(nav_title)
-            nav_layout.addWidget(nav_copy)
+            nav_title_col.addWidget(nav_title)
+            nav_title_col.addWidget(nav_copy)
+            nav_header.addLayout(nav_title_col, 1)
+            self.toolbar_refresh_button = QPushButton("刷新")
+            self.toolbar_refresh_button.setObjectName("ghostButton")
+            nav_header.addWidget(self.toolbar_refresh_button, 0, Qt.AlignTop)
+            nav_layout.addLayout(nav_header)
 
             self.search_input = QLineEdit()
             self.search_input.setPlaceholderText("搜索名称、ID、IP、型号")
@@ -1046,6 +1098,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             stats_layout.addStretch(1)
             stats_layout.addWidget(self.stats_label)
             nav_layout.addWidget(stats_frame)
+
+            active_filter_frame = QFrame()
+            active_filter_frame.setObjectName("activeFilterBar")
+            active_filter_layout = QHBoxLayout(active_filter_frame)
+            active_filter_layout.setContentsMargins(10, 8, 10, 8)
+            active_filter_layout.setSpacing(8)
+            self.filter_summary_label = QLabel("当前显示全部设备")
+            self.filter_summary_label.setObjectName("activeFilterText")
+            self.filter_summary_label.setWordWrap(True)
+            self.clear_filters_button = QPushButton("清空")
+            self.clear_filters_button.setObjectName("ghostButton")
+            self.clear_filters_button.setEnabled(False)
+            active_filter_layout.addWidget(self.filter_summary_label, 1)
+            active_filter_layout.addWidget(self.clear_filters_button)
+            nav_layout.addWidget(active_filter_frame)
 
             self.device_table = self._new_table(["设备", "领域", "CPU", "状态"])
             self.device_table.setMinimumHeight(420)
@@ -1124,11 +1191,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             return panel
 
         def _build_right_panel(self) -> QWidget:
+            scroll = QScrollArea()
+            scroll.setObjectName("inspectorScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setMaximumWidth(410)
+
             panel = QWidget()
             panel.setObjectName("inspectorRail")
-            panel.setMaximumWidth(390)
             layout = QVBoxLayout(panel)
-            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setContentsMargins(0, 0, 8, 0)
             layout.setSpacing(10)
 
             detail_group = QGroupBox("当前设备")
@@ -1169,6 +1242,9 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             device_form_group = QGroupBox("设备 Telnet")
             device_form = QFormLayout(device_form_group)
+            device_form.setContentsMargins(10, 14, 10, 10)
+            device_form.setVerticalSpacing(8)
+            device_form.setHorizontalSpacing(8)
             device_form.setLabelAlignment(Qt.AlignRight)
             self.device_username_input = QLineEdit()
             self.device_password_input = QLineEdit()
@@ -1179,6 +1255,9 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             linux_form_group = QGroupBox("Linux SSH")
             linux_form = QFormLayout(linux_form_group)
+            linux_form.setContentsMargins(10, 14, 10, 10)
+            linux_form.setVerticalSpacing(8)
+            linux_form.setHorizontalSpacing(8)
             linux_form.setLabelAlignment(Qt.AlignRight)
             self.linux_host_input = QLineEdit()
             self.linux_port_input = QLineEdit("22")
@@ -1209,7 +1288,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             footer_layout.addWidget(self.active_session_label)
             layout.addWidget(footer)
             layout.addStretch(1)
-            return panel
+            scroll.setWidget(panel)
+            return scroll
 
         def _section_label(self, text: str) -> QLabel:
             label = QLabel(text)
@@ -1249,13 +1329,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             return terminal
 
         def _wire_events(self) -> None:
-            self.global_search_input.textChanged.connect(self.sync_global_search)
             self.search_input.textChanged.connect(self.sync_left_search)
             self.domain_combo.currentTextChanged.connect(self.apply_filters)
             self.status_combo.currentTextChanged.connect(self.apply_filters)
             self.cpu_input.textChanged.connect(self.apply_filters)
 
             self.toolbar_refresh_button.clicked.connect(self.refresh_snapshot)
+            self.clear_filters_button.clicked.connect(self.clear_filters)
 
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
             self.device_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1271,13 +1351,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_widget.currentChanged.connect(self.handle_session_tab_changed)
             self.session_tab_widget.tabCloseRequested.connect(self.close_session_tab_at_index)
 
-        def sync_global_search(self, value: str) -> None:
-            if self.search_input.text() != value:
-                self.search_input.setText(value)
-
         def sync_left_search(self, value: str) -> None:
-            if self.global_search_input.text() != value:
-                self.global_search_input.setText(value)
+            del value
+            self.apply_filters()
+
+        def clear_filters(self) -> None:
+            self.search_input.clear()
+            self.domain_combo.setCurrentText(ALL_DOMAINS)
+            self.status_combo.setCurrentText(ALL_STATUS)
+            self.cpu_input.clear()
             self.apply_filters()
 
         def dispatch_ui(self, callback: Callable[..., None], *args: object) -> None:
@@ -1396,6 +1478,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.visible_devices.append(device)
             self.visible_devices.sort(key=self._device_sort_key)
 
+            self.refresh_filter_summary()
             self.refresh_stats()
             self.refresh_device_table()
             self.refresh_owned_table()
@@ -1527,6 +1610,27 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.refresh_device_context()
             self.refresh_workspace_context()
             self.update_controls()
+
+        def refresh_filter_summary(self) -> None:
+            active_filters: list[str] = []
+            search_text = self.search_input.text().strip()
+            domain_filter = self.domain_combo.currentText().strip()
+            status_filter = self.status_combo.currentText().strip()
+            cpu_filter = self.cpu_input.text().strip()
+
+            if search_text:
+                active_filters.append(f"关键词: {search_text}")
+            if domain_filter and domain_filter != ALL_DOMAINS:
+                active_filters.append(f"领域: {domain_filter}")
+            if status_filter and status_filter != ALL_STATUS:
+                active_filters.append(f"状态: {status_filter}")
+            if cpu_filter:
+                active_filters.append(f"CPU: {cpu_filter}")
+
+            has_filters = bool(active_filters)
+            summary = " / ".join(active_filters) if has_filters else "当前显示全部设备"
+            self.filter_summary_label.setText(summary)
+            self.clear_filters_button.setEnabled(has_filters)
 
         def show_device_table_context_menu(self, pos: Any) -> None:
             table = self.sender()
@@ -1744,6 +1848,31 @@ if PYSIDE6_IMPORT_ERROR is None:
             page = QWidget()
             layout = QVBoxLayout(page)
             layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+
+            header = QFrame()
+            header.setObjectName("sessionHeaderBar")
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(12, 10, 12, 10)
+            header_layout.setSpacing(10)
+
+            title_col = QVBoxLayout()
+            title_col.setSpacing(2)
+            session_title_label = QLabel(title)
+            session_title_label.setObjectName("sessionTitleLabel")
+            session_meta_label = QLabel()
+            session_meta_label.setObjectName("sessionMetaLabel")
+            title_col.addWidget(session_title_label)
+            title_col.addWidget(session_meta_label)
+            header_layout.addLayout(title_col, 1)
+
+            reconnect_button = QPushButton("重连")
+            reconnect_button.setObjectName("ghostButton")
+            disconnect_button = QPushButton("断开")
+            disconnect_button.setObjectName("ghostButton")
+            header_layout.addWidget(reconnect_button)
+            header_layout.addWidget(disconnect_button)
+            layout.addWidget(header)
 
             terminal = InteractiveTerminal()
             layout.addWidget(terminal, 1)
@@ -1773,11 +1902,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 page=page,
                 terminal=terminal,
                 session=session,
+                session_meta_label=session_meta_label,
+                session_disconnect_button=disconnect_button,
+                session_reconnect_button=reconnect_button,
                 connecting=True,
                 status_text="Connecting",
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
+            disconnect_button.clicked.connect(lambda _checked=False, tab_id=tab_id: self.disconnect_session_tab(tab_id))
+            reconnect_button.clicked.connect(lambda _checked=False, tab_id=tab_id: self.reconnect_session_tab(tab_id))
+            self.refresh_session_header(state)
             return state
 
         def _install_tab_header(self, index: int, state: SessionTabState) -> None:
@@ -1827,9 +1962,29 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return "idle"
             return "error"
 
+        def refresh_session_header(self, state: SessionTabState) -> None:
+            protocol = "Telnet" if state.kind == "device" else "SSH"
+            connection_state = self._tab_connection_state(state)
+            state_label = {
+                "connecting": "连接中",
+                "connected": "已连接",
+                "idle": "已断开",
+                "error": "异常",
+            }.get(connection_state, state.status_text)
+
+            if state.session_meta_label is not None:
+                state.session_meta_label.setText(
+                    f"{protocol} / {state.host}:{state.port} / {state.username} / {state_label}"
+                )
+            if state.session_disconnect_button is not None:
+                state.session_disconnect_button.setEnabled(state.session.is_connected or state.connecting)
+            if state.session_reconnect_button is not None:
+                state.session_reconnect_button.setEnabled(not state.connecting)
+
         def _refresh_tab_header_styles(self) -> None:
             current_index = self.session_tab_widget.currentIndex()
             for state in self.session_tabs_by_id.values():
+                self.refresh_session_header(state)
                 if state.tab_title_label is None:
                     continue
                 index = self.session_tab_widget.indexOf(state.page)
@@ -1894,6 +2049,10 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.set_session_status(tab_id, "Disconnected")
                 if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
                     self.append_session_output(tab_id, f"\n连接失败: {exc}\n")
+                    if self.is_connection_timeout(exc):
+                        self.set_status_message(f"连接超时: {current_state.title}")
+                        self.update_controls()
+                        return
                     self.show_error(str(exc))
                     self.set_status_message(f"连接失败: {exc}")
                     self.update_controls()
@@ -1959,6 +2118,61 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.set_status_message(f"会话已断开: {state.title}")
 
             self.run_coro(disconnect(), on_success=success)
+
+        def reconnect_session_tab(self, tab_id: str) -> None:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None or state.connecting:
+                return
+
+            state.connecting = True
+            self.set_session_status(tab_id, "Connecting")
+            self.set_status_message(f"正在重连会话: {state.title}")
+
+            async def reconnect() -> None:
+                await state.session.disconnect("")
+                await state.session.connect(
+                    state.host,
+                    state.port,
+                    state.username,
+                    state.password,
+                )
+
+            def success(_result: object) -> None:
+                current_state = self.session_tabs_by_id.get(tab_id)
+                if current_state is None:
+                    return
+                current_state.connecting = False
+                self.set_session_status(tab_id, "Connected")
+                current_state.terminal.setFocus()
+                self.set_status_message(f"会话已重连: {current_state.title}")
+
+            def failure(exc: Exception) -> None:
+                current_state = self.session_tabs_by_id.get(tab_id)
+                if current_state is not None:
+                    current_state.connecting = False
+                    self.set_session_status(tab_id, "Disconnected")
+                if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
+                    self.append_session_output(tab_id, f"\n重连失败: {exc}\n")
+                    if self.is_connection_timeout(exc):
+                        title = current_state.title if current_state is not None else tab_id
+                        self.set_status_message(f"重连超时: {title}")
+                        return
+                    self.show_error(str(exc))
+                    self.set_status_message(f"重连失败: {exc}")
+                    return
+                self.handle_background_error(exc)
+
+            self.run_coro(reconnect(), on_success=success, on_error=failure)
+
+        def is_connection_timeout(self, exc: Exception) -> bool:
+            if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                return True
+            if getattr(exc, "winerror", None) in {121, 10060}:
+                return True
+            if getattr(exc, "errno", None) in {110, 121, 10060}:
+                return True
+            message = str(exc).lower()
+            return "timed out" in message or "timeout" in message or "超时" in message
 
         def close_session_tab_at_index(self, index: int) -> None:
             page = self.session_tab_widget.widget(index)
