@@ -658,7 +658,7 @@ class DeviceDashboard(App[None]):
                                 suggester=SuggestFromList([], case_sensitive=False),
                             )
                             yield SuggestInput(
-                                placeholder="CPU \u5173\u952e\u5b57\uff0c\u4f8b\u5982 hi12 / kunpeng / x86",
+                                placeholder="CPU \u5173\u952e\u5b57\uff0c\u4f8b\u5982 ARM-0 / ARM-1",
                                 id="cpu-filter-input",
                                 classes="keyword-filter",
                                 suggester=SuggestFromList([], case_sensitive=False),
