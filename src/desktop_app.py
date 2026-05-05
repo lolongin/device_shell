@@ -152,7 +152,6 @@ QFrame#navFilterBar,
 QFrame#navStatsBar,
 QFrame#myOccupancyCard,
 QFrame#activeFilterBar,
-QFrame#sessionHeaderBar,
 QFrame#commandRecordDock,
 QGroupBox {
     background: #111820;
@@ -234,7 +233,6 @@ QFrame#myOccupancyCard {
     border-color: #253444;
 }
 QFrame#activeFilterBar,
-QFrame#sessionHeaderBar,
 QFrame#commandRecordDock {
     background: #0c1218;
     border-color: #273242;
@@ -623,6 +621,28 @@ QToolButton#commandCollapseButton:hover {
     border-color: #14b8a6;
     color: #d7fff2;
 }
+QToolButton#quickActionIconButton {
+    background: #101c26;
+    border: 1px solid #2b4252;
+    border-radius: 6px;
+    color: #d7fff2;
+    padding: 0px;
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
+    font-weight: 700;
+}
+QToolButton#quickActionIconButton:hover {
+    background: #12313a;
+    border-color: #14b8a6;
+    color: #ffffff;
+}
+QToolButton#quickActionIconButton:disabled {
+    color: #64748b;
+    background: #0b1118;
+    border-color: #15212e;
+}
 QStatusBar {
     background: #0b1117;
     color: #96a6b8;
@@ -693,21 +713,13 @@ QLabel#railCopy {
     color: #96a6b8;
     font-size: 12px;
 }
-QLabel#activeFilterText,
-QLabel#sessionMetaLabel {
+QLabel#activeFilterText {
     background: transparent;
     color: #a8b5c4;
     font-size: 12px;
 }
 QLabel#activeFilterText {
     color: #c5d5e6;
-}
-QLabel#sessionTitleLabel {
-    background: transparent;
-    color: #f8fbff;
-    font-size: 14px;
-    font-weight: 700;
-    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
 }
 """
 
@@ -763,9 +775,6 @@ class SessionTabState:
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
     tab_close_button: QToolButton | None = None
-    session_meta_label: QLabel | None = None
-    session_disconnect_button: QPushButton | None = None
-    session_reconnect_button: QPushButton | None = None
     connecting: bool = False
     status_text: str = "Disconnected"
 
@@ -1194,18 +1203,6 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             status_bar = QStatusBar(self)
             self.setStatusBar(status_bar)
-            self.footer_sessions_label = QLabel("会话 0")
-            self.footer_sessions_label.setObjectName("footerMetric")
-            self.footer_visible_label = QLabel("设备 0")
-            self.footer_visible_label.setObjectName("footerMetric")
-            self.footer_user_label = QLabel("用户 -")
-            self.footer_user_label.setObjectName("footerMetric")
-            self.footer_active_label = QLabel("当前无会话")
-            self.footer_active_label.setObjectName("footerMetric")
-            status_bar.addPermanentWidget(self.footer_sessions_label)
-            status_bar.addPermanentWidget(self.footer_visible_label)
-            status_bar.addPermanentWidget(self.footer_user_label)
-            status_bar.addPermanentWidget(self.footer_active_label)
             status_bar.showMessage("准备就绪")
 
         def _build_layout(self) -> None:
@@ -1219,11 +1216,9 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             splitter.addWidget(self._build_left_panel())
             splitter.addWidget(self._build_center_panel())
-            splitter.addWidget(self._build_right_panel())
-            splitter.setSizes([390, 940, 380])
+            splitter.setSizes([470, 1180])
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
-            splitter.setStretchFactor(2, 0)
 
             self.setCentralWidget(root)
 
@@ -1252,11 +1247,18 @@ if PYSIDE6_IMPORT_ERROR is None:
             return frame
 
         def _build_left_panel(self) -> QWidget:
+            scroll = QScrollArea()
+            scroll.setObjectName("inspectorScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setMinimumWidth(430)
+            scroll.setMaximumWidth(520)
+
             panel = QWidget()
             panel.setObjectName("leftRail")
-            panel.setMaximumWidth(430)
             layout = QVBoxLayout(panel)
-            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setContentsMargins(0, 0, 8, 0)
             layout.setSpacing(10)
 
             navigation_group = QGroupBox("设备导航")
@@ -1332,11 +1334,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             nav_layout.addWidget(active_filter_frame)
 
             self.device_table = self._new_table(["设备", "领域", "CPU", "状态"])
-            self.device_table.setMinimumHeight(420)
-            nav_layout.addWidget(self.device_table, 1)
-            layout.addWidget(navigation_group, 3)
-            layout.addWidget(self._build_occupancy_panel(), 1)
-            return panel
+            self.device_table.setMinimumHeight(320)
+            self.device_table.setMaximumHeight(420)
+            nav_layout.addWidget(self.device_table)
+            layout.addWidget(navigation_group)
+            layout.addWidget(self._build_device_context_panel())
+            layout.addStretch(1)
+            scroll.setWidget(panel)
+            return scroll
 
         def _build_occupancy_panel(self) -> QWidget:
             frame = QFrame()
@@ -1363,6 +1368,57 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addWidget(self.owned_table, 1)
             return frame
 
+        def _build_device_context_panel(self) -> QWidget:
+            panel = QWidget()
+            panel.setObjectName("inspectorRail")
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(10)
+
+            detail_group = QGroupBox("当前设备")
+            detail_group.setObjectName("deviceDetailCard")
+            detail_layout = QVBoxLayout(detail_group)
+            detail_layout.setContentsMargins(12, 16, 12, 12)
+            detail_layout.setSpacing(10)
+            self.device_summary_card = QLabel("请选择一台设备。")
+            self.device_summary_card.setObjectName("detailCard")
+            self.device_summary_card.setWordWrap(True)
+            self.device_summary_card.setTextFormat(Qt.RichText)
+            detail_layout.addWidget(self.device_summary_card)
+            layout.addWidget(detail_group)
+
+            auth_group = QGroupBox("连接参数")
+            auth_group.setObjectName("authCard")
+            auth_layout = QVBoxLayout(auth_group)
+            auth_layout.setSpacing(10)
+
+            device_form_group = QGroupBox("设备 Telnet")
+            device_form = QFormLayout(device_form_group)
+            device_form.setContentsMargins(10, 14, 10, 10)
+            device_form.setVerticalSpacing(8)
+            device_form.setHorizontalSpacing(8)
+            device_form.setLabelAlignment(Qt.AlignRight)
+            self.device_username_input = QLineEdit()
+            self.device_password_input = QLineEdit()
+            device_form.addRow("用户名", self.device_username_input)
+            device_form.addRow("密码", self.device_password_input)
+
+            linux_form_group = QGroupBox("Linux SSH")
+            linux_form = QFormLayout(linux_form_group)
+            linux_form.setContentsMargins(10, 14, 10, 10)
+            linux_form.setVerticalSpacing(8)
+            linux_form.setHorizontalSpacing(8)
+            linux_form.setLabelAlignment(Qt.AlignRight)
+            self.linux_username_input = QLineEdit()
+            self.linux_password_input = QLineEdit()
+            linux_form.addRow("用户名", self.linux_username_input)
+            linux_form.addRow("密码", self.linux_password_input)
+
+            auth_layout.addWidget(device_form_group)
+            auth_layout.addWidget(linux_form_group)
+            layout.addWidget(auth_group)
+            return panel
+
         def _build_center_panel(self) -> QWidget:
             panel = QWidget()
             panel.setObjectName("centerStage")
@@ -1384,7 +1440,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             empty_title.setObjectName("sessionEmptyTitle")
             empty_copy = QLabel(
                 "从左侧选择设备后发起连接。\n"
-                "这里会承载你的 Telnet / SSH 会话，设备导航和当前上下文保持在两侧辅助区。"
+                "这里会承载你的 Telnet / SSH 会话，设备导航和当前上下文集中在左侧。"
             )
             empty_copy.setObjectName("sessionEmptyCopy")
             empty_copy.setWordWrap(True)
@@ -1401,6 +1457,35 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_widget.tabBar().setUsesScrollButtons(True)
             self.center_stage_stack.addWidget(empty_state)
             self.center_stage_stack.addWidget(self.session_tab_widget)
+            quick_action_row = QHBoxLayout()
+            quick_action_row.setContentsMargins(0, 8, 0, 8)
+            quick_action_row.addStretch(1)
+            self.quick_telnet_button = QToolButton()
+            self.quick_telnet_button.setObjectName("quickActionIconButton")
+            self.quick_telnet_button.setText("T")
+            self.quick_telnet_button.setToolTip("连接设备 Telnet")
+            self.quick_ssh_button = QToolButton()
+            self.quick_ssh_button.setObjectName("quickActionIconButton")
+            self.quick_ssh_button.setText("S")
+            self.quick_ssh_button.setToolTip("连接 Linux SSH")
+            self.quick_occupancy_button = QToolButton()
+            self.quick_occupancy_button.setObjectName("quickActionIconButton")
+            self.quick_occupancy_button.setText("占")
+            self.quick_occupancy_button.setToolTip("占用 / 释放")
+            self.quick_reconnect_button = QToolButton()
+            self.quick_reconnect_button.setObjectName("quickActionIconButton")
+            self.quick_reconnect_button.setText("重")
+            self.quick_reconnect_button.setToolTip("重连当前会话")
+            self.quick_disconnect_button = QToolButton()
+            self.quick_disconnect_button.setObjectName("quickActionIconButton")
+            self.quick_disconnect_button.setText("断")
+            self.quick_disconnect_button.setToolTip("断开当前会话")
+            quick_action_row.addWidget(self.quick_telnet_button)
+            quick_action_row.addWidget(self.quick_ssh_button)
+            quick_action_row.addWidget(self.quick_occupancy_button)
+            quick_action_row.addWidget(self.quick_reconnect_button)
+            quick_action_row.addWidget(self.quick_disconnect_button)
+            layout.addLayout(quick_action_row)
             layout.addWidget(self._build_command_record_panel())
             self.update_center_stage_state()
             return panel
@@ -1605,13 +1690,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
             self.device_table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.device_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
-            self.owned_table.itemSelectionChanged.connect(self.handle_owned_table_selected)
-            self.owned_table.setContextMenuPolicy(Qt.CustomContextMenu)
-            self.owned_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
+            if hasattr(self, "owned_table"):
+                self.owned_table.itemSelectionChanged.connect(self.handle_owned_table_selected)
+                self.owned_table.setContextMenuPolicy(Qt.CustomContextMenu)
+                self.owned_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
 
-            self.open_device_button.clicked.connect(self.open_device_session)
-            self.open_linux_button.clicked.connect(self.open_linux_session)
-            self.toggle_occupancy_button.clicked.connect(self.toggle_occupancy)
+            self.quick_telnet_button.clicked.connect(self.open_device_session)
+            self.quick_ssh_button.clicked.connect(self.open_linux_session)
+            self.quick_occupancy_button.clicked.connect(self.toggle_occupancy)
+            self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
+            self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
             self.command_send_button.clicked.connect(self.submit_current_command_record)
             self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
             self.command_clear_button.clicked.connect(self.clear_current_command_record)
@@ -2016,7 +2104,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.current_user = snapshot.current_user
                 self.devices = snapshot.devices
                 self.search_index = {device.id: build_search_text(device) for device in self.devices}
-                self.footer_user_label.setText(f"用户 {self.current_user}")
                 self.refresh_domain_options()
                 self.apply_filters()
                 self.set_status_message(f"已加载 {len(self.devices)} 台设备")
@@ -2147,6 +2234,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.device_table.setRowHeight(row, 38)
 
         def refresh_owned_table(self) -> None:
+            if not hasattr(self, "owned_table"):
+                self.owned_visible_devices = []
+                return
             keyword = self.search_input.text().strip().lower()
             self.owned_visible_devices = [
                 device for device in self.visible_devices if device.owner == self.current_user
@@ -2240,7 +2330,8 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def select_device_in_table(self, device_id: str) -> None:
             self._select_device_row(self.device_table, device_id)
-            self._select_device_row(self.owned_table, device_id)
+            if hasattr(self, "owned_table"):
+                self._select_device_row(self.owned_table, device_id)
 
         def _select_device_row(self, table: QTableWidget, device_id: str) -> None:
             table.blockSignals(True)
@@ -2394,7 +2485,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     f"<span style='color:#96a6b8'>:{device.telnet_port}</span><br>"
                     f"<span style='color:#96a6b8'>账号</span>&nbsp;&nbsp;"
                     f"<span style='font-weight:700'>{html.escape(device.username)}</span>"
-                    f" / <span style='color:#a8b5c4'>{html.escape(mask_password(device.password))}</span>"
+                    f" / <span style='color:#a8b5c4'>{html.escape(device.password)}</span>"
                     f"</div>"
                     f"</div>"
                     f"<div style='margin-top:14px;padding-top:12px;border-top:1px solid #223244'>"
@@ -2411,13 +2502,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
 
         def refresh_workspace_context(self) -> None:
-            state = self.current_session_state()
-
-            if state is None:
-                self.footer_active_label.setText("当前无会话")
-                return
-
-            self.footer_active_label.setText(f"当前 {state.title}")
+            return
 
         def handle_session_tab_changed(self, _index: int) -> None:
             self.refresh_workspace_context()
@@ -2538,31 +2623,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             page = QWidget()
             layout = QVBoxLayout(page)
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
-
-            header = QFrame()
-            header.setObjectName("sessionHeaderBar")
-            header_layout = QHBoxLayout(header)
-            header_layout.setContentsMargins(12, 10, 12, 10)
-            header_layout.setSpacing(10)
-
-            title_col = QVBoxLayout()
-            title_col.setSpacing(2)
-            session_title_label = QLabel(title)
-            session_title_label.setObjectName("sessionTitleLabel")
-            session_meta_label = QLabel()
-            session_meta_label.setObjectName("sessionMetaLabel")
-            title_col.addWidget(session_title_label)
-            title_col.addWidget(session_meta_label)
-            header_layout.addLayout(title_col, 1)
-
-            reconnect_button = QPushButton("重连")
-            reconnect_button.setObjectName("ghostButton")
-            disconnect_button = QPushButton("断开")
-            disconnect_button.setObjectName("ghostButton")
-            header_layout.addWidget(reconnect_button)
-            header_layout.addWidget(disconnect_button)
-            layout.addWidget(header)
+            layout.setSpacing(0)
 
             terminal = InteractiveTerminal()
             layout.addWidget(terminal, 1)
@@ -2592,18 +2653,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 page=page,
                 terminal=terminal,
                 session=session,
-                session_meta_label=session_meta_label,
-                session_disconnect_button=disconnect_button,
-                session_reconnect_button=reconnect_button,
                 connecting=True,
                 status_text="Connecting",
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
             terminal.set_command_recorder(self.add_command_record)
-            disconnect_button.clicked.connect(lambda _checked=False, tab_id=tab_id: self.disconnect_session_tab(tab_id))
-            reconnect_button.clicked.connect(lambda _checked=False, tab_id=tab_id: self.reconnect_session_tab(tab_id))
-            self.refresh_session_header(state)
             return state
 
         def _install_tab_header(self, index: int, state: SessionTabState) -> None:
@@ -2664,23 +2719,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             return "error"
 
         def refresh_session_header(self, state: SessionTabState) -> None:
-            protocol = "Telnet" if state.kind == "device" else "SSH"
-            connection_state = self._tab_connection_state(state)
-            state_label = {
-                "connecting": "连接中",
-                "connected": "已连接",
-                "idle": "已断开",
-                "error": "异常",
-            }.get(connection_state, state.status_text)
-
-            if state.session_meta_label is not None:
-                state.session_meta_label.setText(
-                    f"{protocol} / {state.host}:{state.port} / {state.username} / {state_label}"
-                )
-            if state.session_disconnect_button is not None:
-                state.session_disconnect_button.setEnabled(state.session.is_connected or state.connecting)
-            if state.session_reconnect_button is not None:
-                state.session_reconnect_button.setEnabled(not state.connecting)
+            del state
 
         def _refresh_tab_header_styles(self) -> None:
             current_index = self.session_tab_widget.currentIndex()
@@ -2902,13 +2941,30 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return None
             return next((state for state in self.session_tabs_by_id.values() if state.page is current_page), None)
 
+        def reconnect_current_session(self) -> None:
+            state = self.current_session_state()
+            if state is None:
+                self.set_status_message("当前没有可重连的终端会话。")
+                return
+            self.reconnect_session_tab(state.tab_id)
+
+        def disconnect_current_session(self) -> None:
+            state = self.current_session_state()
+            if state is None:
+                self.set_status_message("当前没有可断开的终端会话。")
+                return
+            self.disconnect_session_tab(state.tab_id)
+
         def update_controls(self) -> None:
             selected = self.get_selected_device() is not None
-            self.open_device_button.setEnabled(selected)
-            self.open_linux_button.setEnabled(selected)
-            self.toggle_occupancy_button.setEnabled(selected)
-            self.footer_sessions_label.setText(f"会话 {len(self.session_tabs_by_id)}")
-            self.footer_visible_label.setText(f"设备 {len(self.visible_devices)}")
+            state = self.current_session_state()
+            self.quick_telnet_button.setEnabled(selected)
+            self.quick_ssh_button.setEnabled(selected)
+            self.quick_occupancy_button.setEnabled(selected)
+            self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
+            self.quick_disconnect_button.setEnabled(
+                state is not None and (state.session.is_connected or state.connecting)
+            )
             self.update_center_stage_state()
 
         def toggle_occupancy(self) -> None:
