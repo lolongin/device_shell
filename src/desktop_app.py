@@ -403,33 +403,33 @@ QSplitter::handle:horizontal:hover {
 }
 QTabWidget::pane {
     border: 1px solid #253140;
-    border-radius: 10px;
+    border-radius: 8px;
     background: #0b1117;
-    top: -2px;
+    top: -1px;
 }
 QTabWidget::tab-bar {
-    left: 8px;
+    left: 6px;
 }
 QTabBar::tab {
     background: #101923;
     color: #96a6b8;
     border: 1px solid #263544;
     border-bottom: 1px solid #253140;
-    border-top-left-radius: 9px;
-    border-top-right-radius: 9px;
-    padding: 5px 8px 5px 8px;
-    min-width: 164px;
-    min-height: 32px;
-    margin-right: 5px;
-    margin-top: 4px;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    padding: 3px 6px;
+    min-width: 148px;
+    min-height: 24px;
+    margin-right: 4px;
+    margin-top: 2px;
 }
 QTabBar::tab:selected {
-    background: #13242d;
+    background: #10232b;
     color: #f8fbff;
-    border-color: #0f766e;
-    border-bottom-color: #13242d;
+    border-color: #2dd4bf;
+    border-bottom-color: #10232b;
     margin-top: 0px;
-    min-height: 36px;
+    min-height: 27px;
 }
 QTabBar::tab:hover {
     color: #e5edf6;
@@ -440,27 +440,34 @@ QWidget#deviceSessionPage {
     background: transparent;
 }
 QTabWidget#deviceSessionTabs::pane {
-    border-color: #1f3342;
-    border-radius: 8px;
-    background: #05080c;
-    top: -1px;
+    border: none;
+    border-radius: 0px;
+    background: transparent;
+    top: 0px;
 }
 QTabWidget#deviceSessionTabs::tab-bar {
-    left: 6px;
+    left: 4px;
 }
 QTabWidget#deviceSessionTabs QTabBar::tab {
-    min-width: 112px;
-    min-height: 28px;
-    padding: 4px 6px;
-    margin-right: 4px;
-    margin-top: 3px;
+    background: #0b141d;
+    border: 1px solid #1d3341;
+    border-radius: 7px;
+    color: #9fb0c2;
+    min-width: 76px;
+    min-height: 19px;
+    padding: 1px 4px;
+    margin-right: 3px;
+    margin-top: 2px;
 }
 QTabWidget#deviceSessionTabs QTabBar::tab:selected {
-    background: #0d1d24;
+    background: #102f37;
     border-color: #5eead4;
-    border-bottom-color: #0d1d24;
-    min-height: 31px;
+    color: #f8fafc;
+    min-height: 21px;
     margin-top: 0px;
+}
+QTabWidget#deviceSessionTabs QLabel#tabHeaderLabel {
+    font-size: 11px;
 }
 QWidget#tabHeader {
     background: transparent;
@@ -470,7 +477,7 @@ QWidget#tabHeader[selected="true"] {
 }
 QLabel#tabStatusDot {
     background: #49627d;
-    border-radius: 5px;
+    border-radius: 4px;
 }
 QLabel#tabStatusDot[connectionState="connecting"] {
     background: #f59e0b;
@@ -484,7 +491,7 @@ QLabel#tabStatusDot[connectionState="error"] {
 QLabel#tabHeaderLabel {
     background: transparent;
     color: #b8c7d9;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
 }
 QLabel#tabHeaderLabel[selected="true"] {
@@ -495,9 +502,9 @@ QToolButton#tabCloseButton {
     background: rgba(148, 163, 184, 0.10);
     color: #9fb0c2;
     border: 1px solid rgba(148, 163, 184, 0.18);
-    border-radius: 10px;
+    border-radius: 8px;
     font-family: "Arial", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 700;
     padding: 0px;
     margin: 0px;
@@ -2937,6 +2944,10 @@ if PYSIDE6_IMPORT_ERROR is None:
                 close_callback=lambda page=state.page: self.close_device_tab_for_page(page),
                 close_tooltip="关闭设备会话",
                 min_label_width=118,
+                header_height=24,
+                dot_size=8,
+                close_slot_size=(22, 20),
+                close_button_size=16,
             )
 
         def _install_session_tab_header(self, tab_widget: QTabWidget, index: int, state: SessionTabState) -> None:
@@ -2946,7 +2957,11 @@ if PYSIDE6_IMPORT_ERROR is None:
                 state,
                 close_callback=lambda page=state.page: self.close_session_tab_for_page(page),
                 close_tooltip="关闭会话",
-                min_label_width=72,
+                min_label_width=48,
+                header_height=20,
+                dot_size=6,
+                close_slot_size=(18, 16),
+                close_button_size=13,
             )
 
         def _install_tab_header(
@@ -2957,19 +2972,23 @@ if PYSIDE6_IMPORT_ERROR is None:
             close_callback: Callable[[], None],
             close_tooltip: str,
             min_label_width: int,
+            header_height: int,
+            dot_size: int,
+            close_slot_size: tuple[int, int],
+            close_button_size: int,
         ) -> None:
             if QToolButton is None:
                 return
             header = QWidget(tab_widget)
             header.setObjectName("tabHeader")
-            header.setFixedHeight(28)
+            header.setFixedHeight(header_height)
             layout = QHBoxLayout(header)
-            layout.setContentsMargins(8, 3, 1, 3)
-            layout.setSpacing(5)
+            layout.setContentsMargins(7, 2, 1, 2)
+            layout.setSpacing(4)
 
             dot = QLabel(header)
             dot.setObjectName("tabStatusDot")
-            dot.setFixedSize(10, 10)
+            dot.setFixedSize(dot_size, dot_size)
             layout.addWidget(dot, 0, Qt.AlignVCenter)
 
             label = QLabel(state.title, header)
@@ -2979,16 +2998,16 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             close_slot = QWidget(tab_widget.tabBar())
             close_slot.setObjectName("tabHeader")
-            close_slot.setFixedSize(26, 24)
+            close_slot.setFixedSize(*close_slot_size)
             close_layout = QHBoxLayout(close_slot)
-            close_layout.setContentsMargins(0, 2, 6, 2)
+            close_layout.setContentsMargins(0, 1, 5, 1)
             close_layout.setSpacing(0)
 
             button = QToolButton(close_slot)
             button.setObjectName("tabCloseButton")
             button.setText("×")
             button.setAutoRaise(True)
-            button.setFixedSize(20, 20)
+            button.setFixedSize(close_button_size, close_button_size)
             button.setToolButtonStyle(Qt.ToolButtonTextOnly)
             button.setFocusPolicy(Qt.NoFocus)
             button.setCursor(Qt.PointingHandCursor)

@@ -81,6 +81,8 @@ python src/desktop_app.py
 
 In API mode, the web page and desktop app share the same backend data source, with periodic refresh used to keep the GUI in sync.
 
+For integrating your own website or backend service, see [docs/网站对接开发指导.md](docs/网站对接开发指导.md).
+
 The desktop shell is implemented with PySide6. The legacy terminal UI is still available through `device-tui-textual`.
 
 ## Mock Huawei Device
