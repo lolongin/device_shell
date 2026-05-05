@@ -199,8 +199,7 @@ QLabel#sessionEmptyCopy {
 QGroupBox#navShell,
 QGroupBox#deviceDetailCard,
 QGroupBox#quickActionCard,
-QGroupBox#authCard,
-QGroupBox#statusCard {
+QGroupBox#authCard {
     border-radius: 12px;
 }
 QGroupBox#deviceDetailCard {
@@ -211,8 +210,7 @@ QGroupBox#quickActionCard {
     border-color: #315042;
     background: #101820;
 }
-QGroupBox#authCard,
-QGroupBox#statusCard {
+QGroupBox#authCard {
     background: #101820;
 }
 QGroupBox#navShell {
@@ -246,9 +244,6 @@ QGroupBox#authCard QGroupBox::title {
     color: #8ea7c2;
     font-size: 12px;
     font-weight: 600;
-}
-QGroupBox#statusCard QLabel {
-    color: #b8c7d9;
 }
 QPushButton {
     background: #17212c;
@@ -397,31 +392,36 @@ QTabWidget::pane {
     border: 1px solid #253140;
     border-radius: 10px;
     background: #0b1117;
-    top: -1px;
+    top: -2px;
 }
 QTabWidget::tab-bar {
-    left: 10px;
+    left: 8px;
 }
 QTabBar::tab {
-    background: #101820;
+    background: #101923;
     color: #96a6b8;
-    border: 1px solid #253140;
-    border-bottom: none;
-    border-top-left-radius: 10px;
-    border-top-right-radius: 10px;
-    padding: 6px 8px 4px 8px;
-    min-width: 136px;
-    min-height: 34px;
-    margin-right: 6px;
+    border: 1px solid #263544;
+    border-bottom: 1px solid #253140;
+    border-top-left-radius: 9px;
+    border-top-right-radius: 9px;
+    padding: 5px 8px 5px 8px;
+    min-width: 164px;
+    min-height: 32px;
+    margin-right: 5px;
+    margin-top: 4px;
 }
 QTabBar::tab:selected {
-    background: #16212c;
+    background: #13242d;
     color: #f8fbff;
     border-color: #0f766e;
+    border-bottom-color: #13242d;
+    margin-top: 0px;
+    min-height: 36px;
 }
 QTabBar::tab:hover {
     color: #e5edf6;
-    background: #16212c;
+    background: #172532;
+    border-color: #385064;
 }
 QWidget#tabHeader {
     background: transparent;
@@ -431,7 +431,7 @@ QWidget#tabHeader[selected="true"] {
 }
 QLabel#tabStatusDot {
     background: #49627d;
-    border-radius: 4px;
+    border-radius: 5px;
 }
 QLabel#tabStatusDot[connectionState="connecting"] {
     background: #f59e0b;
@@ -444,38 +444,39 @@ QLabel#tabStatusDot[connectionState="error"] {
 }
 QLabel#tabHeaderLabel {
     background: transparent;
-    color: #a8b5c4;
+    color: #b8c7d9;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 700;
 }
 QLabel#tabHeaderLabel[selected="true"] {
     color: #f8fbff;
     font-weight: 700;
 }
 QToolButton#tabCloseButton {
-    background: rgba(148, 163, 184, 0.14);
-    color: #dbe7f5;
-    border: 1px solid rgba(148, 163, 184, 0.22);
-    border-radius: 8px;
-    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
-    font-size: 12px;
+    background: rgba(148, 163, 184, 0.10);
+    color: #9fb0c2;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 10px;
+    font-family: "Arial", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
+    font-size: 14px;
     font-weight: 700;
     padding: 0px;
+    margin: 0px;
 }
 QToolButton#tabCloseButton[selected="true"] {
-    background: rgba(59, 130, 246, 0.16);
-    border-color: rgba(96, 165, 250, 0.28);
-    color: #f8fbff;
+    background: rgba(143, 247, 210, 0.12);
+    border-color: rgba(143, 247, 210, 0.28);
+    color: #d7fff2;
 }
 QToolButton#tabCloseButton:hover {
-    background: #8f2f3a;
+    background: #7f1d1d;
     color: #ffffff;
-    border-color: #b84351;
+    border-color: #ef4444;
 }
 QToolButton#tabCloseButton:pressed {
-    background: #6f232c;
+    background: #5f1717;
     color: #ffffff;
-    border-color: #b84351;
+    border-color: #ef4444;
 }
 QPlainTextEdit#terminalLog {
     background: #05080c;
@@ -516,6 +517,9 @@ QLabel#navStatsText {
     font-size: 14px;
     font-weight: 700;
     font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI";
+}
+QLabel#navStatsText span {
+    white-space: nowrap;
 }
 QLabel#statChip {
     border: 1px solid #283747;
@@ -559,6 +563,9 @@ QLabel#sessionMetaLabel {
     color: #a8b5c4;
     font-size: 12px;
 }
+QLabel#activeFilterText {
+    color: #c5d5e6;
+}
 QLabel#sessionTitleLabel {
     background: transparent;
     color: #f8fbff;
@@ -591,7 +598,7 @@ def build_search_text(device: Device) -> str:
 
 
 def mask_password(password: str) -> str:
-    return "*" * max(8, len(password))
+    return password
 
 
 def status_color(status: str) -> str:
@@ -1094,6 +1101,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.stats_caption_label.setObjectName("sectionCopy")
             self.stats_label = QLabel("设备 0  空闲 0  占用 0  流水线 0  其他 0")
             self.stats_label.setObjectName("navStatsText")
+            self.stats_label.setTextFormat(Qt.RichText)
             stats_layout.addWidget(self.stats_caption_label)
             stats_layout.addStretch(1)
             stats_layout.addWidget(self.stats_label)
@@ -1106,6 +1114,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             active_filter_layout.setSpacing(8)
             self.filter_summary_label = QLabel("当前显示全部设备")
             self.filter_summary_label.setObjectName("activeFilterText")
+            self.filter_summary_label.setTextFormat(Qt.RichText)
             self.filter_summary_label.setWordWrap(True)
             self.clear_filters_button = QPushButton("清空")
             self.clear_filters_button.setObjectName("ghostButton")
@@ -1133,10 +1142,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             title_col.setSpacing(2)
             title = QLabel("我的占用")
             title.setObjectName("railTitle")
-            copy = QLabel("随当前筛选结果联动")
-            copy.setObjectName("railCopy")
             title_col.addWidget(title)
-            title_col.addWidget(copy)
             header_row.addLayout(title_col)
             header_row.addStretch(1)
             self.owned_count_label = QLabel("0")
@@ -1259,13 +1265,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             linux_form.setVerticalSpacing(8)
             linux_form.setHorizontalSpacing(8)
             linux_form.setLabelAlignment(Qt.AlignRight)
-            self.linux_host_input = QLineEdit()
-            self.linux_port_input = QLineEdit("22")
             self.linux_username_input = QLineEdit()
             self.linux_password_input = QLineEdit()
             self.linux_password_input.setEchoMode(QLineEdit.Password)
-            linux_form.addRow("主机", self.linux_host_input)
-            linux_form.addRow("端口", self.linux_port_input)
             linux_form.addRow("用户名", self.linux_username_input)
             linux_form.addRow("密码", self.linux_password_input)
 
@@ -1273,20 +1275,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             auth_layout.addWidget(device_form_group)
             auth_layout.addWidget(linux_form_group)
             layout.addWidget(auth_group)
-
-            footer = QGroupBox("当前状态")
-            footer.setObjectName("statusCard")
-            footer_layout = QVBoxLayout(footer)
-            self.device_status_label = QLabel("设备终端: 无活动会话")
-            self.device_status_label.setObjectName("sectionCopy")
-            self.linux_status_label = QLabel("Linux 后台: 无活动会话")
-            self.linux_status_label.setObjectName("sectionCopy")
-            self.active_session_label = QLabel("当前活动: -")
-            self.active_session_label.setObjectName("sectionCopy")
-            footer_layout.addWidget(self.device_status_label)
-            footer_layout.addWidget(self.linux_status_label)
-            footer_layout.addWidget(self.active_session_label)
-            layout.addWidget(footer)
             layout.addStretch(1)
             scroll.setWidget(panel)
             return scroll
@@ -1467,7 +1455,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.visible_devices = []
             for device in self.devices:
-                if search_text and search_text not in self.search_index.get(device.id, ""):
+                if search_text and search_text not in self.device_search_text(device):
                     continue
                 if domain_filter != ALL_DOMAINS and device.domain != domain_filter:
                     continue
@@ -1501,28 +1489,105 @@ if PYSIDE6_IMPORT_ERROR is None:
             pipeline = sum(1 for device in self.visible_devices if device.status == STATUS_PIPELINE)
             other = sum(1 for device in self.visible_devices if device.status == STATUS_OTHER)
             self.stats_label.setText(
-                f"设备 {total}  空闲 {idle}  占用 {occupied}  流水线 {pipeline}  其他 {other}"
+                " ".join(
+                    [
+                        self.stat_chip_html("设备", total, "#263544", "#edf5ff"),
+                        self.stat_chip_html("空闲", idle, "#0f302b", "#8ff7d2"),
+                        self.stat_chip_html("占用", occupied, "#3a2414", "#fb923c"),
+                        self.stat_chip_html("流水线", pipeline, "#342c12", "#fbbf24"),
+                        self.stat_chip_html("其他", other, "#202a36", "#a8b5c4"),
+                    ]
+                )
+            )
+
+        def stat_chip_html(self, label: str, value: int, background: str, color: str) -> str:
+            return (
+                f"<span style='background:{background};color:{color};font-weight:800;"
+                f"padding:2px 7px;border-radius:6px'>{html.escape(label)} {value}</span>"
             )
 
         def refresh_device_table(self) -> None:
+            keyword = self.search_input.text().strip().lower()
             self.device_table.setRowCount(len(self.visible_devices))
             for row, device in enumerate(self.visible_devices):
-                self._set_table_item(self.device_table, row, 0, device.name, device.id)
-                self._set_table_item(self.device_table, row, 1, device.domain, device.id)
-                self._set_table_item(self.device_table, row, 2, device.cpu, device.id)
-                self._set_table_item(self.device_table, row, 3, device.status, device.id, color=status_color(device.status))
+                hidden_keyword_match = self.device_matches_hidden_keyword(
+                    device,
+                    keyword,
+                    visible_values=(device.name, device.domain, device.cpu, device.status),
+                )
+                self._set_table_item(
+                    self.device_table,
+                    row,
+                    0,
+                    device.name,
+                    device.id,
+                    highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+                )
+                self._set_table_item(
+                    self.device_table,
+                    row,
+                    1,
+                    device.domain,
+                    device.id,
+                    highlight=self.text_matches_keyword(device.domain, keyword),
+                )
+                self._set_table_item(
+                    self.device_table,
+                    row,
+                    2,
+                    device.cpu,
+                    device.id,
+                    highlight=self.text_matches_keyword(device.cpu, keyword),
+                )
+                self._set_table_item(
+                    self.device_table,
+                    row,
+                    3,
+                    device.status,
+                    device.id,
+                    color=status_color(device.status),
+                    highlight=self.text_matches_keyword(device.status, keyword),
+                )
                 self.device_table.setRowHeight(row, 38)
 
         def refresh_owned_table(self) -> None:
+            keyword = self.search_input.text().strip().lower()
             self.owned_visible_devices = [
                 device for device in self.visible_devices if device.owner == self.current_user
             ]
             self.owned_count_label.setText(str(len(self.owned_visible_devices)))
             self.owned_table.setRowCount(len(self.owned_visible_devices))
             for row, device in enumerate(self.owned_visible_devices):
-                self._set_table_item(self.owned_table, row, 0, device.name, device.id)
-                self._set_table_item(self.owned_table, row, 1, device.domain, device.id)
-                self._set_table_item(self.owned_table, row, 2, device.status, device.id, color=status_color(device.status))
+                hidden_keyword_match = self.device_matches_hidden_keyword(
+                    device,
+                    keyword,
+                    visible_values=(device.name, device.domain, device.status),
+                )
+                self._set_table_item(
+                    self.owned_table,
+                    row,
+                    0,
+                    device.name,
+                    device.id,
+                    highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+                )
+                self._set_table_item(
+                    self.owned_table,
+                    row,
+                    1,
+                    device.domain,
+                    device.id,
+                    highlight=self.text_matches_keyword(device.domain, keyword),
+                )
+                self._set_table_item(
+                    self.owned_table,
+                    row,
+                    2,
+                    device.status,
+                    device.id,
+                    color=status_color(device.status),
+                    highlight=self.text_matches_keyword(device.status, keyword),
+                )
                 self.owned_table.setRowHeight(row, 36)
 
         def _set_table_item(
@@ -1533,13 +1598,36 @@ if PYSIDE6_IMPORT_ERROR is None:
             text: str,
             device_id: str,
             color: str | None = None,
+            highlight: bool = False,
         ) -> None:
             item = QTableWidgetItem(text)
             item.setData(Qt.UserRole, device_id)
             item.setToolTip(text)
             if color:
                 item.setForeground(QBrush(QColor(color)))
+            if highlight:
+                item.setBackground(QBrush(QColor("#123b36")))
+                item.setForeground(QBrush(QColor("#eafff7")))
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
             table.setItem(row, column, item)
+
+        def text_matches_keyword(self, value: str, keyword: str) -> bool:
+            return bool(keyword and keyword in value.lower())
+
+        def device_search_text(self, device: Device) -> str:
+            return self.search_index.get(device.id) or build_search_text(device)
+
+        def device_matches_hidden_keyword(
+            self,
+            device: Device,
+            keyword: str,
+            visible_values: tuple[str, ...],
+        ) -> bool:
+            if not keyword or keyword not in self.device_search_text(device):
+                return False
+            return not any(self.text_matches_keyword(value, keyword) for value in visible_values)
 
         def get_device_by_id(self, device_id: str) -> Device | None:
             return next((device for device in self.devices if device.id == device_id), None)
@@ -1619,18 +1707,24 @@ if PYSIDE6_IMPORT_ERROR is None:
             cpu_filter = self.cpu_input.text().strip()
 
             if search_text:
-                active_filters.append(f"关键词: {search_text}")
+                active_filters.append(self.filter_chip_html("关键词", search_text))
             if domain_filter and domain_filter != ALL_DOMAINS:
-                active_filters.append(f"领域: {domain_filter}")
+                active_filters.append(self.filter_chip_html("领域", domain_filter))
             if status_filter and status_filter != ALL_STATUS:
-                active_filters.append(f"状态: {status_filter}")
+                active_filters.append(self.filter_chip_html("状态", status_filter))
             if cpu_filter:
-                active_filters.append(f"CPU: {cpu_filter}")
+                active_filters.append(self.filter_chip_html("CPU", cpu_filter))
 
             has_filters = bool(active_filters)
             summary = " / ".join(active_filters) if has_filters else "当前显示全部设备"
             self.filter_summary_label.setText(summary)
             self.clear_filters_button.setEnabled(has_filters)
+
+        def filter_chip_html(self, label: str, value: str) -> str:
+            return (
+                f"<span style='color:#8ff7d2;font-weight:700;background:#0f302b;"
+                f"padding:2px 6px;border-radius:6px'>{html.escape(label)}: {html.escape(value)}</span>"
+            )
 
         def show_device_table_context_menu(self, pos: Any) -> None:
             table = self.sender()
@@ -1672,8 +1766,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             self.device_username_input.setText(device.username)
             self.device_password_input.setText(device.password)
-            self.linux_host_input.setText(device.ssh_ip)
             self.linux_username_input.setText(device.username)
+            self.linux_password_input.setText(device.password)
 
         def refresh_device_context(self) -> None:
             device = self.get_selected_device()
@@ -1682,28 +1776,40 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
 
             owner = device.owner or "未占用"
-            protocol_hint = "Telnet 优先" if device.telnet_ip else "SSH 优先"
             self.device_summary_card.setText(
                 (
-                    f"<div style='font-size:19px;font-weight:700;color:#f8fbff'>{html.escape(device.name)}</div>"
+                    f"<div style='font-size:20px;font-weight:800;color:#f8fbff'>{html.escape(device.name)}</div>"
                     f"<div style='margin-top:6px;color:#96a6b8;font-size:12px'>"
-                    f"{html.escape(device.id)} &nbsp;/&nbsp; {html.escape(device.domain)} &nbsp;/&nbsp; {html.escape(device.device_type)}"
+                    f"<span style='color:#8ff7d2;font-weight:700'>{html.escape(device.id)}</span>"
+                    f" &nbsp;/&nbsp; {html.escape(device.domain)} &nbsp;/&nbsp; {html.escape(device.device_type)}"
                     f"</div>"
-                    f"<div style='margin-top:10px'>"
-                    f"<span style='display:inline-block;padding:4px 10px;border-radius:10px;background:#111827;"
-                    f"color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span>"
-                    f"<span style='display:inline-block;margin-left:8px;padding:4px 10px;border-radius:10px;"
-                    f"background:#0f161d;color:#e5edf6'>占用 {html.escape(owner)}</span>"
-                    f"<span style='display:inline-block;margin-left:8px;padding:4px 10px;border-radius:10px;"
-                    f"background:#10251f;color:#8ff7d2'>{html.escape(protocol_hint)}</span>"
+                    f"<div style='margin-top:12px;color:#e5edf6;line-height:1.9'>"
+                    f"<span style='color:#96a6b8'>当前状态</span>&nbsp;&nbsp;"
+                    f"<span style='color:{status_color(device.status)};font-weight:800'>{html.escape(device.status)}</span>"
                     f"</div>"
-                    f"<div style='margin-top:14px;color:#e5edf6;line-height:1.85'>"
-                    f"<span style='color:#96a6b8'>SSH</span>&nbsp;&nbsp;{html.escape(device.ssh_ip)}:{device.ssh_port}<br>"
-                    f"<span style='color:#96a6b8'>Telnet</span>&nbsp;&nbsp;{html.escape(device.telnet_ip)}:{device.telnet_port}<br>"
-                    f"<span style='color:#96a6b8'>账号</span>&nbsp;&nbsp;{html.escape(device.username)} / {html.escape(mask_password(device.password))}<br>"
-                    f"<span style='color:#96a6b8'>厂商</span>&nbsp;&nbsp;{html.escape(device.vendor)} / {html.escape(device.model)}<br>"
-                    f"<span style='color:#96a6b8'>位置</span>&nbsp;&nbsp;{html.escape(device.site)} / {html.escape(device.rack)}<br>"
+                    f"<div style='margin-top:16px;padding-top:12px;border-top:1px solid #223244'>"
+                    f"<div style='color:#8ea7c2;font-size:12px;font-weight:700'>连接信息</div>"
+                    f"<div style='margin-top:8px;color:#e5edf6;line-height:1.9'>"
+                    f"<span style='color:#96a6b8'>SSH</span>&nbsp;&nbsp;"
+                    f"<span style='color:#8ff7d2;font-weight:700'>{html.escape(device.ssh_ip)}</span>"
+                    f"<span style='color:#96a6b8'>:{device.ssh_port}</span><br>"
+                    f"<span style='color:#96a6b8'>Telnet</span>&nbsp;&nbsp;"
+                    f"<span style='color:#8ff7d2;font-weight:700'>{html.escape(device.telnet_ip)}</span>"
+                    f"<span style='color:#96a6b8'>:{device.telnet_port}</span><br>"
+                    f"<span style='color:#96a6b8'>账号</span>&nbsp;&nbsp;"
+                    f"<span style='font-weight:700'>{html.escape(device.username)}</span>"
+                    f" / <span style='color:#a8b5c4'>{html.escape(mask_password(device.password))}</span>"
+                    f"</div>"
+                    f"</div>"
+                    f"<div style='margin-top:14px;padding-top:12px;border-top:1px solid #223244'>"
+                    f"<div style='color:#8ea7c2;font-size:12px;font-weight:700'>资产信息</div>"
+                    f"<div style='margin-top:8px;color:#e5edf6;line-height:1.9'>"
+                    f"<span style='color:#96a6b8'>厂商</span>&nbsp;&nbsp;"
+                    f"<span style='font-weight:700'>{html.escape(device.vendor)}</span> / {html.escape(device.model)}<br>"
+                    f"<span style='color:#96a6b8'>位置</span>&nbsp;&nbsp;"
+                    f"<span style='font-weight:700'>{html.escape(device.site)}</span> / {html.escape(device.rack)}<br>"
                     f"<span style='color:#96a6b8'>版本</span>&nbsp;&nbsp;{html.escape(device.version)}"
+                    f"</div>"
                     f"</div>"
                 )
             )
@@ -1712,16 +1818,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             state = self.current_session_state()
 
             if state is None:
-                self.active_session_label.setText("当前活动: -")
                 self.footer_active_label.setText("当前无会话")
                 return
 
-            device_obj = self.get_device_by_id(state.device_id)
-            owner = device_obj.owner if device_obj and device_obj.owner else "未占用"
-            protocol = "Telnet" if state.kind == "device" else "SSH"
-            self.active_session_label.setText(
-                f"当前活动: {state.title} / {protocol} / {owner} / {state.status_text}"
-            )
             self.footer_active_label.setText(f"当前 {state.title}")
 
         def handle_session_tab_changed(self, _index: int) -> None:
@@ -1770,17 +1869,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.show_warning("请先选择设备。")
                 return
 
-            host = self.linux_host_input.text().strip()
+            host = device.ssh_ip.strip()
             username = self.linux_username_input.text().strip()
             password = self.linux_password_input.text()
-            port_text = self.linux_port_input.text().strip() or "22"
+            port = device.ssh_port
             if not host or not username or not password:
-                self.show_warning("Linux 后台需要主机、用户名和密码。")
-                return
-            try:
-                port = int(port_text)
-            except ValueError:
-                self.show_warning("Linux 端口必须是数字。")
+                self.show_warning("Linux 后台需要设备 SSH 地址、用户名和密码。")
                 return
 
             self.ensure_session_tab(
@@ -1920,29 +2014,39 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             header = QWidget(self.session_tab_widget)
             header.setObjectName("tabHeader")
-            header.setFixedHeight(24)
+            header.setFixedHeight(28)
             layout = QHBoxLayout(header)
-            layout.setContentsMargins(8, 2, 4, 2)
-            layout.setSpacing(6)
+            layout.setContentsMargins(8, 3, 1, 3)
+            layout.setSpacing(5)
 
             dot = QLabel(header)
             dot.setObjectName("tabStatusDot")
-            dot.setFixedSize(8, 8)
+            dot.setFixedSize(10, 10)
             layout.addWidget(dot, 0, Qt.AlignVCenter)
 
             label = QLabel(state.title, header)
             label.setObjectName("tabHeaderLabel")
+            label.setMinimumWidth(108)
             layout.addWidget(label, 1)
 
-            button = QToolButton(header)
+            close_slot = QWidget(self.session_tab_widget.tabBar())
+            close_slot.setObjectName("tabHeader")
+            close_slot.setFixedSize(26, 24)
+            close_layout = QHBoxLayout(close_slot)
+            close_layout.setContentsMargins(0, 2, 6, 2)
+            close_layout.setSpacing(0)
+
+            button = QToolButton(close_slot)
             button.setObjectName("tabCloseButton")
-            button.setText("x")
+            button.setText("×")
             button.setAutoRaise(True)
-            button.setFixedSize(18, 18)
+            button.setFixedSize(20, 20)
+            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            button.setFocusPolicy(Qt.NoFocus)
             button.setCursor(Qt.PointingHandCursor)
             button.setToolTip("关闭会话")
             button.clicked.connect(lambda _checked=False, page=state.page: self.close_session_tab_for_page(page))
-            layout.addWidget(button)
+            close_layout.addWidget(button)
 
             state.tab_title_label = label
             state.tab_header = header
@@ -1950,7 +2054,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             state.tab_close_button = button
             self.session_tab_widget.setTabText(index, "")
             self.session_tab_widget.tabBar().setTabButton(index, QTabBar.LeftSide, header)
-            self.session_tab_widget.tabBar().setTabButton(index, QTabBar.RightSide, None)
+            self.session_tab_widget.tabBar().setTabButton(index, QTabBar.RightSide, close_slot)
             self._refresh_tab_header_styles()
 
         def _tab_connection_state(self, state: SessionTabState) -> str:
@@ -2075,7 +2179,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 state.tab_title_label.setText(state.title)
             self._refresh_tab_header_styles()
             self.refresh_workspace_context()
-            self.refresh_summary_statuses()
             self.update_center_stage_state()
             self.update_controls()
 
@@ -2192,29 +2295,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.session_tabs_by_key.pop(self.make_session_key(state.kind, state.device_id), None)
                 state.page.deleteLater()
                 self.refresh_workspace_context()
-                self.refresh_summary_statuses()
                 self.update_controls()
 
             self.run_coro(disconnect(), on_success=finalize_close, on_error=lambda _exc: finalize_close())
-
-        def refresh_summary_statuses(self) -> None:
-            device_states = [
-                state for state in self.session_tabs_by_id.values() if state.kind == "device"
-            ]
-            linux_states = [
-                state for state in self.session_tabs_by_id.values() if state.kind == "linux"
-            ]
-            if device_states:
-                active = next((state for state in device_states if state.session.is_connected), device_states[-1])
-                self.device_status_label.setText(f"设备终端: {active.title} / {active.status_text}")
-            else:
-                self.device_status_label.setText("设备终端: 无活动会话")
-
-            if linux_states:
-                active = next((state for state in linux_states if state.session.is_connected), linux_states[-1])
-                self.linux_status_label.setText(f"Linux 后台: {active.title} / {active.status_text}")
-            else:
-                self.linux_status_label.setText("Linux 后台: 无活动会话")
 
         def current_session_state(self) -> SessionTabState | None:
             current_page = self.session_tab_widget.currentWidget()
@@ -2229,7 +2312,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.toggle_occupancy_button.setEnabled(selected)
             self.footer_sessions_label.setText(f"会话 {len(self.session_tabs_by_id)}")
             self.footer_visible_label.setText(f"设备 {len(self.visible_devices)}")
-            self.refresh_summary_statuses()
             self.update_center_stage_state()
 
         def toggle_occupancy(self) -> None:
