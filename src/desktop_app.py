@@ -19,13 +19,12 @@ except ModuleNotFoundError:
 
 try:
     from PySide6.QtCore import QTimer, Qt
-    from PySide6.QtGui import QBrush, QColor, QTextCursor, QTextOption
+    from PySide6.QtGui import QBrush, QColor, QKeySequence, QTextCursor, QTextOption
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
         QFormLayout,
         QFrame,
-        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QHeaderView,
@@ -40,6 +39,9 @@ try:
         QSplitter,
         QStackedLayout,
         QStatusBar,
+        QStyle,
+        QStyledItemDelegate,
+        QStyleOptionViewItem,
         QTabBar,
         QTabWidget,
         QTableWidget,
@@ -52,10 +54,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QApplication = None
     QBrush = None
     QColor = None
+    QKeySequence = None
     QComboBox = None
     QFormLayout = None
     QFrame = None
-    QGridLayout = None
     QGroupBox = None
     QHBoxLayout = None
     QHeaderView = None
@@ -70,6 +72,9 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QSplitter = None
     QStackedLayout = None
     QStatusBar = None
+    QStyle = None
+    QStyledItemDelegate = None
+    QStyleOptionViewItem = None
     QTabBar = None
     QTabWidget = None
     QTableWidget = None
@@ -371,6 +376,10 @@ QTableWidget::item {
 QTableWidget::item:selected {
     background: #164e63;
 }
+QTableWidget::item:focus {
+    border: none;
+    outline: none;
+}
 QTableWidget#deviceTable {
     border-color: #2a3644;
 }
@@ -426,6 +435,32 @@ QTabBar::tab:hover {
     color: #e5edf6;
     background: #172532;
     border-color: #385064;
+}
+QWidget#deviceSessionPage {
+    background: transparent;
+}
+QTabWidget#deviceSessionTabs::pane {
+    border-color: #1f3342;
+    border-radius: 8px;
+    background: #05080c;
+    top: -1px;
+}
+QTabWidget#deviceSessionTabs::tab-bar {
+    left: 6px;
+}
+QTabWidget#deviceSessionTabs QTabBar::tab {
+    min-width: 112px;
+    min-height: 28px;
+    padding: 4px 6px;
+    margin-right: 4px;
+    margin-top: 3px;
+}
+QTabWidget#deviceSessionTabs QTabBar::tab:selected {
+    background: #0d1d24;
+    border-color: #5eead4;
+    border-bottom-color: #0d1d24;
+    min-height: 31px;
+    margin-top: 0px;
 }
 QWidget#tabHeader {
     background: transparent;
@@ -484,12 +519,17 @@ QToolButton#tabCloseButton:pressed {
 }
 QPlainTextEdit#terminalLog {
     background: #05080c;
-    color: #8ff7d2;
-    border: 1px solid #17443b;
+    color: #d6deeb;
+    border: 1px solid #1f3342;
     border-radius: 10px;
     font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
     font-size: 14px;
     padding: 12px;
+    selection-background-color: #1e3a4a;
+    selection-color: #f8fafc;
+}
+QPlainTextEdit#terminalLog:focus {
+    border-color: #5eead4;
 }
 QFrame#commandRecordDock {
     background: #0b1117;
@@ -513,11 +553,11 @@ QLabel#commandRecordHint {
 }
 QPlainTextEdit#commandRecordEditor {
     background: #071018;
-    color: #d9f3ef;
+    color: #f8fafc;
     border: none;
     border-radius: 0px;
     padding: 7px 8px;
-    selection-background-color: #0f766e;
+    selection-background-color: #1e3a4a;
     selection-color: #f8fbff;
     font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei";
     font-size: 14px;
@@ -585,14 +625,14 @@ QToolButton#commandActionButton {
 }
 QToolButton#commandActionButton:hover {
     background: #13242d;
-    border-color: #0f766e;
-    color: #8ff7d2;
+    border-color: #5eead4;
+    color: #5eead4;
 }
 QToolButton#commandEnterModeButton {
     background: #13242d;
     border: 1px solid #2b4252;
     border-radius: 5px;
-    color: #8ff7d2;
+    color: #7dd3fc;
     padding: 1px 7px;
     min-height: 19px;
     font-size: 13px;
@@ -600,12 +640,12 @@ QToolButton#commandEnterModeButton {
 }
 QToolButton#commandEnterModeButton[enterSends="true"] {
     background: #0f766e;
-    border-color: #14b8a6;
+    border-color: #5eead4;
     color: #f6fffd;
 }
 QToolButton#commandEnterModeButton:hover {
     background: #12313a;
-    border-color: #14b8a6;
+    border-color: #5eead4;
     color: #d7fff2;
 }
 QToolButton#commandCollapseButton {
@@ -692,6 +732,24 @@ QLabel#detailCard {
     color: #e5edf6;
     line-height: 1.55;
 }
+QFrame#detailCard {
+    border: 1px solid #273747;
+    border-radius: 10px;
+    background: #0f161d;
+}
+QLineEdit#detailValueInput {
+    background: #0b1117;
+    border: 1px solid #274052;
+    border-radius: 7px;
+    color: #8ff7d2;
+    padding: 4px 8px;
+    font-weight: 700;
+    selection-background-color: #0f766e;
+    selection-color: #ffffff;
+}
+QLineEdit#detailValueInput:focus {
+    border-color: #14b8a6;
+}
 QLabel#footerMetric {
     background: transparent;
     color: #96a6b8;
@@ -759,6 +817,21 @@ class RepositorySnapshot:
 
 
 @dataclass(slots=True)
+class DeviceTabState:
+    device_id: str
+    title: str
+    page: QWidget
+    session_tab_widget: QTabWidget
+    next_session_index: int = 1
+    next_telnet_index: int = 1
+    next_ssh_index: int = 1
+    tab_title_label: QLabel | None = None
+    tab_header: QWidget | None = None
+    tab_status_dot: QLabel | None = None
+    tab_close_button: QToolButton | None = None
+
+
+@dataclass(slots=True)
 class SessionTabState:
     tab_id: str
     kind: str
@@ -799,6 +872,50 @@ class AsyncLoopThread:
 
 if PYSIDE6_IMPORT_ERROR is None:
 
+    class NoFocusItemDelegate(QStyledItemDelegate):
+        def paint(self, painter: Any, option: Any, index: Any) -> None:
+            clean_option = QStyleOptionViewItem(option)
+            clean_option.state &= ~QStyle.State_HasFocus
+            super().paint(painter, clean_option, index)
+
+    class CopyableDeviceTable(QTableWidget):
+        def __init__(
+            self,
+            copy_handler: Callable[["CopyableDeviceTable"], None],
+            field_copy_handler: Callable[["CopyableDeviceTable", str], None],
+            parent: QWidget,
+        ) -> None:
+            super().__init__(0, 0, parent)
+            self._copy_handler = copy_handler
+            self._field_copy_handler = field_copy_handler
+
+        def keyPressEvent(self, event: Any) -> None:  # noqa: N802
+            if event.matches(QKeySequence.Copy):
+                self._copy_handler(self)
+                return
+            if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+                key_map = {
+                    Qt.Key_S: "ssh_ip",
+                    Qt.Key_T: "telnet_ip",
+                    Qt.Key_U: "username",
+                    Qt.Key_P: "password",
+                }
+                field = key_map.get(event.key())
+                if field is not None:
+                    self._field_copy_handler(self, field)
+                    return
+            super().keyPressEvent(event)
+
+    class SelectAllLineEdit(QLineEdit):
+        def __init__(self) -> None:
+            super().__init__()
+            self.setReadOnly(True)
+            self.setObjectName("detailValueInput")
+
+        def mouseDoubleClickEvent(self, event: Any) -> None:  # noqa: N802
+            super().mouseDoubleClickEvent(event)
+            self.selectAll()
+
     class InteractiveTerminal(QPlainTextEdit):
         DEFAULT_COLUMNS = 160
         DEFAULT_LINES = 40
@@ -814,6 +931,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._buffer_lines: list[list[str]] = [[]]
             self._cursor_row = 0
             self._cursor_col = 0
+            self._last_output_char = ""
             self.setObjectName("terminalLog")
             self.setReadOnly(False)
             self.setUndoRedoEnabled(False)
@@ -856,6 +974,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self._command_recorder(command)
 
         def append_output(self, message: str) -> None:
+            message = self._normalize_output_newlines(message)
             if self._pyte_stream is not None:
                 self._pyte_stream.feed(message)
                 self._render_pyte_buffer()
@@ -888,6 +1007,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 index += 1
 
             self._render_buffer()
+
+        def _normalize_output_newlines(self, message: str) -> str:
+            normalized: list[str] = []
+            previous = self._last_output_char
+            for char in message:
+                if char == "\n" and previous != "\r":
+                    normalized.append("\r")
+                normalized.append(char)
+                previous = char
+            self._last_output_char = previous
+            return "".join(normalized)
 
         def _render_pyte_buffer(self) -> None:
             if self._pyte_screen is None:
@@ -1174,8 +1304,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_tab_buttons: list[QToolButton] = []
             self.command_tab_close_buttons: list[QToolButton] = []
             self.state_path = self.desktop_state_path()
+            self.device_tabs_by_id: dict[str, DeviceTabState] = {}
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
-            self.session_tabs_by_key: dict[str, str] = {}
+            self.next_session_sequence = 1
 
             self.refresh_timer = QTimer(self)
             self.refresh_timer.setSingleShot(True)
@@ -1384,7 +1515,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_summary_card.setObjectName("detailCard")
             self.device_summary_card.setWordWrap(True)
             self.device_summary_card.setTextFormat(Qt.RichText)
+            self.device_summary_card.setTextInteractionFlags(Qt.TextSelectableByMouse)
             detail_layout.addWidget(self.device_summary_card)
+
             layout.addWidget(detail_group)
 
             auth_group = QGroupBox("连接参数")
@@ -1398,8 +1531,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_form.setVerticalSpacing(8)
             device_form.setHorizontalSpacing(8)
             device_form.setLabelAlignment(Qt.AlignRight)
+            self.device_telnet_ip_value = SelectAllLineEdit()
             self.device_username_input = QLineEdit()
             self.device_password_input = QLineEdit()
+            device_form.addRow("Telnet IP", self.device_telnet_ip_value)
             device_form.addRow("用户名", self.device_username_input)
             device_form.addRow("密码", self.device_password_input)
 
@@ -1409,8 +1544,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             linux_form.setVerticalSpacing(8)
             linux_form.setHorizontalSpacing(8)
             linux_form.setLabelAlignment(Qt.AlignRight)
+            self.device_ssh_ip_value = SelectAllLineEdit()
             self.linux_username_input = QLineEdit()
             self.linux_password_input = QLineEdit()
+            linux_form.addRow("SSH IP", self.device_ssh_ip_value)
             linux_form.addRow("用户名", self.linux_username_input)
             linux_form.addRow("密码", self.linux_password_input)
 
@@ -1439,8 +1576,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             empty_title = QLabel("终端会话工作区")
             empty_title.setObjectName("sessionEmptyTitle")
             empty_copy = QLabel(
-                "从左侧选择设备后发起连接。\n"
-                "这里会承载你的 Telnet / SSH 会话，设备导航和当前上下文集中在左侧。"
+                "从左侧选择设备，使用右下角快捷动作发起连接。\n"
+                "Telnet / SSH 会话会在这里打开，下方可记录和发送常用命令。"
             )
             empty_copy.setObjectName("sessionEmptyCopy")
             empty_copy.setWordWrap(True)
@@ -1647,7 +1784,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             return label
 
         def _new_table(self, headers: list[str]) -> QTableWidget:
-            table = QTableWidget(0, len(headers), self)
+            table = CopyableDeviceTable(
+                self.copy_selected_table_row,
+                self.copy_selected_device_field,
+                self,
+            )
+            table.setColumnCount(len(headers))
             table.setObjectName("deviceTable")
             table.setHorizontalHeaderLabels(headers)
             table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -1655,6 +1797,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             table.setEditTriggers(QTableWidget.NoEditTriggers)
             table.setAlternatingRowColors(True)
             table.setShowGrid(False)
+            table.setItemDelegate(NoFocusItemDelegate(table))
             table.verticalHeader().setVisible(False)
             table.verticalHeader().setDefaultSectionSize(38)
             header = table.horizontalHeader()
@@ -1707,7 +1850,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_record_toggle_button.clicked.connect(self.toggle_command_record_panel)
 
             self.session_tab_widget.currentChanged.connect(self.handle_session_tab_changed)
-            self.session_tab_widget.tabCloseRequested.connect(self.close_session_tab_at_index)
+            self.session_tab_widget.tabCloseRequested.connect(self.close_device_tab_at_index)
 
         def sync_left_search(self, value: str) -> None:
             del value
@@ -2174,19 +2317,18 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.stats_label.setText(
                 " ".join(
                     [
-                        self.stat_chip_html("设备", total, "#263544", "#edf5ff"),
-                        self.stat_chip_html("空闲", idle, "#0f302b", "#8ff7d2"),
-                        self.stat_chip_html("占用", occupied, "#3a2414", "#fb923c"),
-                        self.stat_chip_html("流水线", pipeline, "#342c12", "#fbbf24"),
-                        self.stat_chip_html("其他", other, "#202a36", "#a8b5c4"),
+                        self.stat_chip_html("设备", total, "#edf5ff"),
+                        self.stat_chip_html("空闲", idle, "#8ff7d2"),
+                        self.stat_chip_html("占用", occupied, "#fb923c"),
+                        self.stat_chip_html("流水线", pipeline, "#fbbf24"),
+                        self.stat_chip_html("其他", other, "#a8b5c4"),
                     ]
                 )
             )
 
-        def stat_chip_html(self, label: str, value: int, background: str, color: str) -> str:
+        def stat_chip_html(self, label: str, value: int, color: str) -> str:
             return (
-                f"<span style='background:{background};color:{color};font-weight:800;"
-                f"padding:2px 7px;border-radius:6px'>{html.escape(label)} {value}</span>"
+                f"<span style='color:{color};font-weight:800'>{html.escape(label)} {value}</span>"
             )
 
         def refresh_device_table(self) -> None:
@@ -2357,6 +2499,54 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return ""
             return str(item.data(Qt.UserRole) or "")
 
+        def _device_from_table(self, table: QTableWidget) -> Device | None:
+            return self.get_device_by_id(self._device_id_from_table(table, 0))
+
+        def copy_text_to_clipboard(self, text: str, message: str) -> None:
+            if not text:
+                return
+            QApplication.clipboard().setText(text)
+            self.set_status_message(message)
+
+        def device_row_copy_text(self, device: Device) -> str:
+            return "\t".join([device.name, device.domain, device.cpu, device.status])
+
+        def device_connection_copy_text(self, device: Device) -> str:
+            return (
+                f"设备: {device.name}\n"
+                f"Telnet: {device.telnet_ip}:{device.telnet_port}\n"
+                f"SSH: {device.ssh_ip}:{device.ssh_port}\n"
+                f"账号: {device.username}\n"
+                f"密码: {device.password}"
+            )
+
+        def copy_device_field(self, device: Device, field: str) -> None:
+            field_map = {
+                "name": ("设备名", device.name),
+                "ssh_ip": ("SSH IP", device.ssh_ip),
+                "ssh_endpoint": ("SSH 地址", f"{device.ssh_ip}:{device.ssh_port}"),
+                "telnet_ip": ("Telnet IP", device.telnet_ip),
+                "telnet_endpoint": ("Telnet 地址", f"{device.telnet_ip}:{device.telnet_port}"),
+                "username": ("账号", device.username),
+                "password": ("密码", device.password),
+            }
+            label, value = field_map[field]
+            self.copy_text_to_clipboard(value, f"已复制{label}: {value}")
+
+        def copy_selected_device_field(self, table: QTableWidget, field: str) -> None:
+            device = self._device_from_table(table)
+            if device is None:
+                self.set_status_message("请先选择一台设备。")
+                return
+            self.copy_device_field(device, field)
+
+        def copy_selected_table_row(self, table: QTableWidget) -> None:
+            device = self._device_from_table(table)
+            if device is None:
+                self.set_status_message("请先选择一台设备。")
+                return
+            self.copy_text_to_clipboard(self.device_row_copy_text(device), f"已复制设备行: {device.name}")
+
         def _mark_recent_device(self, device_id: str) -> None:
             if not device_id:
                 return
@@ -2430,6 +2620,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.activate_device(device_id)
 
             menu = QMenu(table)
+            copy_ssh_ip_action = menu.addAction("复制 SSH IP")
+            copy_telnet_ip_action = menu.addAction("复制 Telnet IP")
+            copy_connection_action = menu.addAction("复制连接信息")
+            menu.addSeparator()
             toggle_action = menu.addAction("占用 / 释放")
             menu.addSeparator()
             open_device_action = menu.addAction("打开设备终端")
@@ -2437,6 +2631,21 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             chosen = menu.exec(table.viewport().mapToGlobal(pos))
             if chosen is None:
+                return
+            device = self.get_device_by_id(device_id)
+            if device is None:
+                return
+            if chosen == copy_ssh_ip_action:
+                self.copy_device_field(device, "ssh_ip")
+                return
+            if chosen == copy_telnet_ip_action:
+                self.copy_device_field(device, "telnet_ip")
+                return
+            if chosen == copy_connection_action:
+                self.copy_text_to_clipboard(
+                    self.device_connection_copy_text(device),
+                    f"已复制连接信息: {device.name}",
+                )
                 return
             if chosen == toggle_action:
                 self.toggle_occupancy()
@@ -2451,8 +2660,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             device = self.get_selected_device()
             if device is None:
                 return
+            self.device_telnet_ip_value.setText(device.telnet_ip)
             self.device_username_input.setText(device.username)
             self.device_password_input.setText(device.password)
+            self.device_ssh_ip_value.setText(device.ssh_ip)
             self.linux_username_input.setText(device.username)
             self.linux_password_input.setText(device.password)
 
@@ -2460,9 +2671,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             device = self.get_selected_device()
             if device is None:
                 self.device_summary_card.setText("请选择一台设备。")
+                self.device_ssh_ip_value.clear()
+                self.device_telnet_ip_value.clear()
                 return
 
-            owner = device.owner or "未占用"
+            self.device_ssh_ip_value.setText(device.ssh_ip)
+            self.device_telnet_ip_value.setText(device.telnet_ip)
             self.device_summary_card.setText(
                 (
                     f"<div style='font-size:20px;font-weight:800;color:#f8fbff'>{html.escape(device.name)}</div>"
@@ -2473,20 +2687,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                     f"<div style='margin-top:12px;color:#e5edf6;line-height:1.9'>"
                     f"<span style='color:#96a6b8'>当前状态</span>&nbsp;&nbsp;"
                     f"<span style='color:{status_color(device.status)};font-weight:800'>{html.escape(device.status)}</span>"
-                    f"</div>"
-                    f"<div style='margin-top:16px;padding-top:12px;border-top:1px solid #223244'>"
-                    f"<div style='color:#8ea7c2;font-size:12px;font-weight:700'>连接信息</div>"
-                    f"<div style='margin-top:8px;color:#e5edf6;line-height:1.9'>"
-                    f"<span style='color:#96a6b8'>SSH</span>&nbsp;&nbsp;"
-                    f"<span style='color:#8ff7d2;font-weight:700'>{html.escape(device.ssh_ip)}</span>"
-                    f"<span style='color:#96a6b8'>:{device.ssh_port}</span><br>"
-                    f"<span style='color:#96a6b8'>Telnet</span>&nbsp;&nbsp;"
-                    f"<span style='color:#8ff7d2;font-weight:700'>{html.escape(device.telnet_ip)}</span>"
-                    f"<span style='color:#96a6b8'>:{device.telnet_port}</span><br>"
-                    f"<span style='color:#96a6b8'>账号</span>&nbsp;&nbsp;"
-                    f"<span style='font-weight:700'>{html.escape(device.username)}</span>"
-                    f" / <span style='color:#a8b5c4'>{html.escape(device.password)}</span>"
-                    f"</div>"
                     f"</div>"
                     f"<div style='margin-top:14px;padding-top:12px;border-top:1px solid #223244'>"
                     f"<div style='color:#8ea7c2;font-size:12px;font-weight:700'>资产信息</div>"
@@ -2520,8 +2720,24 @@ if PYSIDE6_IMPORT_ERROR is None:
             state = self.current_session_state()
             return state.tab_id if state else None
 
-        def make_session_key(self, kind: str, device_id: str) -> str:
-            return f"{kind}:{device_id}"
+        def current_device_tab_state(self) -> DeviceTabState | None:
+            current_page = self.session_tab_widget.currentWidget()
+            if current_page is None:
+                return None
+            return next((state for state in self.device_tabs_by_id.values() if state.page is current_page), None)
+
+        def _device_tab_for_page(self, page: QWidget | None) -> DeviceTabState | None:
+            if page is None:
+                return None
+            return next((state for state in self.device_tabs_by_id.values() if state.page is page), None)
+
+        def _session_state_for_page(self, page: QWidget | None) -> SessionTabState | None:
+            if page is None:
+                return None
+            return next((state for state in self.session_tabs_by_id.values() if state.page is page), None)
+
+        def _session_states_for_device(self, device_id: str) -> list[SessionTabState]:
+            return [state for state in self.session_tabs_by_id.values() if state.device_id == device_id]
 
         def open_device_session(self) -> None:
             device = self.get_selected_device()
@@ -2580,16 +2796,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.show_warning("目标地址不能为空。")
                 return
 
-            key = self.make_session_key(kind, device.id)
-            existing_tab_id = self.session_tabs_by_key.get(key)
-            if existing_tab_id and existing_tab_id in self.session_tabs_by_id:
-                state = self.session_tabs_by_id[existing_tab_id]
-                self.session_tab_widget.setCurrentWidget(state.page)
-                state.terminal.setFocus()
-                return
-
-            title = f"{device.name}-{'Telnet' if kind == 'device' else 'SSH'}"
-            tab_id = key
+            device_tab = self.ensure_device_tab(device)
+            title = self.next_session_title(device_tab, kind)
+            tab_id = self.next_session_tab_id(device.id, kind)
             state = self._create_session_tab(
                 tab_id=tab_id,
                 kind=kind,
@@ -2601,13 +2810,72 @@ if PYSIDE6_IMPORT_ERROR is None:
                 password=password,
             )
             self.session_tabs_by_id[tab_id] = state
-            self.session_tabs_by_key[key] = tab_id
-            index = self.session_tab_widget.addTab(state.page, title)
-            self._install_tab_header(index, state)
-            self.session_tab_widget.setCurrentIndex(index)
+            index = device_tab.session_tab_widget.addTab(state.page, title)
+            self._install_session_tab_header(device_tab.session_tab_widget, index, state)
+            self.session_tab_widget.setCurrentWidget(device_tab.page)
+            device_tab.session_tab_widget.setCurrentIndex(index)
             self.set_status_message(f"正在打开会话: {title}")
+            self.update_center_stage_state()
             self.update_controls()
             self.connect_session_tab(tab_id)
+
+        def ensure_device_tab(self, device: Device) -> DeviceTabState:
+            existing = self.device_tabs_by_id.get(device.id)
+            if existing is not None:
+                existing.title = device.name
+                if existing.tab_title_label is not None:
+                    existing.tab_title_label.setText(device.name)
+                index = self.session_tab_widget.indexOf(existing.page)
+                if index >= 0:
+                    self.session_tab_widget.setCurrentIndex(index)
+                    return existing
+                self.device_tabs_by_id.pop(device.id, None)
+
+            page = QWidget()
+            page.setObjectName("deviceSessionPage")
+            layout = QVBoxLayout(page)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            child_tabs = QTabWidget(page)
+            child_tabs.setObjectName("deviceSessionTabs")
+            child_tabs.setDocumentMode(True)
+            child_tabs.setTabsClosable(False)
+            child_tabs.setMovable(True)
+            child_tabs.tabBar().setExpanding(False)
+            child_tabs.tabBar().setUsesScrollButtons(True)
+            child_tabs.currentChanged.connect(self.handle_session_tab_changed)
+            child_tabs.tabCloseRequested.connect(
+                lambda index, device_id=device.id: self.close_child_session_tab_at_index(device_id, index)
+            )
+            layout.addWidget(child_tabs, 1)
+
+            state = DeviceTabState(
+                device_id=device.id,
+                title=device.name,
+                page=page,
+                session_tab_widget=child_tabs,
+            )
+            self.device_tabs_by_id[device.id] = state
+            index = self.session_tab_widget.addTab(page, device.name)
+            self._install_device_tab_header(index, state)
+            self.session_tab_widget.setCurrentIndex(index)
+            self.update_center_stage_state()
+            return state
+
+        def next_session_title(self, device_tab: DeviceTabState, kind: str) -> str:
+            if kind == "device":
+                number = device_tab.next_telnet_index
+                device_tab.next_telnet_index += 1
+                return f"Telnet #{number}"
+            number = device_tab.next_ssh_index
+            device_tab.next_ssh_index += 1
+            return f"SSH #{number}"
+
+        def next_session_tab_id(self, device_id: str, kind: str) -> str:
+            tab_id = f"{device_id}:{kind}:{self.next_session_sequence}"
+            self.next_session_sequence += 1
+            return tab_id
 
         def _create_session_tab(
             self,
@@ -2661,10 +2929,38 @@ if PYSIDE6_IMPORT_ERROR is None:
             terminal.set_command_recorder(self.add_command_record)
             return state
 
-        def _install_tab_header(self, index: int, state: SessionTabState) -> None:
+        def _install_device_tab_header(self, index: int, state: DeviceTabState) -> None:
+            self._install_tab_header(
+                self.session_tab_widget,
+                index,
+                state,
+                close_callback=lambda page=state.page: self.close_device_tab_for_page(page),
+                close_tooltip="关闭设备会话",
+                min_label_width=118,
+            )
+
+        def _install_session_tab_header(self, tab_widget: QTabWidget, index: int, state: SessionTabState) -> None:
+            self._install_tab_header(
+                tab_widget,
+                index,
+                state,
+                close_callback=lambda page=state.page: self.close_session_tab_for_page(page),
+                close_tooltip="关闭会话",
+                min_label_width=72,
+            )
+
+        def _install_tab_header(
+            self,
+            tab_widget: QTabWidget,
+            index: int,
+            state: DeviceTabState | SessionTabState,
+            close_callback: Callable[[], None],
+            close_tooltip: str,
+            min_label_width: int,
+        ) -> None:
             if QToolButton is None:
                 return
-            header = QWidget(self.session_tab_widget)
+            header = QWidget(tab_widget)
             header.setObjectName("tabHeader")
             header.setFixedHeight(28)
             layout = QHBoxLayout(header)
@@ -2678,10 +2974,10 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             label = QLabel(state.title, header)
             label.setObjectName("tabHeaderLabel")
-            label.setMinimumWidth(108)
+            label.setMinimumWidth(min_label_width)
             layout.addWidget(label, 1)
 
-            close_slot = QWidget(self.session_tab_widget.tabBar())
+            close_slot = QWidget(tab_widget.tabBar())
             close_slot.setObjectName("tabHeader")
             close_slot.setFixedSize(26, 24)
             close_layout = QHBoxLayout(close_slot)
@@ -2696,17 +2992,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             button.setToolButtonStyle(Qt.ToolButtonTextOnly)
             button.setFocusPolicy(Qt.NoFocus)
             button.setCursor(Qt.PointingHandCursor)
-            button.setToolTip("关闭会话")
-            button.clicked.connect(lambda _checked=False, page=state.page: self.close_session_tab_for_page(page))
+            button.setToolTip(close_tooltip)
+            button.clicked.connect(lambda _checked=False, callback=close_callback: callback())
             close_layout.addWidget(button)
 
             state.tab_title_label = label
             state.tab_header = header
             state.tab_status_dot = dot
             state.tab_close_button = button
-            self.session_tab_widget.setTabText(index, "")
-            self.session_tab_widget.tabBar().setTabButton(index, QTabBar.LeftSide, header)
-            self.session_tab_widget.tabBar().setTabButton(index, QTabBar.RightSide, close_slot)
+            tab_widget.setTabText(index, "")
+            tab_widget.tabBar().setTabButton(index, QTabBar.LeftSide, header)
+            tab_widget.tabBar().setTabButton(index, QTabBar.RightSide, close_slot)
             self._refresh_tab_header_styles()
 
         def _tab_connection_state(self, state: SessionTabState) -> str:
@@ -2721,39 +3017,70 @@ if PYSIDE6_IMPORT_ERROR is None:
         def refresh_session_header(self, state: SessionTabState) -> None:
             del state
 
-        def _refresh_tab_header_styles(self) -> None:
-            current_index = self.session_tab_widget.currentIndex()
-            for state in self.session_tabs_by_id.values():
-                self.refresh_session_header(state)
-                if state.tab_title_label is None:
-                    continue
-                index = self.session_tab_widget.indexOf(state.page)
-                selected = index == current_index
-                connection_state = self._tab_connection_state(state)
-                if state.tab_header is not None:
-                    state.tab_header.setProperty("selected", selected)
-                    state.tab_header.style().unpolish(state.tab_header)
-                    state.tab_header.style().polish(state.tab_header)
-                    state.tab_header.update()
+        def _device_connection_state(self, state: DeviceTabState) -> str:
+            child_states = self._session_states_for_device(state.device_id)
+            if any(child.connecting for child in child_states):
+                return "connecting"
+            if any(child.session.is_connected for child in child_states):
+                return "connected"
+            if any(self._tab_connection_state(child) == "error" for child in child_states):
+                return "error"
+            return "idle"
+
+        def _apply_tab_header_style(
+            self,
+            state: DeviceTabState | SessionTabState,
+            selected: bool,
+            connection_state: str,
+        ) -> None:
+            if state.tab_header is not None:
+                state.tab_header.setProperty("selected", selected)
+                state.tab_header.style().unpolish(state.tab_header)
+                state.tab_header.style().polish(state.tab_header)
+                state.tab_header.update()
+            if state.tab_title_label is not None:
                 state.tab_title_label.setProperty("selected", selected)
                 state.tab_title_label.style().unpolish(state.tab_title_label)
                 state.tab_title_label.style().polish(state.tab_title_label)
                 state.tab_title_label.update()
-                if state.tab_status_dot is not None:
-                    state.tab_status_dot.setProperty("connectionState", connection_state)
-                    state.tab_status_dot.style().unpolish(state.tab_status_dot)
-                    state.tab_status_dot.style().polish(state.tab_status_dot)
-                    state.tab_status_dot.update()
-                if state.tab_close_button is not None:
-                    state.tab_close_button.setProperty("selected", selected)
-                    state.tab_close_button.style().unpolish(state.tab_close_button)
-                    state.tab_close_button.style().polish(state.tab_close_button)
-                    state.tab_close_button.update()
+            if state.tab_status_dot is not None:
+                state.tab_status_dot.setProperty("connectionState", connection_state)
+                state.tab_status_dot.style().unpolish(state.tab_status_dot)
+                state.tab_status_dot.style().polish(state.tab_status_dot)
+                state.tab_status_dot.update()
+            if state.tab_close_button is not None:
+                state.tab_close_button.setProperty("selected", selected)
+                state.tab_close_button.style().unpolish(state.tab_close_button)
+                state.tab_close_button.style().polish(state.tab_close_button)
+                state.tab_close_button.update()
+
+        def _refresh_tab_header_styles(self) -> None:
+            current_device = self.current_device_tab_state()
+            current_device_index = self.session_tab_widget.currentIndex()
+            for state in self.device_tabs_by_id.values():
+                index = self.session_tab_widget.indexOf(state.page)
+                selected = index == current_device_index
+                self._apply_tab_header_style(state, selected, self._device_connection_state(state))
+
+            for state in self.session_tabs_by_id.values():
+                self.refresh_session_header(state)
+                device_tab = self.device_tabs_by_id.get(state.device_id)
+                if device_tab is None:
+                    continue
+                index = device_tab.session_tab_widget.indexOf(state.page)
+                selected = device_tab is current_device and index == device_tab.session_tab_widget.currentIndex()
+                self._apply_tab_header_style(state, selected, self._tab_connection_state(state))
 
         def close_session_tab_for_page(self, page: QWidget) -> None:
-            index = self.session_tab_widget.indexOf(page)
+            state = self._session_state_for_page(page)
+            if state is None:
+                return
+            device_tab = self.device_tabs_by_id.get(state.device_id)
+            if device_tab is None:
+                return
+            index = device_tab.session_tab_widget.indexOf(page)
             if index >= 0:
-                self.close_session_tab_at_index(index)
+                self.close_child_session_tab_at_index(device_tab.device_id, index)
 
         def connect_session_tab(self, tab_id: str) -> None:
             state = self.session_tabs_by_id.get(tab_id)
@@ -2777,9 +3104,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if current_state is None:
                     return
                 current_state.connecting = False
+                self.set_session_status(tab_id, "Connected")
                 self.set_status_message(f"会话已连接: {current_state.title}")
                 current_state.terminal.setFocus()
-                self.update_controls()
 
             def failure(exc: Exception) -> None:
                 current_state = self.session_tabs_by_id.get(tab_id)
@@ -2808,9 +3135,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             state.status_text = status
             if status != "Connecting":
                 state.connecting = False
-            index = self.session_tab_widget.indexOf(state.page)
-            if index >= 0:
-                self.session_tab_widget.setTabText(index, "")
+            device_tab = self.device_tabs_by_id.get(state.device_id)
+            if device_tab is not None:
+                index = device_tab.session_tab_widget.indexOf(state.page)
+                if index >= 0:
+                    device_tab.session_tab_widget.setTabText(index, "")
             if state.tab_title_label is not None:
                 state.tab_title_label.setText(state.title)
             self._refresh_tab_header_styles()
@@ -2913,33 +3242,100 @@ if PYSIDE6_IMPORT_ERROR is None:
             message = str(exc).lower()
             return "timed out" in message or "timeout" in message or "超时" in message
 
-        def close_session_tab_at_index(self, index: int) -> None:
-            page = self.session_tab_widget.widget(index)
-            state = next((item for item in self.session_tabs_by_id.values() if item.page is page), None)
+        def close_child_session_tab_at_index(self, device_id: str, index: int) -> None:
+            device_tab = self.device_tabs_by_id.get(device_id)
+            if device_tab is None:
+                return
+            page = device_tab.session_tab_widget.widget(index)
+            state = self._session_state_for_page(page)
             if state is None:
-                self.session_tab_widget.removeTab(index)
+                if index >= 0:
+                    device_tab.session_tab_widget.removeTab(index)
+                self._remove_device_tab_if_empty(device_tab)
                 return
 
             async def disconnect() -> None:
                 await state.session.disconnect("")
 
             def finalize_close(_result: object | None = None) -> None:
-                close_index = self.session_tab_widget.indexOf(state.page)
-                if close_index >= 0:
-                    self.session_tab_widget.removeTab(close_index)
+                current_device_tab = self.device_tabs_by_id.get(device_id)
+                if current_device_tab is not None:
+                    close_index = current_device_tab.session_tab_widget.indexOf(state.page)
+                    if close_index >= 0:
+                        current_device_tab.session_tab_widget.removeTab(close_index)
                 self.session_tabs_by_id.pop(state.tab_id, None)
-                self.session_tabs_by_key.pop(self.make_session_key(state.kind, state.device_id), None)
                 state.page.deleteLater()
+                if current_device_tab is not None:
+                    self._remove_device_tab_if_empty(current_device_tab)
                 self.refresh_workspace_context()
+                self._refresh_tab_header_styles()
                 self.update_controls()
 
             self.run_coro(disconnect(), on_success=finalize_close, on_error=lambda _exc: finalize_close())
 
+        def close_session_tab_at_index(self, index: int) -> None:
+            device_tab = self.current_device_tab_state()
+            if device_tab is None:
+                return
+            self.close_child_session_tab_at_index(device_tab.device_id, index)
+
+        def close_device_tab_for_page(self, page: QWidget) -> None:
+            state = self._device_tab_for_page(page)
+            if state is not None:
+                self.close_device_tab_state(state)
+
+        def close_device_tab_at_index(self, index: int) -> None:
+            state = self._device_tab_for_page(self.session_tab_widget.widget(index))
+            if state is None:
+                if index >= 0:
+                    self.session_tab_widget.removeTab(index)
+                return
+            self.close_device_tab_state(state)
+
+        def close_device_tab_state(self, device_tab: DeviceTabState) -> None:
+            child_states = list(self._session_states_for_device(device_tab.device_id))
+
+            async def disconnect_all() -> None:
+                await asyncio.gather(
+                    *[state.session.disconnect("") for state in child_states],
+                    return_exceptions=True,
+                )
+
+            def finalize_close(_result: object | None = None) -> None:
+                current_device_tab = self.device_tabs_by_id.get(device_tab.device_id)
+                if current_device_tab is None:
+                    return
+                for state in child_states:
+                    self.session_tabs_by_id.pop(state.tab_id, None)
+                    state.page.deleteLater()
+                self._remove_device_tab(current_device_tab)
+                self.refresh_workspace_context()
+                self._refresh_tab_header_styles()
+                self.update_controls()
+
+            if not child_states:
+                finalize_close()
+                return
+            self.run_coro(disconnect_all(), on_success=finalize_close, on_error=lambda _exc: finalize_close())
+
+        def _remove_device_tab_if_empty(self, device_tab: DeviceTabState) -> None:
+            if device_tab.session_tab_widget.count() > 0:
+                return
+            self._remove_device_tab(device_tab)
+
+        def _remove_device_tab(self, device_tab: DeviceTabState) -> None:
+            close_index = self.session_tab_widget.indexOf(device_tab.page)
+            if close_index >= 0:
+                self.session_tab_widget.removeTab(close_index)
+            self.device_tabs_by_id.pop(device_tab.device_id, None)
+            device_tab.page.deleteLater()
+            self.update_center_stage_state()
+
         def current_session_state(self) -> SessionTabState | None:
-            current_page = self.session_tab_widget.currentWidget()
-            if current_page is None:
+            device_tab = self.current_device_tab_state()
+            if device_tab is None:
                 return None
-            return next((state for state in self.session_tabs_by_id.values() if state.page is current_page), None)
+            return self._session_state_for_page(device_tab.session_tab_widget.currentWidget())
 
         def reconnect_current_session(self) -> None:
             state = self.current_session_state()
