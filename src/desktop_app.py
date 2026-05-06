@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import html
 import json
 import os
 import queue
+import re
+import shutil
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
@@ -18,11 +21,21 @@ except ModuleNotFoundError:
     pyte = None
 
 try:
-    from PySide6.QtCore import QTimer, Qt
-    from PySide6.QtGui import QBrush, QColor, QKeySequence, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextOption
+    from PySide6.QtCore import QTimer, Qt, QUrl
+    from PySide6.QtGui import (
+        QBrush,
+        QColor,
+        QDesktopServices,
+        QKeySequence,
+        QSyntaxHighlighter,
+        QTextCharFormat,
+        QTextCursor,
+        QTextOption,
+    )
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
+        QFileDialog,
         QFormLayout,
         QFrame,
         QGroupBox,
@@ -54,9 +67,12 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QApplication = None
     QBrush = None
     QColor = None
+    QDesktopServices = None
+    QFileDialog = None
     QKeySequence = None
     QSyntaxHighlighter = None
     QTextCharFormat = None
+    QUrl = None
     QComboBox = None
     QFormLayout = None
     QFrame = None
@@ -131,7 +147,8 @@ except ImportError:
 ALL_DOMAINS = "全部领域"
 ALL_STATUS = "全部状态"
 FILTERABLE_STATUSES = [ALL_STATUS, STATUS_OCCUPIED, STATUS_IDLE, STATUS_PIPELINE, STATUS_OTHER]
-DESKTOP_STATE_VERSION = 1
+DESKTOP_STATE_VERSION = 2
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 STATUS_COLORS = {
     STATUS_IDLE: "#34d399",
@@ -878,6 +895,9 @@ class SessionTabState:
     page: QWidget
     terminal: "InteractiveTerminal"
     session: HuaweiTelnetSession | LinuxSshSession
+    log_path: Path
+    log_at_line_start: bool = True
+    log_input_buffer: str = ""
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
@@ -1512,6 +1532,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_tab_buttons: list[QToolButton] = []
             self.command_tab_close_buttons: list[QToolButton] = []
             self.state_path = self.desktop_state_path()
+            self.log_directory = self.default_log_directory()
             self.device_tabs_by_id: dict[str, DeviceTabState] = {}
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
             self.next_session_sequence = 1
@@ -1826,6 +1847,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_reconnect_button.setObjectName("quickActionIconButton")
             self.quick_reconnect_button.setText("重")
             self.quick_reconnect_button.setToolTip("重连当前会话")
+            self.quick_log_button = QToolButton()
+            self.quick_log_button.setObjectName("quickActionIconButton")
+            self.quick_log_button.setText("日")
+            self.quick_log_button.setToolTip("打开当前会话日志")
             self.quick_disconnect_button = QToolButton()
             self.quick_disconnect_button.setObjectName("quickActionIconButton")
             self.quick_disconnect_button.setText("断")
@@ -1834,6 +1859,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             quick_action_row.addWidget(self.quick_ssh_button)
             quick_action_row.addWidget(self.quick_occupancy_button)
             quick_action_row.addWidget(self.quick_reconnect_button)
+            quick_action_row.addWidget(self.quick_log_button)
             quick_action_row.addWidget(self.quick_disconnect_button)
             layout.addLayout(quick_action_row)
             layout.addWidget(self._build_command_record_panel())
@@ -2056,6 +2082,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_ssh_button.clicked.connect(self.open_linux_session)
             self.quick_occupancy_button.clicked.connect(self.toggle_occupancy)
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
+            self.quick_log_button.clicked.connect(self.open_current_session_log)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
             self.command_send_button.clicked.connect(self.submit_current_command_record)
             self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
@@ -2095,6 +2122,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return Path(appdata) / "device_tui" / "desktop_state.json"
             return Path.home() / ".device_tui" / "desktop_state.json"
 
+        def default_log_directory(self) -> Path:
+            return self.state_path.parent / "logs"
+
         @staticmethod
         def default_command_record_groups() -> list[dict[str, object]]:
             return [{"name": "终端", "content": ""}]
@@ -2127,6 +2157,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.current_command_group = min(max(loaded_index, 0), len(self.command_record_groups) - 1)
             self.command_record_collapsed = bool(payload.get("command_record_collapsed", False))
             self.command_enter_sends = bool(payload.get("command_enter_sends", False))
+            loaded_log_directory = str(payload.get("log_directory") or "").strip()
+            if loaded_log_directory:
+                self.log_directory = Path(loaded_log_directory).expanduser()
 
         def schedule_desktop_state_save(self) -> None:
             if hasattr(self, "state_save_timer"):
@@ -2141,6 +2174,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "current_command_group": self.current_command_group_index(),
                     "command_record_collapsed": self.command_record_collapsed,
                     "command_enter_sends": self.command_enter_sends,
+                    "log_directory": str(self.log_directory),
                 }
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)
                 temp_path = self.state_path.with_suffix(f"{self.state_path.suffix}.tmp")
@@ -2151,7 +2185,177 @@ if PYSIDE6_IMPORT_ERROR is None:
                 temp_path.replace(self.state_path)
             except OSError as exc:
                 if self.statusBar() is not None:
-                    self.statusBar().showMessage(f"常用命令保存失败: {exc}")
+                    self.statusBar().showMessage(f"桌面状态保存失败: {exc}")
+
+        def session_log_path(self, device: Device, title: str, kind: str) -> Path:
+            timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            device_name = self.safe_log_component(device.name or device.id, "device")
+            session_name = self.safe_log_component(title, "session")
+            kind_name = "telnet" if kind == "device" else "ssh"
+            filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
+            return self.unique_log_path(self.log_directory.expanduser() / filename)
+
+        def unique_log_path(self, path: Path) -> Path:
+            if not path.exists():
+                return path
+            counter = 2
+            while True:
+                candidate = path.with_name(f"{path.stem}-{counter}{path.suffix}")
+                if not candidate.exists():
+                    return candidate
+                counter += 1
+
+        def safe_log_component(self, value: str, fallback: str) -> str:
+            safe_chars: list[str] = []
+            for char in value.strip():
+                if char.isalnum() or char in {"-", "_", "."}:
+                    safe_chars.append(char)
+                elif safe_chars and safe_chars[-1] != "-":
+                    safe_chars.append("-")
+            safe = "".join(safe_chars).strip("-._")
+            return (safe or fallback)[:80]
+
+        def write_session_log_line(self, state: SessionTabState, channel: str, text: str) -> None:
+            self.write_session_log(state, channel, f"{text}\n", separate_record=True)
+
+        def write_session_log(
+            self,
+            state: SessionTabState,
+            channel: str,
+            text: str,
+            *,
+            separate_record: bool = False,
+        ) -> None:
+            if channel == "IN":
+                return
+            sanitized = self.sanitize_log_text(text)
+            if not sanitized:
+                return
+            if channel == "SYS":
+                sanitized = f"# {sanitized}"
+            try:
+                state.log_path.parent.mkdir(parents=True, exist_ok=True)
+                with state.log_path.open("a", encoding="utf-8", newline="") as log_file:
+                    if separate_record and not state.log_at_line_start:
+                        log_file.write("\n")
+                        state.log_at_line_start = True
+                    for segment in sanitized.splitlines(keepends=True):
+                        if channel != "SYS" and state.log_at_line_start and not segment.strip():
+                            continue
+                        if state.log_at_line_start:
+                            log_file.write(f"[{self.log_timestamp()}] ")
+                        log_file.write(segment)
+                        state.log_at_line_start = segment.endswith("\n")
+            except OSError as exc:
+                self.set_status_message(f"日志写入失败: {exc}")
+
+        def finish_session_log_record(self, state: SessionTabState) -> None:
+            if state.log_at_line_start:
+                return
+            try:
+                state.log_path.parent.mkdir(parents=True, exist_ok=True)
+                with state.log_path.open("a", encoding="utf-8", newline="") as log_file:
+                    log_file.write("\n")
+                state.log_at_line_start = True
+            except OSError as exc:
+                self.set_status_message(f"日志写入失败: {exc}")
+
+        @staticmethod
+        def sanitize_log_text(text: str) -> str:
+            sanitized = ANSI_ESCAPE_RE.sub("", text)
+            sanitized = sanitized.replace("\r\n", "\n").replace("\r", "\n")
+            return "".join(char if char == "\n" or char == "\t" or char >= " " else "" for char in sanitized)
+
+        @staticmethod
+        def log_timestamp() -> str:
+            return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        def log_session_input(self, state: SessionTabState, text: str) -> None:
+            del state, text
+
+        @staticmethod
+        def skip_escape_sequence(text: str, index: int) -> int:
+            if index + 1 >= len(text) or text[index + 1] != "[":
+                return index + 1
+            end = index + 2
+            while end < len(text) and not ("@" <= text[end] <= "~"):
+                end += 1
+            return min(end + 1, len(text))
+
+        def flush_session_input_log(self, state: SessionTabState) -> None:
+            command = state.log_input_buffer.rstrip()
+            state.log_input_buffer = ""
+            if command:
+                self.write_session_log_line(state, "IN", command)
+
+        def open_session_log(self, state: SessionTabState) -> None:
+            self.finish_session_log_record(state)
+            self.open_local_path(state.log_path, "日志文件", is_directory=False)
+
+        def open_session_log_directory(self, state: SessionTabState) -> None:
+            self.finish_session_log_record(state)
+            self.open_local_path(state.log_path.parent, "日志目录", is_directory=True)
+
+        def open_local_path(self, path: Path, label: str, *, is_directory: bool) -> None:
+            try:
+                if is_directory:
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                if not is_directory and not path.exists():
+                    path.touch()
+            except OSError as exc:
+                self.show_error(f"{label}准备失败: {exc}")
+                return
+            if QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                self.set_status_message(f"已打开{label}: {path}")
+                return
+            self.show_warning(f"无法打开{label}: {path}")
+
+        def change_log_directory(self) -> None:
+            selected = QFileDialog.getExistingDirectory(
+                self,
+                "选择日志保存位置",
+                str(self.log_directory.expanduser()),
+            )
+            if not selected:
+                return
+            new_directory = Path(selected).expanduser()
+            try:
+                new_directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.show_error(f"日志目录不可用: {exc}")
+                return
+            moved_count = self.move_active_session_logs(new_directory)
+            self.log_directory = new_directory
+            self.schedule_desktop_state_save()
+            suffix = f"，已迁移 {moved_count} 个当前会话日志" if moved_count else ""
+            self.set_status_message(f"日志位置已更改: {new_directory}{suffix}")
+
+        def move_active_session_logs(self, new_directory: Path) -> int:
+            moved_count = 0
+            for state in self.session_tabs_by_id.values():
+                old_path = state.log_path
+                target_path = new_directory / old_path.name
+                try:
+                    same_path = old_path.resolve() == target_path.resolve()
+                except OSError:
+                    same_path = old_path == target_path
+                if same_path:
+                    continue
+                new_path = self.unique_log_path(target_path)
+                self.finish_session_log_record(state)
+                try:
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    if old_path.exists():
+                        shutil.move(str(old_path), str(new_path))
+                        moved_count += 1
+                    state.log_path = new_path
+                    state.log_at_line_start = True
+                    self.write_session_log_line(state, "SYS", f"Log location changed from {old_path}")
+                except (OSError, shutil.Error) as exc:
+                    self.set_status_message(f"日志迁移失败: {exc}")
+            return moved_count
 
         def submit_command_record_input(self, command: str) -> None:
             self._save_current_command_content()
@@ -2986,12 +3190,15 @@ if PYSIDE6_IMPORT_ERROR is None:
                 copy_selection_action = menu.addAction("复制选中文本")
                 menu.addSeparator()
             actions = self._add_device_quick_actions(menu)
+            log_actions = self._add_session_log_actions(menu)
 
             chosen = menu.exec(terminal.viewport().mapToGlobal(pos))
             if chosen is None:
                 return
             if copy_selection_action is not None and chosen == copy_selection_action:
                 terminal.copy()
+                return
+            if self._handle_session_log_action(chosen, log_actions, state):
                 return
             self._handle_device_quick_action(chosen, actions, device)
 
@@ -3006,6 +3213,23 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             self._handle_device_quick_action(chosen, actions, device)
 
+        def show_session_quick_context_menu(self, tab_id: str, widget: QWidget, pos: Any) -> None:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None:
+                return
+            device = self.get_device_by_id(state.device_id)
+            if device is None:
+                return
+            menu = QMenu(widget)
+            actions = self._add_device_quick_actions(menu)
+            log_actions = self._add_session_log_actions(menu)
+            chosen = menu.exec(widget.mapToGlobal(pos))
+            if chosen is None:
+                return
+            if self._handle_session_log_action(chosen, log_actions, state):
+                return
+            self._handle_device_quick_action(chosen, actions, device)
+
         def _add_device_quick_actions(self, menu: QMenu) -> dict[str, Any]:
             actions = {
                 "locate": menu.addAction("定位到设备列表"),
@@ -3017,6 +3241,31 @@ if PYSIDE6_IMPORT_ERROR is None:
             actions["copy_ssh_ip"] = menu.addAction("复制 SSH IP")
             actions["copy_connection"] = menu.addAction("复制连接信息")
             return actions
+
+        def _add_session_log_actions(self, menu: QMenu) -> dict[str, Any]:
+            menu.addSeparator()
+            return {
+                "open_log": menu.addAction("打开本会话日志"),
+                "open_log_directory": menu.addAction("打开日志目录"),
+                "change_log_directory": menu.addAction("更改日志位置..."),
+            }
+
+        def _handle_session_log_action(
+            self,
+            chosen: Any,
+            actions: dict[str, Any],
+            state: SessionTabState,
+        ) -> bool:
+            if chosen == actions["open_log"]:
+                self.open_session_log(state)
+                return True
+            if chosen == actions["open_log_directory"]:
+                self.open_session_log_directory(state)
+                return True
+            if chosen == actions["change_log_directory"]:
+                self.change_log_directory()
+                return True
+            return False
 
         def _handle_device_quick_action(
             self,
@@ -3318,11 +3567,18 @@ if PYSIDE6_IMPORT_ERROR is None:
                 page=page,
                 terminal=terminal,
                 session=session,
+                log_path=self.session_log_path(device, title, kind),
                 connecting=True,
                 status_text="Connecting",
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
+            kind_label = "Telnet" if kind == "device" else "SSH"
+            self.write_session_log_line(
+                state,
+                "SYS",
+                f"Session created: {kind_label} {host}:{port} user={username} device={device.name} ({device.id})",
+            )
             return state
 
         def _install_device_tab_header(self, index: int, state: DeviceTabState) -> None:
@@ -3364,13 +3620,22 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if widget is None:
                     continue
                 widget.setContextMenuPolicy(Qt.CustomContextMenu)
-                widget.customContextMenuRequested.connect(
-                    lambda pos, widget=widget, device_id=device_id: self.show_device_quick_context_menu(
-                        device_id,
-                        widget,
-                        pos,
+                if isinstance(state, SessionTabState):
+                    widget.customContextMenuRequested.connect(
+                        lambda pos, widget=widget, tab_id=state.tab_id: self.show_session_quick_context_menu(
+                            tab_id,
+                            widget,
+                            pos,
+                        )
                     )
-                )
+                else:
+                    widget.customContextMenuRequested.connect(
+                        lambda pos, widget=widget, device_id=device_id: self.show_device_quick_context_menu(
+                            device_id,
+                            widget,
+                            pos,
+                        )
+                    )
 
         def _install_tab_header(
             self,
@@ -3516,6 +3781,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             state.connecting = True
             self.set_session_status(tab_id, "Connecting")
+            self.write_session_log_line(state, "SYS", f"Connecting to {state.host}:{state.port}")
             self.update_controls()
 
             async def connect() -> None:
@@ -3532,6 +3798,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     return
                 current_state.connecting = False
                 self.set_session_status(tab_id, "Connected")
+                self.write_session_log_line(current_state, "SYS", "Connected")
                 self.set_status_message(f"会话已连接: {current_state.title}")
                 current_state.terminal.setFocus()
 
@@ -3541,6 +3808,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     return
                 current_state.connecting = False
                 self.set_session_status(tab_id, "Disconnected")
+                self.write_session_log_line(current_state, "SYS", f"Connection failed: {exc}")
                 if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
                     self.append_session_output(tab_id, f"\n连接失败: {exc}\n")
                     if self.is_connection_timeout(exc):
@@ -3580,6 +3848,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
 
             state.terminal.append_output(message)
+            self.write_session_log(state, "OUT", message)
 
         def send_session_text(self, tab_id: str, text: str) -> None:
             state = self.session_tabs_by_id.get(tab_id)
@@ -3588,11 +3857,13 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             if text == "\x7f":
                 text = "\x08" if state.kind == "device" else "\x7f"
+            self.log_session_input(state, text)
 
             async def send() -> None:
                 await state.session.send_text(text)
 
             def failure(exc: Exception) -> None:
+                self.write_session_log_line(state, "SYS", f"Send failed: {exc}")
                 if isinstance(exc, (TelnetSessionError, SessionUnavailableError)):
                     self.show_error(str(exc))
                     return
@@ -3610,6 +3881,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             def success(_result: object) -> None:
                 self.set_session_status(tab_id, "Disconnected")
+                self.write_session_log_line(state, "SYS", "Disconnected")
                 self.set_status_message(f"会话已断开: {state.title}")
 
             self.run_coro(disconnect(), on_success=success)
@@ -3621,6 +3893,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             state.connecting = True
             self.set_session_status(tab_id, "Connecting")
+            self.write_session_log_line(state, "SYS", f"Reconnecting to {state.host}:{state.port}")
             self.set_status_message(f"正在重连会话: {state.title}")
 
             async def reconnect() -> None:
@@ -3638,6 +3911,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     return
                 current_state.connecting = False
                 self.set_session_status(tab_id, "Connected")
+                self.write_session_log_line(current_state, "SYS", "Reconnected")
                 current_state.terminal.setFocus()
                 self.set_status_message(f"会话已重连: {current_state.title}")
 
@@ -3646,6 +3920,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if current_state is not None:
                     current_state.connecting = False
                     self.set_session_status(tab_id, "Disconnected")
+                    self.write_session_log_line(current_state, "SYS", f"Reconnect failed: {exc}")
                 if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
                     self.append_session_output(tab_id, f"\n重连失败: {exc}\n")
                     if self.is_connection_timeout(exc):
@@ -3690,6 +3965,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     close_index = current_device_tab.session_tab_widget.indexOf(state.page)
                     if close_index >= 0:
                         current_device_tab.session_tab_widget.removeTab(close_index)
+                self.write_session_log_line(state, "SYS", "Session closed")
                 self.session_tabs_by_id.pop(state.tab_id, None)
                 state.page.deleteLater()
                 if current_device_tab is not None:
@@ -3733,6 +4009,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if current_device_tab is None:
                     return
                 for state in child_states:
+                    self.write_session_log_line(state, "SYS", "Session closed")
                     self.session_tabs_by_id.pop(state.tab_id, None)
                     state.page.deleteLater()
                 self._remove_device_tab(current_device_tab)
@@ -3771,6 +4048,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             self.reconnect_session_tab(state.tab_id)
 
+        def open_current_session_log(self) -> None:
+            state = self.current_session_state()
+            if state is None:
+                self.set_status_message("当前没有可打开日志的终端会话。")
+                return
+            self.open_session_log(state)
+
         def disconnect_current_session(self) -> None:
             state = self.current_session_state()
             if state is None:
@@ -3785,6 +4069,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_ssh_button.setEnabled(selected)
             self.quick_occupancy_button.setEnabled(selected)
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
+            self.quick_log_button.setEnabled(state is not None)
             self.quick_disconnect_button.setEnabled(
                 state is not None and (state.session.is_connected or state.connecting)
             )
@@ -3846,6 +4131,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.state_save_timer.stop()
             self.ui_timer.stop()
             self.refresh_timer.stop()
+            for state in self.session_tabs_by_id.values():
+                self.write_session_log_line(state, "SYS", "Application closing")
 
             async def shutdown_sessions() -> None:
                 await asyncio.gather(
