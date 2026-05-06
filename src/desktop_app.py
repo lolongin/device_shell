@@ -1830,6 +1830,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.center_stage_stack.addWidget(self.session_tab_widget)
             quick_action_row = QHBoxLayout()
             quick_action_row.setContentsMargins(0, 8, 0, 8)
+            self.session_jump_combo = QComboBox()
+            self.session_jump_combo.setObjectName("sessionJumpCombo")
+            self.session_jump_combo.setMinimumWidth(280)
+            self.session_jump_combo.setMaximumWidth(420)
+            self.session_jump_combo.setToolTip("快速跳转到已打开的终端会话")
+            quick_action_row.addWidget(self.session_jump_combo)
             quick_action_row.addStretch(1)
             self.quick_telnet_button = QToolButton()
             self.quick_telnet_button.setObjectName("quickActionIconButton")
@@ -1863,6 +1869,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             quick_action_row.addWidget(self.quick_disconnect_button)
             layout.addLayout(quick_action_row)
             layout.addWidget(self._build_command_record_panel())
+            self.refresh_workspace_context()
             self.update_center_stage_state()
             return panel
 
@@ -2084,6 +2091,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
             self.quick_log_button.clicked.connect(self.open_current_session_log)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
+            self.session_jump_combo.activated.connect(self.handle_session_jump_activated)
             self.command_send_button.clicked.connect(self.submit_current_command_record)
             self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
             self.command_clear_button.clicked.connect(self.clear_current_command_record)
@@ -3344,7 +3352,75 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
 
         def refresh_workspace_context(self) -> None:
-            return
+            self.refresh_session_jump_combo()
+
+        def refresh_session_jump_combo(self) -> None:
+            if not hasattr(self, "session_jump_combo"):
+                return
+            current_tab_id = self.current_session_key()
+            combo = self.session_jump_combo
+            combo.blockSignals(True)
+            combo.clear()
+            states = self.ordered_session_states()
+            if not states:
+                combo.addItem("无打开会话", "")
+                combo.setCurrentIndex(0)
+                combo.setEnabled(False)
+                combo.blockSignals(False)
+                return
+            combo.setEnabled(True)
+            current_index = 0
+            for index, state in enumerate(states):
+                combo.addItem(self.session_jump_text(state), state.tab_id)
+                if state.tab_id == current_tab_id:
+                    current_index = index
+            combo.setCurrentIndex(current_index)
+            combo.blockSignals(False)
+
+        def ordered_session_states(self) -> list[SessionTabState]:
+            states: list[SessionTabState] = []
+            for device_index in range(self.session_tab_widget.count()):
+                device_tab = self._device_tab_for_page(self.session_tab_widget.widget(device_index))
+                if device_tab is None:
+                    continue
+                for session_index in range(device_tab.session_tab_widget.count()):
+                    state = self._session_state_for_page(device_tab.session_tab_widget.widget(session_index))
+                    if state is not None:
+                        states.append(state)
+            return states
+
+        def session_jump_text(self, state: SessionTabState) -> str:
+            device = self.get_device_by_id(state.device_id)
+            device_name = device.name if device is not None else state.device_id
+            kind = "Telnet" if state.kind == "device" else "SSH"
+            return f"{device_name} / {kind} / {state.title} / {state.status_text}"
+
+        def handle_session_jump_activated(self, index: int) -> None:
+            tab_id = str(self.session_jump_combo.itemData(index) or "")
+            if tab_id:
+                self.jump_to_session(tab_id)
+
+        def jump_to_session(self, tab_id: str) -> None:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None:
+                self.refresh_session_jump_combo()
+                return
+            device_tab = self.device_tabs_by_id.get(state.device_id)
+            if device_tab is None:
+                self.refresh_session_jump_combo()
+                return
+            device_index = self.session_tab_widget.indexOf(device_tab.page)
+            session_index = device_tab.session_tab_widget.indexOf(state.page)
+            if device_index >= 0:
+                self.session_tab_widget.setCurrentIndex(device_index)
+            if session_index >= 0:
+                device_tab.session_tab_widget.setCurrentIndex(session_index)
+            device = self.get_device_by_id(state.device_id)
+            if device is not None:
+                self.activate_device(device.id)
+            state.terminal.setFocus()
+            self.refresh_session_jump_combo()
+            self.set_status_message(f"已跳转到会话: {self.session_jump_text(state)}")
 
         def handle_session_tab_changed(self, _index: int) -> None:
             self.refresh_workspace_context()
@@ -3457,6 +3533,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_widget.setCurrentWidget(device_tab.page)
             device_tab.session_tab_widget.setCurrentIndex(index)
             self.set_status_message(f"正在打开会话: {title}")
+            self.refresh_workspace_context()
             self.update_center_stage_state()
             self.update_controls()
             self.connect_session_tab(tab_id)
