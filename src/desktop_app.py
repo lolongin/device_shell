@@ -2594,6 +2594,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 item = table.item(row, 0)
                 if item is not None and item.data(Qt.UserRole) == device_id:
                     table.selectRow(row)
+                    table.scrollToItem(item)
                     break
             table.blockSignals(False)
 
@@ -2632,6 +2633,36 @@ if PYSIDE6_IMPORT_ERROR is None:
                 f"SSH: {device.ssh_ip}:{device.ssh_port}\n"
                 f"SSH 账号: {self.device_ssh_username(device)}\n"
                 f"SSH 密码: {self.device_ssh_password(device)}"
+            )
+
+        def clone_telnet_session(self, device: Device) -> None:
+            username = device.username.strip()
+            password = device.password
+            if not device.telnet_ip.strip() or not username or not password:
+                self.show_warning("设备 Telnet 地址、用户名和密码不完整。")
+                return
+            self.ensure_session_tab(
+                kind="device",
+                device=device,
+                host=device.telnet_ip.strip(),
+                port=device.telnet_port,
+                username=username,
+                password=password,
+            )
+
+        def clone_ssh_session(self, device: Device) -> None:
+            username = self.device_ssh_username(device).strip()
+            password = self.device_ssh_password(device)
+            if not device.ssh_ip.strip() or not username or not password:
+                self.show_warning("设备 SSH 地址、用户名和密码不完整。")
+                return
+            self.ensure_session_tab(
+                kind="linux",
+                device=device,
+                host=device.ssh_ip.strip(),
+                port=device.ssh_port,
+                username=username,
+                password=password,
             )
 
         def copy_device_field(self, device: Device, field: str) -> None:
@@ -2697,6 +2728,18 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.refresh_device_context()
             self.refresh_workspace_context()
             self.update_controls()
+
+        def locate_device_in_list(self, device_id: str) -> None:
+            device = self.get_device_by_id(device_id)
+            if device is None:
+                self.set_status_message("未找到当前会话对应的设备。")
+                return
+            visible_ids = {item.id for item in self.visible_devices}
+            if device_id not in visible_ids:
+                self.clear_filters()
+            self.activate_device(device_id)
+            self.device_table.setFocus()
+            self.set_status_message(f"已定位到设备: {device.name}")
 
         def refresh_filter_summary(self) -> None:
             active_filters: list[str] = []
@@ -2780,6 +2823,79 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             if chosen == open_linux_action:
                 self.open_linux_session()
+
+        def show_terminal_context_menu(self, tab_id: str, terminal: InteractiveTerminal, pos: Any) -> None:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None:
+                return
+            device = self.get_device_by_id(state.device_id)
+            if device is None:
+                return
+
+            menu = QMenu(terminal)
+            copy_selection_action = None
+            if terminal.textCursor().hasSelection():
+                copy_selection_action = menu.addAction("复制选中文本")
+                menu.addSeparator()
+            actions = self._add_device_quick_actions(menu)
+
+            chosen = menu.exec(terminal.viewport().mapToGlobal(pos))
+            if chosen is None:
+                return
+            if copy_selection_action is not None and chosen == copy_selection_action:
+                terminal.copy()
+                return
+            self._handle_device_quick_action(chosen, actions, device)
+
+        def show_device_quick_context_menu(self, device_id: str, widget: QWidget, pos: Any) -> None:
+            device = self.get_device_by_id(device_id)
+            if device is None:
+                return
+            menu = QMenu(widget)
+            actions = self._add_device_quick_actions(menu)
+            chosen = menu.exec(widget.mapToGlobal(pos))
+            if chosen is None:
+                return
+            self._handle_device_quick_action(chosen, actions, device)
+
+        def _add_device_quick_actions(self, menu: QMenu) -> dict[str, Any]:
+            actions = {
+                "locate": menu.addAction("定位到设备列表"),
+            }
+            menu.addSeparator()
+            actions["clone_telnet"] = menu.addAction("复制 Telnet")
+            actions["clone_ssh"] = menu.addAction("复制 SSH")
+            actions["copy_telnet_ip"] = menu.addAction("复制 Telnet IP")
+            actions["copy_ssh_ip"] = menu.addAction("复制 SSH IP")
+            actions["copy_connection"] = menu.addAction("复制连接信息")
+            return actions
+
+        def _handle_device_quick_action(
+            self,
+            chosen: Any,
+            actions: dict[str, Any],
+            device: Device,
+        ) -> None:
+            if chosen == actions["locate"]:
+                self.locate_device_in_list(device.id)
+                return
+            if chosen == actions["clone_telnet"]:
+                self.clone_telnet_session(device)
+                return
+            if chosen == actions["clone_ssh"]:
+                self.clone_ssh_session(device)
+                return
+            if chosen == actions["copy_telnet_ip"]:
+                self.copy_device_field(device, "telnet_ip")
+                return
+            if chosen == actions["copy_ssh_ip"]:
+                self.copy_device_field(device, "ssh_ip")
+                return
+            if chosen == actions["copy_connection"]:
+                self.copy_text_to_clipboard(
+                    self.device_connection_copy_text(device),
+                    f"已复制连接信息: {device.name}",
+                )
 
         def sync_auth_fields_from_selected(self) -> None:
             device = self.get_selected_device()
@@ -3023,6 +3139,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.setSpacing(0)
 
             terminal = InteractiveTerminal()
+            terminal.setContextMenuPolicy(Qt.CustomContextMenu)
+            terminal.customContextMenuRequested.connect(
+                lambda pos, tab_id=tab_id, terminal=terminal: self.show_terminal_context_menu(tab_id, terminal, pos)
+            )
             layout.addWidget(terminal, 1)
 
             if kind == "device":
@@ -3070,6 +3190,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 close_slot_size=(22, 20),
                 close_button_size=16,
             )
+            self._install_device_context_menu_on_tab_header(state.device_id, state)
 
         def _install_session_tab_header(self, tab_widget: QTabWidget, index: int, state: SessionTabState) -> None:
             self._install_tab_header(
@@ -3084,6 +3205,24 @@ if PYSIDE6_IMPORT_ERROR is None:
                 close_slot_size=(18, 16),
                 close_button_size=13,
             )
+            self._install_device_context_menu_on_tab_header(state.device_id, state)
+
+        def _install_device_context_menu_on_tab_header(
+            self,
+            device_id: str,
+            state: DeviceTabState | SessionTabState,
+        ) -> None:
+            for widget in (state.tab_header, state.tab_title_label, state.tab_status_dot):
+                if widget is None:
+                    continue
+                widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                widget.customContextMenuRequested.connect(
+                    lambda pos, widget=widget, device_id=device_id: self.show_device_quick_context_menu(
+                        device_id,
+                        widget,
+                        pos,
+                    )
+                )
 
         def _install_tab_header(
             self,
