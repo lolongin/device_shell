@@ -1070,10 +1070,30 @@ if PYSIDE6_IMPORT_ERROR is None:
         def _line_to_text(self, line: Any, preserve_to_column: int | None = None) -> str:
             if isinstance(line, str):
                 text = line
+            elif hasattr(line, "items"):
+                cells = []
+                for column, cell in line.items():
+                    try:
+                        column_index = int(column)
+                    except (TypeError, ValueError):
+                        continue
+                    if column_index < 0:
+                        continue
+                    cells.append((column_index, cell))
+                if not cells:
+                    text = ""
+                else:
+                    width = max(column for column, _cell in cells) + 1
+                    chars = [" "] * width
+                    for column, cell in cells:
+                        data = getattr(cell, "data", " ")
+                        chars[column] = str(data)[:1] if data else " "
+                    text = "".join(chars)
             else:
                 text = "".join(getattr(cell, "data", str(cell)) for cell in line)
             if preserve_to_column is not None:
-                return text[:preserve_to_column].ljust(preserve_to_column)
+                visible_text = text.rstrip()
+                return visible_text.ljust(preserve_to_column) if len(visible_text) < preserve_to_column else visible_text
             return text.rstrip()
 
         def _cursor_position_for_lines(self, lines: list[str], row: int, column: int) -> int:
@@ -1190,6 +1210,9 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             if modifiers == Qt.ControlModifier:
                 if key == Qt.Key_C:
+                    if self.textCursor().hasSelection():
+                        self.copy()
+                        return
                     self._forward_text("\x03")
                     return
                 if key == Qt.Key_V:
@@ -1270,6 +1293,9 @@ if PYSIDE6_IMPORT_ERROR is None:
         def set_enter_sends(self, enter_sends: bool) -> None:
             self._enter_sends = enter_sends
 
+        def current_command_line(self) -> str:
+            return self.textCursor().block().text().strip()
+
         def keyPressEvent(self, event: Any) -> None:  # noqa: N802
             key = event.key()
             modifiers = event.modifiers()
@@ -1277,7 +1303,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 ctrl_pressed = bool(modifiers & Qt.ControlModifier)
                 should_submit = not ctrl_pressed if self._enter_sends else ctrl_pressed
                 if should_submit:
-                    command = self.toPlainText().strip()
+                    command = self.current_command_line()
                     if command and self._submit_handler is not None:
                         self._submit_handler(command)
                     return
@@ -1944,9 +1970,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.send_command_text_to_current_session(command)
 
         def submit_current_command_record(self) -> None:
-            command = self.command_record_input.toPlainText().strip()
+            command = self.command_record_input.current_command_line()
             if not command:
-                self.set_status_message("请先输入要发送的命令。")
+                self.set_status_message("请先将光标放到要发送的命令行。")
                 return
             self.submit_command_record_input(command)
 
@@ -1956,12 +1982,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.set_status_message("命令已记录，当前没有打开的终端会话。")
                 return
             self.send_session_text(state.tab_id, self.command_record_payload(command))
-            state.terminal.setFocus()
+            self.command_record_input.setFocus()
 
         def broadcast_command_record_input(self) -> None:
-            command = self.command_record_input.toPlainText().strip()
+            command = self.command_record_input.current_command_line()
             if not command:
-                self.set_status_message("请先输入要广播发送的命令。")
+                self.set_status_message("请先将光标放到要广播发送的命令行。")
                 return
             self._save_current_command_content()
             connected_states = [
@@ -2933,7 +2959,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
-            terminal.set_command_recorder(self.add_command_record)
             return state
 
         def _install_device_tab_header(self, index: int, state: DeviceTabState) -> None:
