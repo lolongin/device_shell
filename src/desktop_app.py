@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 try:
     from PySide6.QtCore import QTimer, Qt
-    from PySide6.QtGui import QBrush, QColor, QKeySequence, QTextCursor, QTextOption
+    from PySide6.QtGui import QBrush, QColor, QKeySequence, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextOption
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
@@ -55,6 +55,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QBrush = None
     QColor = None
     QKeySequence = None
+    QSyntaxHighlighter = None
+    QTextCharFormat = None
     QComboBox = None
     QFormLayout = None
     QFrame = None
@@ -948,10 +950,123 @@ if PYSIDE6_IMPORT_ERROR is None:
             super().mouseDoubleClickEvent(event)
             self.selectAll()
 
+    class TerminalSyntaxHighlighter(QSyntaxHighlighter):
+        BRACKET_OUTPUT_LABELS = {
+            "debug",
+            "device",
+            "error",
+            "fail",
+            "failed",
+            "fatal",
+            "info",
+            "linux",
+            "notice",
+            "ok",
+            "success",
+            "system",
+            "trace",
+            "warn",
+            "warning",
+            "workflow",
+        }
+
+        def __init__(self, document: Any) -> None:
+            super().__init__(document)
+            self._prompt_format = self._format("#60a5fa")
+            self._command_format = self._format("#f8fafc", bold=True)
+            self._info_format = self._format("#94a3b8", bold=True)
+            self._success_format = self._format("#5eead4", bold=True)
+            self._warning_format = self._format("#fbbf24", bold=True)
+            self._error_format = self._format("#f87171", bold=True)
+
+        def highlightBlock(self, text: str) -> None:  # noqa: N802
+            stripped = text.lstrip()
+            leading_spaces = len(text) - len(stripped)
+            if not stripped:
+                return
+
+            prompt_end = self._prompt_end_index(text)
+            if prompt_end > 0:
+                self.setFormat(0, prompt_end, self._prompt_format)
+                if len(text) > prompt_end:
+                    self.setFormat(prompt_end, len(text) - prompt_end, self._command_format)
+                return
+
+            self._highlight_status_prefix(stripped, leading_spaces)
+
+        def _prompt_end_index(self, text: str) -> int:
+            if text.startswith("<"):
+                end = text.find(">")
+                return end + 1 if end > 0 else 0
+            if text.startswith("["):
+                end = text.find("]")
+                if end <= 0:
+                    return 0
+                content = text[1:end].strip()
+                rest = text[end + 1 :]
+                if self._looks_like_device_prompt(content) and (not rest or not rest[0].isspace()):
+                    return end + 1
+            return 0
+
+        def _looks_like_device_prompt(self, content: str) -> bool:
+            normalized = content.strip()
+            if not normalized:
+                return False
+            plain = normalized.strip("*~").lower()
+            if plain in self.BRACKET_OUTPUT_LABELS:
+                return False
+            if len(normalized) > 48 or not any(char.isalnum() for char in normalized):
+                return False
+            return all(char.isalnum() or char in {"-", "_", ".", "/", ":", "~", "*"} for char in normalized)
+
+        def _highlight_status_prefix(self, stripped: str, leading_spaces: int) -> None:
+            prefix_rules = (
+                (("Error:", "ERROR:", "Fatal:", "FATAL:", "错误:", "失败:"), self._error_format),
+                (("Warning:", "WARNING:", "Warn:", "WARN:", "告警:", "警告:"), self._warning_format),
+                (("OK:", "Success:", "SUCCESS:", "Done:", "DONE:", "成功:"), self._success_format),
+                (("Info:", "INFO:", "Notice:", "NOTICE:", "提示:", "信息:"), self._info_format),
+            )
+            for prefixes, fmt in prefix_rules:
+                for prefix in prefixes:
+                    if stripped.startswith(prefix):
+                        self.setFormat(leading_spaces, len(prefix), fmt)
+                        return
+
+            if not stripped.startswith("["):
+                return
+            end = stripped.find("]")
+            if end <= 0 or end > 12:
+                return
+            label = stripped[1:end].strip().lower()
+            bracket_formats = {
+                "error": self._error_format,
+                "fail": self._error_format,
+                "failed": self._error_format,
+                "fatal": self._error_format,
+                "warn": self._warning_format,
+                "warning": self._warning_format,
+                "ok": self._success_format,
+                "success": self._success_format,
+                "info": self._info_format,
+                "notice": self._info_format,
+            }
+            fmt = bracket_formats.get(label)
+            if fmt is not None:
+                self.setFormat(leading_spaces, end + 1, fmt)
+
+        def _format(self, color: str, bold: bool = False) -> QTextCharFormat:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            if bold:
+                fmt.setFontWeight(700)
+            return fmt
+
     class InteractiveTerminal(QPlainTextEdit):
         DEFAULT_COLUMNS = 160
         DEFAULT_LINES = 40
         DEFAULT_HISTORY = 2000
+        MIN_COLUMNS = 80
+        MIN_LINES = 8
 
         def __init__(self) -> None:
             super().__init__()
@@ -969,20 +1084,42 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setUndoRedoEnabled(False)
             self.setCursorWidth(2)
             self.setTabChangesFocus(False)
-            self.setCenterOnScroll(True)
+            self.setCenterOnScroll(False)
             self.setWordWrapMode(QTextOption.NoWrap)
+            self._syntax_highlighter = TerminalSyntaxHighlighter(self.document())
             self._init_terminal_backend()
 
         def _init_terminal_backend(self) -> None:
             if pyte is None:
                 return
+            columns, lines = self._terminal_dimensions()
             self._pyte_screen = pyte.HistoryScreen(
-                self.DEFAULT_COLUMNS,
-                self.DEFAULT_LINES,
+                columns,
+                lines,
                 history=self.DEFAULT_HISTORY,
                 ratio=1.0,
             )
             self._pyte_stream = pyte.Stream(self._pyte_screen)
+
+        def _terminal_dimensions(self) -> tuple[int, int]:
+            metrics = self.fontMetrics()
+            char_width = max(1, metrics.horizontalAdvance("M"))
+            line_height = max(1, metrics.lineSpacing())
+            viewport = self.viewport()
+            columns = max(self.MIN_COLUMNS, viewport.width() // char_width)
+            lines = max(self.MIN_LINES, viewport.height() // line_height)
+            return columns, lines
+
+        def _sync_terminal_dimensions(self) -> bool:
+            if self._pyte_screen is None:
+                return False
+            columns, lines = self._terminal_dimensions()
+            current_columns = int(getattr(self._pyte_screen, "columns", columns))
+            current_lines = int(getattr(self._pyte_screen, "lines", lines))
+            if columns == current_columns and lines == current_lines:
+                return False
+            self._pyte_screen.resize(lines=lines, columns=columns)
+            return True
 
         def _forward_text(self, text: str) -> None:
             if self._raw_sender is None:
@@ -1008,6 +1145,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         def append_output(self, message: str) -> None:
             message = self._normalize_output_newlines(message)
             if self._pyte_stream is not None:
+                self._sync_terminal_dimensions()
                 self._pyte_stream.feed(message)
                 self._render_pyte_buffer()
                 return
@@ -1054,6 +1192,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         def _render_pyte_buffer(self) -> None:
             if self._pyte_screen is None:
                 return
+            self._sync_terminal_dimensions()
 
             history = getattr(self._pyte_screen, "history", None)
             history_top = list(getattr(history, "top", []))
@@ -1067,7 +1206,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             lines, cursor_row = self._trim_terminal_lines(all_lines, cursor_row)
 
             text = "\n".join(lines)
-            self.setPlainText(text)
+            self._set_terminal_text(text)
 
             if not lines:
                 lines = [""]
@@ -1127,6 +1266,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             for line in lines[:safe_row]:
                 position += len(line) + 1
             return position + min(column, len(lines[safe_row]))
+
+        def _set_terminal_text(self, text: str) -> None:
+            self.setPlainText(text)
+            self._syntax_highlighter.rehighlight()
 
         def _apply_escape_sequence(self, message: str, index: int) -> int:
             if index + 1 >= len(message) or message[index + 1] != "[":
@@ -1193,7 +1336,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def _render_buffer(self) -> None:
             text = "\n".join("".join(line) for line in self._buffer_lines)
-            self.setPlainText(text)
+            self._set_terminal_text(text)
 
             document = self.document()
             block = document.findBlockByNumber(self._cursor_row)
@@ -1214,6 +1357,11 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def set_command_recorder(self, recorder: Callable[[str], None]) -> None:
             self._command_recorder = recorder
+
+        def resizeEvent(self, event: Any) -> None:  # noqa: N802
+            super().resizeEvent(event)
+            if self._sync_terminal_dimensions():
+                self._render_pyte_buffer()
 
         def keyPressEvent(self, event: Any) -> None:  # noqa: N802
             if self._raw_sender is None:
