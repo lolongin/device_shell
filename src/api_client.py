@@ -19,11 +19,18 @@ class ApiConflictError(ApiClientError):
     """Raised when a remote occupancy operation cannot be completed."""
 
 
+class ApiNotFoundError(ApiClientError):
+    """Raised when an optional API endpoint is not provided by the service."""
+
+
 class DeviceApiClient(Protocol):
     def get_current_user(self) -> str:
         ...
 
     def list_devices(self) -> list[dict[str, Any]]:
+        ...
+
+    def list_my_occupancy(self) -> object:
         ...
 
     def toggle_device(self, device_id: str, user: str) -> dict[str, Any]:
@@ -45,7 +52,11 @@ class DeviceApiClient(Protocol):
 class HttpDeviceApiClient:
     """HTTP-backed client used by the TUI to talk to a device web service."""
 
-    def __init__(self, base_url: str, timeout_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 5.0,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._current_revision = 0
@@ -61,6 +72,9 @@ class HttpDeviceApiClient:
         if not isinstance(devices, list):
             raise ApiClientError("Invalid /api/devices response")
         return devices
+
+    def list_my_occupancy(self) -> object:
+        return self._request_json("GET", "/api/my-occupancy")
 
     def toggle_device(self, device_id: str, user: str) -> dict[str, Any]:
         quoted_id = parse.quote(device_id, safe="")
@@ -148,10 +162,15 @@ class HttpDeviceApiClient:
 
         if exc.code == 409:
             return ApiConflictError(message)
+        if exc.code == 404:
+            return ApiNotFoundError(message)
         return ApiClientError(message)
 
 
 def create_http_client_from_env() -> HttpDeviceApiClient:
     base_url = os.getenv("DEVICE_TUI_API_BASE_URL", "http://127.0.0.1:8765")
     timeout_seconds = float(os.getenv("DEVICE_TUI_API_TIMEOUT_SECONDS", "5"))
-    return HttpDeviceApiClient(base_url=base_url, timeout_seconds=timeout_seconds)
+    return HttpDeviceApiClient(
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )

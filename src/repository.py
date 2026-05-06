@@ -9,6 +9,7 @@ try:
         ApiClientError,
         ApiConflictError,
         DeviceApiClient,
+        ApiNotFoundError,
         create_http_client_from_env,
     )
     from .data import (
@@ -25,6 +26,7 @@ except ImportError:
         ApiClientError,
         ApiConflictError,
         DeviceApiClient,
+        ApiNotFoundError,
         create_http_client_from_env,
     )
     from data import (
@@ -56,6 +58,9 @@ class DeviceRepository(Protocol):
     def fetch_devices(self) -> list[Device]:
         ...
 
+    def fetch_owned_device_ids(self) -> set[str] | None:
+        ...
+
     def toggle_device(self, device_id: str, user: str) -> str:
         ...
 
@@ -85,6 +90,9 @@ class SampleDeviceRepository:
 
     def fetch_devices(self) -> list[Device]:
         return [replace(device) for device in self._devices]
+
+    def fetch_owned_device_ids(self) -> set[str] | None:
+        return {device.id for device in self._devices if device.owner == self._current_user}
 
     def toggle_device(self, device_id: str, user: str) -> str:
         device = self._find_device(device_id)
@@ -137,9 +145,16 @@ class ApiDeviceRepository:
         self._api_client = api_client
         self.refresh_interval_seconds = refresh_interval_seconds
         self.live_update_timeout_seconds = 25.0
+        self._current_user = ""
 
     def current_user(self) -> str:
-        return self._api_client.get_current_user()
+        if self._current_user:
+            return self._current_user
+        try:
+            self._current_user = self._api_client.get_current_user()
+        except ApiNotFoundError:
+            self._current_user = os.getenv("DEVICE_TUI_CURRENT_USER", "")
+        return self._current_user
 
     def fetch_devices(self) -> list[Device]:
         try:
@@ -147,6 +162,45 @@ class ApiDeviceRepository:
         except ApiClientError as exc:
             raise RepositoryError(str(exc)) from exc
         return [self._map_device(payload) for payload in payloads]
+
+    def fetch_owned_device_ids(self) -> set[str] | None:
+        try:
+            payload = self._api_client.list_my_occupancy()
+        except ApiNotFoundError:
+            return None
+        except ApiClientError as exc:
+            raise RepositoryError(str(exc)) from exc
+        return self._owned_device_ids_from_payload(payload)
+
+    def _owned_device_ids_from_payload(self, payload: object) -> set[str]:
+        if isinstance(payload, list):
+            return self._device_ids_from_items(payload)
+        if not isinstance(payload, dict):
+            return set()
+
+        current_user = payload.get("current_user") or payload.get("user")
+        if current_user:
+            self._current_user = str(current_user)
+
+        raw_device_ids = payload.get("device_ids") or payload.get("ids")
+        if isinstance(raw_device_ids, list):
+            return {str(device_id) for device_id in raw_device_ids if str(device_id)}
+
+        raw_devices = payload.get("devices")
+        if isinstance(raw_devices, list):
+            return self._device_ids_from_items(raw_devices)
+        return set()
+
+    def _device_ids_from_items(self, items: list[object]) -> set[str]:
+        device_ids: set[str] = set()
+        for item in items:
+            if isinstance(item, dict):
+                device_id = item.get("device_id") or item.get("id")
+            else:
+                device_id = item
+            if device_id:
+                device_ids.add(str(device_id))
+        return device_ids
 
     def toggle_device(self, device_id: str, user: str) -> str:
         try:
@@ -190,6 +244,12 @@ class ApiDeviceRepository:
         asset = payload.get("asset", {})
         status_code = str(payload.get("status_code", "other")).lower()
         status = self.STATUS_BY_CODE.get(status_code, str(payload.get("status_label", STATUS_OTHER)))
+        legacy_username = str(connection.get("username", ""))
+        legacy_password = str(connection.get("password", ""))
+        telnet_username = str(connection.get("telnet_username", legacy_username))
+        telnet_password = str(connection.get("telnet_password", legacy_password))
+        ssh_username = str(connection.get("ssh_username", legacy_username))
+        ssh_password = str(connection.get("ssh_password", legacy_password))
         return Device(
             id=str(payload.get("device_id", "")),
             name=str(payload.get("display_name", "")),
@@ -200,8 +260,8 @@ class ApiDeviceRepository:
             owner=occupancy.get("owner"),
             ssh_ip=str(connection.get("ssh_host", "")),
             telnet_ip=str(connection.get("telnet_host", "")),
-            username=str(connection.get("username", "")),
-            password=str(connection.get("password", "")),
+            username=telnet_username,
+            password=telnet_password,
             vendor=str(asset.get("vendor", "")),
             model=str(asset.get("model", "")),
             site=str(asset.get("site", "")),
@@ -210,6 +270,8 @@ class ApiDeviceRepository:
             notes=str(payload.get("notes", "")),
             ssh_port=int(connection.get("ssh_port", 22) or 22),
             telnet_port=int(connection.get("telnet_port", 23) or 23),
+            ssh_username=ssh_username,
+            ssh_password=ssh_password,
         )
 
 

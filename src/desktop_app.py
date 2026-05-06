@@ -287,6 +287,30 @@ QPushButton#ghostButton {
     background: transparent;
     border-color: #303d4d;
 }
+QPushButton#filterToggleButton {
+    background: #0b1117;
+    border: 1px solid #263544;
+    border-radius: 8px;
+    color: #a8b5c4;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QPushButton#filterToggleButton:hover {
+    background: #13242d;
+    border-color: #5eead4;
+    color: #d7fff2;
+}
+QPushButton#filterToggleButton:checked {
+    background: #0f302b;
+    border-color: #14b8a6;
+    color: #8ff7d2;
+}
+QPushButton#filterToggleButton:disabled {
+    background: #0b1118;
+    border-color: #15212e;
+    color: #506174;
+}
 QLineEdit,
 QComboBox,
 QPlainTextEdit {
@@ -821,6 +845,7 @@ def status_color(status: str) -> str:
 class RepositorySnapshot:
     current_user: str
     devices: list[Device]
+    owned_device_ids: set[str] | None
 
 
 @dataclass(slots=True)
@@ -1324,9 +1349,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.owned_visible_devices: list[Device] = []
             self.selected_device_id = ""
             self.current_user = ""
+            self.owned_device_ids: set[str] | None = None
             self.refresh_generation = 0
             self.closed = False
             self.loading_snapshot = False
+            self.my_occupancy_filter_enabled = False
             self.recent_device_ids: list[str] = []
             self.command_record_groups: list[dict[str, object]] = [
                 {"name": "终端", "content": ""},
@@ -1461,9 +1488,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.status_combo.addItems(FILTERABLE_STATUSES)
             self.cpu_input = QLineEdit()
             self.cpu_input.setPlaceholderText("CPU")
+            self.my_occupancy_filter_button = QPushButton("我的")
+            self.my_occupancy_filter_button.setObjectName("filterToggleButton")
+            self.my_occupancy_filter_button.setCheckable(True)
+            self.my_occupancy_filter_button.setToolTip("只显示当前 API 用户占用的设备")
             filter_row.addWidget(self.domain_combo, 1)
             filter_row.addWidget(self.status_combo, 1)
             filter_row.addWidget(self.cpu_input, 1)
+            filter_row.addWidget(self.my_occupancy_filter_button, 0)
             nav_layout.addWidget(filter_frame)
 
             stats_frame = QFrame()
@@ -1859,6 +1891,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.domain_combo.currentTextChanged.connect(self.apply_filters)
             self.status_combo.currentTextChanged.connect(self.apply_filters)
             self.cpu_input.textChanged.connect(self.apply_filters)
+            self.my_occupancy_filter_button.toggled.connect(self.set_my_occupancy_filter)
 
             self.toolbar_refresh_button.clicked.connect(self.refresh_snapshot)
             self.clear_filters_button.clicked.connect(self.clear_filters)
@@ -1894,6 +1927,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.domain_combo.setCurrentText(ALL_DOMAINS)
             self.status_combo.setCurrentText(ALL_STATUS)
             self.cpu_input.clear()
+            self.my_occupancy_filter_enabled = False
+            self.my_occupancy_filter_button.blockSignals(True)
+            self.my_occupancy_filter_button.setChecked(False)
+            self.my_occupancy_filter_button.blockSignals(False)
+            self.apply_filters()
+
+        def set_my_occupancy_filter(self, enabled: bool) -> None:
+            self.my_occupancy_filter_enabled = enabled
             self.apply_filters()
 
         @staticmethod
@@ -2268,9 +2309,14 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             def load_snapshot() -> RepositorySnapshot:
                 with self.repository_lock:
-                    current_user = self.repository.current_user()
                     devices = self.repository.fetch_devices()
-                return RepositorySnapshot(current_user=current_user, devices=devices)
+                    owned_device_ids = self.repository.fetch_owned_device_ids()
+                    current_user = self.repository.current_user()
+                return RepositorySnapshot(
+                    current_user=current_user,
+                    devices=devices,
+                    owned_device_ids=owned_device_ids,
+                )
 
             def apply_snapshot(result: object) -> None:
                 snapshot = result
@@ -2279,6 +2325,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.loading_snapshot = False
                 self.current_user = snapshot.current_user
                 self.devices = snapshot.devices
+                self.owned_device_ids = snapshot.owned_device_ids
                 self.search_index = {device.id: build_search_text(device) for device in self.devices}
                 self.refresh_domain_options()
                 self.apply_filters()
@@ -2311,6 +2358,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             domain_filter = self.domain_combo.currentText().strip()
             status_filter = self.status_combo.currentText().strip()
             cpu_filter = self.cpu_input.text().strip().lower()
+            my_occupancy_filter = self.my_occupancy_filter_enabled
 
             self.visible_devices = []
             for device in self.devices:
@@ -2322,9 +2370,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                     continue
                 if cpu_filter and cpu_filter not in device.cpu.lower():
                     continue
+                if my_occupancy_filter and not self.is_my_occupied_device(device):
+                    continue
                 self.visible_devices.append(device)
             self.visible_devices.sort(key=self._device_sort_key)
 
+            self.refresh_my_occupancy_filter_button()
             self.refresh_filter_summary()
             self.refresh_stats()
             self.refresh_device_table()
@@ -2363,6 +2414,34 @@ if PYSIDE6_IMPORT_ERROR is None:
             return (
                 f"<span style='color:{color};font-weight:800'>{html.escape(label)} {value}</span>"
             )
+
+        def refresh_my_occupancy_filter_button(self) -> None:
+            if not hasattr(self, "my_occupancy_filter_button"):
+                return
+            owned_count = self.my_occupancy_count()
+            self.my_occupancy_filter_button.setText(f"我的 {owned_count}")
+            self.my_occupancy_filter_button.setEnabled(self.owned_device_ids is not None or bool(self.current_user))
+            self.my_occupancy_filter_button.setToolTip(
+                "只显示我的占用 API 返回的设备"
+                if self.owned_device_ids is not None
+                else (
+                    f"只显示 {self.current_user} 占用的设备"
+                    if self.current_user
+                    else "当前用户尚未从 API 加载"
+                )
+            )
+
+        def my_occupancy_count(self) -> int:
+            if self.owned_device_ids is not None:
+                return len(self.owned_device_ids)
+            if not self.current_user:
+                return 0
+            return sum(1 for device in self.devices if device.owner == self.current_user)
+
+        def is_my_occupied_device(self, device: Device) -> bool:
+            if self.owned_device_ids is not None:
+                return device.id in self.owned_device_ids
+            return bool(self.current_user and device.owner == self.current_user)
 
         def refresh_device_table(self) -> None:
             keyword = self.search_input.text().strip().lower()
@@ -2414,7 +2493,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             keyword = self.search_input.text().strip().lower()
             self.owned_visible_devices = [
-                device for device in self.visible_devices if device.owner == self.current_user
+                device for device in self.visible_devices if self.is_my_occupied_device(device)
             ]
             self.owned_count_label.setText(str(len(self.owned_visible_devices)))
             self.owned_table.setRowCount(len(self.owned_visible_devices))
@@ -2548,9 +2627,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             return (
                 f"设备: {device.name}\n"
                 f"Telnet: {device.telnet_ip}:{device.telnet_port}\n"
+                f"Telnet 账号: {device.username}\n"
+                f"Telnet 密码: {device.password}\n"
                 f"SSH: {device.ssh_ip}:{device.ssh_port}\n"
-                f"账号: {device.username}\n"
-                f"密码: {device.password}"
+                f"SSH 账号: {self.device_ssh_username(device)}\n"
+                f"SSH 密码: {self.device_ssh_password(device)}"
             )
 
         def copy_device_field(self, device: Device, field: str) -> None:
@@ -2560,11 +2641,19 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "ssh_endpoint": ("SSH 地址", f"{device.ssh_ip}:{device.ssh_port}"),
                 "telnet_ip": ("Telnet IP", device.telnet_ip),
                 "telnet_endpoint": ("Telnet 地址", f"{device.telnet_ip}:{device.telnet_port}"),
-                "username": ("账号", device.username),
-                "password": ("密码", device.password),
+                "username": ("Telnet 账号", device.username),
+                "password": ("Telnet 密码", device.password),
+                "ssh_username": ("SSH 账号", self.device_ssh_username(device)),
+                "ssh_password": ("SSH 密码", self.device_ssh_password(device)),
             }
             label, value = field_map[field]
             self.copy_text_to_clipboard(value, f"已复制{label}: {value}")
+
+        def device_ssh_username(self, device: Device) -> str:
+            return device.ssh_username or device.username
+
+        def device_ssh_password(self, device: Device) -> str:
+            return device.ssh_password or device.password
 
         def copy_selected_device_field(self, table: QTableWidget, field: str) -> None:
             device = self._device_from_table(table)
@@ -2618,6 +2707,9 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             if search_text:
                 active_filters.append(self.filter_chip_html("关键词", search_text))
+            if self.my_occupancy_filter_enabled:
+                label = self.current_user or "我的占用"
+                active_filters.append(self.filter_chip_html("占用", label))
             if domain_filter and domain_filter != ALL_DOMAINS:
                 active_filters.append(self.filter_chip_html("领域", domain_filter))
             if status_filter and status_filter != ALL_STATUS:
@@ -2697,8 +2789,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_username_input.setText(device.username)
             self.device_password_input.setText(device.password)
             self.device_ssh_ip_value.setText(device.ssh_ip)
-            self.linux_username_input.setText(device.username)
-            self.linux_password_input.setText(device.password)
+            self.linux_username_input.setText(self.device_ssh_username(device))
+            self.linux_password_input.setText(self.device_ssh_password(device))
 
         def refresh_device_context(self) -> None:
             device = self.get_selected_device()
@@ -2710,6 +2802,8 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.device_ssh_ip_value.setText(device.ssh_ip)
             self.device_telnet_ip_value.setText(device.telnet_ip)
+            owner_text = device.owner or "未占用"
+            owner_color = "#8ff7d2" if device.owner else "#96a6b8"
             self.device_summary_card.setText(
                 (
                     f"<div style='font-size:20px;font-weight:800;color:#f8fbff'>{html.escape(device.name)}</div>"
@@ -2719,7 +2813,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                     f"</div>"
                     f"<div style='margin-top:12px;color:#e5edf6;line-height:1.9'>"
                     f"<span style='color:#96a6b8'>当前状态</span>&nbsp;&nbsp;"
-                    f"<span style='color:{status_color(device.status)};font-weight:800'>{html.escape(device.status)}</span>"
+                    f"<span style='color:{status_color(device.status)};font-weight:800'>{html.escape(device.status)}</span><br>"
+                    f"<span style='color:#96a6b8'>占用人</span>&nbsp;&nbsp;"
+                    f"<span style='color:{owner_color};font-weight:800'>{html.escape(owner_text)}</span>"
                     f"</div>"
                     f"<div style='margin-top:14px;padding-top:12px;border-top:1px solid #223244'>"
                     f"<div style='color:#8ea7c2;font-size:12px;font-weight:700'>资产信息</div>"
@@ -3411,9 +3507,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             device = self.get_selected_device()
             if device is None:
                 self.show_warning("请先选择设备。")
-                return
-            if not self.current_user:
-                self.show_warning("当前用户尚未加载完成。")
                 return
 
             self.set_status_message(f"正在更新设备占用状态: {device.name}")

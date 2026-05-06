@@ -409,6 +409,16 @@ class DeviceServiceState:
                 "devices": [device_to_payload(device) for device in self._devices],
             }
 
+    def my_occupancy_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            devices = [device for device in self._devices if device.owner == self.current_user]
+            return {
+                "current_user": self.current_user,
+                "revision": self._revision,
+                "device_ids": [device.id for device in devices],
+                "devices": [device_to_payload(device) for device in devices],
+            }
+
     def current_revision(self) -> int:
         with self._lock:
             return self._revision
@@ -506,6 +516,10 @@ def device_to_payload(device: Device) -> dict[str, Any]:
             "ssh_port": device.ssh_port,
             "telnet_host": device.telnet_ip,
             "telnet_port": device.telnet_port,
+            "ssh_username": device.ssh_username or device.username,
+            "ssh_password": device.ssh_password or device.password,
+            "telnet_username": device.username,
+            "telnet_password": device.password,
             "username": device.username,
             "password": device.password,
         },
@@ -537,6 +551,9 @@ def create_request_handler(state: DeviceServiceState) -> type[BaseHTTPRequestHan
                 return
             if parsed.path == "/api/devices":
                 self._write_json(HTTPStatus.OK, state.snapshot())
+                return
+            if parsed.path == "/api/my-occupancy":
+                self._write_json(HTTPStatus.OK, state.my_occupancy_snapshot())
                 return
             if parsed.path == "/api/events":
                 try:

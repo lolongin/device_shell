@@ -170,8 +170,8 @@ Built-in workflow stubs:
 Current implementation notes:
 
 - The device target still follows the selected device in the list
-- Device username / password can be overridden in the TUI before connecting
-- Linux host / port / username / password are entered separately in the TUI
+- Device Telnet username / password can be overridden in the TUI before connecting
+- Linux SSH uses its own username / password from the selected device, with separate fields in API mode
 - Workflow output, Linux output, and device output are merged into one log window with source tags
 
 Optional environment variables:

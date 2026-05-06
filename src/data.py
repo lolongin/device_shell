@@ -10,6 +10,8 @@ LOCAL_TEST_SSH_PASSWORD = "202188"
 MOCK_DEVICE_HOST = "127.0.0.1"
 MOCK_DEVICE_TELNET_USER = "lon"
 MOCK_DEVICE_TELNET_PASSWORD = "202188"
+MOCK_LINUX_SSH_USER = "ops"
+MOCK_LINUX_SSH_PASSWORD = "ops123"
 
 STATUS_OCCUPIED = "\u5df2\u88ab\u5360\u7528"
 STATUS_IDLE = "\u7a7a\u95f2"
@@ -38,6 +40,8 @@ class Device:
     notes: str
     ssh_port: int = 22
     telnet_port: int = 23
+    ssh_username: str = ""
+    ssh_password: str = ""
 
 
 def sample_devices() -> list[Device]:
@@ -62,6 +66,8 @@ def sample_devices() -> list[Device]:
             notes="Local integration target. Device Telnet mock uses 127.0.0.1:2323 with lon/202188. Linux SSH mock uses 127.0.0.1:2200 with ops/ops123.",
             ssh_port=2200,
             telnet_port=2323,
+            ssh_username=MOCK_LINUX_SSH_USER,
+            ssh_password=MOCK_LINUX_SSH_PASSWORD,
         ),
         Device(
             id="LOCAL-SSH-001",
