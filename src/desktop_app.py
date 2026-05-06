@@ -231,15 +231,16 @@ QGroupBox#authCard {
     border-radius: 12px;
 }
 QGroupBox#deviceDetailCard {
-    border-color: #204061;
-    background: #0d1621;
+    border-color: #1b2a38;
+    background: #0b1219;
 }
 QGroupBox#quickActionCard {
     border-color: #315042;
     background: #101820;
 }
 QGroupBox#authCard {
-    background: #101820;
+    background: #0b1219;
+    border-color: #1b2a38;
 }
 QGroupBox#navShell {
     border-color: #2a3644;
@@ -252,6 +253,11 @@ QFrame#navStatsBar {
     background: #0c1218;
     border-color: #233548;
 }
+QFrame#sessionQuickBar {
+    background: #0a1016;
+    border: 1px solid #1d2935;
+    border-radius: 9px;
+}
 QFrame#myOccupancyCard {
     background: #101820;
     border-color: #253444;
@@ -262,11 +268,11 @@ QFrame#commandRecordDock {
     border-color: #273242;
 }
 QGroupBox#authCard QGroupBox {
-    background: #0c1218;
-    border: 1px solid #273242;
-    border-radius: 10px;
-    margin-top: 18px;
-    padding-top: 18px;
+    background: #090f15;
+    border: 1px solid #1d2a38;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 14px;
 }
 QGroupBox#authCard QGroupBox::title {
     color: #8ea7c2;
@@ -293,9 +299,9 @@ QPushButton:disabled {
     border-color: #15212e;
 }
 QPushButton#primaryButton {
-    background: #0f766e;
-    border-color: #14b8a6;
-    color: #f6fffd;
+    background: #1f3344;
+    border-color: #46586b;
+    color: #f8fafc;
 }
 QPushButton#dangerButton {
     background: #4a1f23;
@@ -316,14 +322,14 @@ QPushButton#filterToggleButton {
     font-weight: 700;
 }
 QPushButton#filterToggleButton:hover {
-    background: #13242d;
-    border-color: #5eead4;
-    color: #d7fff2;
+    background: #172532;
+    border-color: #4b5f73;
+    color: #f8fafc;
 }
 QPushButton#filterToggleButton:checked {
-    background: #0f302b;
-    border-color: #14b8a6;
-    color: #8ff7d2;
+    background: #17212c;
+    border-color: #5b6b7d;
+    color: #e5edf6;
 }
 QPushButton#filterToggleButton:disabled {
     background: #0b1118;
@@ -338,33 +344,50 @@ QPlainTextEdit {
     border-radius: 8px;
     padding: 8px 10px;
     color: #e5edf6;
-    selection-background-color: #0f766e;
+    selection-background-color: #2f4050;
 }
 QLineEdit:focus,
 QComboBox:focus,
 QPlainTextEdit:focus {
-    border-color: #14b8a6;
+    border-color: #3f5267;
 }
 QComboBox::drop-down {
     border: none;
     width: 20px;
 }
+QComboBox#sessionJumpCombo {
+    background: #0c1218;
+    border: 1px solid #243241;
+    border-radius: 7px;
+    color: #cbd5e1;
+    padding: 5px 28px 5px 10px;
+    min-height: 24px;
+    font-size: 12px;
+}
+QComboBox#sessionJumpCombo:focus {
+    border-color: #4b5f73;
+}
+QComboBox#sessionJumpCombo:disabled {
+    color: #64748b;
+    background: #090e13;
+    border-color: #17212c;
+}
 QScrollBar:vertical {
     background: #0b141d;
-    width: 12px;
-    margin: 6px 2px 6px 2px;
-    border-radius: 6px;
+    width: 9px;
+    margin: 8px 2px 8px 2px;
+    border-radius: 5px;
 }
 QScrollBar::handle:vertical {
-    background: #26445f;
+    background: #1f3342;
     min-height: 28px;
-    border-radius: 6px;
+    border-radius: 5px;
 }
 QScrollBar::handle:vertical:hover {
-    background: #35658f;
+    background: #385064;
 }
 QScrollBar::handle:vertical:pressed {
-    background: #4a86b8;
+    background: #4b6f91;
 }
 QScrollBar::sub-line:vertical,
 QScrollBar::add-line:vertical {
@@ -409,7 +432,7 @@ QTableWidget {
     border: 1px solid #253140;
     border-radius: 10px;
     gridline-color: #172231;
-    selection-background-color: #164e63;
+    selection-background-color: #12394a;
     selection-color: #ffffff;
 }
 QTableWidget::item {
@@ -417,7 +440,7 @@ QTableWidget::item {
     border-bottom: 1px solid #0f1b29;
 }
 QTableWidget::item:selected {
-    background: #164e63;
+    background: #12394a;
 }
 QTableWidget::item:focus {
     border: none;
@@ -454,30 +477,30 @@ QTabWidget::tab-bar {
     left: 6px;
 }
 QTabBar::tab {
-    background: #101923;
+    background: transparent;
     color: #96a6b8;
-    border: 1px solid #263544;
+    border: 1px solid transparent;
     border-bottom: 1px solid #253140;
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
     padding: 3px 6px;
     min-width: 148px;
-    min-height: 24px;
+    min-height: 22px;
     margin-right: 4px;
     margin-top: 2px;
 }
 QTabBar::tab:selected {
-    background: #10232b;
+    background: #0d1822;
     color: #f8fbff;
-    border-color: #2dd4bf;
-    border-bottom-color: #10232b;
+    border-color: #2b3b4c;
+    border-bottom-color: #0d1822;
     margin-top: 0px;
-    min-height: 27px;
+    min-height: 24px;
 }
 QTabBar::tab:hover {
     color: #e5edf6;
-    background: #172532;
-    border-color: #385064;
+    background: #101923;
+    border-color: #2f4050;
 }
 QWidget#deviceSessionPage {
     background: transparent;
@@ -492,21 +515,22 @@ QTabWidget#deviceSessionTabs::tab-bar {
     left: 4px;
 }
 QTabWidget#deviceSessionTabs QTabBar::tab {
-    background: #0b141d;
-    border: 1px solid #1d3341;
-    border-radius: 7px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: 1px solid #1d3341;
+    border-radius: 6px;
     color: #9fb0c2;
     min-width: 76px;
-    min-height: 19px;
+    min-height: 18px;
     padding: 1px 4px;
     margin-right: 3px;
     margin-top: 2px;
 }
 QTabWidget#deviceSessionTabs QTabBar::tab:selected {
-    background: #102f37;
-    border-color: #5eead4;
+    background: #0e1b24;
+    border-color: #2c4354;
     color: #f8fafc;
-    min-height: 21px;
+    min-height: 20px;
     margin-top: 0px;
 }
 QTabWidget#deviceSessionTabs QLabel#tabHeaderLabel {
@@ -542,9 +566,9 @@ QLabel#tabHeaderLabel[selected="true"] {
     font-weight: 700;
 }
 QToolButton#tabCloseButton {
-    background: rgba(148, 163, 184, 0.10);
-    color: #9fb0c2;
-    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: transparent;
+    color: #6f8194;
+    border: 1px solid transparent;
     border-radius: 8px;
     font-family: "Arial", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
     font-size: 12px;
@@ -553,9 +577,9 @@ QToolButton#tabCloseButton {
     margin: 0px;
 }
 QToolButton#tabCloseButton[selected="true"] {
-    background: rgba(143, 247, 210, 0.12);
-    border-color: rgba(143, 247, 210, 0.28);
-    color: #d7fff2;
+    background: transparent;
+    border-color: transparent;
+    color: #8fa1b4;
 }
 QToolButton#tabCloseButton:hover {
     background: #7f1d1d;
@@ -569,27 +593,27 @@ QToolButton#tabCloseButton:pressed {
 }
 QPlainTextEdit#terminalLog {
     background: #05080c;
-    color: #d6deeb;
-    border: 1px solid #1f3342;
+    color: #cbd5e1;
+    border: 1px solid #162431;
     border-radius: 10px;
     font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
     font-size: 14px;
-    padding: 12px;
+    padding: 16px;
     selection-background-color: #1e3a4a;
     selection-color: #f8fafc;
 }
 QPlainTextEdit#terminalLog:focus {
-    border-color: #5eead4;
+    border-color: #385064;
 }
 QFrame#commandRecordDock {
-    background: #0b1117;
-    border: 1px solid #1f3b49;
+    background: #080f15;
+    border: 1px solid #172635;
     border-radius: 8px;
 }
 QFrame#commandRecordHintBar {
-    background: #0f1720;
+    background: #0b141b;
     border: none;
-    border-bottom: 1px solid #1d3341;
+    border-bottom: 1px solid #172635;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
     min-height: 27px;
@@ -602,7 +626,7 @@ QLabel#commandRecordHint {
     font-weight: 600;
 }
 QPlainTextEdit#commandRecordEditor {
-    background: #071018;
+    background: #060d13;
     color: #f8fafc;
     border: none;
     border-radius: 0px;
@@ -616,9 +640,9 @@ QPlainTextEdit#commandRecordEditor:focus {
     border: none;
 }
 QFrame#commandRecordFooter {
-    background: #0f1720;
+    background: #0b141b;
     border: none;
-    border-top: 1px solid #1d3341;
+    border-top: 1px solid #172635;
     border-bottom-left-radius: 8px;
     border-bottom-right-radius: 8px;
     min-height: 29px;
@@ -634,8 +658,8 @@ QToolButton#commandTabButton {
     font-weight: 600;
 }
 QToolButton#commandTabButton[selected="true"] {
-    background: #12313a;
-    color: #8ff7d2;
+    background: #111b25;
+    color: #e5edf6;
 }
 QToolButton#commandTabButton:hover {
     background: #172532;
@@ -659,7 +683,7 @@ QToolButton#commandTabCloseButton {
     font-weight: 700;
 }
 QToolButton#commandTabCloseButton[selected="true"] {
-    color: #b9fff0;
+    color: #9fb0c2;
 }
 QToolButton#commandTabCloseButton:hover {
     background: #7f1d1d;
@@ -675,63 +699,101 @@ QToolButton#commandActionButton {
 }
 QToolButton#commandActionButton:hover {
     background: #13242d;
-    border-color: #5eead4;
-    color: #5eead4;
+    border-color: #4b5f73;
+    color: #f8fafc;
 }
 QToolButton#commandEnterModeButton {
-    background: #13242d;
+    background: #111b25;
     border: 1px solid #2b4252;
     border-radius: 5px;
-    color: #7dd3fc;
+    color: #cbd5e1;
     padding: 1px 7px;
     min-height: 19px;
     font-size: 13px;
     font-weight: 700;
 }
 QToolButton#commandEnterModeButton[enterSends="true"] {
-    background: #0f766e;
-    border-color: #5eead4;
-    color: #f6fffd;
+    background: #17212c;
+    border-color: #4b5f73;
+    color: #f8fafc;
 }
 QToolButton#commandEnterModeButton:hover {
-    background: #12313a;
-    border-color: #5eead4;
-    color: #d7fff2;
+    background: #17212c;
+    border-color: #4b5f73;
+    color: #f8fafc;
 }
 QToolButton#commandCollapseButton {
-    background: #101c26;
-    border: 1px solid #2b4252;
+    background: transparent;
+    border: 1px solid #243241;
     border-radius: 5px;
     color: #c3d3e4;
     padding: 3px 8px;
     font-weight: 700;
 }
 QToolButton#commandCollapseButton:hover {
-    background: #13242d;
-    border-color: #14b8a6;
-    color: #d7fff2;
+    background: #111b25;
+    border-color: #4b5f73;
+    color: #f8fafc;
+}
+QToolButton#inspectorToggleButton {
+    background: transparent;
+    border: 1px solid #243241;
+    border-radius: 6px;
+    color: #9fb0c2;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QToolButton#inspectorToggleButton:hover {
+    background: #111b25;
+    border-color: #4b5f73;
+    color: #f8fafc;
 }
 QToolButton#quickActionIconButton {
-    background: #101c26;
-    border: 1px solid #2b4252;
+    background: #0c141c;
+    border: 1px solid #243241;
     border-radius: 6px;
-    color: #d7fff2;
+    color: #cbd5e1;
     padding: 0px;
-    min-width: 26px;
-    max-width: 26px;
-    min-height: 26px;
-    max-height: 26px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    font-size: 12px;
     font-weight: 700;
 }
 QToolButton#quickActionIconButton:hover {
-    background: #12313a;
-    border-color: #14b8a6;
-    color: #ffffff;
+    background: #13202b;
+    border-color: #4b5f73;
+    color: #f8fafc;
 }
 QToolButton#quickActionIconButton:disabled {
     color: #64748b;
-    background: #0b1118;
-    border-color: #15212e;
+    background: #090e13;
+    border-color: #17212c;
+}
+QToolButton#quickDangerIconButton {
+    background: #0c141c;
+    border: 1px solid #243241;
+    border-radius: 6px;
+    color: #cbd5e1;
+    padding: 0px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QToolButton#quickDangerIconButton:hover {
+    background: #34181d;
+    border-color: #8f2f3a;
+    color: #fecaca;
+}
+QToolButton#quickDangerIconButton:disabled {
+    color: #64748b;
+    background: #090e13;
+    border-color: #17212c;
 }
 QStatusBar {
     background: #0b1117;
@@ -767,6 +829,12 @@ QLabel#navStatsText {
 QLabel#navStatsText span {
     white-space: nowrap;
 }
+QLabel#inspectorText {
+    background: transparent;
+    color: #d5dee9;
+    font-size: 13px;
+    line-height: 1.55;
+}
 QLabel#statChip {
     border: 1px solid #283747;
     border-radius: 8px;
@@ -791,14 +859,14 @@ QLineEdit#detailValueInput {
     background: #0b1117;
     border: 1px solid #274052;
     border-radius: 7px;
-    color: #8ff7d2;
+    color: #dce6f1;
     padding: 4px 8px;
     font-weight: 700;
-    selection-background-color: #0f766e;
+    selection-background-color: #2f4050;
     selection-color: #ffffff;
 }
 QLineEdit#detailValueInput:focus {
-    border-color: #14b8a6;
+    border-color: #4b5f73;
 }
 QLabel#footerMetric {
     background: transparent;
@@ -992,10 +1060,10 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def __init__(self, document: Any) -> None:
             super().__init__(document)
-            self._prompt_format = self._format("#60a5fa")
+            self._prompt_format = self._format("#8fb3d1")
             self._command_format = self._format("#f8fafc", bold=True)
             self._info_format = self._format("#94a3b8", bold=True)
-            self._success_format = self._format("#5eead4", bold=True)
+            self._success_format = self._format("#86cfa3", bold=True)
             self._warning_format = self._format("#fbbf24", bold=True)
             self._error_format = self._format("#f87171", bold=True)
 
@@ -1475,8 +1543,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._submit_handler: Callable[[str], None] | None = None
             self._enter_sends = False
             self.setObjectName("commandRecordEditor")
-            self.setMinimumHeight(132)
-            self.setMaximumHeight(180)
+            self.setMinimumHeight(104)
+            self.setMaximumHeight(150)
             self.setTabChangesFocus(True)
             self.setPlaceholderText("在此输入命令...")
 
@@ -1529,6 +1597,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.current_command_group = 0
             self.command_record_collapsed = False
             self.command_enter_sends = False
+            self.connection_params_collapsed = True
             self.command_tab_buttons: list[QToolButton] = []
             self.command_tab_close_buttons: list[QToolButton] = []
             self.state_path = self.desktop_state_path()
@@ -1677,26 +1746,19 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.stats_label = QLabel("设备 0  空闲 0  占用 0  流水线 0  其他 0")
             self.stats_label.setObjectName("navStatsText")
             self.stats_label.setTextFormat(Qt.RichText)
-            stats_layout.addWidget(self.stats_caption_label)
-            stats_layout.addStretch(1)
-            stats_layout.addWidget(self.stats_label)
-            nav_layout.addWidget(stats_frame)
-
-            active_filter_frame = QFrame()
-            active_filter_frame.setObjectName("activeFilterBar")
-            active_filter_layout = QHBoxLayout(active_filter_frame)
-            active_filter_layout.setContentsMargins(10, 8, 10, 8)
-            active_filter_layout.setSpacing(8)
             self.filter_summary_label = QLabel("当前显示全部设备")
             self.filter_summary_label.setObjectName("activeFilterText")
             self.filter_summary_label.setTextFormat(Qt.RichText)
-            self.filter_summary_label.setWordWrap(True)
+            self.filter_summary_label.setWordWrap(False)
+            stats_layout.addWidget(self.stats_caption_label)
+            stats_layout.addWidget(self.stats_label)
+            stats_layout.addStretch(1)
+            stats_layout.addWidget(self.filter_summary_label, 1)
             self.clear_filters_button = QPushButton("清空")
             self.clear_filters_button.setObjectName("ghostButton")
             self.clear_filters_button.setEnabled(False)
-            active_filter_layout.addWidget(self.filter_summary_label, 1)
-            active_filter_layout.addWidget(self.clear_filters_button)
-            nav_layout.addWidget(active_filter_frame)
+            stats_layout.addWidget(self.clear_filters_button)
+            nav_layout.addWidget(stats_frame)
 
             self.device_table = self._new_table(["设备", "领域", "CPU", "状态"])
             self.device_table.setMinimumHeight(320)
@@ -1738,15 +1800,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             panel.setObjectName("inspectorRail")
             layout = QVBoxLayout(panel)
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(10)
+            layout.setSpacing(8)
 
             detail_group = QGroupBox("当前设备")
             detail_group.setObjectName("deviceDetailCard")
             detail_layout = QVBoxLayout(detail_group)
-            detail_layout.setContentsMargins(12, 16, 12, 12)
-            detail_layout.setSpacing(10)
+            detail_layout.setContentsMargins(12, 14, 12, 12)
+            detail_layout.setSpacing(8)
             self.device_summary_card = QLabel("请选择一台设备。")
-            self.device_summary_card.setObjectName("detailCard")
+            self.device_summary_card.setObjectName("inspectorText")
             self.device_summary_card.setWordWrap(True)
             self.device_summary_card.setTextFormat(Qt.RichText)
             self.device_summary_card.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -1757,7 +1819,27 @@ if PYSIDE6_IMPORT_ERROR is None:
             auth_group = QGroupBox("连接参数")
             auth_group.setObjectName("authCard")
             auth_layout = QVBoxLayout(auth_group)
-            auth_layout.setSpacing(10)
+            auth_layout.setContentsMargins(12, 16, 12, 12)
+            auth_layout.setSpacing(8)
+
+            auth_header = QHBoxLayout()
+            auth_header.setContentsMargins(0, 0, 0, 0)
+            auth_header.setSpacing(8)
+            auth_hint = QLabel("账号和密码来自设备信息")
+            auth_hint.setObjectName("sectionCopy")
+            self.connection_params_toggle_button = QToolButton()
+            self.connection_params_toggle_button.setObjectName("inspectorToggleButton")
+            self.connection_params_toggle_button.setText("展开")
+            self.connection_params_toggle_button.setToolTip("展开或收起连接参数")
+            auth_header.addWidget(auth_hint)
+            auth_header.addStretch(1)
+            auth_header.addWidget(self.connection_params_toggle_button)
+            auth_layout.addLayout(auth_header)
+
+            self.connection_params_body = QWidget()
+            body_layout = QVBoxLayout(self.connection_params_body)
+            body_layout.setContentsMargins(0, 0, 0, 0)
+            body_layout.setSpacing(8)
 
             device_form_group = QGroupBox("设备 Telnet")
             device_form = QFormLayout(device_form_group)
@@ -1785,9 +1867,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             linux_form.addRow("用户名", self.linux_username_input)
             linux_form.addRow("密码", self.linux_password_input)
 
-            auth_layout.addWidget(device_form_group)
-            auth_layout.addWidget(linux_form_group)
+            body_layout.addWidget(device_form_group)
+            body_layout.addWidget(linux_form_group)
+            auth_layout.addWidget(self.connection_params_body)
             layout.addWidget(auth_group)
+            self.apply_connection_params_state()
             return panel
 
         def _build_center_panel(self) -> QWidget:
@@ -1828,12 +1912,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_widget.tabBar().setUsesScrollButtons(True)
             self.center_stage_stack.addWidget(empty_state)
             self.center_stage_stack.addWidget(self.session_tab_widget)
-            quick_action_row = QHBoxLayout()
-            quick_action_row.setContentsMargins(0, 8, 0, 8)
+            quick_action_bar = QFrame()
+            quick_action_bar.setObjectName("sessionQuickBar")
+            quick_action_row = QHBoxLayout(quick_action_bar)
+            quick_action_row.setContentsMargins(8, 5, 8, 5)
+            quick_action_row.setSpacing(5)
             self.session_jump_combo = QComboBox()
             self.session_jump_combo.setObjectName("sessionJumpCombo")
-            self.session_jump_combo.setMinimumWidth(280)
-            self.session_jump_combo.setMaximumWidth(420)
+            self.session_jump_combo.setMinimumWidth(240)
+            self.session_jump_combo.setMaximumWidth(360)
             self.session_jump_combo.setToolTip("快速跳转到已打开的终端会话")
             quick_action_row.addWidget(self.session_jump_combo)
             quick_action_row.addStretch(1)
@@ -1858,16 +1945,18 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_log_button.setText("日")
             self.quick_log_button.setToolTip("打开当前会话日志")
             self.quick_disconnect_button = QToolButton()
-            self.quick_disconnect_button.setObjectName("quickActionIconButton")
+            self.quick_disconnect_button.setObjectName("quickDangerIconButton")
             self.quick_disconnect_button.setText("断")
             self.quick_disconnect_button.setToolTip("断开当前会话")
             quick_action_row.addWidget(self.quick_telnet_button)
             quick_action_row.addWidget(self.quick_ssh_button)
+            quick_action_row.addSpacing(6)
             quick_action_row.addWidget(self.quick_occupancy_button)
             quick_action_row.addWidget(self.quick_reconnect_button)
             quick_action_row.addWidget(self.quick_log_button)
+            quick_action_row.addSpacing(6)
             quick_action_row.addWidget(self.quick_disconnect_button)
-            layout.addLayout(quick_action_row)
+            layout.addWidget(quick_action_bar)
             layout.addWidget(self._build_command_record_panel())
             self.refresh_workspace_context()
             self.update_center_stage_state()
@@ -1958,8 +2047,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             frame = QFrame()
             frame.setObjectName("commandRecordDock")
             self.command_record_frame = frame
-            frame.setMinimumHeight(196)
-            frame.setMaximumHeight(240)
+            frame.setMinimumHeight(164)
+            frame.setMaximumHeight(210)
             layout = QVBoxLayout(frame)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(0)
@@ -2097,6 +2186,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_clear_button.clicked.connect(self.clear_current_command_record)
             self.command_enter_mode_button.clicked.connect(self.toggle_command_enter_mode)
             self.command_record_toggle_button.clicked.connect(self.toggle_command_record_panel)
+            self.connection_params_toggle_button.clicked.connect(self.toggle_connection_params)
 
             self.session_tab_widget.currentChanged.connect(self.handle_session_tab_changed)
             self.session_tab_widget.tabCloseRequested.connect(self.close_device_tab_at_index)
@@ -2165,6 +2255,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.current_command_group = min(max(loaded_index, 0), len(self.command_record_groups) - 1)
             self.command_record_collapsed = bool(payload.get("command_record_collapsed", False))
             self.command_enter_sends = bool(payload.get("command_enter_sends", False))
+            self.connection_params_collapsed = bool(payload.get("connection_params_collapsed", True))
             loaded_log_directory = str(payload.get("log_directory") or "").strip()
             if loaded_log_directory:
                 self.log_directory = Path(loaded_log_directory).expanduser()
@@ -2182,6 +2273,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "current_command_group": self.current_command_group_index(),
                     "command_record_collapsed": self.command_record_collapsed,
                     "command_enter_sends": self.command_enter_sends,
+                    "connection_params_collapsed": self.connection_params_collapsed,
                     "log_directory": str(self.log_directory),
                 }
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2566,12 +2658,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             self.command_record_input.set_enter_sends(self.command_enter_sends)
             hint = (
-                "</>  常用命令已隐藏"
+                "常用命令已隐藏"
                 if self.command_record_collapsed
                 else (
-                    "</>  常用命令    Enter: 发送 | Ctrl+Enter: 换行"
+                    "常用命令  ·  Enter 发送"
                     if self.command_enter_sends
-                    else "</>  常用命令    Enter: 换行 | Ctrl+Enter: 发送"
+                    else "常用命令  ·  Ctrl+Enter 发送"
                 )
             )
             self.command_record_hint_label.setText(hint)
@@ -2589,12 +2681,24 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.apply_command_record_panel_state()
             self.schedule_desktop_state_save()
 
+        def toggle_connection_params(self) -> None:
+            self.connection_params_collapsed = not self.connection_params_collapsed
+            self.apply_connection_params_state()
+            self.schedule_desktop_state_save()
+
+        def apply_connection_params_state(self) -> None:
+            if not hasattr(self, "connection_params_body"):
+                return
+            collapsed = self.connection_params_collapsed
+            self.connection_params_body.setVisible(not collapsed)
+            self.connection_params_toggle_button.setText("展开" if collapsed else "收起")
+
         def apply_command_record_panel_state(self) -> None:
             collapsed = self.command_record_collapsed
             self.command_record_input.setVisible(not collapsed)
             self.command_record_footer.setVisible(not collapsed)
-            self.command_record_frame.setMinimumHeight(29 if collapsed else 196)
-            self.command_record_frame.setMaximumHeight(29 if collapsed else 240)
+            self.command_record_frame.setMinimumHeight(29 if collapsed else 164)
+            self.command_record_frame.setMaximumHeight(29 if collapsed else 210)
             self.command_record_toggle_button.setText("展开" if collapsed else "收起")
             self.command_record_hint_label.setText(
                 "</>  常用命令已隐藏"
@@ -2762,7 +2866,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 " ".join(
                     [
                         self.stat_chip_html("设备", total, "#edf5ff"),
-                        self.stat_chip_html("空闲", idle, "#8ff7d2"),
+                        self.stat_chip_html("空闲", idle, "#86cfa3"),
                         self.stat_chip_html("占用", occupied, "#fb923c"),
                         self.stat_chip_html("流水线", pipeline, "#fbbf24"),
                         self.stat_chip_html("其他", other, "#a8b5c4"),
@@ -3127,7 +3231,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def filter_chip_html(self, label: str, value: str) -> str:
             return (
-                f"<span style='color:#8ff7d2;font-weight:700;background:#0f302b;"
+                f"<span style='color:#d5dee9;font-weight:700;background:#17212c;"
                 f"padding:2px 6px;border-radius:6px'>{html.escape(label)}: {html.escape(value)}</span>"
             )
 
@@ -3324,29 +3428,25 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_ssh_ip_value.setText(device.ssh_ip)
             self.device_telnet_ip_value.setText(device.telnet_ip)
             owner_text = device.owner or "未占用"
-            owner_color = "#8ff7d2" if device.owner else "#96a6b8"
+            owner_color = "#cbd5e1" if device.owner else "#96a6b8"
+            telnet_text = f"{device.telnet_ip}:{device.telnet_port}"
+            ssh_text = f"{device.ssh_ip}:{device.ssh_port}"
             self.device_summary_card.setText(
                 (
-                    f"<div style='font-size:20px;font-weight:800;color:#f8fbff'>{html.escape(device.name)}</div>"
-                    f"<div style='margin-top:6px;color:#96a6b8;font-size:12px'>"
-                    f"<span style='color:#8ff7d2;font-weight:700'>{html.escape(device.id)}</span>"
-                    f" &nbsp;/&nbsp; {html.escape(device.domain)} &nbsp;/&nbsp; {html.escape(device.device_type)}"
+                    f"<div style='font-size:18px;font-weight:800;color:#f8fbff'>{html.escape(device.name)}</div>"
+                    f"<div style='margin-top:5px;color:#8ea7c2;font-size:12px'>"
+                    f"<span style='color:#cbd5e1;font-weight:700'>{html.escape(device.id)}</span>"
+                    f" &nbsp;·&nbsp; {html.escape(device.domain)}"
                     f"</div>"
-                    f"<div style='margin-top:12px;color:#e5edf6;line-height:1.9'>"
-                    f"<span style='color:#96a6b8'>当前状态</span>&nbsp;&nbsp;"
+                    f"<div style='margin-top:12px;color:#d5dee9;line-height:1.85'>"
+                    f"<span style='color:#7f92a6'>状态</span>&nbsp;&nbsp;"
                     f"<span style='color:{status_color(device.status)};font-weight:800'>{html.escape(device.status)}</span><br>"
-                    f"<span style='color:#96a6b8'>占用人</span>&nbsp;&nbsp;"
-                    f"<span style='color:{owner_color};font-weight:800'>{html.escape(owner_text)}</span>"
-                    f"</div>"
-                    f"<div style='margin-top:14px;padding-top:12px;border-top:1px solid #223244'>"
-                    f"<div style='color:#8ea7c2;font-size:12px;font-weight:700'>资产信息</div>"
-                    f"<div style='margin-top:8px;color:#e5edf6;line-height:1.9'>"
-                    f"<span style='color:#96a6b8'>厂商</span>&nbsp;&nbsp;"
-                    f"<span style='font-weight:700'>{html.escape(device.vendor)}</span> / {html.escape(device.model)}<br>"
-                    f"<span style='color:#96a6b8'>位置</span>&nbsp;&nbsp;"
-                    f"<span style='font-weight:700'>{html.escape(device.site)}</span> / {html.escape(device.rack)}<br>"
-                    f"<span style='color:#96a6b8'>版本</span>&nbsp;&nbsp;{html.escape(device.version)}"
-                    f"</div>"
+                    f"<span style='color:#7f92a6'>占用</span>&nbsp;&nbsp;"
+                    f"<span style='color:{owner_color};font-weight:700'>{html.escape(owner_text)}</span><br>"
+                    f"<span style='color:#7f92a6'>Telnet</span>&nbsp;&nbsp;"
+                    f"<span style='font-weight:700'>{html.escape(telnet_text)}</span><br>"
+                    f"<span style='color:#7f92a6'>SSH</span>&nbsp;&nbsp;"
+                    f"<span style='font-weight:700'>{html.escape(ssh_text)}</span>"
                     f"</div>"
                 )
             )
@@ -3393,7 +3493,25 @@ if PYSIDE6_IMPORT_ERROR is None:
             device = self.get_device_by_id(state.device_id)
             device_name = device.name if device is not None else state.device_id
             kind = "Telnet" if state.kind == "device" else "SSH"
-            return f"{device_name} / {kind} / {state.title} / {state.status_text}"
+            return f"{device_name} · {self.session_display_title(state, kind)} · {self.session_status_label(state.status_text)}"
+
+        @staticmethod
+        def session_display_title(state: SessionTabState, kind: str) -> str:
+            title = state.title.strip()
+            if title.lower().startswith(kind.lower()):
+                return title
+            return f"{kind} {title}" if title else kind
+
+        @staticmethod
+        def session_status_label(status: str) -> str:
+            normalized = status.strip().lower()
+            if normalized == "connected":
+                return "已连接"
+            if normalized == "connecting":
+                return "连接中"
+            if normalized == "disconnected":
+                return "未连接"
+            return status or "未知"
 
         def handle_session_jump_activated(self, index: int) -> None:
             tab_id = str(self.session_jump_combo.itemData(index) or "")
