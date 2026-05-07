@@ -250,6 +250,8 @@ class ApiDeviceRepository:
         telnet_password = str(connection.get("telnet_password", legacy_password))
         ssh_username = str(connection.get("ssh_username", legacy_username))
         ssh_password = str(connection.get("ssh_password", legacy_password))
+        serial_username = str(connection.get("serial_username", telnet_username))
+        serial_password = str(connection.get("serial_password", telnet_password))
         return Device(
             id=str(payload.get("device_id", "")),
             name=str(payload.get("display_name", "")),
@@ -272,6 +274,10 @@ class ApiDeviceRepository:
             telnet_port=int(connection.get("telnet_port", 23) or 23),
             ssh_username=ssh_username,
             ssh_password=ssh_password,
+            serial_ip=str(connection.get("serial_host", "")),
+            serial_port=int(connection.get("serial_port", 23) or 23),
+            serial_username=serial_username,
+            serial_password=serial_password,
         )
 
 

@@ -400,13 +400,13 @@ class DeviceServiceState:
 
     def list_devices(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [device_to_payload(device) for device in self._devices]
+            return [device_to_payload(device, self.current_user) for device in self._devices]
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "revision": self._revision,
-                "devices": [device_to_payload(device) for device in self._devices],
+                "devices": [device_to_payload(device, self.current_user) for device in self._devices],
             }
 
     def my_occupancy_snapshot(self) -> dict[str, Any]:
@@ -416,7 +416,7 @@ class DeviceServiceState:
                 "current_user": self.current_user,
                 "revision": self._revision,
                 "device_ids": [device.id for device in devices],
-                "devices": [device_to_payload(device) for device in devices],
+                "devices": [device_to_payload(device, self.current_user) for device in devices],
             }
 
     def current_revision(self) -> int:
@@ -442,7 +442,7 @@ class DeviceServiceState:
             return {
                 "message": f"Claimed {device.name}",
                 "revision": self._revision,
-                "device": device_to_payload(device),
+                "device": device_to_payload(device, self.current_user),
             }
 
     def toggle_device(self, device_id: str, user: str) -> dict[str, Any]:
@@ -464,7 +464,7 @@ class DeviceServiceState:
             return {
                 "message": message,
                 "revision": self._revision,
-                "device": device_to_payload(device),
+                "device": device_to_payload(device, self.current_user),
             }
 
     def release_device(self, device_id: str, user: str) -> dict[str, Any]:
@@ -479,7 +479,7 @@ class DeviceServiceState:
             return {
                 "message": f"Released {device.name}",
                 "revision": self._revision,
-                "device": device_to_payload(device),
+                "device": device_to_payload(device, self.current_user),
             }
 
     def _find_device(self, device_id: str) -> Device:
@@ -501,7 +501,8 @@ class ConflictError(WebApiError):
     status = HTTPStatus.CONFLICT
 
 
-def device_to_payload(device: Device) -> dict[str, Any]:
+def device_to_payload(device: Device, current_user: str = "") -> dict[str, Any]:
+    can_view_serial = bool(current_user and device.owner == current_user)
     return {
         "device_id": device.id,
         "display_name": device.name,
@@ -516,10 +517,14 @@ def device_to_payload(device: Device) -> dict[str, Any]:
             "ssh_port": device.ssh_port,
             "telnet_host": device.telnet_ip,
             "telnet_port": device.telnet_port,
+            "serial_host": device.serial_ip if can_view_serial else "",
+            "serial_port": device.serial_port if can_view_serial else 0,
             "ssh_username": device.ssh_username or device.username,
             "ssh_password": device.ssh_password or device.password,
             "telnet_username": device.username,
             "telnet_password": device.password,
+            "serial_username": device.serial_username or device.username,
+            "serial_password": device.serial_password or device.password,
             "username": device.username,
             "password": device.password,
         },

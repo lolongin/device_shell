@@ -9,6 +9,7 @@ import queue
 import re
 import shutil
 import threading
+import time
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ try:
         QPainter,
         QPen,
         QPixmap,
+        QTextBlockFormat,
         QSyntaxHighlighter,
         QTextCharFormat,
         QTextCursor,
@@ -79,6 +81,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QPainter = None
     QPen = None
     QPixmap = None
+    QTextBlockFormat = None
     QSyntaxHighlighter = None
     QTextCharFormat = None
     QUrl = None
@@ -625,7 +628,8 @@ QPlainTextEdit#terminalLog {
     border-radius: 10px;
     font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
     font-size: 14px;
-    padding: 16px;
+    font-weight: 400;
+    padding: 18px;
     selection-background-color: #303842;
     selection-color: #f8fafc;
 }
@@ -973,6 +977,7 @@ class DeviceTabState:
     next_session_index: int = 1
     next_telnet_index: int = 1
     next_ssh_index: int = 1
+    next_serial_index: int = 1
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
@@ -1089,15 +1094,15 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def __init__(self, document: Any) -> None:
             super().__init__(document)
-            self._prompt_format = self._format("#e1e6ed", bold=True)
-            self._command_format = self._format("#f8fafc", bold=True)
-            self._info_format = self._format("#94a3b8", bold=True)
-            self._success_format = self._format("#90b79a", bold=True)
-            self._warning_format = self._format("#fbbf24", bold=True)
-            self._error_format = self._format("#f87171", bold=True)
-            self._field_label_format = self._format("#d7dde5", bold=True)
-            self._field_separator_format = self._format("#7f8b99")
-            self._field_value_format = self._format("#cbd5e1")
+            self._prompt_format = self._format("#d8dee6")
+            self._command_format = self._format("#f4f7fb")
+            self._info_format = self._format("#9aa6b2")
+            self._success_format = self._format("#8fb89b")
+            self._warning_format = self._format("#e6b85c")
+            self._error_format = self._format("#e98585")
+            self._field_label_format = self._format("#dce3ec")
+            self._field_separator_format = self._format("#7d8794")
+            self._field_value_format = self._format("#c2ccd8")
 
         def highlightBlock(self, text: str) -> None:  # noqa: N802
             stripped = text.lstrip()
@@ -1227,6 +1232,12 @@ if PYSIDE6_IMPORT_ERROR is None:
         DEFAULT_HISTORY = 2000
         MIN_COLUMNS = 80
         MIN_LINES = 8
+        RENDER_INTERVAL_MS = 16
+        LARGE_OUTPUT_RENDER_INTERVAL_MS = 35
+        LARGE_OUTPUT_THRESHOLD = 32768
+        MAX_FEED_CHARS_PER_FRAME = 32768
+        MAX_RENDER_LINES = 600
+        LINE_SPACING_MAX_BLOCKS = 600
 
         def __init__(self) -> None:
             super().__init__()
@@ -1239,6 +1250,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._cursor_row = 0
             self._cursor_col = 0
             self._last_output_char = ""
+            self._pending_output_chunks: list[str] = []
+            self._pending_render_kind = ""
+            self._last_render_text = ""
+            self._terminal_cursor_position = 0
             self.setObjectName("terminalLog")
             self.setReadOnly(False)
             self.setUndoRedoEnabled(False)
@@ -1247,6 +1262,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setCenterOnScroll(False)
             self.setWordWrapMode(QTextOption.NoWrap)
             self._syntax_highlighter = TerminalSyntaxHighlighter(self.document())
+            self._render_timer = QTimer(self)
+            self._render_timer.setSingleShot(True)
+            self._render_timer.timeout.connect(self._flush_pending_render)
             self._init_terminal_backend()
 
         def _init_terminal_backend(self) -> None:
@@ -1303,13 +1321,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self._command_recorder(command)
 
         def append_output(self, message: str) -> None:
-            message = self._normalize_output_newlines(message)
             if self._pyte_stream is not None:
-                self._sync_terminal_dimensions()
-                self._pyte_stream.feed(message)
-                self._render_pyte_buffer()
+                self._pending_output_chunks.append(self._normalize_output_newlines(message))
+                self._schedule_terminal_render("pyte", len(message))
                 return
 
+            message = self._normalize_output_newlines(message)
             index = 0
             while index < len(message):
                 char = message[index]
@@ -1336,7 +1353,51 @@ if PYSIDE6_IMPORT_ERROR is None:
                     self._write_char(char)
                 index += 1
 
-            self._render_buffer()
+            self._schedule_terminal_render("buffer", len(message))
+
+        def _schedule_terminal_render(self, kind: str, message_size: int = 0) -> None:
+            self._pending_render_kind = "pyte" if kind == "pyte" else "buffer"
+            if self._render_timer.isActive():
+                return
+            interval = (
+                self.LARGE_OUTPUT_RENDER_INTERVAL_MS
+                if message_size >= self.LARGE_OUTPUT_THRESHOLD
+                else self.RENDER_INTERVAL_MS
+            )
+            self._render_timer.start(interval)
+
+        def _flush_pending_render(self) -> None:
+            kind = self._pending_render_kind
+            self._pending_render_kind = ""
+            if kind == "pyte":
+                has_more_output = self._flush_pending_pyte_output()
+                self._render_pyte_buffer_now()
+                if has_more_output:
+                    self._schedule_terminal_render("pyte", self.LARGE_OUTPUT_THRESHOLD)
+            elif kind == "buffer":
+                self._render_buffer_now()
+
+        def _flush_pending_pyte_output(self) -> bool:
+            if self._pyte_stream is None or not self._pending_output_chunks:
+                return False
+            message = "".join(self._pending_output_chunks)
+            if len(message) > self.MAX_FEED_CHARS_PER_FRAME:
+                feed_message = message[: self.MAX_FEED_CHARS_PER_FRAME]
+                self._pending_output_chunks = [message[self.MAX_FEED_CHARS_PER_FRAME :]]
+                has_more_output = True
+            else:
+                feed_message = message
+                self._pending_output_chunks.clear()
+                has_more_output = False
+            self._sync_terminal_dimensions()
+            self._pyte_stream.feed(feed_message)
+            return has_more_output
+
+        def _flush_render_before_user_input(self) -> None:
+            if not self._render_timer.isActive():
+                return
+            self._render_timer.stop()
+            self._flush_pending_render()
 
         def _normalize_output_newlines(self, message: str) -> str:
             normalized: list[str] = []
@@ -1349,7 +1410,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._last_output_char = previous
             return "".join(normalized)
 
-        def _render_pyte_buffer(self) -> None:
+        def _render_pyte_buffer_now(self) -> None:
             if self._pyte_screen is None:
                 return
             self._sync_terminal_dimensions()
@@ -1372,7 +1433,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 lines = [""]
 
             cursor = self.textCursor()
-            cursor.setPosition(self._cursor_position_for_lines(lines, cursor_row, cursor_col))
+            self._terminal_cursor_position = self._cursor_position_for_lines(lines, cursor_row, cursor_col)
+            cursor.setPosition(self._terminal_cursor_position)
             self.setTextCursor(cursor)
             self.setCursorWidth(0 if getattr(self._pyte_screen.cursor, "hidden", False) else 2)
             self.ensureCursorVisible()
@@ -1389,7 +1451,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             start = min(non_empty_rows[0], cursor_row)
             end = max(non_empty_rows[-1], cursor_row) + 1
             trimmed = lines[start:end]
-            return trimmed, cursor_row - start
+            cursor_index = cursor_row - start
+            if len(trimmed) > self.MAX_RENDER_LINES:
+                window_start = min(
+                    max(0, cursor_index - self.MAX_RENDER_LINES + 1),
+                    len(trimmed) - self.MAX_RENDER_LINES,
+                )
+                trimmed = trimmed[window_start : window_start + self.MAX_RENDER_LINES]
+                cursor_index -= window_start
+            return trimmed, cursor_index
 
         def _line_to_text(self, line: Any, preserve_to_column: int | None = None) -> str:
             if isinstance(line, str):
@@ -1428,8 +1498,24 @@ if PYSIDE6_IMPORT_ERROR is None:
             return position + min(column, len(lines[safe_row]))
 
         def _set_terminal_text(self, text: str) -> None:
+            if text == self._last_render_text:
+                return
+            self._last_render_text = text
             self.setPlainText(text)
-            self._syntax_highlighter.rehighlight()
+            block_count = self.document().blockCount()
+            if block_count <= self.LINE_SPACING_MAX_BLOCKS:
+                self._apply_terminal_block_spacing()
+                self._syntax_highlighter.rehighlight()
+
+        def _apply_terminal_block_spacing(self) -> None:
+            if QTextBlockFormat is None:
+                return
+            cursor = QTextCursor(self.document())
+            cursor.select(QTextCursor.Document)
+            block_format = QTextBlockFormat()
+            line_height_type = getattr(QTextBlockFormat.ProportionalHeight, "value", QTextBlockFormat.ProportionalHeight)
+            block_format.setLineHeight(118.0, int(line_height_type))
+            cursor.mergeBlockFormat(block_format)
 
         def _apply_escape_sequence(self, message: str, index: int) -> int:
             if index + 1 >= len(message) or message[index + 1] != "[":
@@ -1494,7 +1580,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             del line[start : start + count]
 
-        def _render_buffer(self) -> None:
+        def _render_buffer_now(self) -> None:
             text = "\n".join("".join(line) for line in self._buffer_lines)
             self._set_terminal_text(text)
 
@@ -1508,7 +1594,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
 
             cursor = self.textCursor()
-            cursor.setPosition(block.position() + min(self._cursor_col, len(block.text())))
+            self._terminal_cursor_position = block.position() + min(self._cursor_col, len(block.text()))
+            cursor.setPosition(self._terminal_cursor_position)
             self.setTextCursor(cursor)
             self.ensureCursorVisible()
 
@@ -1521,7 +1608,24 @@ if PYSIDE6_IMPORT_ERROR is None:
         def resizeEvent(self, event: Any) -> None:  # noqa: N802
             super().resizeEvent(event)
             if self._sync_terminal_dimensions():
-                self._render_pyte_buffer()
+                self._flush_pending_pyte_output()
+                self._render_pyte_buffer_now()
+
+        def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+            super().mousePressEvent(event)
+            if event.button() == Qt.LeftButton and not self.textCursor().hasSelection():
+                self._restore_terminal_cursor()
+
+        def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+            super().mouseReleaseEvent(event)
+            if event.button() == Qt.LeftButton and not self.textCursor().hasSelection():
+                self._restore_terminal_cursor()
+
+        def _restore_terminal_cursor(self) -> None:
+            cursor = self.textCursor()
+            position = max(0, min(self._terminal_cursor_position, self.document().characterCount() - 1))
+            cursor.setPosition(position)
+            self.setTextCursor(cursor)
 
         def keyPressEvent(self, event: Any) -> None:  # noqa: N802
             if self._raw_sender is None:
@@ -1618,6 +1722,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setMinimumHeight(88)
             self.setMaximumHeight(132)
             self.setTabChangesFocus(True)
+            self.setUndoRedoEnabled(False)
+            self.setLineWrapMode(QPlainTextEdit.NoWrap)
             self.setPlaceholderText("在此输入命令...")
 
         def set_submit_handler(self, handler: Callable[[str], None]) -> None:
@@ -1685,7 +1791,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.state_save_timer.setSingleShot(True)
             self.state_save_timer.timeout.connect(self.save_desktop_state)
             self.ui_timer = QTimer(self)
-            self.ui_timer.setInterval(50)
+            self.ui_timer.setInterval(10)
             self.ui_timer.timeout.connect(self._drain_ui_queue)
 
             self.load_desktop_state()
@@ -1956,6 +2062,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_form.addRow("用户名", self.device_username_input)
             device_form.addRow("密码", self.device_password_input)
 
+            serial_form_group = QGroupBox("串口 Telnet")
+            serial_form = QFormLayout(serial_form_group)
+            serial_form.setContentsMargins(10, 14, 10, 10)
+            serial_form.setVerticalSpacing(8)
+            serial_form.setHorizontalSpacing(8)
+            serial_form.setLabelAlignment(Qt.AlignRight)
+            self.device_serial_ip_value = SelectAllLineEdit()
+            self.device_serial_ip_value.setPlaceholderText("占用后可见")
+            serial_form.addRow("串口地址", self.device_serial_ip_value)
+
             linux_form_group = QGroupBox("Linux SSH")
             linux_form = QFormLayout(linux_form_group)
             linux_form.setContentsMargins(10, 14, 10, 10)
@@ -1970,6 +2086,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             linux_form.addRow("密码", self.linux_password_input)
 
             body_layout.addWidget(device_form_group)
+            body_layout.addWidget(serial_form_group)
             body_layout.addWidget(linux_form_group)
             auth_layout.addWidget(self.connection_params_body)
             layout.addWidget(auth_group)
@@ -1997,6 +2114,14 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawRoundedRect(5, 9, 10, 7, 2, 2)
                 painter.drawArc(6, 4, 8, 9, 0, 180 * 16)
                 painter.drawLine(10, 12, 10, 14)
+            elif kind == "serial":
+                painter.drawRoundedRect(4, 4, 12, 8, 2, 2)
+                painter.drawLine(7, 14, 13, 14)
+                painter.drawLine(8, 17, 12, 17)
+                painter.drawLine(10, 12, 10, 17)
+                painter.drawPoint(7, 8)
+                painter.drawPoint(10, 8)
+                painter.drawPoint(13, 8)
             elif kind == "owner":
                 painter.drawEllipse(7, 4, 6, 6)
                 painter.drawArc(4, 9, 12, 8, 20 * 16, 140 * 16)
@@ -2098,6 +2223,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "ssh",
                 "连接 Linux SSH",
             )
+            self.quick_serial_button = QToolButton()
+            self._configure_quick_action_button(
+                self.quick_serial_button,
+                "serial",
+                "连接串口 Telnet（占用后可用）",
+            )
             self.quick_occupancy_button = QToolButton()
             self._configure_quick_action_button(
                 self.quick_occupancy_button,
@@ -2125,6 +2256,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             quick_action_row.addWidget(self.quick_telnet_button)
             quick_action_row.addWidget(self.quick_ssh_button)
+            quick_action_row.addWidget(self.quick_serial_button)
             quick_action_row.addSpacing(6)
             quick_action_row.addWidget(self.quick_occupancy_button)
             quick_action_row.addWidget(self.quick_reconnect_button)
@@ -2355,6 +2487,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.quick_telnet_button.clicked.connect(self.open_device_session)
             self.quick_ssh_button.clicked.connect(self.open_linux_session)
+            self.quick_serial_button.clicked.connect(self.open_serial_session)
             self.quick_occupancy_button.clicked.connect(self.toggle_occupancy)
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
             self.quick_log_button.clicked.connect(self.open_current_session_log)
@@ -2447,7 +2580,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def schedule_desktop_state_save(self) -> None:
             if hasattr(self, "state_save_timer"):
-                self.state_save_timer.start(450)
+                self.state_save_timer.start(1200)
 
         def save_desktop_state(self) -> None:
             try:
@@ -2476,7 +2609,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
             device_name = self.safe_log_component(device.name or device.id, "device")
             session_name = self.safe_log_component(title, "session")
-            kind_name = "telnet" if kind == "device" else "ssh"
+            kind_name = "serial" if kind == "serial" else ("telnet" if kind == "device" else "ssh")
             filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
             return self.unique_log_path(self.log_directory.expanduser() / filename)
 
@@ -2903,12 +3036,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.ui_queue.put((callback, args))
 
         def _drain_ui_queue(self) -> None:
-            while True:
+            processed = 0
+            deadline = time.monotonic() + 0.012
+            while processed < 48 and time.monotonic() < deadline:
                 try:
                     callback, args = self.ui_queue.get_nowait()
                 except queue.Empty:
                     break
                 callback(*args)
+                processed += 1
 
         def run_blocking(
             self,
@@ -3273,11 +3409,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             return "\t".join([device.name, device.domain, device.cpu, device.status])
 
         def device_connection_copy_text(self, device: Device) -> str:
+            serial_text = (
+                f"{device.serial_ip}:{device.serial_port}"
+                if self.can_view_serial_connection(device)
+                else "占用后可见"
+            )
             return (
                 f"设备: {device.name}\n"
                 f"Telnet: {device.telnet_ip}:{device.telnet_port}\n"
                 f"Telnet 账号: {device.username}\n"
                 f"Telnet 密码: {device.password}\n"
+                f"串口: {serial_text}\n"
                 f"SSH: {device.ssh_ip}:{device.ssh_port}\n"
                 f"SSH 账号: {self.device_ssh_username(device)}\n"
                 f"SSH 密码: {self.device_ssh_password(device)}"
@@ -3313,19 +3455,52 @@ if PYSIDE6_IMPORT_ERROR is None:
                 password=password,
             )
 
+        def clone_serial_session(self, device: Device) -> None:
+            if not self.is_my_occupied_device(device):
+                self.show_warning("请先占用设备后再连接串口。")
+                self.set_status_message("串口连接需要先占用当前设备。")
+                return
+            if not device.serial_ip.strip():
+                self.show_warning("当前设备未返回串口 IP 和端口，请刷新或检查接口数据。")
+                self.set_status_message("串口地址不可用。")
+                return
+            username = self.device_serial_username(device).strip()
+            password = self.device_serial_password(device)
+            if not device.serial_ip.strip() or not username or not password:
+                self.show_warning("设备串口地址、用户名和密码不完整。")
+                return
+            self.ensure_session_tab(
+                kind="serial",
+                device=device,
+                host=device.serial_ip.strip(),
+                port=device.serial_port,
+                username=username,
+                password=password,
+            )
+
         def copy_device_field(self, device: Device, field: str) -> None:
+            serial_endpoint = (
+                f"{device.serial_ip}:{device.serial_port}"
+                if self.can_view_serial_connection(device)
+                else "占用后可见"
+            )
             field_map = {
                 "name": ("设备名", device.name),
                 "ssh_ip": ("SSH IP", device.ssh_ip),
                 "ssh_endpoint": ("SSH 地址", f"{device.ssh_ip}:{device.ssh_port}"),
                 "telnet_ip": ("Telnet IP", device.telnet_ip),
                 "telnet_endpoint": ("Telnet 地址", f"{device.telnet_ip}:{device.telnet_port}"),
+                "serial_ip": ("串口 IP", device.serial_ip if self.can_view_serial_connection(device) else ""),
+                "serial_endpoint": ("串口地址", serial_endpoint),
                 "username": ("Telnet 账号", device.username),
                 "password": ("Telnet 密码", device.password),
                 "ssh_username": ("SSH 账号", self.device_ssh_username(device)),
                 "ssh_password": ("SSH 密码", self.device_ssh_password(device)),
             }
             label, value = field_map[field]
+            if field == "serial_ip" and not value:
+                self.show_warning("请先占用设备后再查看串口 IP。")
+                return
             self.copy_text_to_clipboard(value, f"已复制{label}: {value}")
 
         def device_ssh_username(self, device: Device) -> str:
@@ -3333,6 +3508,15 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def device_ssh_password(self, device: Device) -> str:
             return device.ssh_password or device.password
+
+        def device_serial_username(self, device: Device) -> str:
+            return device.serial_username or device.username
+
+        def device_serial_password(self, device: Device) -> str:
+            return device.serial_password or device.password
+
+        def can_view_serial_connection(self, device: Device) -> bool:
+            return bool(device.serial_ip.strip() and self.is_my_occupied_device(device))
 
         def copy_selected_device_field(self, table: QTableWidget, field: str) -> None:
             device = self._device_from_table(table)
@@ -3434,28 +3618,36 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.select_device_in_table(device_id)
             self.activate_device(device_id)
+            device = self.get_device_by_id(device_id)
+            if device is None:
+                return
 
             menu = QMenu(table)
             copy_ssh_ip_action = menu.addAction("复制 SSH IP")
             copy_telnet_ip_action = menu.addAction("复制 Telnet IP")
+            copy_serial_ip_action = menu.addAction("复制串口 IP")
             copy_connection_action = menu.addAction("复制连接信息")
             menu.addSeparator()
             toggle_action = menu.addAction("占用 / 释放")
             menu.addSeparator()
             open_device_action = menu.addAction("打开设备终端")
             open_linux_action = menu.addAction("打开 Linux 后台")
+            open_serial_action = menu.addAction("打开串口")
+            serial_available = self.can_view_serial_connection(device)
+            copy_serial_ip_action.setEnabled(serial_available)
+            open_serial_action.setEnabled(serial_available)
 
             chosen = menu.exec(table.viewport().mapToGlobal(pos))
             if chosen is None:
-                return
-            device = self.get_device_by_id(device_id)
-            if device is None:
                 return
             if chosen == copy_ssh_ip_action:
                 self.copy_device_field(device, "ssh_ip")
                 return
             if chosen == copy_telnet_ip_action:
                 self.copy_device_field(device, "telnet_ip")
+                return
+            if chosen == copy_serial_ip_action:
+                self.copy_device_field(device, "serial_ip")
                 return
             if chosen == copy_connection_action:
                 self.copy_text_to_clipboard(
@@ -3471,6 +3663,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             if chosen == open_linux_action:
                 self.open_linux_session()
+                return
+            if chosen == open_serial_action:
+                self.open_serial_session()
 
         def show_terminal_context_menu(self, tab_id: str, terminal: InteractiveTerminal, pos: Any) -> None:
             state = self.session_tabs_by_id.get(tab_id)
@@ -3533,8 +3728,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             menu.addSeparator()
             actions["clone_telnet"] = menu.addAction("复制 Telnet")
             actions["clone_ssh"] = menu.addAction("复制 SSH")
+            actions["clone_serial"] = menu.addAction("复制串口")
             actions["copy_telnet_ip"] = menu.addAction("复制 Telnet IP")
             actions["copy_ssh_ip"] = menu.addAction("复制 SSH IP")
+            actions["copy_serial_ip"] = menu.addAction("复制串口 IP")
             actions["copy_connection"] = menu.addAction("复制连接信息")
             return actions
 
@@ -3578,11 +3775,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             if chosen == actions["clone_ssh"]:
                 self.clone_ssh_session(device)
                 return
+            if chosen == actions["clone_serial"]:
+                self.clone_serial_session(device)
+                return
             if chosen == actions["copy_telnet_ip"]:
                 self.copy_device_field(device, "telnet_ip")
                 return
             if chosen == actions["copy_ssh_ip"]:
                 self.copy_device_field(device, "ssh_ip")
+                return
+            if chosen == actions["copy_serial_ip"]:
+                self.copy_device_field(device, "serial_ip")
                 return
             if chosen == actions["copy_connection"]:
                 self.copy_text_to_clipboard(
@@ -3598,6 +3801,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_username_input.setText(device.username)
             self.device_password_input.setText(device.password)
             self.device_ssh_ip_value.setText(device.ssh_ip)
+            self.device_serial_ip_value.setText(
+                f"{device.serial_ip}:{device.serial_port}" if self.can_view_serial_connection(device) else ""
+            )
             self.linux_username_input.setText(self.device_ssh_username(device))
             self.linux_password_input.setText(self.device_ssh_password(device))
 
@@ -3607,14 +3813,21 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.device_summary_card.setText("请选择一台设备。")
                 self.device_ssh_ip_value.clear()
                 self.device_telnet_ip_value.clear()
+                self.device_serial_ip_value.clear()
                 return
 
             self.device_ssh_ip_value.setText(device.ssh_ip)
             self.device_telnet_ip_value.setText(device.telnet_ip)
+            serial_visible = self.can_view_serial_connection(device)
+            self.device_serial_ip_value.setText(
+                f"{device.serial_ip}:{device.serial_port}" if serial_visible else ""
+            )
             owner_text = device.owner or "未占用"
             owner_color = "#cbd5e1" if device.owner else "#96a6b8"
             telnet_text = f"{device.telnet_ip}:{device.telnet_port}"
             ssh_text = f"{device.ssh_ip}:{device.ssh_port}"
+            serial_text = f"{device.serial_ip}:{device.serial_port}" if serial_visible else "占用后可见"
+            serial_color = "#d5dee9" if serial_visible else "#7f92a6"
             self.device_summary_card.setText(
                 (
                     f"<div style='font-size:18px;font-weight:800;color:#f8fbff'>{html.escape(device.name)}</div>"
@@ -3629,6 +3842,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                     f"<span style='color:{owner_color};font-weight:700'>{html.escape(owner_text)}</span><br>"
                     f"<span style='color:#7f92a6'>Telnet</span>&nbsp;&nbsp;"
                     f"<span style='font-weight:700'>{html.escape(telnet_text)}</span><br>"
+                    f"<span style='color:#7f92a6'>串口</span>&nbsp;&nbsp;"
+                    f"<span style='color:{serial_color};font-weight:700'>{html.escape(serial_text)}</span><br>"
                     f"<span style='color:#7f92a6'>SSH</span>&nbsp;&nbsp;"
                     f"<span style='font-weight:700'>{html.escape(ssh_text)}</span>"
                     f"</div>"
@@ -3676,8 +3891,16 @@ if PYSIDE6_IMPORT_ERROR is None:
         def session_jump_text(self, state: SessionTabState) -> str:
             device = self.get_device_by_id(state.device_id)
             device_name = device.name if device is not None else state.device_id
-            kind = "Telnet" if state.kind == "device" else "SSH"
+            kind = self.session_kind_label(state.kind)
             return f"{device_name} · {self.session_display_title(state, kind)} · {self.session_status_label(state.status_text)}"
+
+        @staticmethod
+        def session_kind_label(kind: str) -> str:
+            if kind == "device":
+                return "Telnet"
+            if kind == "serial":
+                return "串口"
+            return "SSH"
 
         @staticmethod
         def session_display_title(state: SessionTabState, kind: str) -> str:
@@ -3803,6 +4026,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 password=password,
             )
 
+        def open_serial_session(self) -> None:
+            device = self.get_selected_device()
+            if device is None:
+                self.show_warning("请先选择设备。")
+                return
+            self.clone_serial_session(device)
+
         def ensure_session_tab(
             self,
             kind: str,
@@ -3889,6 +4119,10 @@ if PYSIDE6_IMPORT_ERROR is None:
                 number = device_tab.next_telnet_index
                 device_tab.next_telnet_index += 1
                 return f"Telnet #{number}"
+            if kind == "serial":
+                number = device_tab.next_serial_index
+                device_tab.next_serial_index += 1
+                return f"串口 #{number}"
             number = device_tab.next_ssh_index
             device_tab.next_ssh_index += 1
             return f"SSH #{number}"
@@ -3921,7 +4155,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             layout.addWidget(terminal, 1)
 
-            if kind == "device":
+            if kind in {"device", "serial"}:
                 session = HuaweiTelnetSession(
                     on_output=lambda message, tab_id=tab_id: self.dispatch_ui(self.append_session_output, tab_id, message),
                     on_status=lambda status, tab_id=tab_id: self.dispatch_ui(self.set_session_status, tab_id, status),
@@ -3952,7 +4186,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
-            kind_label = "Telnet" if kind == "device" else "SSH"
+            kind_label = self.session_kind_label(kind)
             self.write_session_log_line(
                 state,
                 "SYS",
@@ -4235,7 +4469,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
 
             if text == "\x7f":
-                text = "\x08" if state.kind == "device" else "\x7f"
+                text = "\x08" if state.kind in {"device", "serial"} else "\x7f"
             self.log_session_input(state, text)
 
             async def send() -> None:
@@ -4442,10 +4676,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.disconnect_session_tab(state.tab_id)
 
         def update_controls(self) -> None:
-            selected = self.get_selected_device() is not None
+            device = self.get_selected_device()
+            selected = device is not None
             state = self.current_session_state()
             self.quick_telnet_button.setEnabled(selected)
             self.quick_ssh_button.setEnabled(selected)
+            self.quick_serial_button.setEnabled(selected)
             self.quick_occupancy_button.setEnabled(selected)
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
             self.quick_log_button.setEnabled(state is not None)

@@ -42,6 +42,10 @@ class Device:
     telnet_port: int = 23
     ssh_username: str = ""
     ssh_password: str = ""
+    serial_ip: str = ""
+    serial_port: int = 23
+    serial_username: str = ""
+    serial_password: str = ""
 
 
 def sample_devices() -> list[Device]:
@@ -68,6 +72,10 @@ def sample_devices() -> list[Device]:
             telnet_port=2323,
             ssh_username=MOCK_LINUX_SSH_USER,
             ssh_password=MOCK_LINUX_SSH_PASSWORD,
+            serial_ip=MOCK_DEVICE_HOST,
+            serial_port=2323,
+            serial_username=MOCK_DEVICE_TELNET_USER,
+            serial_password=MOCK_DEVICE_TELNET_PASSWORD,
         ),
         Device(
             id="LOCAL-SSH-001",
