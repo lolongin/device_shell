@@ -21,6 +21,7 @@ DEFAULT_PORT = int(os.getenv("MOCK_LINUX_PORT", "2200"))
 DEFAULT_USERNAME = os.getenv("MOCK_LINUX_USERNAME", "ops")
 DEFAULT_PASSWORD = os.getenv("MOCK_LINUX_PASSWORD", "ops123")
 DEFAULT_HOSTNAME = os.getenv("MOCK_LINUX_HOSTNAME", "mock-linux")
+MAX_MOCK_OUTPUT_LINES = 100000
 
 
 def parse_args() -> argparse.Namespace:
@@ -286,6 +287,14 @@ class MockLinuxCommandProcessor:
         if tokens[0] == "echo":
             return self._handle_echo(tokens)
 
+        if tokens[0] in {"mock-output", "mock-log"}:
+            line_count = self._mock_line_count(tokens, default=20000)
+            return self._mock_plain_output(line_count), "", 0
+
+        if tokens[0] == "mock-ansi":
+            line_count = self._mock_line_count(tokens, default=5000)
+            return self._mock_ansi_output(line_count), "", 0
+
         if stripped == "find /tmp/huawei_logs":
             entries = [
                 path
@@ -295,6 +304,27 @@ class MockLinuxCommandProcessor:
             return ("\n".join(entries) + "\n") if entries else "", "", 0
 
         return "", f"bash: {tokens[0]}: command not found\n", 127
+
+    def _mock_line_count(self, tokens: list[str], *, default: int) -> int:
+        if len(tokens) < 2:
+            return default
+        try:
+            requested = int(tokens[1])
+        except ValueError:
+            return default
+        return max(1, min(requested, MAX_MOCK_OUTPUT_LINES))
+
+    def _mock_plain_output(self, line_count: int) -> str:
+        return "".join(
+            f"{index:06d} mock linux log output pid={1000 + index % 9000} level=info service=device-tui\n"
+            for index in range(1, line_count + 1)
+        )
+
+    def _mock_ansi_output(self, line_count: int) -> str:
+        return "".join(
+            f"\x1b[31mERROR\x1b[0m {index:06d} mock colored linux event retry={index % 5}\n"
+            for index in range(1, line_count + 1)
+        )
 
     def _handle_echo(self, tokens: list[str]) -> tuple[str, str, int]:
         if ">" in tokens or ">>" in tokens:

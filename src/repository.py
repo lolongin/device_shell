@@ -70,6 +70,9 @@ class DeviceRepository(Protocol):
     def release_device(self, device_id: str, user: str) -> str:
         ...
 
+    def power_off_device(self, device_id: str, user: str) -> str:
+        ...
+
     def current_revision(self) -> int:
         ...
 
@@ -119,6 +122,14 @@ class SampleDeviceRepository:
         device.owner = None
         device.status = STATUS_IDLE
         return f"Released {device.name}"
+
+    def power_off_device(self, device_id: str, user: str) -> str:
+        device = self._find_device(device_id)
+        if device.owner != user:
+            raise RepositoryConflictError(f"{device.name} is not occupied by {user}")
+        if not device.supports_power_off:
+            raise RepositoryConflictError(f"{device.name} does not support power off")
+        return f"Powered off {device.name}"
 
     def _find_device(self, device_id: str) -> Device:
         for device in self._devices:
@@ -229,6 +240,15 @@ class ApiDeviceRepository:
             raise RepositoryError(str(exc)) from exc
         return str(response.get("message", f"Released {device_id}"))
 
+    def power_off_device(self, device_id: str, user: str) -> str:
+        try:
+            response = self._api_client.power_off_device(device_id, user)
+        except ApiConflictError as exc:
+            raise RepositoryConflictError(str(exc)) from exc
+        except ApiClientError as exc:
+            raise RepositoryError(str(exc)) from exc
+        return str(response.get("message", f"Powered off {device_id}"))
+
     def current_revision(self) -> int:
         return self._api_client.current_revision()
 
@@ -252,6 +272,8 @@ class ApiDeviceRepository:
         ssh_password = str(connection.get("ssh_password", legacy_password))
         serial_username = str(connection.get("serial_username", telnet_username))
         serial_password = str(connection.get("serial_password", telnet_password))
+        capabilities = payload.get("capabilities", {})
+        power = payload.get("power", {})
         return Device(
             id=str(payload.get("device_id", "")),
             name=str(payload.get("display_name", "")),
@@ -278,7 +300,26 @@ class ApiDeviceRepository:
             serial_port=int(connection.get("serial_port", 23) or 23),
             serial_username=serial_username,
             serial_password=serial_password,
+            supports_power_off=self._truthy(
+                capabilities.get("power_off")
+                or capabilities.get("powerOff")
+                or capabilities.get("can_power_off")
+                or power.get("supports_power_off")
+                or power.get("power_off")
+                or payload.get("supports_power_off")
+                or payload.get("can_power_off")
+            ),
         )
+
+    @staticmethod
+    def _truthy(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on", "support", "supported"}
+        return bool(value)
 
 
 def create_repository_from_env() -> DeviceRepository:

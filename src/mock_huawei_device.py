@@ -27,6 +27,7 @@ NEGOTIATION_COMMANDS = {DO, DONT, WILL, WONT}
 DEFAULT_USERNAME = os.getenv("MOCK_HUAWEI_USERNAME", "lon")
 DEFAULT_PASSWORD = os.getenv("MOCK_HUAWEI_PASSWORD", "202188")
 DEFAULT_HOSTNAME = os.getenv("MOCK_HUAWEI_HOSTNAME", "Lab-Huawei")
+MAX_MOCK_OUTPUT_LINES = 100000
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +154,12 @@ class MockHuaweiCliSession:
                 "GigabitEthernet0/0/1             unassigned           down       down\r\n"
                 "LoopBack0                        10.255.255.1/32      up         up\r\n"
             )
+        elif lowered.startswith("display mock-output"):
+            line_count = self._mock_line_count(command, default=20000)
+            await self._write(self._mock_plain_output(line_count))
+        elif lowered.startswith("display mock-ansi"):
+            line_count = self._mock_line_count(command, default=5000)
+            await self._write(self._mock_ansi_output(line_count))
         elif lowered == "system-view":
             self.system_view = True
             await self._write("Enter system view, return user view with Ctrl+Z.\r\n")
@@ -174,6 +181,28 @@ class MockHuaweiCliSession:
     async def _show_prompt(self) -> None:
         prompt = f"[{self.hostname}]" if self.system_view else f"<{self.hostname}>"
         await self._write(prompt)
+
+    def _mock_line_count(self, command: str, *, default: int) -> int:
+        parts = command.split()
+        if not parts:
+            return default
+        try:
+            requested = int(parts[-1])
+        except ValueError:
+            return default
+        return max(1, min(requested, MAX_MOCK_OUTPUT_LINES))
+
+    def _mock_plain_output(self, line_count: int) -> str:
+        return "".join(
+            f"{index:06d} mock telnet output interface GigabitEthernet0/0/{index % 8} state up\r\n"
+            for index in range(1, line_count + 1)
+        )
+
+    def _mock_ansi_output(self, line_count: int) -> str:
+        return "".join(
+            f"\x1b[33mWARN\x1b[0m {index:06d} mock colored telnet event cpu ARM-{index % 4}\r\n"
+            for index in range(1, line_count + 1)
+        )
 
     async def _write(self, text: str) -> None:
         self.writer.write(text.encode("utf-8"))

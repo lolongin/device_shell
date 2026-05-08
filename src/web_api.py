@@ -482,6 +482,21 @@ class DeviceServiceState:
                 "device": device_to_payload(device, self.current_user),
             }
 
+    def power_off_device(self, device_id: str, user: str) -> dict[str, Any]:
+        with self._condition:
+            device = self._find_device(device_id)
+            if device.owner != user:
+                raise ConflictError(f"{device.name} is not occupied by {user}")
+            if not device.supports_power_off:
+                raise ConflictError(f"{device.name} does not support power off")
+            self._revision += 1
+            self._condition.notify_all()
+            return {
+                "message": f"Powered off {device.name}",
+                "revision": self._revision,
+                "device": device_to_payload(device, self.current_user),
+            }
+
     def _find_device(self, device_id: str) -> Device:
         for device in self._devices:
             if device.id == device_id:
@@ -512,6 +527,12 @@ def device_to_payload(device: Device, current_user: str = "") -> dict[str, Any]:
         "status_code": STATUS_TO_CODE.get(device.status, "other"),
         "status_label": device.status,
         "occupancy": {"owner": device.owner},
+        "capabilities": {
+            "power_off": device.supports_power_off,
+        },
+        "power": {
+            "supports_power_off": device.supports_power_off,
+        },
         "connection": {
             "ssh_host": device.ssh_ip,
             "ssh_port": device.ssh_port,
@@ -589,6 +610,8 @@ def create_request_handler(state: DeviceServiceState) -> type[BaseHTTPRequestHan
                     response = state.claim_device(device_id, user)
                 elif action == "release":
                     response = state.release_device(device_id, user)
+                elif action in {"power-off", "power_off"}:
+                    response = state.power_off_device(device_id, user)
                 else:
                     raise NotFoundError("Route not found")
             except WebApiError as exc:

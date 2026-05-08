@@ -19,6 +19,7 @@ OPTION_SUPPRESS_GO_AHEAD = 3
 
 USERNAME_PATTERNS = ("username:", "login:")
 PASSWORD_PATTERNS = ("password:",)
+READ_CHUNK_SIZE = 16384
 PROMPT_PATTERN = re.compile(r"(<[^<>\r\n]+>|\[[^\[\]\r\n]+\]|[^\r\n]+[>#])\s*$")
 
 
@@ -152,7 +153,7 @@ class HuaweiTelnetSession:
                 if remaining <= 0:
                     raise TelnetSessionError("Timed out waiting for device prompt.")
 
-                chunk = await asyncio.wait_for(self._reader.read(4096), timeout=remaining)
+                chunk = await asyncio.wait_for(self._reader.read(READ_CHUNK_SIZE), timeout=remaining)
                 if not chunk:
                     raise TelnetSessionError("Connection closed during login.")
 
@@ -175,7 +176,7 @@ class HuaweiTelnetSession:
 
         try:
             while not self._closed:
-                chunk = await self._reader.read(4096)
+                chunk = await self._reader.read(READ_CHUNK_SIZE)
                 if not chunk:
                     break
                 text = self._process_bytes(chunk)

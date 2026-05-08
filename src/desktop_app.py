@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -627,7 +627,7 @@ QPlainTextEdit#terminalLog {
     border: 1px solid #162431;
     border-radius: 10px;
     font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 400;
     padding: 18px;
     selection-background-color: #303842;
@@ -641,6 +641,15 @@ QFrame#commandRecordDock {
     border: 1px solid #151b22;
     border-top-color: #252c35;
     border-radius: 10px;
+}
+QFrame#commandRecordResizeHandle {
+    background: transparent;
+    border: none;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+}
+QFrame#commandRecordResizeHandle:hover {
+    background: #202832;
 }
 QFrame#commandRecordHintBar {
     background: transparent;
@@ -1000,6 +1009,7 @@ class SessionTabState:
     log_path: Path
     log_at_line_start: bool = True
     log_input_buffer: str = ""
+    log_pending_records: list[tuple[str, str, bool]] = field(default_factory=list)
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
@@ -1235,14 +1245,18 @@ if PYSIDE6_IMPORT_ERROR is None:
         RENDER_INTERVAL_MS = 16
         LARGE_OUTPUT_RENDER_INTERVAL_MS = 35
         LARGE_OUTPUT_THRESHOLD = 32768
-        MAX_FEED_CHARS_PER_FRAME = 32768
+        MAX_FEED_CHARS_PER_FRAME = 65536
         MAX_RENDER_LINES = 600
         LINE_SPACING_MAX_BLOCKS = 600
+        FAST_PLAIN_OUTPUT_THRESHOLD = 8192
+        FAST_PLAIN_TAIL_CHARS = 65536
+        TERMINAL_HORIZONTAL_INSET = 42
 
         def __init__(self) -> None:
             super().__init__()
             self._raw_sender: Callable[[str], None] | None = None
             self._command_recorder: Callable[[str], None] | None = None
+            self._enter_reconnect_handler: Callable[[], bool] | None = None
             self._pending_command_chars: list[str] = []
             self._pyte_screen: Any | None = None
             self._pyte_stream: Any | None = None
@@ -1254,6 +1268,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._pending_render_kind = ""
             self._last_render_text = ""
             self._terminal_cursor_position = 0
+            self._plain_fast_mode = False
+            self._plain_fast_tail = ""
+            self._skip_pyte_render_once = False
+            self._defer_terminal_decoration = False
+            self._terminal_highlighter_enabled = True
             self.setObjectName("terminalLog")
             self.setReadOnly(False)
             self.setUndoRedoEnabled(False)
@@ -1261,6 +1280,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setTabChangesFocus(False)
             self.setCenterOnScroll(False)
             self.setWordWrapMode(QTextOption.NoWrap)
+            self.document().setMaximumBlockCount(self.MAX_RENDER_LINES)
             self._syntax_highlighter = TerminalSyntaxHighlighter(self.document())
             self._render_timer = QTimer(self)
             self._render_timer.setSingleShot(True)
@@ -1284,7 +1304,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             char_width = max(1, metrics.horizontalAdvance("M"))
             line_height = max(1, metrics.lineSpacing())
             viewport = self.viewport()
-            columns = max(self.MIN_COLUMNS, viewport.width() // char_width)
+            content_width = max(1, self.width() - self.TERMINAL_HORIZONTAL_INSET)
+            columns = max(self.MIN_COLUMNS, content_width // char_width)
             lines = max(self.MIN_LINES, viewport.height() // line_height)
             return columns, lines
 
@@ -1294,9 +1315,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             columns, lines = self._terminal_dimensions()
             current_columns = int(getattr(self._pyte_screen, "columns", columns))
             current_lines = int(getattr(self._pyte_screen, "lines", lines))
-            if columns == current_columns and lines == current_lines:
+            if columns == current_columns:
                 return False
-            self._pyte_screen.resize(lines=lines, columns=columns)
+            self._pyte_screen.resize(lines=current_lines, columns=columns)
             return True
 
         def _forward_text(self, text: str) -> None:
@@ -1371,7 +1392,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._pending_render_kind = ""
             if kind == "pyte":
                 has_more_output = self._flush_pending_pyte_output()
-                self._render_pyte_buffer_now()
+                if self._skip_pyte_render_once:
+                    self._skip_pyte_render_once = False
+                else:
+                    self._defer_terminal_decoration = has_more_output
+                    self._render_pyte_buffer_now()
+                    self._defer_terminal_decoration = False
                 if has_more_output:
                     self._schedule_terminal_render("pyte", self.LARGE_OUTPUT_THRESHOLD)
             elif kind == "buffer":
@@ -1381,6 +1407,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             if self._pyte_stream is None or not self._pending_output_chunks:
                 return False
             message = "".join(self._pending_output_chunks)
+            if self._should_fast_render_plain_output(message):
+                self._pending_output_chunks.clear()
+                self._append_plain_output_fast(message)
+                self._skip_pyte_render_once = True
+                return False
+            if self._plain_fast_mode:
+                self._resync_pyte_from_plain_tail()
             if len(message) > self.MAX_FEED_CHARS_PER_FRAME:
                 feed_message = message[: self.MAX_FEED_CHARS_PER_FRAME]
                 self._pending_output_chunks = [message[self.MAX_FEED_CHARS_PER_FRAME :]]
@@ -1393,6 +1426,54 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._pyte_stream.feed(feed_message)
             return has_more_output
 
+        def _should_fast_render_plain_output(self, message: str) -> bool:
+            if len(message) < self.FAST_PLAIN_OUTPUT_THRESHOLD and not self._plain_fast_mode:
+                return False
+            return self._is_plain_stream_output(message)
+
+        def _is_plain_stream_output(self, message: str) -> bool:
+            for index, char in enumerate(message):
+                if char == "\x1b" or char in ("\b", "\x7f"):
+                    return False
+                if char == "\r":
+                    if index + 1 >= len(message) or message[index + 1] != "\n":
+                        return False
+                    continue
+                if char == "\n" or char == "\t" or char >= " ":
+                    continue
+                return False
+            return True
+
+        def _append_plain_output_fast(self, message: str) -> None:
+            text = message.replace("\r\n", "\n").replace("\r", "\n")
+            if not text:
+                return
+
+            self._plain_fast_mode = True
+            self._plain_fast_tail = (self._plain_fast_tail + message)[-self.FAST_PLAIN_TAIL_CHARS :]
+            self._set_terminal_highlighter_enabled(False)
+
+            cursor = QTextCursor(self.document())
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(text)
+            self._last_render_text = ""
+            self._terminal_cursor_position = max(0, self.document().characterCount() - 1)
+            cursor.setPosition(self._terminal_cursor_position)
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+        def _resync_pyte_from_plain_tail(self) -> None:
+            if not self._plain_fast_mode:
+                return
+            tail = self._plain_fast_tail
+            self._plain_fast_mode = False
+            self._plain_fast_tail = ""
+            self._init_terminal_backend()
+            if self._pyte_stream is None or not tail:
+                return
+            self._sync_terminal_dimensions()
+            self._pyte_stream.feed(tail)
+
         def _flush_render_before_user_input(self) -> None:
             if not self._render_timer.isActive():
                 return
@@ -1400,15 +1481,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._flush_pending_render()
 
         def _normalize_output_newlines(self, message: str) -> str:
-            normalized: list[str] = []
+            if not message:
+                return message
             previous = self._last_output_char
-            for char in message:
-                if char == "\n" and previous != "\r":
-                    normalized.append("\r")
-                normalized.append(char)
-                previous = char
-            self._last_output_char = previous
-            return "".join(normalized)
+            self._last_output_char = message[-1]
+            if previous == "\r" and message.startswith("\n"):
+                return "\n" + message[1:].replace("\r\n", "\n").replace("\n", "\r\n")
+            return message.replace("\r\n", "\n").replace("\n", "\r\n")
 
         def _render_pyte_buffer_now(self) -> None:
             if self._pyte_screen is None:
@@ -1499,13 +1578,33 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def _set_terminal_text(self, text: str) -> None:
             if text == self._last_render_text:
+                if (
+                    not self._defer_terminal_decoration
+                    and not self._terminal_highlighter_enabled
+                    and self.document().blockCount() <= self.LINE_SPACING_MAX_BLOCKS
+                ):
+                    self._set_terminal_highlighter_enabled(True)
+                    self._apply_terminal_block_spacing()
+                    self._syntax_highlighter.rehighlight()
                 return
             self._last_render_text = text
             self.setPlainText(text)
             block_count = self.document().blockCount()
+            if self._defer_terminal_decoration:
+                self._set_terminal_highlighter_enabled(False)
+                return
             if block_count <= self.LINE_SPACING_MAX_BLOCKS:
+                self._set_terminal_highlighter_enabled(True)
                 self._apply_terminal_block_spacing()
                 self._syntax_highlighter.rehighlight()
+            else:
+                self._set_terminal_highlighter_enabled(False)
+
+        def _set_terminal_highlighter_enabled(self, enabled: bool) -> None:
+            if self._terminal_highlighter_enabled == enabled:
+                return
+            self._terminal_highlighter_enabled = enabled
+            self._syntax_highlighter.setDocument(self.document() if enabled else None)
 
         def _apply_terminal_block_spacing(self) -> None:
             if QTextBlockFormat is None:
@@ -1602,11 +1701,18 @@ if PYSIDE6_IMPORT_ERROR is None:
         def set_raw_sender(self, sender: Callable[[str], None]) -> None:
             self._raw_sender = sender
 
+        def set_enter_reconnect_handler(self, handler: Callable[[], bool]) -> None:
+            self._enter_reconnect_handler = handler
+
         def set_command_recorder(self, recorder: Callable[[str], None]) -> None:
             self._command_recorder = recorder
 
         def resizeEvent(self, event: Any) -> None:  # noqa: N802
             super().resizeEvent(event)
+            if self._plain_fast_mode:
+                return
+            if event.oldSize().isValid() and event.oldSize().width() == event.size().width():
+                return
             if self._sync_terminal_dimensions():
                 self._flush_pending_pyte_output()
                 self._render_pyte_buffer_now()
@@ -1668,6 +1774,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
 
             if key in (Qt.Key_Return, Qt.Key_Enter):
+                if self._enter_reconnect_handler is not None and self._enter_reconnect_handler():
+                    return
                 self._commit_pending_command()
                 self._forward_text("\r")
                 return
@@ -1719,8 +1827,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._submit_handler: Callable[[str], None] | None = None
             self._enter_sends = False
             self.setObjectName("commandRecordEditor")
-            self.setMinimumHeight(88)
-            self.setMaximumHeight(132)
+            self.setMinimumHeight(72)
+            self.setMaximumHeight(16777215)
             self.setTabChangesFocus(True)
             self.setUndoRedoEnabled(False)
             self.setLineWrapMode(QPlainTextEdit.NoWrap)
@@ -1750,7 +1858,52 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             super().keyPressEvent(event)
 
+    class CommandRecordResizeHandle(QFrame):
+        def __init__(self, resize_handler: Callable[[int], None], parent: QWidget) -> None:
+            super().__init__(parent)
+            self._resize_handler = resize_handler
+            self._drag_start_y = 0
+            self._drag_start_height = 0
+            self.setObjectName("commandRecordResizeHandle")
+            self.setFixedHeight(7)
+            self.setCursor(Qt.SizeVerCursor)
+
+        def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+            if event.button() == Qt.LeftButton:
+                self._drag_start_y = self._event_global_y(event)
+                parent = self.parentWidget()
+                self._drag_start_height = parent.height() if parent is not None else 0
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
+            if not (event.buttons() & Qt.LeftButton):
+                return super().mouseMoveEvent(event)
+            delta = self._event_global_y(event) - self._drag_start_y
+            self._resize_handler(self._drag_start_height - delta)
+            event.accept()
+
+        def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+            if event.button() == Qt.LeftButton:
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+        @staticmethod
+        def _event_global_y(event: Any) -> int:
+            if hasattr(event, "globalPosition"):
+                return int(event.globalPosition().toPoint().y())
+            return int(event.globalY())
+
     class DeviceDesktopApp(QMainWindow):
+        LOG_FLUSH_INTERVAL_MS = 250
+        LOG_FLUSH_IMMEDIATE_CHARS = 65536
+        COMMAND_RECORD_COLLAPSED_HEIGHT = 25
+        COMMAND_RECORD_DEFAULT_HEIGHT = 158
+        COMMAND_RECORD_MIN_HEIGHT = 126
+        COMMAND_RECORD_MAX_HEIGHT = 420
+
         def __init__(self, repository: DeviceRepository | None = None) -> None:
             super().__init__()
             self.repository = repository or create_repository_from_env()
@@ -1775,6 +1928,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.current_command_group = 0
             self.command_record_collapsed = True
             self.command_enter_sends = False
+            self.command_record_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
             self.connection_params_collapsed = True
             self.command_tab_buttons: list[QToolButton] = []
             self.command_tab_close_buttons: list[QToolButton] = []
@@ -1793,6 +1947,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.ui_timer = QTimer(self)
             self.ui_timer.setInterval(10)
             self.ui_timer.timeout.connect(self._drain_ui_queue)
+            self.log_flush_timer = QTimer(self)
+            self.log_flush_timer.setSingleShot(True)
+            self.log_flush_timer.timeout.connect(self.flush_pending_session_logs)
 
             self.load_desktop_state()
             self._build_window()
@@ -2354,11 +2511,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             frame = QFrame()
             frame.setObjectName("commandRecordDock")
             self.command_record_frame = frame
-            frame.setMinimumHeight(142)
-            frame.setMaximumHeight(186)
+            frame.setMinimumHeight(self.COMMAND_RECORD_MIN_HEIGHT)
+            frame.setMaximumHeight(self.COMMAND_RECORD_MAX_HEIGHT)
             layout = QVBoxLayout(frame)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(0)
+
+            self.command_record_resize_handle = CommandRecordResizeHandle(
+                self.resize_command_record_panel,
+                frame,
+            )
+            layout.addWidget(self.command_record_resize_handle)
 
             hint_bar = QFrame()
             hint_bar.setObjectName("commandRecordHintBar")
@@ -2573,6 +2736,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             if state_version < 3:
                 self.command_record_collapsed = True
             self.command_enter_sends = bool(payload.get("command_enter_sends", False))
+            try:
+                loaded_command_height = int(
+                    payload.get("command_record_height", self.COMMAND_RECORD_DEFAULT_HEIGHT)
+                )
+            except (TypeError, ValueError):
+                loaded_command_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
+            self.command_record_height = self.clamp_command_record_height(loaded_command_height)
             self.connection_params_collapsed = bool(payload.get("connection_params_collapsed", True))
             loaded_log_directory = str(payload.get("log_directory") or "").strip()
             if loaded_log_directory:
@@ -2591,6 +2761,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "current_command_group": self.current_command_group_index(),
                     "command_record_collapsed": self.command_record_collapsed,
                     "command_enter_sends": self.command_enter_sends,
+                    "command_record_height": self.command_record_height,
                     "connection_params_collapsed": self.connection_params_collapsed,
                     "log_directory": str(self.log_directory),
                 }
@@ -2651,23 +2822,43 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             if channel == "SYS":
                 sanitized = f"# {sanitized}"
+            state.log_pending_records.append((channel, sanitized, separate_record))
+            if separate_record or len(sanitized) >= self.LOG_FLUSH_IMMEDIATE_CHARS:
+                self.flush_session_log_state(state)
+            else:
+                self.schedule_session_log_flush()
+
+        def schedule_session_log_flush(self) -> None:
+            if not self.log_flush_timer.isActive():
+                self.log_flush_timer.start(self.LOG_FLUSH_INTERVAL_MS)
+
+        def flush_pending_session_logs(self) -> None:
+            for state in list(self.session_tabs_by_id.values()):
+                self.flush_session_log_state(state)
+
+        def flush_session_log_state(self, state: SessionTabState) -> None:
+            if not state.log_pending_records:
+                return
             try:
                 state.log_path.parent.mkdir(parents=True, exist_ok=True)
                 with state.log_path.open("a", encoding="utf-8", newline="") as log_file:
-                    if separate_record and not state.log_at_line_start:
-                        log_file.write("\n")
-                        state.log_at_line_start = True
-                    for segment in sanitized.splitlines(keepends=True):
-                        if channel != "SYS" and state.log_at_line_start and not segment.strip():
-                            continue
-                        if state.log_at_line_start:
-                            log_file.write(f"[{self.log_timestamp()}] ")
-                        log_file.write(segment)
-                        state.log_at_line_start = segment.endswith("\n")
+                    for channel, sanitized, separate_record in state.log_pending_records:
+                        if separate_record and not state.log_at_line_start:
+                            log_file.write("\n")
+                            state.log_at_line_start = True
+                        for segment in sanitized.splitlines(keepends=True):
+                            if channel != "SYS" and state.log_at_line_start and not segment.strip():
+                                continue
+                            if state.log_at_line_start:
+                                log_file.write(f"[{self.log_timestamp()}] ")
+                            log_file.write(segment)
+                            state.log_at_line_start = segment.endswith("\n")
+                state.log_pending_records.clear()
             except OSError as exc:
-                self.set_status_message(f"日志写入失败: {exc}")
+                self.set_status_message(f"Log write failed: {exc}")
 
         def finish_session_log_record(self, state: SessionTabState) -> None:
+            self.flush_session_log_state(state)
             if state.log_at_line_start:
                 return
             try:
@@ -3000,6 +3191,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.apply_command_record_panel_state(focus_editor=will_expand)
             self.schedule_desktop_state_save()
 
+        def clamp_command_record_height(self, height: int) -> int:
+            return max(self.COMMAND_RECORD_MIN_HEIGHT, min(self.COMMAND_RECORD_MAX_HEIGHT, height))
+
+        def resize_command_record_panel(self, height: int) -> None:
+            if self.command_record_collapsed:
+                return
+            self.command_record_height = self.clamp_command_record_height(height)
+            self.apply_command_record_panel_state()
+            self.schedule_desktop_state_save()
+
         def toggle_connection_params(self) -> None:
             self.connection_params_collapsed = not self.connection_params_collapsed
             self.apply_connection_params_state()
@@ -3018,11 +3219,18 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def apply_command_record_panel_state(self, focus_editor: bool = False) -> None:
             collapsed = self.command_record_collapsed
+            self.command_record_resize_handle.setVisible(not collapsed)
             self.command_record_input.setVisible(not collapsed)
             self.command_record_footer.setVisible(not collapsed)
             self.command_enter_mode_button.setVisible(not collapsed)
-            self.command_record_frame.setMinimumHeight(25 if collapsed else 142)
-            self.command_record_frame.setMaximumHeight(25 if collapsed else 186)
+            target_height = (
+                self.COMMAND_RECORD_COLLAPSED_HEIGHT
+                if collapsed
+                else self.clamp_command_record_height(self.command_record_height)
+            )
+            self.command_record_frame.setMinimumHeight(target_height)
+            self.command_record_frame.setMaximumHeight(target_height)
+            self.command_record_frame.updateGeometry()
             self.command_record_toggle_button.setText("展开" if collapsed else "收起")
             self.update_command_enter_mode()
             if collapsed:
@@ -4186,6 +4394,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
+            terminal.set_enter_reconnect_handler(lambda tab_id=tab_id: self.reconnect_session_from_enter(tab_id))
             kind_label = self.session_kind_label(kind)
             self.write_session_log_line(
                 state,
@@ -4484,6 +4693,18 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.run_coro(send(), on_error=failure)
 
+        def reconnect_session_from_enter(self, tab_id: str) -> bool:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None:
+                return False
+            if state.connecting:
+                self.set_status_message(f"Session is connecting: {state.title}")
+                return True
+            if state.session.is_connected:
+                return False
+            self.reconnect_session_tab(tab_id)
+            return True
+
         def disconnect_session_tab(self, tab_id: str) -> None:
             state = self.session_tabs_by_id.get(tab_id)
             if state is None:
@@ -4746,8 +4967,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.state_save_timer.stop()
             self.ui_timer.stop()
             self.refresh_timer.stop()
+            self.log_flush_timer.stop()
             for state in self.session_tabs_by_id.values():
                 self.write_session_log_line(state, "SYS", "Application closing")
+                self.flush_session_log_state(state)
 
             async def shutdown_sessions() -> None:
                 await asyncio.gather(

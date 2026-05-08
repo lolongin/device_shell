@@ -10,6 +10,9 @@ except ImportError:
     from session_protocol import SessionCallbacks, SessionUnavailableError
 
 
+READ_CHUNK_SIZE = 16384
+
+
 class LinuxSshSession:
     """Interactive async SSH session backed by a persistent shell."""
 
@@ -127,7 +130,7 @@ class LinuxSshSession:
     async def _pump_stream(self, stream: asyncssh.SSHReader[str]) -> None:
         try:
             while True:
-                chunk = await stream.read(4096)
+                chunk = await stream.read(READ_CHUNK_SIZE)
                 if not chunk:
                     return
                 self.callbacks.on_output(chunk)

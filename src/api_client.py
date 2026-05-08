@@ -42,6 +42,9 @@ class DeviceApiClient(Protocol):
     def release_device(self, device_id: str, user: str) -> dict[str, Any]:
         ...
 
+    def power_off_device(self, device_id: str, user: str) -> dict[str, Any]:
+        ...
+
     def current_revision(self) -> int:
         ...
 
@@ -97,6 +100,14 @@ class HttpDeviceApiClient:
         return self._request_json(
             "POST",
             f"/api/devices/{quoted_id}/release",
+            payload={"user": user},
+        )
+
+    def power_off_device(self, device_id: str, user: str) -> dict[str, Any]:
+        quoted_id = parse.quote(device_id, safe="")
+        return self._request_json(
+            "POST",
+            f"/api/devices/{quoted_id}/power-off",
             payload={"user": user},
         )
 

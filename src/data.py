@@ -46,6 +46,7 @@ class Device:
     serial_port: int = 23
     serial_username: str = ""
     serial_password: str = ""
+    supports_power_off: bool = False
 
 
 def sample_devices() -> list[Device]:
@@ -76,6 +77,7 @@ def sample_devices() -> list[Device]:
             serial_port=2323,
             serial_username=MOCK_DEVICE_TELNET_USER,
             serial_password=MOCK_DEVICE_TELNET_PASSWORD,
+            supports_power_off=True,
         ),
         Device(
             id="LOCAL-SSH-001",
@@ -114,6 +116,7 @@ def sample_devices() -> list[Device]:
             rack="A01-U08",
             version="V100R019C10",
             notes="Backhaul node for aggregation ring. SSH points to local host for testing.",
+            supports_power_off=True,
         ),
         Device(
             id="JQ-SH-003",
