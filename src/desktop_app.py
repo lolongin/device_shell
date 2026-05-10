@@ -11,7 +11,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable, Coroutine
-from concurrent.futures import Future
+from concurrent.futures import CancelledError as FutureCancelledError, Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1289,6 +1289,10 @@ QTableWidget::item:selected {
 QTableWidget::item:hover {
     background: #161616;
 }
+QTableWidget::item:selected:hover {
+    background: #3a3f6b;
+    color: #ededed;
+}
 QTableWidget::item:focus {
     border: none;
     outline: none;
@@ -1742,6 +1746,9 @@ class DeviceTabState:
     title: str
     page: QWidget
     session_tab_widget: QTabWidget
+    session_splitter: QSplitter | None = None
+    session_tab_widgets: list[QTabWidget] = field(default_factory=list)
+    active_session_tab_widget: QTabWidget | None = None
     next_session_index: int = 1
     next_telnet_index: int = 1
     next_ssh_index: int = 1
@@ -1790,7 +1797,25 @@ class AsyncLoopThread:
     def submit(self, coro: Coroutine[Any, Any, Any]) -> Future:
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
+    async def _cancel_pending_tasks(self) -> None:
+        current = asyncio.current_task(self._loop)
+        tasks = [task for task in asyncio.all_tasks(self._loop) if task is not current and not task.done()]
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def cancel_pending(self, timeout: float = 2.0) -> None:
+        if not self._loop.is_running():
+            return
+        try:
+            self.submit(self._cancel_pending_tasks()).result(timeout=timeout)
+        except Exception:
+            pass
+
     def stop(self) -> None:
+        self.cancel_pending(timeout=1.0)
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2.0)
 
@@ -2773,6 +2798,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.log_directory = self.default_log_directory()
             self.device_tabs_by_id: dict[str, DeviceTabState] = {}
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
+            self.pending_futures: set[Future] = set()
             self.next_session_sequence = 1
 
             self.refresh_timer = QTimer(self)
@@ -2800,6 +2826,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setWindowTitle("设备工作台")
             self.resize(1700, 1000)
             self.setMinimumSize(1280, 800)
+            base_font = self.font()
+            if base_font.pointSize() <= 0:
+                base_font.setPointSize(9)
+                self.setFont(base_font)
             self.setStyleSheet(APP_STYLE)
 
             status_bar = QStatusBar(self)
@@ -4382,17 +4412,28 @@ if PYSIDE6_IMPORT_ERROR is None:
             on_error: Callable[[Exception], None] | None = None,
         ) -> None:
             future = self.async_loop.submit(coro)
+            self.pending_futures.add(future)
 
             def done(completed: Future) -> None:
+                self.pending_futures.discard(completed)
                 try:
                     result = completed.result()
+                except FutureCancelledError:
+                    return
                 except Exception as exc:
+                    if self.closed:
+                        return
                     self.dispatch_ui(on_error or self.handle_background_error, exc)
                     return
-                if on_success is not None:
+                if on_success is not None and not self.closed:
                     self.dispatch_ui(on_success, result)
 
             future.add_done_callback(done)
+
+        def cancel_pending_futures(self) -> None:
+            for future in list(self.pending_futures):
+                future.cancel()
+            self.pending_futures.clear()
 
         def refresh_snapshot(self) -> None:
             if self.loading_snapshot:
@@ -4959,7 +5000,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             toggle_action = menu.addAction("占用 / 释放")
             power_off_action = menu.addAction("掉电")
             menu.addSeparator()
-            open_device_action = menu.addAction("打开设备终端")
+            open_device_action = menu.addAction("打开设备管理口")
             open_linux_action = menu.addAction("打开 Linux 后台")
             open_serial_action = menu.addAction("打开串口")
             serial_available = self.can_view_serial_connection(device)
@@ -5015,12 +5056,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 menu.addSeparator()
             actions = self._add_device_quick_actions(menu)
             log_actions = self._add_session_log_actions(menu)
+            menu.addSeparator()
+            split_right_action = menu.addAction("向右分屏")
 
             chosen = menu.exec(terminal.viewport().mapToGlobal(pos))
             if chosen is None:
                 return
             if copy_selection_action is not None and chosen == copy_selection_action:
                 terminal.copy()
+                return
+            if chosen == split_right_action:
+                self.split_session_to_right(tab_id)
                 return
             if self._handle_session_log_action(chosen, log_actions, state):
                 return
@@ -5047,12 +5093,52 @@ if PYSIDE6_IMPORT_ERROR is None:
             menu = QMenu(widget)
             actions = self._add_device_quick_actions(menu)
             log_actions = self._add_session_log_actions(menu)
+            menu.addSeparator()
+            split_right_action = menu.addAction("向右分屏")
             chosen = menu.exec(widget.mapToGlobal(pos))
             if chosen is None:
+                return
+            if chosen == split_right_action:
+                self.split_session_to_right(tab_id)
                 return
             if self._handle_session_log_action(chosen, log_actions, state):
                 return
             self._handle_device_quick_action(chosen, actions, device)
+
+        def split_session_to_right(self, tab_id: str) -> None:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None:
+                return
+            device_tab = self.device_tabs_by_id.get(state.device_id)
+            if device_tab is None or device_tab.session_splitter is None:
+                return
+            source_tabs = self.find_session_tab_widget(device_tab, state.page)
+            if source_tabs is None:
+                return
+            if len(self.session_tab_widgets_for_device(device_tab)) < 2:
+                target_tabs = self.create_session_tab_widget(device_tab.device_id, device_tab.session_splitter)
+                device_tab.session_splitter.addWidget(target_tabs)
+                device_tab.session_tab_widgets.append(target_tabs)
+                device_tab.session_splitter.setSizes([1, 1])
+            else:
+                target_tabs = self.session_tab_widgets_for_device(device_tab)[1]
+            if source_tabs is target_tabs:
+                self.set_status_message("当前会话已经在右侧分屏。")
+                return
+            source_index = source_tabs.indexOf(state.page)
+            if source_index < 0:
+                return
+            source_tabs.removeTab(source_index)
+            target_index = target_tabs.addTab(state.page, state.title)
+            self._install_session_tab_header(target_tabs, target_index, state)
+            target_tabs.setCurrentIndex(target_index)
+            device_tab.active_session_tab_widget = target_tabs
+            self.session_tab_widget.setCurrentWidget(device_tab.page)
+            self._refresh_tab_header_styles()
+            self.refresh_workspace_context()
+            self.update_controls()
+            state.terminal.setFocus()
+            self.set_status_message(f"已将会话移动到右侧分屏: {state.title}")
 
         def _add_device_quick_actions(self, menu: QMenu) -> dict[str, Any]:
             actions = {
@@ -5220,10 +5306,11 @@ if PYSIDE6_IMPORT_ERROR is None:
                 device_tab = self._device_tab_for_page(self.session_tab_widget.widget(device_index))
                 if device_tab is None:
                     continue
-                for session_index in range(device_tab.session_tab_widget.count()):
-                    state = self._session_state_for_page(device_tab.session_tab_widget.widget(session_index))
-                    if state is not None:
-                        states.append(state)
+                for tabs in self.session_tab_widgets_for_device(device_tab):
+                    for session_index in range(tabs.count()):
+                        state = self._session_state_for_page(tabs.widget(session_index))
+                        if state is not None:
+                            states.append(state)
             return states
 
         def session_jump_text(self, state: SessionTabState) -> str:
@@ -5273,11 +5360,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.refresh_session_jump_combo()
                 return
             device_index = self.session_tab_widget.indexOf(device_tab.page)
-            session_index = device_tab.session_tab_widget.indexOf(state.page)
+            session_tabs = self.find_session_tab_widget(device_tab, state.page)
+            session_index = session_tabs.indexOf(state.page) if session_tabs is not None else -1
             if device_index >= 0:
                 self.session_tab_widget.setCurrentIndex(device_index)
-            if session_index >= 0:
-                device_tab.session_tab_widget.setCurrentIndex(session_index)
+            if session_tabs is not None and session_index >= 0:
+                device_tab.active_session_tab_widget = session_tabs
+                session_tabs.setCurrentIndex(session_index)
             device = self.get_device_by_id(state.device_id)
             if device is not None:
                 self.activate_device(device.id)
@@ -5290,6 +5379,23 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._refresh_tab_header_styles()
             self.update_controls()
             state = self.current_session_state()
+            if state is not None:
+                state.terminal.setFocus()
+
+        def handle_split_session_tab_changed(self, device_id: str, tabs: QTabWidget) -> None:
+            self.mark_active_session_tab_widget(device_id, tabs)
+            self.handle_session_tab_changed(tabs.currentIndex())
+
+        def handle_split_session_tab_clicked(self, device_id: str, tabs: QTabWidget, index: int) -> None:
+            if index < 0:
+                return
+            self.mark_active_session_tab_widget(device_id, tabs)
+            if tabs.currentIndex() != index:
+                tabs.setCurrentIndex(index)
+            self.refresh_workspace_context()
+            self._refresh_tab_header_styles()
+            self.update_controls()
+            state = self._session_state_for_page(tabs.widget(index))
             if state is not None:
                 state.terminal.setFocus()
 
@@ -5320,6 +5426,26 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def _session_states_for_device(self, device_id: str) -> list[SessionTabState]:
             return [state for state in self.session_tabs_by_id.values() if state.device_id == device_id]
+
+        def session_tab_widgets_for_device(self, device_tab: DeviceTabState) -> list[QTabWidget]:
+            return device_tab.session_tab_widgets or [device_tab.session_tab_widget]
+
+        def active_session_tabs_for_device(self, device_tab: DeviceTabState) -> QTabWidget:
+            tabs = device_tab.active_session_tab_widget or device_tab.session_tab_widget
+            if tabs in self.session_tab_widgets_for_device(device_tab):
+                return tabs
+            return device_tab.session_tab_widget
+
+        def find_session_tab_widget(self, device_tab: DeviceTabState, page: QWidget) -> QTabWidget | None:
+            for tabs in self.session_tab_widgets_for_device(device_tab):
+                if tabs.indexOf(page) >= 0:
+                    return tabs
+            return None
+
+        def mark_active_session_tab_widget(self, device_id: str, tabs: QTabWidget) -> None:
+            device_tab = self.device_tabs_by_id.get(device_id)
+            if device_tab is not None:
+                device_tab.active_session_tab_widget = tabs
 
         def open_device_session(self) -> None:
             device = self.get_selected_device()
@@ -5409,10 +5535,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 password=password,
             )
             self.session_tabs_by_id[tab_id] = state
-            index = device_tab.session_tab_widget.addTab(state.page, title)
-            self._install_session_tab_header(device_tab.session_tab_widget, index, state)
+            target_tabs = self.active_session_tabs_for_device(device_tab)
+            index = target_tabs.addTab(state.page, title)
+            self._install_session_tab_header(target_tabs, index, state)
             self.session_tab_widget.setCurrentWidget(device_tab.page)
-            device_tab.session_tab_widget.setCurrentIndex(index)
+            target_tabs.setCurrentIndex(index)
+            device_tab.active_session_tab_widget = target_tabs
             self.set_status_message(f"正在打开会话: {title}")
             self.refresh_workspace_context()
             self.update_center_stage_state()
@@ -5437,24 +5565,20 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(0)
 
-            child_tabs = QTabWidget(page)
-            child_tabs.setObjectName("deviceSessionTabs")
-            child_tabs.setDocumentMode(True)
-            child_tabs.setTabsClosable(False)
-            child_tabs.setMovable(True)
-            child_tabs.tabBar().setExpanding(False)
-            child_tabs.tabBar().setUsesScrollButtons(True)
-            child_tabs.currentChanged.connect(self.handle_session_tab_changed)
-            child_tabs.tabCloseRequested.connect(
-                lambda index, device_id=device.id: self.close_child_session_tab_at_index(device_id, index)
-            )
-            layout.addWidget(child_tabs, 1)
+            session_splitter = QSplitter(Qt.Horizontal, page)
+            session_splitter.setObjectName("sessionSplitPane")
+            layout.addWidget(session_splitter, 1)
+            child_tabs = self.create_session_tab_widget(device.id, session_splitter)
+            session_splitter.addWidget(child_tabs)
 
             state = DeviceTabState(
                 device_id=device.id,
                 title=device.name,
                 page=page,
                 session_tab_widget=child_tabs,
+                session_splitter=session_splitter,
+                session_tab_widgets=[child_tabs],
+                active_session_tab_widget=child_tabs,
             )
             self.device_tabs_by_id[device.id] = state
             index = self.session_tab_widget.addTab(page, device.name)
@@ -5462,6 +5586,36 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_widget.setCurrentIndex(index)
             self.update_center_stage_state()
             return state
+
+        def create_session_tab_widget(self, device_id: str, parent: QWidget) -> QTabWidget:
+            child_tabs = QTabWidget(parent)
+            child_tabs.setObjectName("deviceSessionTabs")
+            child_tabs.setDocumentMode(True)
+            child_tabs.setTabsClosable(False)
+            child_tabs.setMovable(True)
+            child_tabs.tabBar().setExpanding(False)
+            child_tabs.tabBar().setUsesScrollButtons(True)
+            child_tabs.currentChanged.connect(
+                lambda _index, device_id=device_id, tabs=child_tabs: self.handle_split_session_tab_changed(
+                    device_id,
+                    tabs,
+                )
+            )
+            child_tabs.tabBarClicked.connect(
+                lambda index, device_id=device_id, tabs=child_tabs: self.handle_split_session_tab_clicked(
+                    device_id,
+                    tabs,
+                    index,
+                )
+            )
+            child_tabs.tabCloseRequested.connect(
+                lambda index, device_id=device_id, tabs=child_tabs: self.close_child_session_tab_at_index(
+                    device_id,
+                    index,
+                    tabs,
+                )
+            )
+            return child_tabs
 
         def next_session_title(self, device_tab: DeviceTabState, kind: str) -> str:
             if kind == "device":
@@ -5722,8 +5876,14 @@ if PYSIDE6_IMPORT_ERROR is None:
                 device_tab = self.device_tabs_by_id.get(state.device_id)
                 if device_tab is None:
                     continue
-                index = device_tab.session_tab_widget.indexOf(state.page)
-                selected = device_tab is current_device and index == device_tab.session_tab_widget.currentIndex()
+                tabs = self.find_session_tab_widget(device_tab, state.page)
+                index = tabs.indexOf(state.page) if tabs is not None else -1
+                selected = (
+                    device_tab is current_device
+                    and tabs is not None
+                    and tabs is device_tab.active_session_tab_widget
+                    and index == tabs.currentIndex()
+                )
                 self._apply_tab_header_style(state, selected, self._tab_connection_state(state))
 
         def close_session_tab_for_page(self, page: QWidget) -> None:
@@ -5733,9 +5893,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_tab = self.device_tabs_by_id.get(state.device_id)
             if device_tab is None:
                 return
-            index = device_tab.session_tab_widget.indexOf(page)
-            if index >= 0:
-                self.close_child_session_tab_at_index(device_tab.device_id, index)
+            tabs = self.find_session_tab_widget(device_tab, page)
+            if tabs is not None:
+                index = tabs.indexOf(page)
+                if index >= 0:
+                    self.close_child_session_tab_at_index(device_tab.device_id, index, tabs)
 
         def connect_session_tab(self, tab_id: str) -> None:
             state = self.session_tabs_by_id.get(tab_id)
@@ -5795,9 +5957,11 @@ if PYSIDE6_IMPORT_ERROR is None:
                 state.connecting = False
             device_tab = self.device_tabs_by_id.get(state.device_id)
             if device_tab is not None:
-                index = device_tab.session_tab_widget.indexOf(state.page)
-                if index >= 0:
-                    device_tab.session_tab_widget.setTabText(index, "")
+                tabs = self.find_session_tab_widget(device_tab, state.page)
+                if tabs is not None:
+                    index = tabs.indexOf(state.page)
+                    if index >= 0:
+                        tabs.setTabText(index, "")
             if state.tab_title_label is not None:
                 state.tab_title_label.setText(state.title)
             self._refresh_tab_header_styles()
@@ -5919,15 +6083,22 @@ if PYSIDE6_IMPORT_ERROR is None:
             message = str(exc).lower()
             return "timed out" in message or "timeout" in message or "超时" in message
 
-        def close_child_session_tab_at_index(self, device_id: str, index: int) -> None:
+        def close_child_session_tab_at_index(
+            self,
+            device_id: str,
+            index: int,
+            tab_widget: QTabWidget | None = None,
+        ) -> None:
             device_tab = self.device_tabs_by_id.get(device_id)
             if device_tab is None:
                 return
-            page = device_tab.session_tab_widget.widget(index)
+            tabs = tab_widget or self.active_session_tabs_for_device(device_tab)
+            page = tabs.widget(index)
             state = self._session_state_for_page(page)
             if state is None:
                 if index >= 0:
-                    device_tab.session_tab_widget.removeTab(index)
+                    tabs.removeTab(index)
+                self.normalize_session_splitters(device_tab)
                 self._remove_device_tab_if_empty(device_tab)
                 return
 
@@ -5937,13 +6108,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             def finalize_close(_result: object | None = None) -> None:
                 current_device_tab = self.device_tabs_by_id.get(device_id)
                 if current_device_tab is not None:
-                    close_index = current_device_tab.session_tab_widget.indexOf(state.page)
-                    if close_index >= 0:
-                        current_device_tab.session_tab_widget.removeTab(close_index)
+                    close_tabs = self.find_session_tab_widget(current_device_tab, state.page)
+                    if close_tabs is not None:
+                        close_index = close_tabs.indexOf(state.page)
+                        if close_index >= 0:
+                            close_tabs.removeTab(close_index)
                 self.write_session_log_line(state, "SYS", "Session closed")
                 self.session_tabs_by_id.pop(state.tab_id, None)
                 state.page.deleteLater()
                 if current_device_tab is not None:
+                    self.normalize_session_splitters(current_device_tab)
                     self._remove_device_tab_if_empty(current_device_tab)
                 self.refresh_workspace_context()
                 self._refresh_tab_header_styles()
@@ -5955,7 +6129,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_tab = self.current_device_tab_state()
             if device_tab is None:
                 return
-            self.close_child_session_tab_at_index(device_tab.device_id, index)
+            self.close_child_session_tab_at_index(
+                device_tab.device_id,
+                index,
+                self.active_session_tabs_for_device(device_tab),
+            )
 
         def close_device_tab_for_page(self, page: QWidget) -> None:
             state = self._device_tab_for_page(page)
@@ -5998,9 +6176,57 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.run_coro(disconnect_all(), on_success=finalize_close, on_error=lambda _exc: finalize_close())
 
         def _remove_device_tab_if_empty(self, device_tab: DeviceTabState) -> None:
-            if device_tab.session_tab_widget.count() > 0:
+            if any(tabs.count() > 0 for tabs in self.session_tab_widgets_for_device(device_tab)):
                 return
             self._remove_device_tab(device_tab)
+
+        def normalize_session_splitters(self, device_tab: DeviceTabState) -> None:
+            splitter = device_tab.session_splitter
+            if splitter is None:
+                return
+            primary_tabs = device_tab.session_tab_widget
+            all_tabs = self.session_tab_widgets_for_device(device_tab)
+            nonempty_tabs = [tabs for tabs in all_tabs if tabs.count() > 0]
+
+            if not nonempty_tabs:
+                for tabs in list(all_tabs):
+                    if tabs is not primary_tabs:
+                        device_tab.session_tab_widgets.remove(tabs)
+                        tabs.setParent(None)
+                        tabs.deleteLater()
+                device_tab.active_session_tab_widget = primary_tabs
+                return
+
+            if len(nonempty_tabs) == 1:
+                survivor = nonempty_tabs[0]
+                if survivor is not primary_tabs:
+                    while survivor.count() > 0:
+                        page = survivor.widget(0)
+                        state = self._session_state_for_page(page)
+                        survivor.removeTab(0)
+                        title = state.title if state is not None else ""
+                        index = primary_tabs.addTab(page, title)
+                        if state is not None:
+                            self._install_session_tab_header(primary_tabs, index, state)
+                    survivor.setParent(None)
+                    survivor.deleteLater()
+                for tabs in list(device_tab.session_tab_widgets):
+                    if tabs is not primary_tabs and tabs.count() == 0:
+                        device_tab.session_tab_widgets.remove(tabs)
+                        tabs.setParent(None)
+                        tabs.deleteLater()
+                device_tab.session_tab_widgets = [primary_tabs]
+                device_tab.active_session_tab_widget = primary_tabs
+                splitter.setSizes([1])
+                return
+
+            for tabs in list(device_tab.session_tab_widgets):
+                if tabs is not primary_tabs and tabs.count() == 0:
+                    device_tab.session_tab_widgets.remove(tabs)
+                    tabs.setParent(None)
+                    tabs.deleteLater()
+            if device_tab.active_session_tab_widget not in device_tab.session_tab_widgets:
+                device_tab.active_session_tab_widget = device_tab.session_tab_widgets[0]
 
         def _remove_device_tab(self, device_tab: DeviceTabState) -> None:
             close_index = self.session_tab_widget.indexOf(device_tab.page)
@@ -6014,7 +6240,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_tab = self.current_device_tab_state()
             if device_tab is None:
                 return None
-            return self._session_state_for_page(device_tab.session_tab_widget.currentWidget())
+            tabs = self.active_session_tabs_for_device(device_tab)
+            return self._session_state_for_page(tabs.currentWidget())
 
         def reconnect_current_session(self) -> None:
             state = self.current_session_state()
@@ -6151,6 +6378,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.write_session_log_line(state, "SYS", "Application closing")
                 self.flush_session_log_state(state)
 
+            self.cancel_pending_futures()
+            self.async_loop.cancel_pending(timeout=2.0)
+
             async def shutdown_sessions() -> None:
                 await asyncio.gather(
                     *[state.session.disconnect("") for state in self.session_tabs_by_id.values()],
@@ -6161,6 +6391,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.async_loop.submit(shutdown_sessions()).result(timeout=3.0)
             except Exception:
                 pass
+            self.async_loop.cancel_pending(timeout=1.0)
             self.async_loop.stop()
             event.accept()
 
