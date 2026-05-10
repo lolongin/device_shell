@@ -1268,6 +1268,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._pending_render_kind = ""
             self._last_render_text = ""
             self._terminal_cursor_position = 0
+            self._terminal_cursor_width = 2
             self._plain_fast_mode = False
             self._plain_fast_tail = ""
             self._skip_pyte_render_once = False
@@ -1515,7 +1516,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._terminal_cursor_position = self._cursor_position_for_lines(lines, cursor_row, cursor_col)
             cursor.setPosition(self._terminal_cursor_position)
             self.setTextCursor(cursor)
-            self.setCursorWidth(0 if getattr(self._pyte_screen.cursor, "hidden", False) else 2)
+            self._set_terminal_cursor_width(0 if getattr(self._pyte_screen.cursor, "hidden", False) else 2)
             self.ensureCursorVisible()
 
         def _trim_terminal_lines(self, lines: list[str], cursor_row: int) -> tuple[list[str], int]:
@@ -1696,6 +1697,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._terminal_cursor_position = block.position() + min(self._cursor_col, len(block.text()))
             cursor.setPosition(self._terminal_cursor_position)
             self.setTextCursor(cursor)
+            self._set_terminal_cursor_width(2)
             self.ensureCursorVisible()
 
         def set_raw_sender(self, sender: Callable[[str], None]) -> None:
@@ -1718,25 +1720,70 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self._render_pyte_buffer_now()
 
         def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+            if event.button() == Qt.LeftButton:
+                self.setCursorWidth(0)
             super().mousePressEvent(event)
-            if event.button() == Qt.LeftButton and not self.textCursor().hasSelection():
-                self._restore_terminal_cursor()
 
         def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
             super().mouseReleaseEvent(event)
             if event.button() == Qt.LeftButton and not self.textCursor().hasSelection():
                 self._restore_terminal_cursor()
+            elif event.button() == Qt.LeftButton:
+                self.setCursorWidth(0)
 
         def _restore_terminal_cursor(self) -> None:
             cursor = self.textCursor()
             position = max(0, min(self._terminal_cursor_position, self.document().characterCount() - 1))
             cursor.setPosition(position)
             self.setTextCursor(cursor)
+            self._restore_terminal_cursor_width()
+
+        def _set_terminal_cursor_width(self, width: int) -> None:
+            self._terminal_cursor_width = width
+            if not self.textCursor().hasSelection():
+                self.setCursorWidth(width)
+
+        def _restore_terminal_cursor_width(self) -> None:
+            if not self.textCursor().hasSelection():
+                self.setCursorWidth(self._terminal_cursor_width)
+
+        def _move_terminal_cursor_preview(self, delta: int) -> None:
+            self._restore_terminal_cursor_width()
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                cursor.clearSelection()
+            position = max(0, min(self._terminal_cursor_position, self.document().characterCount() - 1))
+            block = self.document().findBlock(position)
+            if not block.isValid():
+                return
+            line_start = block.position()
+            line_end = line_start + len(block.text())
+            next_position = max(line_start, min(line_end, position + delta))
+            self._terminal_cursor_position = next_position
+            cursor.setPosition(next_position)
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+        def _move_terminal_cursor_to_line_edge(self, edge: str) -> None:
+            self._restore_terminal_cursor_width()
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                cursor.clearSelection()
+            position = max(0, min(self._terminal_cursor_position, self.document().characterCount() - 1))
+            block = self.document().findBlock(position)
+            if not block.isValid():
+                return
+            next_position = block.position() if edge == "start" else block.position() + len(block.text())
+            self._terminal_cursor_position = next_position
+            cursor.setPosition(next_position)
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
 
         def keyPressEvent(self, event: Any) -> None:  # noqa: N802
             if self._raw_sender is None:
                 return super().keyPressEvent(event)
 
+            self._restore_terminal_cursor_width()
             key = event.key()
             modifiers = event.modifiers()
 
@@ -1790,9 +1837,11 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self._forward_text("\t")
                 return
             if key == Qt.Key_Left:
+                self._move_terminal_cursor_preview(-1)
                 self._forward_text("\x1b[D")
                 return
             if key == Qt.Key_Right:
+                self._move_terminal_cursor_preview(1)
                 self._forward_text("\x1b[C")
                 return
             if key == Qt.Key_Up:
@@ -1802,9 +1851,11 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self._forward_text("\x1b[B")
                 return
             if key == Qt.Key_Home:
+                self._move_terminal_cursor_to_line_edge("start")
                 self._forward_text("\x1b[H")
                 return
             if key == Qt.Key_End:
+                self._move_terminal_cursor_to_line_edge("end")
                 self._forward_text("\x1b[F")
                 return
             if key == Qt.Key_PageUp:
@@ -1846,6 +1897,31 @@ if PYSIDE6_IMPORT_ERROR is None:
         def keyPressEvent(self, event: Any) -> None:  # noqa: N802
             key = event.key()
             modifiers = event.modifiers()
+            if modifiers == Qt.NoModifier:
+                if key == Qt.Key_Left:
+                    cursor = self.textCursor()
+                    cursor.movePosition(QTextCursor.Left)
+                    self.setTextCursor(cursor)
+                    self.ensureCursorVisible()
+                    return
+                if key == Qt.Key_Right:
+                    cursor = self.textCursor()
+                    cursor.movePosition(QTextCursor.Right)
+                    self.setTextCursor(cursor)
+                    self.ensureCursorVisible()
+                    return
+                if key == Qt.Key_Home:
+                    cursor = self.textCursor()
+                    cursor.movePosition(QTextCursor.StartOfLine)
+                    self.setTextCursor(cursor)
+                    self.ensureCursorVisible()
+                    return
+                if key == Qt.Key_End:
+                    cursor = self.textCursor()
+                    cursor.movePosition(QTextCursor.EndOfLine)
+                    self.setTextCursor(cursor)
+                    self.ensureCursorVisible()
+                    return
             if key in (Qt.Key_Return, Qt.Key_Enter):
                 ctrl_pressed = bool(modifiers & Qt.ControlModifier)
                 should_submit = not ctrl_pressed if self._enter_sends else ctrl_pressed
@@ -2283,6 +2359,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawEllipse(7, 4, 6, 6)
                 painter.drawArc(4, 9, 12, 8, 20 * 16, 140 * 16)
                 painter.drawLine(5, 17, 15, 17)
+            elif kind == "power":
+                painter.drawArc(5, 6, 10, 10, 35 * 16, 290 * 16)
+                painter.drawLine(10, 3, 10, 10)
             elif kind == "refresh":
                 painter.drawArc(4, 4, 12, 12, 35 * 16, 260 * 16)
                 painter.drawLine(15, 5, 15, 9)
@@ -2392,6 +2471,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "owner",
                 "占用 / 释放",
             )
+            self.quick_power_off_button = QToolButton()
+            self._configure_quick_action_button(
+                self.quick_power_off_button,
+                "power",
+                "掉电当前占用设备",
+                danger=True,
+            )
             self.quick_reconnect_button = QToolButton()
             self._configure_quick_action_button(
                 self.quick_reconnect_button,
@@ -2416,6 +2502,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             quick_action_row.addWidget(self.quick_serial_button)
             quick_action_row.addSpacing(6)
             quick_action_row.addWidget(self.quick_occupancy_button)
+            quick_action_row.addWidget(self.quick_power_off_button)
             quick_action_row.addWidget(self.quick_reconnect_button)
             quick_action_row.addWidget(self.quick_log_button)
             quick_action_row.addSpacing(6)
@@ -2652,6 +2739,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_ssh_button.clicked.connect(self.open_linux_session)
             self.quick_serial_button.clicked.connect(self.open_serial_session)
             self.quick_occupancy_button.clicked.connect(self.toggle_occupancy)
+            self.quick_power_off_button.clicked.connect(self.power_off_selected_device)
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
             self.quick_log_button.clicked.connect(self.open_current_session_log)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
@@ -3435,6 +3523,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return device.id in self.owned_device_ids
             return bool(self.current_user and device.owner == self.current_user)
 
+        def can_power_off_device(self, device: Device) -> bool:
+            return bool(device.supports_power_off and self.is_my_occupied_device(device))
+
         def refresh_device_table(self) -> None:
             keyword = self.search_input.text().strip().lower()
             self.device_table.setRowCount(len(self.visible_devices))
@@ -3837,6 +3928,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             copy_connection_action = menu.addAction("复制连接信息")
             menu.addSeparator()
             toggle_action = menu.addAction("占用 / 释放")
+            power_off_action = menu.addAction("掉电")
             menu.addSeparator()
             open_device_action = menu.addAction("打开设备终端")
             open_linux_action = menu.addAction("打开 Linux 后台")
@@ -3844,6 +3936,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             serial_available = self.can_view_serial_connection(device)
             copy_serial_ip_action.setEnabled(serial_available)
             open_serial_action.setEnabled(serial_available)
+            power_off_action.setEnabled(self.can_power_off_device(device))
 
             chosen = menu.exec(table.viewport().mapToGlobal(pos))
             if chosen is None:
@@ -3865,6 +3958,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return
             if chosen == toggle_action:
                 self.toggle_occupancy()
+                return
+            if chosen == power_off_action:
+                self.power_off_device(device)
                 return
             if chosen == open_device_action:
                 self.open_device_session()
@@ -3941,6 +4037,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             actions["copy_ssh_ip"] = menu.addAction("复制 SSH IP")
             actions["copy_serial_ip"] = menu.addAction("复制串口 IP")
             actions["copy_connection"] = menu.addAction("复制连接信息")
+            menu.addSeparator()
+            actions["power_off"] = menu.addAction("掉电")
             return actions
 
         def _add_session_log_actions(self, menu: QMenu) -> dict[str, Any]:
@@ -4000,6 +4098,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                     self.device_connection_copy_text(device),
                     f"已复制连接信息: {device.name}",
                 )
+
+            if chosen == actions["power_off"]:
+                self.power_off_device(device)
 
         def sync_auth_fields_from_selected(self) -> None:
             device = self.get_selected_device()
@@ -4904,6 +5005,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_ssh_button.setEnabled(selected)
             self.quick_serial_button.setEnabled(selected)
             self.quick_occupancy_button.setEnabled(selected)
+            self.quick_power_off_button.setEnabled(bool(device and self.can_power_off_device(device)))
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
             self.quick_log_button.setEnabled(state is not None)
             self.quick_disconnect_button.setEnabled(
@@ -4928,6 +5030,43 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.refresh_snapshot()
 
             self.run_blocking(toggle, on_success=done, on_error=self.handle_toggle_error)
+
+        def power_off_selected_device(self) -> None:
+            device = self.get_selected_device()
+            if device is None:
+                self.show_warning("请先选择设备。")
+                return
+            self.power_off_device(device)
+
+        def power_off_device(self, device: Device) -> None:
+            if not device.supports_power_off:
+                self.show_warning("当前设备不支持掉电。")
+                return
+            if not self.is_my_occupied_device(device):
+                self.show_warning("请先占用设备后再执行掉电。")
+                return
+
+            confirmed = QMessageBox.question(
+                self,
+                "设备掉电",
+                f"确认对 {device.name} 执行掉电？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirmed != QMessageBox.Yes:
+                return
+
+            self.set_status_message(f"正在执行设备掉电: {device.name}")
+
+            def power_off() -> str:
+                with self.repository_lock:
+                    return self.repository.power_off_device(device.id, self.current_user)
+
+            def done(result: object) -> None:
+                self.set_status_message(str(result))
+                self.refresh_snapshot()
+
+            self.run_blocking(power_off, on_success=done, on_error=self.handle_toggle_error)
 
         def handle_toggle_error(self, exc: Exception) -> None:
             if isinstance(exc, RepositoryConflictError):
