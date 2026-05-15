@@ -30,7 +30,7 @@ def build_search_text(device: Device) -> str:
 
 def mask_password(password: str) -> str:
     """Mask a password for display."""
-    return password
+    return "******" if password else ""
 
 
 def status_color(status: str) -> str:
