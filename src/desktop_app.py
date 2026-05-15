@@ -153,6 +153,7 @@ try:
     from .styles import APP_STYLE
     from .helpers import build_search_text, mask_password, status_color
     from .app_state import RepositorySnapshot, DeviceTabState, SessionTabState
+    from .async_utils import AsyncLoopThread
     from .linux_session import LinuxSshSession
     from .repository import (
         DeviceRepository,
@@ -173,6 +174,7 @@ except ImportError:
     from styles import APP_STYLE
     from helpers import build_search_text, mask_password, status_color
     from app_state import RepositorySnapshot, DeviceTabState, SessionTabState
+    from async_utils import AsyncLoopThread
     from linux_session import LinuxSshSession
     from repository import (
         DeviceRepository,
@@ -190,43 +192,6 @@ FILTERABLE_STATUSES = [ALL_STATUS, STATUS_OCCUPIED, STATUS_IDLE, STATUS_PIPELINE
 DESKTOP_STATE_VERSION = 3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
-
-
-class AsyncLoopThread:
-    def __init__(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="device-tui-async-loop")
-        self._thread.start()
-
-    def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
-
-    def submit(self, coro: Coroutine[Any, Any, Any]) -> Future:
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
-
-    async def _cancel_pending_tasks(self) -> None:
-        current = asyncio.current_task(self._loop)
-        tasks = [task for task in asyncio.all_tasks(self._loop) if task is not current and not task.done()]
-        if not tasks:
-            return
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    def cancel_pending(self, timeout: float = 2.0) -> None:
-        if not self._loop.is_running():
-            return
-        try:
-            self.submit(self._cancel_pending_tasks()).result(timeout=timeout)
-        except Exception:
-            pass
-
-    def stop(self) -> None:
-        self.cancel_pending(timeout=1.0)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=2.0)
-
 
 if PYSIDE6_IMPORT_ERROR is None:
 
