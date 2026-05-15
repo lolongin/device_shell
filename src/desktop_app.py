@@ -151,6 +151,7 @@ try:
         Device,
     )
     from .styles import APP_STYLE, STATUS_COLORS
+    from .helpers import build_search_text, mask_password, status_color
     from .linux_session import LinuxSshSession
     from .repository import (
         DeviceRepository,
@@ -169,6 +170,7 @@ except ImportError:
         Device,
     )
     from styles import APP_STYLE, STATUS_COLORS
+    from helpers import build_search_text, mask_password, status_color
     from linux_session import LinuxSshSession
     from repository import (
         DeviceRepository,
@@ -187,35 +189,6 @@ DESKTOP_STATE_VERSION = 3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
-
-def build_search_text(device: Device) -> str:
-    fields = (
-        device.board_id,
-        device.id,
-        device.name,
-        device.domain,
-        device.device_type,
-        device.cpu,
-        device.status,
-        device.owner or "",
-        device.ssh_ip,
-        device.telnet_ip,
-        device.vendor,
-        device.model,
-        device.site,
-        device.rack,
-        device.version,
-        device.notes,
-    )
-    return " ".join(value.lower() for value in fields)
-
-
-def mask_password(password: str) -> str:
-    return password
-
-
-def status_color(status: str) -> str:
-    return STATUS_COLORS.get(status, "#808080")
 
 @dataclass(slots=True)
 class RepositorySnapshot:
