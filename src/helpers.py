@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .data import Device
+from .styles import STATUS_COLORS
 
 
 def build_search_text(device: Device) -> str:
@@ -35,9 +36,4 @@ def mask_password(password: str) -> str:
 
 def status_color(status: str) -> str:
     """Return a hex colour for the given device status."""
-    mapping = {
-        "空闲": "#3cc98e",
-        "已被占用": "#f5a623",
-        "流水线占用": "#5b6ef5",
-    }
-    return mapping.get(status, "#808080")
+    return STATUS_COLORS.get(status, "#808080")

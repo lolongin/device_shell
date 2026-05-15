@@ -150,7 +150,7 @@ try:
         STATUS_PIPELINE,
         Device,
     )
-    from .styles import APP_STYLE, STATUS_COLORS
+    from .styles import APP_STYLE
     from .helpers import build_search_text, mask_password, status_color
     from .linux_session import LinuxSshSession
     from .repository import (
@@ -169,7 +169,7 @@ except ImportError:
         STATUS_PIPELINE,
         Device,
     )
-    from styles import APP_STYLE, STATUS_COLORS
+    from styles import APP_STYLE
     from helpers import build_search_text, mask_password, status_color
     from linux_session import LinuxSshSession
     from repository import (
