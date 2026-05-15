@@ -19,6 +19,7 @@ try:
         STATUS_OTHER,
         STATUS_PIPELINE,
         Device,
+        large_sample_devices,
         sample_devices,
     )
 except ImportError:
@@ -36,6 +37,7 @@ except ImportError:
         STATUS_OTHER,
         STATUS_PIPELINE,
         Device,
+        large_sample_devices,
         sample_devices,
     )
 
@@ -84,9 +86,13 @@ class SampleDeviceRepository:
     refresh_interval_seconds = 0.0
     live_update_timeout_seconds = 0.0
 
-    def __init__(self, current_user: str = CURRENT_USER) -> None:
+    def __init__(self, current_user: str = CURRENT_USER, device_count: int | None = None) -> None:
         self._current_user = current_user
-        self._devices = sample_devices()
+        self._devices = (
+            large_sample_devices(device_count)
+            if device_count is not None and device_count > 0
+            else sample_devices()
+        )
 
     def current_user(self) -> str:
         return self._current_user
@@ -331,4 +337,8 @@ def create_repository_from_env() -> DeviceRepository:
             create_http_client_from_env(),
             refresh_interval_seconds=refresh_seconds,
         )
-    return SampleDeviceRepository(current_user=current_user)
+    try:
+        sample_count = int(os.getenv("DEVICE_TUI_SAMPLE_DEVICE_COUNT", "0") or "0")
+    except ValueError:
+        sample_count = 0
+    return SampleDeviceRepository(current_user=current_user, device_count=sample_count)

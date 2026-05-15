@@ -24,6 +24,8 @@ except ModuleNotFoundError:
 try:
     from PySide6.QtCore import (
         QEasingCurve,
+        QEvent,
+        QMimeData,
         QParallelAnimationGroup,
         QPropertyAnimation,
         QSize,
@@ -36,6 +38,7 @@ try:
         QBrush,
         QColor,
         QDesktopServices,
+        QDrag,
         QIcon,
         QKeySequence,
         QPainter,
@@ -85,10 +88,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QBrush = None
     QColor = None
     QDesktopServices = None
+    QDrag = None
     QEasingCurve = None
+    QEvent = None
     QFileDialog = None
     QIcon = None
     QInputDialog = None
+    QMimeData = None
     QKeySequence = None
     QParallelAnimationGroup = None
     QPainter = None
@@ -177,6 +183,7 @@ ALL_STATUS = "全部状态"
 FILTERABLE_STATUSES = [ALL_STATUS, STATUS_OCCUPIED, STATUS_IDLE, STATUS_PIPELINE, STATUS_OTHER]
 DESKTOP_STATE_VERSION = 3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
 STATUS_COLORS = {
     STATUS_IDLE: "#3cc98e",
@@ -2771,6 +2778,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.ui_queue: queue.SimpleQueue[tuple[Callable[..., None], tuple[object, ...]]] = queue.SimpleQueue()
             self.repository_lock = threading.Lock()
             self.search_index: dict[str, str] = {}
+            self.device_by_id: dict[str, Device] = {}
+            self.device_table_rows: dict[str, int] = {}
+            self.owned_table_rows: dict[str, int] = {}
             self.devices: list[Device] = []
             self.visible_devices: list[Device] = []
             self.owned_visible_devices: list[Device] = []
@@ -2799,11 +2809,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_tabs_by_id: dict[str, DeviceTabState] = {}
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
             self.pending_futures: set[Future] = set()
+            self._drag_session_tab_id = ""
             self.next_session_sequence = 1
 
             self.refresh_timer = QTimer(self)
             self.refresh_timer.setSingleShot(True)
             self.refresh_timer.timeout.connect(self.refresh_snapshot)
+            self.filter_timer = QTimer(self)
+            self.filter_timer.setSingleShot(True)
+            self.filter_timer.setInterval(120)
+            self.filter_timer.timeout.connect(self.apply_filters)
             self.state_save_timer = QTimer(self)
             self.state_save_timer.setSingleShot(True)
             self.state_save_timer.timeout.connect(self.save_desktop_state)
@@ -3575,6 +3590,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             table.setEditTriggers(QTableWidget.NoEditTriggers)
             table.setAlternatingRowColors(False)
             table.setShowGrid(False)
+            table.setWordWrap(False)
             table.setMouseTracking(True)
             table.setItemDelegate(NoFocusItemDelegate(table))
             table.verticalHeader().setVisible(False)
@@ -3587,7 +3603,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             header.setSectionsClickable(False)
             header.setSectionResizeMode(0, QHeaderView.Stretch)
             for column in range(1, len(headers)):
-                header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(column, QHeaderView.Interactive)
+            if len(headers) == 4:
+                table.setColumnWidth(1, 96)
+                table.setColumnWidth(2, 78)
+                table.setColumnWidth(3, 74)
+            elif len(headers) == 3:
+                table.setColumnWidth(1, 96)
+                table.setColumnWidth(2, 74)
             return table
 
         def _new_stat_chip(self) -> QLabel:
@@ -3607,7 +3630,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.search_input.textChanged.connect(self.sync_left_search)
             self.domain_combo.currentTextChanged.connect(self.apply_filters)
             self.status_combo.currentTextChanged.connect(self.apply_filters)
-            self.cpu_input.textChanged.connect(self.apply_filters)
+            self.cpu_input.textChanged.connect(self.schedule_apply_filters)
             self.my_occupancy_filter_button.toggled.connect(self.set_my_occupancy_filter)
 
             self.toolbar_refresh_button.clicked.connect(self.refresh_snapshot)
@@ -3642,7 +3665,10 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def sync_left_search(self, value: str) -> None:
             del value
-            self.apply_filters()
+            self.schedule_apply_filters()
+
+        def schedule_apply_filters(self) -> None:
+            self.filter_timer.start()
 
         def clear_filters(self) -> None:
             self.search_input.clear()
@@ -4463,6 +4489,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.current_user = snapshot.current_user
                 self.devices = snapshot.devices
                 self.owned_device_ids = snapshot.owned_device_ids
+                self.device_by_id = {device.id: device for device in self.devices}
                 self.search_index = {device.id: build_search_text(device) for device in self.devices}
                 self.refresh_domain_options()
                 self.apply_filters()
@@ -4491,6 +4518,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.domain_combo.blockSignals(False)
 
         def apply_filters(self) -> None:
+            if hasattr(self, "filter_timer"):
+                self.filter_timer.stop()
             search_text = self.search_input.text().strip().lower()
             domain_filter = self.domain_combo.currentText().strip()
             status_filter = self.status_combo.currentText().strip()
@@ -4585,47 +4614,56 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def refresh_device_table(self) -> None:
             keyword = self.search_input.text().strip().lower()
-            self.device_table.setRowCount(len(self.visible_devices))
-            for row, device in enumerate(self.visible_devices):
-                hidden_keyword_match = self.device_matches_hidden_keyword(
-                    device,
-                    keyword,
-                    visible_values=(device.name, device.domain, device.cpu, device.status),
-                )
-                self._set_table_item(
-                    self.device_table,
-                    row,
-                    0,
-                    device.name,
-                    device.id,
-                    highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
-                )
-                self._set_table_item(
-                    self.device_table,
-                    row,
-                    1,
-                    device.domain,
-                    device.id,
-                    highlight=self.text_matches_keyword(device.domain, keyword),
-                )
-                self._set_table_item(
-                    self.device_table,
-                    row,
-                    2,
-                    device.cpu,
-                    device.id,
-                    highlight=self.text_matches_keyword(device.cpu, keyword),
-                )
-                self._set_table_item(
-                    self.device_table,
-                    row,
-                    3,
-                    device.status,
-                    device.id,
-                    color=status_color(device.status),
-                    highlight=self.text_matches_keyword(device.status, keyword),
-                )
-                self.device_table.setRowHeight(row, 32)
+            table = self.device_table
+            table.setUpdatesEnabled(False)
+            table.blockSignals(True)
+            try:
+                table.setRowCount(len(self.visible_devices))
+                self.device_table_rows = {}
+                for row, device in enumerate(self.visible_devices):
+                    self.device_table_rows[device.id] = row
+                    hidden_keyword_match = self.device_matches_hidden_keyword(
+                        device,
+                        keyword,
+                        visible_values=(device.name, device.domain, device.cpu, device.status),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        0,
+                        device.name,
+                        device.id,
+                        highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        1,
+                        device.domain,
+                        device.id,
+                        highlight=self.text_matches_keyword(device.domain, keyword),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        2,
+                        device.cpu,
+                        device.id,
+                        highlight=self.text_matches_keyword(device.cpu, keyword),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        3,
+                        device.status,
+                        device.id,
+                        color=status_color(device.status),
+                        highlight=self.text_matches_keyword(device.status, keyword),
+                    )
+                    table.setRowHeight(row, 32)
+            finally:
+                table.blockSignals(False)
+                table.setUpdatesEnabled(True)
 
         def refresh_owned_table(self) -> None:
             if not hasattr(self, "owned_table"):
@@ -4636,39 +4674,48 @@ if PYSIDE6_IMPORT_ERROR is None:
                 device for device in self.visible_devices if self.is_my_occupied_device(device)
             ]
             self.owned_count_label.setText(str(len(self.owned_visible_devices)))
-            self.owned_table.setRowCount(len(self.owned_visible_devices))
-            for row, device in enumerate(self.owned_visible_devices):
-                hidden_keyword_match = self.device_matches_hidden_keyword(
-                    device,
-                    keyword,
-                    visible_values=(device.name, device.domain, device.status),
-                )
-                self._set_table_item(
-                    self.owned_table,
-                    row,
-                    0,
-                    device.name,
-                    device.id,
-                    highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
-                )
-                self._set_table_item(
-                    self.owned_table,
-                    row,
-                    1,
-                    device.domain,
-                    device.id,
-                    highlight=self.text_matches_keyword(device.domain, keyword),
-                )
-                self._set_table_item(
-                    self.owned_table,
-                    row,
-                    2,
-                    device.status,
-                    device.id,
-                    color=status_color(device.status),
-                    highlight=self.text_matches_keyword(device.status, keyword),
-                )
-                self.owned_table.setRowHeight(row, 30)
+            table = self.owned_table
+            table.setUpdatesEnabled(False)
+            table.blockSignals(True)
+            try:
+                table.setRowCount(len(self.owned_visible_devices))
+                self.owned_table_rows = {}
+                for row, device in enumerate(self.owned_visible_devices):
+                    self.owned_table_rows[device.id] = row
+                    hidden_keyword_match = self.device_matches_hidden_keyword(
+                        device,
+                        keyword,
+                        visible_values=(device.name, device.domain, device.status),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        0,
+                        device.name,
+                        device.id,
+                        highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        1,
+                        device.domain,
+                        device.id,
+                        highlight=self.text_matches_keyword(device.domain, keyword),
+                    )
+                    self._set_table_item(
+                        table,
+                        row,
+                        2,
+                        device.status,
+                        device.id,
+                        color=status_color(device.status),
+                        highlight=self.text_matches_keyword(device.status, keyword),
+                    )
+                    table.setRowHeight(row, 30)
+            finally:
+                table.blockSignals(False)
+                table.setUpdatesEnabled(True)
 
         def _set_table_item(
             self,
@@ -4710,7 +4757,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             return not any(self.text_matches_keyword(value, keyword) for value in visible_values)
 
         def get_device_by_id(self, device_id: str) -> Device | None:
-            return next((device for device in self.devices if device.id == device_id), None)
+            return self.device_by_id.get(device_id)
 
         def ensure_valid_selection(self) -> None:
             visible_ids = {device.id for device in self.visible_devices}
@@ -4730,6 +4777,15 @@ if PYSIDE6_IMPORT_ERROR is None:
         def _select_device_row(self, table: QTableWidget, device_id: str) -> None:
             table.blockSignals(True)
             table.clearSelection()
+            row_map = self.owned_table_rows if hasattr(self, "owned_table") and table is self.owned_table else self.device_table_rows
+            mapped_row = row_map.get(device_id)
+            if mapped_row is not None and 0 <= mapped_row < table.rowCount():
+                item = table.item(mapped_row, 0)
+                if item is not None and item.data(Qt.UserRole) == device_id:
+                    table.selectRow(mapped_row)
+                    table.scrollToItem(item)
+                    table.blockSignals(False)
+                    return
             for row in range(table.rowCount()):
                 item = table.item(row, 0)
                 if item is not None and item.data(Qt.UserRole) == device_id:
@@ -5057,7 +5113,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             actions = self._add_device_quick_actions(menu)
             log_actions = self._add_session_log_actions(menu)
             menu.addSeparator()
-            split_right_action = menu.addAction("向右分屏")
+            split_actions = self._add_session_split_actions(menu)
 
             chosen = menu.exec(terminal.viewport().mapToGlobal(pos))
             if chosen is None:
@@ -5065,8 +5121,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             if copy_selection_action is not None and chosen == copy_selection_action:
                 terminal.copy()
                 return
-            if chosen == split_right_action:
-                self.split_session_to_right(tab_id)
+            if self._handle_session_split_action(chosen, split_actions, tab_id):
                 return
             if self._handle_session_log_action(chosen, log_actions, state):
                 return
@@ -5094,18 +5149,102 @@ if PYSIDE6_IMPORT_ERROR is None:
             actions = self._add_device_quick_actions(menu)
             log_actions = self._add_session_log_actions(menu)
             menu.addSeparator()
-            split_right_action = menu.addAction("向右分屏")
+            split_actions = self._add_session_split_actions(menu)
             chosen = menu.exec(widget.mapToGlobal(pos))
             if chosen is None:
                 return
-            if chosen == split_right_action:
-                self.split_session_to_right(tab_id)
+            if self._handle_session_split_action(chosen, split_actions, tab_id):
                 return
             if self._handle_session_log_action(chosen, log_actions, state):
                 return
             self._handle_device_quick_action(chosen, actions, device)
 
+        def _add_session_split_actions(self, menu: QMenu) -> dict[str, Any]:
+            return {
+                "left": menu.addAction("向左分屏"),
+                "right": menu.addAction("向右分屏"),
+                "top": menu.addAction("向上分屏"),
+                "bottom": menu.addAction("向下分屏"),
+            }
+
+        def _handle_session_split_action(
+            self,
+            chosen: Any,
+            actions: dict[str, Any],
+            tab_id: str,
+        ) -> bool:
+            for direction, action in actions.items():
+                if chosen == action:
+                    self.split_session(tab_id, direction)
+                    return True
+            return False
+
+        def eventFilter(self, watched: Any, event: Any) -> bool:  # noqa: N802
+            if QEvent is not None:
+                event_type = event.type()
+                if event_type == QEvent.MouseButtonPress and hasattr(watched, "property"):
+                    if watched.property("sessionDragTabId"):
+                        watched.setProperty("sessionDragStart", event.pos())
+                elif event_type == QEvent.MouseMove and hasattr(watched, "property"):
+                    tab_id = str(watched.property("sessionDragTabId") or "")
+                    start_pos = watched.property("sessionDragStart")
+                    if tab_id and start_pos is not None and event.buttons() & Qt.LeftButton:
+                        distance = (event.pos() - start_pos).manhattanLength()
+                        if distance >= QApplication.startDragDistance():
+                            self.start_session_tab_drag(watched, tab_id)
+                            return True
+                elif event_type in {QEvent.DragEnter, QEvent.DragMove}:
+                    if self.event_has_session_tab(event):
+                        event.acceptProposedAction()
+                        return True
+                elif event_type == QEvent.Drop:
+                    if self.handle_session_tab_drop(watched, event):
+                        return True
+            return super().eventFilter(watched, event)
+
+        @staticmethod
+        def event_has_session_tab(event: Any) -> bool:
+            mime = event.mimeData()
+            return bool(mime is not None and mime.hasFormat(SESSION_TAB_MIME))
+
+        def start_session_tab_drag(self, source: QWidget, tab_id: str) -> None:
+            if QDrag is None or QMimeData is None:
+                return
+            self._drag_session_tab_id = tab_id
+            mime = QMimeData()
+            mime.setData(SESSION_TAB_MIME, tab_id.encode("utf-8"))
+            drag = QDrag(source)
+            drag.setMimeData(mime)
+            drag.exec(Qt.MoveAction)
+            self._drag_session_tab_id = ""
+
+        def handle_session_tab_drop(self, target: Any, event: Any) -> bool:
+            if not self.event_has_session_tab(event):
+                return False
+            tab_id = bytes(event.mimeData().data(SESSION_TAB_MIME)).decode("utf-8")
+            if tab_id not in self.session_tabs_by_id:
+                return False
+            direction = self.split_direction_for_drop(target, event)
+            self.split_session(tab_id, direction)
+            event.acceptProposedAction()
+            return True
+
+        @staticmethod
+        def split_direction_for_drop(target: QWidget, event: Any) -> str:
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            rect = target.rect()
+            distances = {
+                "left": max(0, pos.x() - rect.left()),
+                "right": max(0, rect.right() - pos.x()),
+                "top": max(0, pos.y() - rect.top()),
+                "bottom": max(0, rect.bottom() - pos.y()),
+            }
+            return min(distances, key=distances.get)
+
         def split_session_to_right(self, tab_id: str) -> None:
+            self.split_session(tab_id, "right")
+
+        def split_session(self, tab_id: str, direction: str) -> None:
             state = self.session_tabs_by_id.get(tab_id)
             if state is None:
                 return
@@ -5115,15 +5254,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             source_tabs = self.find_session_tab_widget(device_tab, state.page)
             if source_tabs is None:
                 return
+            horizontal = direction in {"left", "right"}
+            device_tab.session_splitter.setOrientation(Qt.Horizontal if horizontal else Qt.Vertical)
             if len(self.session_tab_widgets_for_device(device_tab)) < 2:
                 target_tabs = self.create_session_tab_widget(device_tab.device_id, device_tab.session_splitter)
-                device_tab.session_splitter.addWidget(target_tabs)
-                device_tab.session_tab_widgets.append(target_tabs)
+                if direction in {"left", "top"}:
+                    device_tab.session_splitter.insertWidget(0, target_tabs)
+                    device_tab.session_tab_widgets.insert(0, target_tabs)
+                else:
+                    device_tab.session_splitter.addWidget(target_tabs)
+                    device_tab.session_tab_widgets.append(target_tabs)
                 device_tab.session_splitter.setSizes([1, 1])
             else:
-                target_tabs = self.session_tab_widgets_for_device(device_tab)[1]
+                target_tabs = self.session_tab_widgets_for_device(device_tab)[0 if direction in {"left", "top"} else -1]
             if source_tabs is target_tabs:
-                self.set_status_message("当前会话已经在右侧分屏。")
+                self.set_status_message("当前会话已经在目标分屏。")
                 return
             source_index = source_tabs.indexOf(state.page)
             if source_index < 0:
@@ -5138,7 +5283,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.refresh_workspace_context()
             self.update_controls()
             state.terminal.setFocus()
-            self.set_status_message(f"已将会话移动到右侧分屏: {state.title}")
+            direction_label = {"left": "左侧", "right": "右侧", "top": "上方", "bottom": "下方"}.get(direction, "目标")
+            self.set_status_message(f"已将会话移动到{direction_label}分屏: {state.title}")
 
         def _add_device_quick_actions(self, menu: QMenu) -> dict[str, Any]:
             actions = {
@@ -5567,6 +5713,12 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             session_splitter = QSplitter(Qt.Horizontal, page)
             session_splitter.setObjectName("sessionSplitPane")
+            session_splitter.setAcceptDrops(True)
+            session_splitter.setProperty("sessionDropDeviceId", device.id)
+            session_splitter.installEventFilter(self)
+            page.setAcceptDrops(True)
+            page.setProperty("sessionDropDeviceId", device.id)
+            page.installEventFilter(self)
             layout.addWidget(session_splitter, 1)
             child_tabs = self.create_session_tab_widget(device.id, session_splitter)
             session_splitter.addWidget(child_tabs)
@@ -5590,6 +5742,9 @@ if PYSIDE6_IMPORT_ERROR is None:
         def create_session_tab_widget(self, device_id: str, parent: QWidget) -> QTabWidget:
             child_tabs = QTabWidget(parent)
             child_tabs.setObjectName("deviceSessionTabs")
+            child_tabs.setAcceptDrops(True)
+            child_tabs.setProperty("sessionDropDeviceId", device_id)
+            child_tabs.installEventFilter(self)
             child_tabs.setDocumentMode(True)
             child_tabs.setTabsClosable(False)
             child_tabs.setMovable(True)
@@ -5738,6 +5893,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                     continue
                 widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 if isinstance(state, SessionTabState):
+                    widget.setProperty("sessionDragTabId", state.tab_id)
+                    widget.setToolTip("拖动到终端区边缘分屏，右键可选择分屏方向")
+                    widget.installEventFilter(self)
                     widget.customContextMenuRequested.connect(
                         lambda pos, widget=widget, tab_id=state.tab_id: self.show_session_quick_context_menu(
                             tab_id,
@@ -6279,6 +6437,26 @@ if PYSIDE6_IMPORT_ERROR is None:
                 state is not None and (state.session.is_connected or state.connecting)
             )
             self.update_center_stage_state()
+
+        def refresh_current_operation_label(
+            self,
+            device: Device | None,
+            state: SessionTabState | None,
+        ) -> None:
+            if not hasattr(self, "current_operation_label"):
+                return
+            if device is None:
+                self.current_operation_label.setText("当前操作：未选择")
+                self.current_operation_label.setToolTip("")
+                return
+            if state is not None:
+                text = f"当前操作：{device.name} / {state.title}"
+                tip = f"右下角快捷动作将作用于当前终端页签：{device.name} - {state.title}"
+            else:
+                text = f"当前操作：{device.name}"
+                tip = f"右下角快捷动作将作用于左侧选中设备：{device.name}"
+            self.current_operation_label.setText(text)
+            self.current_operation_label.setToolTip(tip)
 
         def toggle_occupancy(self) -> None:
             device = self.get_quick_action_device()

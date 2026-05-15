@@ -17,6 +17,7 @@ try:
         STATUS_OTHER,
         STATUS_PIPELINE,
         Device,
+        large_sample_devices,
         sample_devices,
     )
 except ImportError:
@@ -27,6 +28,7 @@ except ImportError:
         STATUS_OTHER,
         STATUS_PIPELINE,
         Device,
+        large_sample_devices,
         sample_devices,
     )
 
@@ -390,7 +392,11 @@ HTML_PAGE = """<!doctype html>
 class DeviceServiceState:
     def __init__(self, current_user: str) -> None:
         self.current_user = current_user
-        self._devices = sample_devices()
+        try:
+            sample_count = int(os.getenv("DEVICE_TUI_SAMPLE_DEVICE_COUNT", "0") or "0")
+        except ValueError:
+            sample_count = 0
+        self._devices = large_sample_devices(sample_count) if sample_count > 0 else sample_devices()
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._revision = 1

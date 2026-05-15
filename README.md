@@ -52,6 +52,26 @@ or
 device-tui-textual
 ```
 
+## Large Sample Dataset
+
+For local performance testing, set `DEVICE_TUI_SAMPLE_DEVICE_COUNT` before starting
+the desktop app or the mock Web API. The built-in sample devices are kept first,
+and generated devices are appended until the requested count is reached.
+
+PowerShell example:
+
+```powershell
+$env:DEVICE_TUI_SAMPLE_DEVICE_COUNT = "1200"
+python src/desktop_app.py
+```
+
+Mock Web API example:
+
+```powershell
+$env:DEVICE_TUI_SAMPLE_DEVICE_COUNT = "1200"
+python src/web_api.py --host 127.0.0.1 --port 8765
+```
+
 ## Web API Mode
 
 Default mode uses the in-memory sample dataset.

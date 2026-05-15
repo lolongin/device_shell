@@ -385,3 +385,79 @@ def sample_devices() -> list[Device]:
             notes="Added to expand CPU filter coverage.",
         ),
     ]
+
+
+def large_sample_devices(count: int) -> list[Device]:
+    devices = sample_devices()
+    if count <= len(devices):
+        return devices[:count]
+
+    domains = ["RTN", "XTN", "\u4ea4\u4f01", "\u8def\u7531\u5668", "\u6d4b\u8bd5"]
+    device_types = [
+        "Microwave",
+        "Transport Node",
+        "Access Gateway",
+        "Core Router",
+        "Validation Node",
+    ]
+    vendors = ["Huawei", "H3C", "Cisco", "Juniper", "ZTE"]
+    models = ["RTN 950A", "XTN 980", "SecPath F1000", "NCS 540", "Lab GW 1000"]
+    sites = [
+        "Beijing Tongzhou",
+        "Shanghai Pudong",
+        "Guangzhou Tianhe",
+        "Chengdu Hi-Tech",
+        "Shenzhen Nanshan",
+        "Nanjing Jiangning",
+        "Wuhan Optical Valley",
+        "Hangzhou Binjiang",
+    ]
+    name_prefixes = ["RTN", "XTN", "JQ", "RTR", "LAB"]
+    status_cycle = [
+        (STATUS_IDLE, None),
+        (STATUS_OCCUPIED, CURRENT_USER),
+        (STATUS_IDLE, None),
+        (STATUS_PIPELINE, "pipeline.bot"),
+        (STATUS_OTHER, "ops.shift"),
+        (STATUS_OCCUPIED, "qa.bot"),
+    ]
+
+    for index in range(len(devices) + 1, count + 1):
+        offset = index - 1
+        status, owner = status_cycle[offset % len(status_cycle)]
+        domain = domains[offset % len(domains)]
+        subnet_a = 10 + (offset // 250) % 120
+        subnet_b = (offset // 250) % 255
+        host = offset % 250 + 1
+        devices.append(
+            Device(
+                id=f"MOCK-{index:04d}",
+                name=f"{name_prefixes[offset % len(name_prefixes)]}-Node-{index:04d}",
+                domain=domain,
+                device_type=device_types[offset % len(device_types)],
+                cpu=f"ARM-{offset % 16}",
+                status=status,
+                owner=owner,
+                ssh_ip=LOCAL_TEST_SSH_IP,
+                telnet_ip=f"172.{subnet_a}.{subnet_b}.{host}",
+                username=LOCAL_TEST_SSH_USER,
+                password=LOCAL_TEST_SSH_PASSWORD,
+                vendor=vendors[offset % len(vendors)],
+                model=models[offset % len(models)],
+                site=sites[offset % len(sites)],
+                rack=f"R{offset % 40 + 1:02d}-U{offset % 42 + 1:02d}",
+                version=f"V{100 + offset % 9}R{offset % 24:02d}C{offset % 10:02d}",
+                notes=f"Generated performance sample device #{index}.",
+                ssh_port=22,
+                telnet_port=23,
+                ssh_username=LOCAL_TEST_SSH_USER,
+                ssh_password=LOCAL_TEST_SSH_PASSWORD,
+                serial_ip=f"10.{subnet_a}.{subnet_b}.{host}",
+                serial_port=2000 + offset % 1000,
+                serial_username=LOCAL_TEST_SSH_USER,
+                serial_password=LOCAL_TEST_SSH_PASSWORD,
+                supports_power_off=owner == CURRENT_USER or index % 7 == 0,
+            )
+        )
+
+    return devices
