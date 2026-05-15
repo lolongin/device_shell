@@ -163,6 +163,7 @@ try:
     )
     from .session_protocol import SessionCallbacks, SessionUnavailableError
     from .telnet_session import HuaweiTelnetSession, TelnetSessionError
+    from .widgets.device_table import CopyableDeviceTable
 except ImportError:
     from _sample_data import (
         STATUS_IDLE,
@@ -184,6 +185,7 @@ except ImportError:
     )
     from session_protocol import SessionCallbacks, SessionUnavailableError
     from telnet_session import HuaweiTelnetSession, TelnetSessionError
+    from widgets.device_table import CopyableDeviceTable
 
 
 ALL_DOMAINS = "全部领域"
@@ -195,39 +197,6 @@ SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
 if PYSIDE6_IMPORT_ERROR is None:
 
-    class NoFocusItemDelegate(QStyledItemDelegate):
-        def paint(self, painter: Any, option: Any, index: Any) -> None:
-            clean_option = QStyleOptionViewItem(option)
-            clean_option.state &= ~QStyle.State_HasFocus
-            super().paint(painter, clean_option, index)
-
-    class CopyableDeviceTable(QTableWidget):
-        def __init__(
-            self,
-            copy_handler: Callable[["CopyableDeviceTable"], None],
-            field_copy_handler: Callable[["CopyableDeviceTable", str], None],
-            parent: QWidget,
-        ) -> None:
-            super().__init__(0, 0, parent)
-            self._copy_handler = copy_handler
-            self._field_copy_handler = field_copy_handler
-
-        def keyPressEvent(self, event: Any) -> None:  # noqa: N802
-            if event.matches(QKeySequence.Copy):
-                self._copy_handler(self)
-                return
-            if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
-                key_map = {
-                    Qt.Key_S: "ssh_ip",
-                    Qt.Key_T: "telnet_ip",
-                    Qt.Key_U: "username",
-                    Qt.Key_P: "password",
-                }
-                field = key_map.get(event.key())
-                if field is not None:
-                    self._field_copy_handler(self, field)
-                    return
-            super().keyPressEvent(event)
 
     class SelectAllLineEdit(QLineEdit):
         def __init__(self) -> None:
@@ -2343,7 +2312,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             table.setShowGrid(False)
             table.setWordWrap(False)
             table.setMouseTracking(True)
-            table.setItemDelegate(NoFocusItemDelegate(table))
             table.verticalHeader().setVisible(False)
             table.verticalHeader().setDefaultSectionSize(32)
             header = table.horizontalHeader()
