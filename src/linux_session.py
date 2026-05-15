@@ -33,6 +33,7 @@ class LinuxSshSession:
         port: int,
         username: str,
         password: str,
+        term_size: tuple[int, int] = (160, 40),
     ) -> None:
         if self.is_connected:
             await self.disconnect("Disconnected previous Linux session.")
@@ -56,7 +57,7 @@ class LinuxSshSession:
         try:
             self._process = await self._connection.create_process(
                 term_type="xterm",
-                term_size=(160, 40),
+                term_size=term_size,
             )
         except (asyncssh.Error, OSError) as exc:
             connection = self._connection
@@ -126,6 +127,14 @@ class LinuxSshSession:
         async with self._write_lock:
             process.stdin.write(text)
             await process.stdin.drain()
+
+    async def resize_terminal(self, columns: int, lines: int) -> None:
+        process = self._process
+        if process is None:
+            return
+        resize = getattr(process, "change_terminal_size", None)
+        if callable(resize):
+            resize(columns, lines, 0, 0)
 
     async def _pump_stream(self, stream: asyncssh.SSHReader[str]) -> None:
         try:

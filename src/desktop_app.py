@@ -644,19 +644,19 @@ QToolButton#tabCloseButton:pressed {
     border-color: #ef4444;
 }
 QPlainTextEdit#terminalLog {
-    background: #05080c;
-    color: #cbd5e1;
-    border: 1px solid #162431;
+    background: #06090d;
+    color: #d6deeb;
+    border: 1px solid #18212b;
     border-radius: 10px;
-    font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
+    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", "Microsoft YaHei UI";
     font-size: 15px;
     font-weight: 400;
-    padding: 18px;
-    selection-background-color: #303842;
+    padding: 16px 18px;
+    selection-background-color: #334155;
     selection-color: #f8fafc;
 }
 QPlainTextEdit#terminalLog:focus {
-    border-color: #343d49;
+    border-color: #3b4450;
 }
 QFrame#commandRecordDock {
     background: #06090d;
@@ -1435,19 +1435,19 @@ QToolButton#tabCloseButton:hover {
     border-color: #5c2328;
 }
 QPlainTextEdit#terminalLog {
-    background: #050505;
-    color: #d0d0d0;
-    border: 1px solid #1a1a1a;
+    background: #06090d;
+    color: #d6deeb;
+    border: 1px solid #18212b;
     border-radius: 8px;
-    font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
+    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", "Microsoft YaHei UI";
     font-size: 14px;
     font-weight: 400;
-    padding: 14px;
-    selection-background-color: #264f78;
+    padding: 16px 18px;
+    selection-background-color: #334155;
     selection-color: #ededed;
 }
 QPlainTextEdit#terminalLog:focus {
-    border-color: #333333;
+    border-color: #3b4450;
 }
 QFrame#commandRecordDock {
     background: #080808;
@@ -1714,6 +1714,7 @@ QLabel#activeFilterText {
 
 def build_search_text(device: Device) -> str:
     fields = (
+        device.board_id,
         device.id,
         device.name,
         device.domain,
@@ -1874,6 +1875,24 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.selectAll()
 
     class TerminalSyntaxHighlighter(QSyntaxHighlighter):
+        ANSI_COLORS = {
+            "black": "#64748b",
+            "red": "#f87171",
+            "green": "#5eead4",
+            "yellow": "#fbbf24",
+            "blue": "#7dd3fc",
+            "magenta": "#c4b5fd",
+            "cyan": "#67e8f9",
+            "white": "#d6deeb",
+            "brightblack": "#94a3b8",
+            "brightred": "#fca5a5",
+            "brightgreen": "#99f6e4",
+            "brightyellow": "#fde68a",
+            "brightblue": "#bae6fd",
+            "brightmagenta": "#ddd6fe",
+            "brightcyan": "#a5f3fc",
+            "brightwhite": "#f8fafc",
+        }
         BRACKET_OUTPUT_LABELS = {
             "debug",
             "device",
@@ -1891,23 +1910,114 @@ if PYSIDE6_IMPORT_ERROR is None:
             "warn",
             "warning",
         }
+        IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b")
+        PATH_RE = re.compile(r"(?<!\w)(?:/[\w.\-]+(?:/[\w.\-]+)+|[A-Za-z]:\\[^\s]+)")
+        TOKEN_RE = re.compile(r"\b(?:V\d+(?:R\d+)?(?:C\d+)?|ARM-\d+|\d+ms|\d+%)\b")
+        HUAWEI_PRODUCT_RE = re.compile(r"^(Huawei)\s+(.+?\sSoftware)$")
+        LS_LONG_RE = re.compile(
+            r"^(\s*)([bcdlps-][rwxXsStT-]{9}[+.]?)\s+(\d+)\s+(\S+)\s+(\S+)\s+"
+            r"(\d+(?:[.,]\d+)?[KMGTPE]?|[0-9]+)\s+"
+            r"(\S+\s+\d+\s+(?:\d{1,2}:\d{2}|\d{4}))\s+(.+)$"
+        )
+        WORD_TOKEN_RE = re.compile(r"(?<!\S)(\S+)(?!\S)")
+        DIRECTORY_NAMES = {
+            "bin",
+            "boot",
+            "build",
+            "conf",
+            "config",
+            "data",
+            "dev",
+            "doc",
+            "docs",
+            "etc",
+            "home",
+            "lib",
+            "lib64",
+            "log",
+            "logs",
+            "mnt",
+            "opt",
+            "proc",
+            "root",
+            "run",
+            "sbin",
+            "src",
+            "sys",
+            "tmp",
+            "usr",
+            "var",
+        }
+        ARCHIVE_EXTENSIONS = {
+            ".7z",
+            ".bz2",
+            ".gz",
+            ".rar",
+            ".tar",
+            ".tgz",
+            ".xz",
+            ".zip",
+        }
+        CODE_EXTENSIONS = {
+            ".c",
+            ".cc",
+            ".cfg",
+            ".conf",
+            ".cpp",
+            ".go",
+            ".h",
+            ".ini",
+            ".json",
+            ".log",
+            ".md",
+            ".py",
+            ".sh",
+            ".sql",
+            ".toml",
+            ".txt",
+            ".xml",
+            ".yaml",
+            ".yml",
+        }
 
         def __init__(self, document: Any) -> None:
             super().__init__(document)
-            self._prompt_format = self._format("#a0a0a0")
-            self._command_format = self._format("#ededed")
-            self._info_format = self._format("#808080")
-            self._success_format = self._format("#3cc98e")
-            self._warning_format = self._format("#f5a623")
-            self._error_format = self._format("#f04f5a")
-            self._field_label_format = self._format("#c0c0c0")
-            self._field_separator_format = self._format("#606060")
-            self._field_value_format = self._format("#b0b0b0")
+            self._prompt_format = self._format("#8aa2b5")
+            self._command_format = self._format("#f8fafc")
+            self._info_format = self._format("#94a3b8")
+            self._success_format = self._format("#5eead4")
+            self._warning_format = self._format("#fbbf24")
+            self._error_format = self._format("#f87171")
+            self._field_label_format = self._format("#8aa2b5")
+            self._field_separator_format = self._format("#64748b")
+            self._field_value_format = self._format("#cbd5e1")
+            self._ip_format = self._format("#7dd3fc")
+            self._path_format = self._format("#a7f3d0")
+            self._muted_number_format = self._format("#c4b5fd")
+            self._directory_format = self._format("#7dd3fc")
+            self._file_format = self._format("#d6deeb")
+            self._executable_format = self._format("#5eead4")
+            self._symlink_format = self._format("#c4b5fd")
+            self._archive_format = self._format("#fbbf24")
+            self._permission_format = self._format("#94a3b8")
+            self._date_format = self._format("#8aa2b5")
+            self._ansi_line_formats: list[list[tuple[int, int, str, str, bool, bool]]] = []
+            self._ansi_format_cache: dict[tuple[str, str, bool, bool], QTextCharFormat] = {}
+
+        def set_ansi_line_formats(
+            self,
+            line_formats: list[list[tuple[int, int, str, str, bool, bool]]],
+        ) -> None:
+            self._ansi_line_formats = line_formats
+
+        def clear_ansi_line_formats(self) -> None:
+            self._ansi_line_formats = []
 
         def highlightBlock(self, text: str) -> None:  # noqa: N802
             stripped = text.lstrip()
             leading_spaces = len(text) - len(stripped)
             if not stripped:
+                self._highlight_ansi_line()
                 return
 
             prompt_end = self._prompt_end_index(text)
@@ -1915,12 +2025,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.setFormat(0, prompt_end, self._prompt_format)
                 if len(text) > prompt_end:
                     self.setFormat(prompt_end, len(text) - prompt_end, self._command_format)
+                self._highlight_ansi_line()
                 return
 
             if self._highlight_device_field(text, stripped, leading_spaces):
+                self._highlight_ansi_line()
                 return
 
             self._highlight_status_prefix(stripped, leading_spaces)
+            self._highlight_ls_output(text, stripped, leading_spaces)
+            self._highlight_inline_tokens(text)
+            self._highlight_ansi_line()
 
         def _prompt_end_index(self, text: str) -> int:
             if text.startswith("<"):
@@ -1983,7 +2098,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.setFormat(leading_spaces, end + 1, fmt)
 
         def _highlight_device_field(self, text: str, stripped: str, leading_spaces: int) -> bool:
-            del text
             field_prefixes = (
                 ("Patch Version", ":"),
                 ("Device name", ":"),
@@ -2003,14 +2117,125 @@ if PYSIDE6_IMPORT_ERROR is None:
                     self.setFormat(value_start, len(stripped) - (value_start - leading_spaces), self._field_value_format)
                 return True
 
-            product_match = re.match(r"^(Huawei)\s+(.+?\sSoftware)$", stripped)
+            product_match = self.HUAWEI_PRODUCT_RE.match(stripped)
             if product_match:
                 vendor_start = leading_spaces + product_match.start(1)
                 product_start = leading_spaces + product_match.start(2)
                 self.setFormat(vendor_start, len(product_match.group(1)), self._field_label_format)
                 self.setFormat(product_start, len(product_match.group(2)), self._field_value_format)
                 return True
+            self._highlight_inline_tokens(text)
             return False
+
+        def _highlight_inline_tokens(self, text: str) -> None:
+            if len(text) > 512:
+                return
+            for match in self.IP_RE.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self._ip_format)
+            for match in self.PATH_RE.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self._path_format)
+            for match in self.TOKEN_RE.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self._muted_number_format)
+
+        def _highlight_ls_output(self, text: str, stripped: str, leading_spaces: int) -> None:
+            long_match = self.LS_LONG_RE.match(text)
+            if long_match:
+                self._highlight_ls_long_match(long_match)
+                return
+            if len(text) > 240 or "/" in stripped:
+                return
+            tokens = list(self.WORD_TOKEN_RE.finditer(text))
+            if len(tokens) < 2:
+                return
+            gap_count = sum(1 for left, right in zip(tokens, tokens[1:]) if right.start() - left.end() >= 2)
+            if gap_count == 0 and len(tokens) > 5:
+                return
+            for match in tokens:
+                token = match.group(1)
+                fmt = self._format_for_ls_name(token)
+                if fmt is not None:
+                    self.setFormat(match.start(1), len(token), fmt)
+
+        def _highlight_ls_long_match(self, match: re.Match[str]) -> None:
+            permission = match.group(2)
+            self.setFormat(match.start(2), len(permission), self._permission_format)
+            self.setFormat(match.start(3), len(match.group(3)), self._muted_number_format)
+            self.setFormat(match.start(6), len(match.group(6)), self._muted_number_format)
+            self.setFormat(match.start(7), len(match.group(7)), self._date_format)
+
+            name = match.group(8)
+            name_start = match.start(8)
+            if permission.startswith("d"):
+                fmt = self._directory_format
+            elif permission.startswith("l"):
+                fmt = self._symlink_format
+            elif "x" in permission.lower() or "s" in permission.lower():
+                fmt = self._executable_format
+            else:
+                fmt = self._format_for_ls_name(name) or self._file_format
+
+            arrow_index = name.find(" -> ")
+            if arrow_index >= 0:
+                self.setFormat(name_start, arrow_index, self._symlink_format)
+                self.setFormat(name_start + arrow_index, len(name) - arrow_index, self._path_format)
+            else:
+                self.setFormat(name_start, len(name), fmt)
+
+        def _format_for_ls_name(self, name: str) -> QTextCharFormat | None:
+            clean_name = name.strip().strip("\"'")
+            if not clean_name or clean_name in {".", ".."}:
+                return None
+            marker = clean_name[-1]
+            base_name = clean_name[:-1] if marker in {"/", "*", "@", "|", "="} else clean_name
+            lower_name = base_name.lower()
+            suffix = Path(lower_name).suffix
+            if marker == "/" or lower_name in self.DIRECTORY_NAMES:
+                return self._directory_format
+            if marker == "@":
+                return self._symlink_format
+            if marker == "*" or lower_name.endswith((".run", ".bin", ".exe")):
+                return self._executable_format
+            if suffix in self.ARCHIVE_EXTENSIONS:
+                return self._archive_format
+            if suffix in self.CODE_EXTENSIONS:
+                return self._file_format
+            return None
+
+        def _highlight_ansi_line(self) -> None:
+            block_number = self.currentBlock().blockNumber()
+            if block_number < 0 or block_number >= len(self._ansi_line_formats):
+                return
+            for start, length, fg, bg, reverse, underscore in self._ansi_line_formats[block_number]:
+                fmt = self._ansi_format(fg, bg, reverse, underscore)
+                if fmt is not None:
+                    self.setFormat(start, length, fmt)
+
+        def _ansi_format(
+            self,
+            fg: str,
+            bg: str,
+            reverse: bool,
+            underscore: bool,
+        ) -> QTextCharFormat | None:
+            fg = fg or "default"
+            bg = bg or "default"
+            key = (fg, bg, reverse, underscore)
+            cached = self._ansi_format_cache.get(key)
+            if cached is not None:
+                return cached
+            foreground = self.ANSI_COLORS.get(bg if reverse else fg)
+            background = self.ANSI_COLORS.get(fg if reverse else bg)
+            if foreground is None and background is None and not underscore:
+                return None
+            fmt = QTextCharFormat()
+            if foreground is not None:
+                fmt.setForeground(QColor(foreground))
+            if background is not None:
+                fmt.setBackground(QColor(background))
+            if underscore:
+                fmt.setFontUnderline(True)
+            self._ansi_format_cache[key] = fmt
+            return fmt
 
         def _format(
             self,
@@ -2033,13 +2258,14 @@ if PYSIDE6_IMPORT_ERROR is None:
         MIN_COLUMNS = 80
         MIN_LINES = 8
         RENDER_INTERVAL_MS = 16
-        LARGE_OUTPUT_RENDER_INTERVAL_MS = 35
+        LARGE_OUTPUT_RENDER_INTERVAL_MS = 16
         LARGE_OUTPUT_THRESHOLD = 32768
         MAX_FEED_CHARS_PER_FRAME = 65536
         MAX_RENDER_LINES = 600
         LINE_SPACING_MAX_BLOCKS = 600
-        FAST_PLAIN_OUTPUT_THRESHOLD = 8192
+        FAST_PLAIN_OUTPUT_THRESHOLD = 4096
         FAST_PLAIN_TAIL_CHARS = 65536
+        FAST_PLAIN_INSERT_CHARS_PER_FRAME = 262144
         TERMINAL_HORIZONTAL_INSET = 42
 
         def __init__(self) -> None:
@@ -2064,6 +2290,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._skip_pyte_render_once = False
             self._defer_terminal_decoration = False
             self._terminal_highlighter_enabled = True
+            self._terminal_resize_handler: Callable[[int, int], None] | None = None
+            self._last_reported_terminal_dimensions = (0, 0)
             self.setObjectName("terminalLog")
             self.setReadOnly(False)
             self.setUndoRedoEnabled(False)
@@ -2073,6 +2301,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setWordWrapMode(QTextOption.NoWrap)
             self.document().setMaximumBlockCount(self.MAX_RENDER_LINES)
             self._syntax_highlighter = TerminalSyntaxHighlighter(self.document())
+            self._sync_terminal_tab_stop()
             self._render_timer = QTimer(self)
             self._render_timer.setSingleShot(True)
             self._render_timer.timeout.connect(self._flush_pending_render)
@@ -2100,16 +2329,34 @@ if PYSIDE6_IMPORT_ERROR is None:
             lines = max(self.MIN_LINES, viewport.height() // line_height)
             return columns, lines
 
+        def terminal_dimensions(self) -> tuple[int, int]:
+            return self._terminal_dimensions()
+
+        def _sync_terminal_tab_stop(self) -> None:
+            self.setTabStopDistance(max(1, self.fontMetrics().horizontalAdvance(" ")) * 8)
+
         def _sync_terminal_dimensions(self) -> bool:
             if self._pyte_screen is None:
                 return False
             columns, lines = self._terminal_dimensions()
             current_columns = int(getattr(self._pyte_screen, "columns", columns))
             current_lines = int(getattr(self._pyte_screen, "lines", lines))
-            if columns == current_columns:
+            if columns == current_columns and lines == current_lines:
                 return False
-            self._pyte_screen.resize(lines=current_lines, columns=columns)
+            self._pyte_screen.resize(lines=lines, columns=columns)
             return True
+
+        def set_terminal_resize_handler(self, handler: Callable[[int, int], None]) -> None:
+            self._terminal_resize_handler = handler
+
+        def _notify_terminal_resize(self) -> None:
+            if self._terminal_resize_handler is None:
+                return
+            dimensions = self._terminal_dimensions()
+            if dimensions == self._last_reported_terminal_dimensions:
+                return
+            self._last_reported_terminal_dimensions = dimensions
+            self._terminal_resize_handler(*dimensions)
 
         def _forward_text(self, text: str) -> None:
             if self._raw_sender is None:
@@ -2199,10 +2446,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return False
             message = "".join(self._pending_output_chunks)
             if self._should_fast_render_plain_output(message):
-                self._pending_output_chunks.clear()
-                self._append_plain_output_fast(message)
+                if len(message) > self.FAST_PLAIN_INSERT_CHARS_PER_FRAME:
+                    feed_message = message[: self.FAST_PLAIN_INSERT_CHARS_PER_FRAME]
+                    self._pending_output_chunks = [message[self.FAST_PLAIN_INSERT_CHARS_PER_FRAME :]]
+                    has_more_output = True
+                else:
+                    feed_message = message
+                    self._pending_output_chunks.clear()
+                    has_more_output = False
+                self._append_plain_output_fast(feed_message)
                 self._skip_pyte_render_once = True
-                return False
+                return has_more_output
             if self._plain_fast_mode:
                 self._resync_pyte_from_plain_tail()
             if len(message) > self.MAX_FEED_CHARS_PER_FRAME:
@@ -2236,12 +2490,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             return True
 
         def _append_plain_output_fast(self, message: str) -> None:
-            text = message.replace("\r\n", "\n").replace("\r", "\n")
+            text = self._expand_tabs(message.replace("\r\n", "\n").replace("\r", "\n"))
             if not text:
                 return
 
             self._plain_fast_mode = True
             self._plain_fast_tail = (self._plain_fast_tail + message)[-self.FAST_PLAIN_TAIL_CHARS :]
+            self._syntax_highlighter.clear_ansi_line_formats()
             self._set_terminal_highlighter_enabled(False)
 
             cursor = QTextCursor(self.document())
@@ -2280,6 +2535,24 @@ if PYSIDE6_IMPORT_ERROR is None:
                 return "\n" + message[1:].replace("\r\n", "\n").replace("\n", "\r\n")
             return message.replace("\r\n", "\n").replace("\n", "\r\n")
 
+        def _expand_tabs(self, text: str, tab_size: int = 8) -> str:
+            if "\t" not in text:
+                return text
+            expanded: list[str] = []
+            column = 0
+            for char in text:
+                if char == "\t":
+                    spaces = tab_size - (column % tab_size)
+                    expanded.append(" " * spaces)
+                    column += spaces
+                    continue
+                expanded.append(char)
+                if char == "\n":
+                    column = 0
+                else:
+                    column += 1
+            return "".join(expanded)
+
         def _render_pyte_buffer_now(self) -> None:
             if self._pyte_screen is None:
                 return
@@ -2289,12 +2562,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             history_top = list(getattr(history, "top", []))
             cursor_row = len(history_top) + int(self._pyte_screen.cursor.y)
             cursor_col = int(self._pyte_screen.cursor.x)
-            display_lines = [
-                self._line_to_text(line, cursor_col if index == self._pyte_screen.cursor.y else None)
+            screen_buffer = getattr(self._pyte_screen, "buffer", {})
+            display_entries = [
+                self._line_to_text_and_styles(
+                    screen_buffer[index] if hasattr(screen_buffer, "__getitem__") else line,
+                    cursor_col if index == self._pyte_screen.cursor.y else None,
+                )
                 for index, line in enumerate(self._pyte_screen.display)
             ]
-            all_lines = [self._line_to_text(line) for line in history_top] + display_lines
-            lines, cursor_row = self._trim_terminal_lines(all_lines, cursor_row)
+            all_entries = [self._line_to_text_and_styles(line) for line in history_top] + display_entries
+            lines, ansi_line_formats, cursor_row = self._trim_terminal_line_entries(all_entries, cursor_row)
+            self._syntax_highlighter.set_ansi_line_formats(ansi_line_formats)
 
             text = "\n".join(lines)
             self._set_terminal_text(text)
@@ -2331,6 +2609,34 @@ if PYSIDE6_IMPORT_ERROR is None:
                 cursor_index -= window_start
             return trimmed, cursor_index
 
+        def _trim_terminal_line_entries(
+            self,
+            entries: list[tuple[str, list[tuple[int, int, str, str, bool, bool]]]],
+            cursor_row: int,
+        ) -> tuple[list[str], list[list[tuple[int, int, str, str, bool, bool]]], int]:
+            lines = [text for text, _formats in entries]
+            if not lines:
+                return [""], [[]], 0
+
+            non_empty_rows = [index for index, line in enumerate(lines) if line.strip()]
+            if not non_empty_rows:
+                safe_row = min(cursor_row, len(entries) - 1)
+                text, formats = entries[safe_row]
+                return [text], [formats], 0
+
+            start = min(non_empty_rows[0], cursor_row)
+            end = max(non_empty_rows[-1], cursor_row) + 1
+            trimmed_entries = entries[start:end]
+            cursor_index = cursor_row - start
+            if len(trimmed_entries) > self.MAX_RENDER_LINES:
+                window_start = min(
+                    max(0, cursor_index - self.MAX_RENDER_LINES + 1),
+                    len(trimmed_entries) - self.MAX_RENDER_LINES,
+                )
+                trimmed_entries = trimmed_entries[window_start : window_start + self.MAX_RENDER_LINES]
+                cursor_index -= window_start
+            return [text for text, _formats in trimmed_entries], [formats for _text, formats in trimmed_entries], cursor_index
+
         def _line_to_text(self, line: Any, preserve_to_column: int | None = None) -> str:
             if isinstance(line, str):
                 text = line
@@ -2359,6 +2665,76 @@ if PYSIDE6_IMPORT_ERROR is None:
                 visible_text = text.rstrip()
                 return visible_text.ljust(preserve_to_column) if len(visible_text) < preserve_to_column else visible_text
             return text.rstrip()
+
+        def _line_to_text_and_styles(
+            self,
+            line: Any,
+            preserve_to_column: int | None = None,
+        ) -> tuple[str, list[tuple[int, int, str, str, bool, bool]]]:
+            if isinstance(line, str) or not hasattr(line, "items"):
+                return self._line_to_text(line, preserve_to_column), []
+
+            cells = []
+            for column, cell in line.items():
+                try:
+                    column_index = int(column)
+                except (TypeError, ValueError):
+                    continue
+                if column_index < 0:
+                    continue
+                cells.append((column_index, cell))
+            if not cells:
+                text = ""
+                return (text.ljust(preserve_to_column) if preserve_to_column else text), []
+
+            width = max(column for column, _cell in cells) + 1
+            chars = [" "] * width
+            style_by_column: dict[int, tuple[str, str, bool, bool]] = {}
+            for column, cell in cells:
+                data = getattr(cell, "data", " ")
+                chars[column] = str(data)[:1] if data else " "
+                style = self._cell_style_key(cell)
+                if style is not None:
+                    style_by_column[column] = style
+
+            raw_text = "".join(chars)
+            if preserve_to_column is not None:
+                visible_text = raw_text.rstrip()
+                text = visible_text.ljust(preserve_to_column) if len(visible_text) < preserve_to_column else visible_text
+            else:
+                text = raw_text.rstrip()
+
+            visible_width = len(text)
+            ranges: list[tuple[int, int, str, str, bool, bool]] = []
+            range_start: int | None = None
+            range_style: tuple[str, str, bool, bool] | None = None
+            previous_column = -1
+            for column in sorted(style_by_column):
+                if column >= visible_width:
+                    continue
+                style = style_by_column[column]
+                if range_start is None:
+                    range_start = column
+                    range_style = style
+                elif column != previous_column + 1 or style != range_style:
+                    if range_style is not None:
+                        ranges.append((range_start, previous_column - range_start + 1, *range_style))
+                    range_start = column
+                    range_style = style
+                previous_column = column
+            if range_start is not None and range_style is not None:
+                ranges.append((range_start, previous_column - range_start + 1, *range_style))
+            return text, ranges
+
+        @staticmethod
+        def _cell_style_key(cell: Any) -> tuple[str, str, bool, bool] | None:
+            fg = str(getattr(cell, "fg", "default") or "default")
+            bg = str(getattr(cell, "bg", "default") or "default")
+            reverse = bool(getattr(cell, "reverse", False))
+            underscore = bool(getattr(cell, "underscore", False))
+            if fg == "default" and bg == "default" and not reverse and not underscore:
+                return None
+            return fg, bg, reverse, underscore
 
         def _cursor_position_for_lines(self, lines: list[str], row: int, column: int) -> int:
             safe_row = max(0, min(row, len(lines) - 1))
@@ -2501,6 +2877,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def resizeEvent(self, event: Any) -> None:  # noqa: N802
             super().resizeEvent(event)
+            self._sync_terminal_tab_stop()
             if self._plain_fast_mode:
                 return
             if event.oldSize().isValid() and event.oldSize().width() == event.size().width():
@@ -2508,6 +2885,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             if self._sync_terminal_dimensions():
                 self._flush_pending_pyte_output()
                 self._render_pyte_buffer_now()
+                self._notify_terminal_resize()
 
         def mousePressEvent(self, event: Any) -> None:  # noqa: N802
             if event.button() == Qt.LeftButton:
@@ -2783,6 +3161,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.devices: list[Device] = []
             self.visible_devices: list[Device] = []
             self.owned_visible_devices: list[Device] = []
+            self.visible_status_counts: dict[str, int] = {}
             self.selected_device_id = ""
             self.current_user = ""
             self.owned_device_ids: set[str] | None = None
@@ -2809,6 +3188,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
             self.pending_futures: set[Future] = set()
             self._drag_session_tab_id = ""
+            self._last_desktop_state_payload = ""
+            self._last_device_table_signature: tuple[object, ...] = ()
+            self._last_owned_table_signature: tuple[object, ...] = ()
+            self._table_render_jobs: list[dict[str, object]] = []
+            self._table_render_generation = 0
             self.next_session_sequence = 1
 
             self.refresh_timer = QTimer(self)
@@ -2827,6 +3211,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.log_flush_timer = QTimer(self)
             self.log_flush_timer.setSingleShot(True)
             self.log_flush_timer.timeout.connect(self.flush_pending_session_logs)
+            self.table_render_timer = QTimer(self)
+            self.table_render_timer.setSingleShot(True)
+            self.table_render_timer.timeout.connect(self.process_table_render_jobs)
 
             self.load_desktop_state()
             self._build_window()
@@ -3012,7 +3399,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             stats_layout.addLayout(stats_bottom_row)
             nav_layout.addWidget(stats_frame)
 
-            self.device_table = self._new_table(["设备", "领域", "CPU", "状态"])
+            self.device_table = self._new_table(["序号", "设备", "领域", "CPU", "状态"])
             self.device_table.setMinimumHeight(320)
             self.device_table.setMaximumHeight(420)
             nav_layout.addWidget(self.device_table)
@@ -3600,10 +3987,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             header.setHighlightSections(False)
             header.setSectionsClickable(False)
-            header.setSectionResizeMode(0, QHeaderView.Stretch)
-            for column in range(1, len(headers)):
-                header.setSectionResizeMode(column, QHeaderView.Interactive)
-            if len(headers) == 4:
+            if len(headers) == 5:
+                header.setSectionResizeMode(0, QHeaderView.Interactive)
+                header.setSectionResizeMode(1, QHeaderView.Stretch)
+                for column in range(2, len(headers)):
+                    header.setSectionResizeMode(column, QHeaderView.Interactive)
+            else:
+                header.setSectionResizeMode(0, QHeaderView.Stretch)
+                for column in range(1, len(headers)):
+                    header.setSectionResizeMode(column, QHeaderView.Interactive)
+            if len(headers) == 5:
+                table.setColumnWidth(0, 56)
+                table.setColumnWidth(2, 96)
+                table.setColumnWidth(3, 78)
+                table.setColumnWidth(4, 74)
+            elif len(headers) == 4:
                 table.setColumnWidth(1, 96)
                 table.setColumnWidth(2, 78)
                 table.setColumnWidth(3, 74)
@@ -3766,6 +4164,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "left_sidebar_collapsed": self.left_sidebar_collapsed,
                     "log_directory": str(self.log_directory),
                 }
+                serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                if serialized == self._last_desktop_state_payload:
+                    return
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)
                 temp_path = self.state_path.with_suffix(f"{self.state_path.suffix}.tmp")
                 temp_path.write_text(
@@ -3773,6 +4174,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     encoding="utf-8",
                 )
                 temp_path.replace(self.state_path)
+                self._last_desktop_state_payload = serialized
             except OSError as exc:
                 if self.statusBar() is not None:
                     self.statusBar().showMessage(f"桌面状态保存失败: {exc}")
@@ -4490,6 +4892,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.owned_device_ids = snapshot.owned_device_ids
                 self.device_by_id = {device.id: device for device in self.devices}
                 self.search_index = {device.id: build_search_text(device) for device in self.devices}
+                self._last_device_table_signature = ()
+                self._last_owned_table_signature = ()
                 self.refresh_domain_options()
                 self.apply_filters()
                 self.set_status_message(f"已加载 {len(self.devices)} 台设备")
@@ -4525,7 +4929,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             cpu_filter = self.cpu_input.text().strip().lower()
             my_occupancy_filter = self.my_occupancy_filter_enabled
 
-            self.visible_devices = []
+            visible_devices: list[Device] = []
+            status_counts = {
+                STATUS_IDLE: 0,
+                STATUS_OCCUPIED: 0,
+                STATUS_PIPELINE: 0,
+                STATUS_OTHER: 0,
+            }
             for device in self.devices:
                 if search_text and search_text not in self.device_search_text(device):
                     continue
@@ -4537,8 +4947,15 @@ if PYSIDE6_IMPORT_ERROR is None:
                     continue
                 if my_occupancy_filter and not self.is_my_occupied_device(device):
                     continue
-                self.visible_devices.append(device)
-            self.visible_devices.sort(key=self._device_sort_key)
+                visible_devices.append(device)
+                if device.status in status_counts:
+                    status_counts[device.status] += 1
+
+            self.visible_devices = visible_devices
+            self.visible_status_counts = status_counts
+            self.owned_visible_devices = [
+                device for device in visible_devices if self.is_my_occupied_device(device)
+            ]
 
             self.refresh_my_occupancy_filter_button()
             self.refresh_filter_summary()
@@ -4550,19 +4967,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.refresh_workspace_context()
             self.update_controls()
 
-        def _device_sort_key(self, device: Device) -> tuple[int, int, str]:
-            if device.id == self.selected_device_id:
-                return (0, 0, device.name.lower())
-            if device.id in self.recent_device_ids:
-                return (1, self.recent_device_ids.index(device.id), device.name.lower())
-            return (2, 0, device.name.lower())
-
         def refresh_stats(self) -> None:
             total = len(self.visible_devices)
-            idle = sum(1 for device in self.visible_devices if device.status == STATUS_IDLE)
-            occupied = sum(1 for device in self.visible_devices if device.status == STATUS_OCCUPIED)
-            pipeline = sum(1 for device in self.visible_devices if device.status == STATUS_PIPELINE)
-            other = sum(1 for device in self.visible_devices if device.status == STATUS_OTHER)
+            idle = self.visible_status_counts.get(STATUS_IDLE, 0)
+            occupied = self.visible_status_counts.get(STATUS_OCCUPIED, 0)
+            pipeline = self.visible_status_counts.get(STATUS_PIPELINE, 0)
+            other = self.visible_status_counts.get(STATUS_OTHER, 0)
             self.stats_label.setText(
                 " ".join(
                     [
@@ -4611,8 +5021,169 @@ if PYSIDE6_IMPORT_ERROR is None:
         def can_power_off_device(self, device: Device) -> bool:
             return bool(device.supports_power_off and self.is_my_occupied_device(device))
 
+        def cancel_table_render_jobs(self) -> None:
+            self._table_render_generation += 1
+            self._table_render_jobs.clear()
+            if hasattr(self, "table_render_timer"):
+                self.table_render_timer.stop()
+
+        def enqueue_table_render_job(
+            self,
+            table: QTableWidget,
+            devices: list[Device],
+            keyword: str,
+            kind: str,
+            generation: int,
+            start_row: int,
+        ) -> None:
+            if start_row >= len(devices):
+                return
+            self._table_render_jobs.append(
+                {
+                    "table": table,
+                    "devices": devices,
+                    "keyword": keyword,
+                    "kind": kind,
+                    "generation": generation,
+                    "row": start_row,
+                }
+            )
+            if not self.table_render_timer.isActive():
+                self.table_render_timer.start(0)
+
+        def process_table_render_jobs(self) -> None:
+            frame_started = time.perf_counter()
+            while self._table_render_jobs:
+                job = self._table_render_jobs[0]
+                if job.get("generation") != self._table_render_generation:
+                    self._table_render_jobs.pop(0)
+                    continue
+                table = job["table"]
+                if not isinstance(table, QTableWidget):
+                    self._table_render_jobs.pop(0)
+                    continue
+                table.setUpdatesEnabled(False)
+                try:
+                    self.render_table_job_rows(job, max_rows=180)
+                finally:
+                    table.setUpdatesEnabled(True)
+                if int(job["row"]) >= len(job["devices"]):
+                    self._table_render_jobs.pop(0)
+                if (time.perf_counter() - frame_started) >= 0.008:
+                    break
+            if self._table_render_jobs:
+                self.table_render_timer.start(0)
+
+        def render_table_job_rows(self, job: dict[str, object], max_rows: int) -> None:
+            devices = job["devices"]
+            if not isinstance(devices, list):
+                return
+            keyword = str(job["keyword"])
+            kind = str(job["kind"])
+            row = int(job["row"])
+            end_row = min(len(devices), row + max_rows)
+            for current_row in range(row, end_row):
+                device = devices[current_row]
+                if kind == "owned":
+                    self.render_owned_table_row(current_row, device, keyword)
+                else:
+                    self.render_device_table_row(current_row, device, keyword)
+            job["row"] = end_row
+
+        def render_device_table_row(self, row: int, device: Device, keyword: str) -> None:
+            hidden_keyword_match = self.device_matches_hidden_keyword(
+                device,
+                keyword,
+                visible_values=(device.board_id, device.name, device.domain, device.cpu, device.status),
+            )
+            self._set_table_item(
+                self.device_table,
+                row,
+                0,
+                device.board_id,
+                device.id,
+                highlight=self.text_matches_keyword(device.board_id, keyword),
+            )
+            self._set_table_item(
+                self.device_table,
+                row,
+                1,
+                device.name,
+                device.id,
+                highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+            )
+            self._set_table_item(
+                self.device_table,
+                row,
+                2,
+                device.domain,
+                device.id,
+                highlight=self.text_matches_keyword(device.domain, keyword),
+            )
+            self._set_table_item(
+                self.device_table,
+                row,
+                3,
+                device.cpu,
+                device.id,
+                highlight=self.text_matches_keyword(device.cpu, keyword),
+            )
+            self._set_table_item(
+                self.device_table,
+                row,
+                4,
+                device.status,
+                device.id,
+                color=status_color(device.status),
+                highlight=self.text_matches_keyword(device.status, keyword),
+            )
+
+        def render_owned_table_row(self, row: int, device: Device, keyword: str) -> None:
+            hidden_keyword_match = self.device_matches_hidden_keyword(
+                device,
+                keyword,
+                visible_values=(device.name, device.domain, device.status),
+            )
+            self._set_table_item(
+                self.owned_table,
+                row,
+                0,
+                device.name,
+                device.id,
+                highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+            )
+            self._set_table_item(
+                self.owned_table,
+                row,
+                1,
+                device.domain,
+                device.id,
+                highlight=self.text_matches_keyword(device.domain, keyword),
+            )
+            self._set_table_item(
+                self.owned_table,
+                row,
+                2,
+                device.status,
+                device.id,
+                color=status_color(device.status),
+                highlight=self.text_matches_keyword(device.status, keyword),
+            )
+
         def refresh_device_table(self) -> None:
             keyword = self.search_input.text().strip().lower()
+            signature = (
+                keyword,
+                tuple(
+                    (device.id, device.board_id, device.name, device.domain, device.cpu, device.status)
+                    for device in self.visible_devices
+                ),
+            )
+            if signature == self._last_device_table_signature:
+                return
+            self._last_device_table_signature = signature
+            self.cancel_table_render_jobs()
+            generation = self._table_render_generation
             table = self.device_table
             table.setUpdatesEnabled(False)
             table.blockSignals(True)
@@ -4621,58 +5192,37 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.device_table_rows = {}
                 for row, device in enumerate(self.visible_devices):
                     self.device_table_rows[device.id] = row
-                    hidden_keyword_match = self.device_matches_hidden_keyword(
-                        device,
-                        keyword,
-                        visible_values=(device.name, device.domain, device.cpu, device.status),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        0,
-                        device.name,
-                        device.id,
-                        highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        1,
-                        device.domain,
-                        device.id,
-                        highlight=self.text_matches_keyword(device.domain, keyword),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        2,
-                        device.cpu,
-                        device.id,
-                        highlight=self.text_matches_keyword(device.cpu, keyword),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        3,
-                        device.status,
-                        device.id,
-                        color=status_color(device.status),
-                        highlight=self.text_matches_keyword(device.status, keyword),
-                    )
-                    table.setRowHeight(row, 32)
+                sync_rows = min(80, len(self.visible_devices))
+                for row in range(sync_rows):
+                    self.render_device_table_row(row, self.visible_devices[row], keyword)
             finally:
                 table.blockSignals(False)
                 table.setUpdatesEnabled(True)
+            self.enqueue_table_render_job(
+                table,
+                self.visible_devices,
+                keyword,
+                "device",
+                generation,
+                sync_rows,
+            )
 
         def refresh_owned_table(self) -> None:
             if not hasattr(self, "owned_table"):
                 self.owned_visible_devices = []
                 return
             keyword = self.search_input.text().strip().lower()
-            self.owned_visible_devices = [
-                device for device in self.visible_devices if self.is_my_occupied_device(device)
-            ]
             self.owned_count_label.setText(str(len(self.owned_visible_devices)))
+            signature = (
+                keyword,
+                tuple(
+                    (device.id, device.name, device.domain, device.status)
+                    for device in self.owned_visible_devices
+                ),
+            )
+            if signature == self._last_owned_table_signature:
+                return
+            self._last_owned_table_signature = signature
             table = self.owned_table
             table.setUpdatesEnabled(False)
             table.blockSignals(True)
@@ -4681,40 +5231,20 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.owned_table_rows = {}
                 for row, device in enumerate(self.owned_visible_devices):
                     self.owned_table_rows[device.id] = row
-                    hidden_keyword_match = self.device_matches_hidden_keyword(
-                        device,
-                        keyword,
-                        visible_values=(device.name, device.domain, device.status),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        0,
-                        device.name,
-                        device.id,
-                        highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        1,
-                        device.domain,
-                        device.id,
-                        highlight=self.text_matches_keyword(device.domain, keyword),
-                    )
-                    self._set_table_item(
-                        table,
-                        row,
-                        2,
-                        device.status,
-                        device.id,
-                        color=status_color(device.status),
-                        highlight=self.text_matches_keyword(device.status, keyword),
-                    )
-                    table.setRowHeight(row, 30)
+                sync_rows = min(60, len(self.owned_visible_devices))
+                for row in range(sync_rows):
+                    self.render_owned_table_row(row, self.owned_visible_devices[row], keyword)
             finally:
                 table.blockSignals(False)
                 table.setUpdatesEnabled(True)
+            self.enqueue_table_render_job(
+                table,
+                self.owned_visible_devices,
+                keyword,
+                "owned",
+                self._table_render_generation,
+                sync_rows,
+            )
 
         def _set_table_item(
             self,
@@ -4726,9 +5256,22 @@ if PYSIDE6_IMPORT_ERROR is None:
             color: str | None = None,
             highlight: bool = False,
         ) -> None:
-            item = QTableWidgetItem(text)
-            item.setData(Qt.UserRole, device_id)
-            item.setToolTip(text)
+            item = table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem()
+                table.setItem(row, column, item)
+            if item.text() != text:
+                item.setText(text)
+            if item.data(Qt.UserRole) != device_id:
+                item.setData(Qt.UserRole, device_id)
+            if item.toolTip() != text:
+                item.setToolTip(text)
+            item.setBackground(QBrush())
+            item.setForeground(QBrush())
+            font = item.font()
+            if font.bold():
+                font.setBold(False)
+                item.setFont(font)
             if color:
                 item.setForeground(QBrush(QColor(color)))
             if highlight:
@@ -4737,7 +5280,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 font = item.font()
                 font.setBold(True)
                 item.setFont(font)
-            table.setItem(row, column, item)
 
         def text_matches_keyword(self, value: str, keyword: str) -> bool:
             return bool(keyword and keyword in value.lower())
@@ -4780,7 +5322,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             mapped_row = row_map.get(device_id)
             if mapped_row is not None and 0 <= mapped_row < table.rowCount():
                 item = table.item(mapped_row, 0)
-                if item is not None and item.data(Qt.UserRole) == device_id:
+                if item is None:
+                    table.selectRow(mapped_row)
+                    table.blockSignals(False)
+                    return
+                if item.data(Qt.UserRole) == device_id:
                     table.selectRow(mapped_row)
                     table.scrollToItem(item)
                     table.blockSignals(False)
@@ -4830,7 +5376,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.set_status_message(message)
 
         def device_row_copy_text(self, device: Device) -> str:
-            return "\t".join([device.name, device.domain, device.cpu, device.status])
+            return "\t".join([device.board_id, device.name, device.domain, device.cpu, device.status])
 
         def device_connection_copy_text(self, device: Device) -> str:
             serial_text = (
@@ -5082,19 +5628,19 @@ if PYSIDE6_IMPORT_ERROR is None:
                 )
                 return
             if chosen == toggle_action:
-                self.toggle_occupancy()
+                self.toggle_occupancy(device)
                 return
             if chosen == power_off_action:
                 self.power_off_device(device)
                 return
             if chosen == open_device_action:
-                self.open_device_session()
+                self.open_device_session(device)
                 return
             if chosen == open_linux_action:
-                self.open_linux_session()
+                self.open_linux_session(device)
                 return
             if chosen == open_serial_action:
-                self.open_serial_session()
+                self.open_serial_session(device)
 
         def show_terminal_context_menu(self, tab_id: str, terminal: InteractiveTerminal, pos: Any) -> None:
             state = self.session_tabs_by_id.get(tab_id)
@@ -5592,8 +6138,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             if device_tab is not None:
                 device_tab.active_session_tab_widget = tabs
 
-        def open_device_session(self) -> None:
-            device = self.get_selected_device()
+        def open_device_session(self, device: Device | None = None) -> None:
+            device = device if isinstance(device, Device) else None
+            device = device or self.get_selected_device()
             if device is None:
                 self.show_warning("请先选择设备。")
                 return
@@ -5618,8 +6165,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 password=password,
             )
 
-        def open_linux_session(self) -> None:
-            device = self.get_quick_action_device()
+        def open_linux_session(self, device: Device | None = None) -> None:
+            device = device if isinstance(device, Device) else None
+            device = device or self.get_quick_action_device()
             if device is None:
                 self.show_warning("请先选择设备。")
                 return
@@ -5646,8 +6194,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 password=password,
             )
 
-        def open_serial_session(self) -> None:
-            device = self.get_quick_action_device()
+        def open_serial_session(self, device: Device | None = None) -> None:
+            device = device if isinstance(device, Device) else None
+            device = device or self.get_quick_action_device()
             if device is None:
                 self.show_warning("请先选择设备。")
                 return
@@ -5844,6 +6393,9 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
             terminal.set_enter_reconnect_handler(lambda tab_id=tab_id: self.reconnect_session_from_enter(tab_id))
+            terminal.set_terminal_resize_handler(
+                lambda columns, lines, tab_id=tab_id: self.resize_session_pty(tab_id, columns, lines)
+            )
             kind_label = self.session_kind_label(kind)
             self.write_session_log_line(
                 state,
@@ -6067,6 +6619,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.update_controls()
 
             async def connect() -> None:
+                if isinstance(state.session, LinuxSshSession):
+                    await state.session.connect(
+                        state.host,
+                        state.port,
+                        state.username,
+                        state.password,
+                        term_size=state.terminal.terminal_dimensions(),
+                    )
+                    return
                 await state.session.connect(
                     state.host,
                     state.port,
@@ -6104,6 +6665,16 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.handle_background_error(exc)
 
             self.run_coro(connect(), on_success=success, on_error=failure)
+
+        def resize_session_pty(self, tab_id: str, columns: int, lines: int) -> None:
+            state = self.session_tabs_by_id.get(tab_id)
+            if state is None or not isinstance(state.session, LinuxSshSession):
+                return
+
+            async def resize() -> None:
+                await state.session.resize_terminal(columns, lines)
+
+            self.run_coro(resize(), on_error=lambda _exc: None)
 
         def set_session_status(self, tab_id: str, status: str) -> None:
             state = self.session_tabs_by_id.get(tab_id)
@@ -6457,8 +7028,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.current_operation_label.setText(text)
             self.current_operation_label.setToolTip(tip)
 
-        def toggle_occupancy(self) -> None:
-            device = self.get_quick_action_device()
+        def toggle_occupancy(self, device: Device | None = None) -> None:
+            device = device if isinstance(device, Device) else None
+            device = device or self.get_quick_action_device()
             if device is None:
                 self.show_warning("请先选择设备。")
                 return

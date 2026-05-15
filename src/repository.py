@@ -280,8 +280,17 @@ class ApiDeviceRepository:
         serial_password = str(connection.get("serial_password", telnet_password))
         capabilities = payload.get("capabilities", {})
         power = payload.get("power", {})
+        board_id = (
+            payload.get("board_id")
+            or payload.get("boardId")
+            or payload.get("board")
+            or asset.get("board_id")
+            or asset.get("boardId")
+            or ""
+        )
         return Device(
             id=str(payload.get("device_id", "")),
+            board_id=str(board_id),
             name=str(payload.get("display_name", "")),
             domain=str(payload.get("domain_name", "")),
             device_type=str(payload.get("kind", "")),

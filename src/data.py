@@ -38,6 +38,7 @@ class Device:
     rack: str
     version: str
     notes: str
+    board_id: str = ""
     ssh_port: int = 22
     telnet_port: int = 23
     ssh_username: str = ""
@@ -50,7 +51,7 @@ class Device:
 
 
 def sample_devices() -> list[Device]:
-    return [
+    devices = [
         Device(
             id="MOCK-LAB-000",
             name="Mock-Huawei-Lab",
@@ -385,6 +386,14 @@ def sample_devices() -> list[Device]:
             notes="Added to expand CPU filter coverage.",
         ),
     ]
+    return _with_board_ids(devices)
+
+
+def _with_board_ids(devices: list[Device]) -> list[Device]:
+    for index, device in enumerate(devices, start=1):
+        if not device.board_id:
+            device.board_id = f"{index:04d}"
+    return devices
 
 
 def large_sample_devices(count: int) -> list[Device]:
@@ -457,6 +466,7 @@ def large_sample_devices(count: int) -> list[Device]:
                 serial_username=LOCAL_TEST_SSH_USER,
                 serial_password=LOCAL_TEST_SSH_PASSWORD,
                 supports_power_off=owner == CURRENT_USER or index % 7 == 0,
+                board_id=f"{index:04d}",
             )
         )
 
