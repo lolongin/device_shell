@@ -143,13 +143,13 @@ else:
     PYSIDE6_IMPORT_ERROR = None
 
 try:
-    from .data import (
+    from ._sample_data import (
         STATUS_IDLE,
         STATUS_OCCUPIED,
         STATUS_OTHER,
         STATUS_PIPELINE,
-        Device,
     )
+    from .data import Device
     from .styles import APP_STYLE
     from .helpers import build_search_text, mask_password, status_color
     from .app_state import RepositorySnapshot, DeviceTabState, SessionTabState
@@ -164,13 +164,13 @@ try:
     from .session_protocol import SessionCallbacks, SessionUnavailableError
     from .telnet_session import HuaweiTelnetSession, TelnetSessionError
 except ImportError:
-    from data import (
+    from _sample_data import (
         STATUS_IDLE,
         STATUS_OCCUPIED,
         STATUS_OTHER,
         STATUS_PIPELINE,
-        Device,
     )
+    from data import Device
     from styles import APP_STYLE
     from helpers import build_search_text, mask_password, status_color
     from app_state import RepositorySnapshot, DeviceTabState, SessionTabState
