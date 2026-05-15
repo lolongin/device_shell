@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(python *)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(pip install *)",
+      "Bash(pytest --version)",
+      "Bash(pytest tests/ -v)",
+      "Bash(pytest tests/test_app_state.py -v)",
+      "Bash(pytest tests/test_api_client.py -v)"
+    ]
+  }
+}
