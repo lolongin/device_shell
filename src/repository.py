@@ -331,7 +331,7 @@ class ApiDeviceRepository:
 def create_repository_from_env() -> DeviceRepository:
     source = os.getenv("DEVICE_TUI_DATA_SOURCE", "sample").strip().lower()
     current_user = os.getenv("DEVICE_TUI_CURRENT_USER", CURRENT_USER)
-    if source in {"api", "web_api", "stub_api"}:
+    if source == "api":
         refresh_seconds = float(os.getenv("DEVICE_TUI_REFRESH_SECONDS", "30"))
         return ApiDeviceRepository(
             create_http_client_from_env(),

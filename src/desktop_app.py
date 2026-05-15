@@ -1890,7 +1890,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             "trace",
             "warn",
             "warning",
-            "workflow",
         }
 
         def __init__(self, document: Any) -> None:
