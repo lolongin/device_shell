@@ -165,6 +165,7 @@ try:
     from .telnet_session import HuaweiTelnetSession, TelnetSessionError
     from .widgets.device_table import CopyableDeviceTable
     from .widgets.search_input import SelectAllLineEdit
+    from .widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
     from .widgets.terminal_widget import (
         ANSI_ESCAPE_RE,
         InteractiveTerminal,
@@ -193,6 +194,7 @@ except ImportError:
     from telnet_session import HuaweiTelnetSession, TelnetSessionError
     from widgets.device_table import CopyableDeviceTable
     from widgets.search_input import SelectAllLineEdit
+    from widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
     from widgets.terminal_widget import (
         ANSI_ESCAPE_RE,
         InteractiveTerminal,
@@ -207,108 +209,6 @@ DESKTOP_STATE_VERSION = 3
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
 if PYSIDE6_IMPORT_ERROR is None:
-
-
-
-    class CommandRecordInput(QPlainTextEdit):
-        def __init__(self) -> None:
-            super().__init__()
-            self._submit_handler: Callable[[str], None] | None = None
-            self._enter_sends = False
-            self.setObjectName("commandRecordEditor")
-            self.setMinimumHeight(72)
-            self.setMaximumHeight(16777215)
-            self.setTabChangesFocus(True)
-            self.setUndoRedoEnabled(False)
-            self.setLineWrapMode(QPlainTextEdit.NoWrap)
-            self.setPlaceholderText("在此输入命令...")
-
-        def set_submit_handler(self, handler: Callable[[str], None]) -> None:
-            self._submit_handler = handler
-
-        def set_enter_sends(self, enter_sends: bool) -> None:
-            self._enter_sends = enter_sends
-
-        def current_command_line(self) -> str:
-            return self.textCursor().block().text().strip()
-
-        def keyPressEvent(self, event: Any) -> None:  # noqa: N802
-            key = event.key()
-            modifiers = event.modifiers()
-            if modifiers == Qt.NoModifier:
-                if key == Qt.Key_Left:
-                    cursor = self.textCursor()
-                    cursor.movePosition(QTextCursor.Left)
-                    self.setTextCursor(cursor)
-                    self.ensureCursorVisible()
-                    return
-                if key == Qt.Key_Right:
-                    cursor = self.textCursor()
-                    cursor.movePosition(QTextCursor.Right)
-                    self.setTextCursor(cursor)
-                    self.ensureCursorVisible()
-                    return
-                if key == Qt.Key_Home:
-                    cursor = self.textCursor()
-                    cursor.movePosition(QTextCursor.StartOfLine)
-                    self.setTextCursor(cursor)
-                    self.ensureCursorVisible()
-                    return
-                if key == Qt.Key_End:
-                    cursor = self.textCursor()
-                    cursor.movePosition(QTextCursor.EndOfLine)
-                    self.setTextCursor(cursor)
-                    self.ensureCursorVisible()
-                    return
-            if key in (Qt.Key_Return, Qt.Key_Enter):
-                ctrl_pressed = bool(modifiers & Qt.ControlModifier)
-                should_submit = not ctrl_pressed if self._enter_sends else ctrl_pressed
-                if should_submit:
-                    command = self.current_command_line()
-                    if command and self._submit_handler is not None:
-                        self._submit_handler(command)
-                    return
-                self.insertPlainText("\n")
-                return
-            super().keyPressEvent(event)
-
-    class CommandRecordResizeHandle(QFrame):
-        def __init__(self, resize_handler: Callable[[int], None], parent: QWidget) -> None:
-            super().__init__(parent)
-            self._resize_handler = resize_handler
-            self._drag_start_y = 0
-            self._drag_start_height = 0
-            self.setObjectName("commandRecordResizeHandle")
-            self.setFixedHeight(5)
-            self.setCursor(Qt.SizeVerCursor)
-
-        def mousePressEvent(self, event: Any) -> None:  # noqa: N802
-            if event.button() == Qt.LeftButton:
-                self._drag_start_y = self._event_global_y(event)
-                parent = self.parentWidget()
-                self._drag_start_height = parent.height() if parent is not None else 0
-                event.accept()
-                return
-            super().mousePressEvent(event)
-
-        def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
-            if not (event.buttons() & Qt.LeftButton):
-                return super().mouseMoveEvent(event)
-            delta = self._event_global_y(event) - self._drag_start_y
-            self._resize_handler(self._drag_start_height - delta)
-            event.accept()
-
-        def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
-            if event.button() == Qt.LeftButton:
-                event.accept()
-                return
-            super().mouseReleaseEvent(event)
-
-        @staticmethod
-        def _event_global_y(event: Any) -> int:
-            if hasattr(event, "globalPosition"):
-                return int(event.globalPosition().toPoint().y())
-            return int(event.globalY())
 
     class DeviceDesktopApp(QMainWindow):
         LOG_FLUSH_INTERVAL_MS = 250
