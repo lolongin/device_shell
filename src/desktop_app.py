@@ -155,11 +155,11 @@ try:
     from .app_state import RepositorySnapshot, DeviceTabState, SessionTabState
     from .async_utils import AsyncLoopThread
     from .linux_session import LinuxSshSession
+    from .repo_factory import create_repository_from_env
     from .repository import (
         DeviceRepository,
         RepositoryConflictError,
         RepositoryError,
-        create_repository_from_env,
     )
     from .session_protocol import SessionCallbacks, SessionUnavailableError
     from .telnet_session import HuaweiTelnetSession, TelnetSessionError
@@ -176,11 +176,11 @@ except ImportError:
     from app_state import RepositorySnapshot, DeviceTabState, SessionTabState
     from async_utils import AsyncLoopThread
     from linux_session import LinuxSshSession
+    from repo_factory import create_repository_from_env
     from repository import (
         DeviceRepository,
         RepositoryConflictError,
         RepositoryError,
-        create_repository_from_env,
     )
     from session_protocol import SessionCallbacks, SessionUnavailableError
     from telnet_session import HuaweiTelnetSession, TelnetSessionError
