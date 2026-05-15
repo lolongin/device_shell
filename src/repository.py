@@ -4,42 +4,17 @@ import os
 from dataclasses import replace
 from typing import Any, Protocol
 
-try:
-    from .api_client import (
-        ApiClientError,
-        ApiConflictError,
-        DeviceApiClient,
-        ApiNotFoundError,
-        create_http_client_from_env,
-    )
-    from ._sample_data import (
-        CURRENT_USER,
-        STATUS_IDLE,
-        STATUS_OCCUPIED,
-        STATUS_OTHER,
-        STATUS_PIPELINE,
-        large_sample_devices,
-        sample_devices,
-    )
-    from .data import Device
-except ImportError:
-    from api_client import (
-        ApiClientError,
-        ApiConflictError,
-        DeviceApiClient,
-        ApiNotFoundError,
-        create_http_client_from_env,
-    )
-    from _sample_data import (
-        CURRENT_USER,
-        STATUS_IDLE,
-        STATUS_OCCUPIED,
-        STATUS_OTHER,
-        STATUS_PIPELINE,
-        large_sample_devices,
-        sample_devices,
-    )
-    from data import Device
+from .api_client import ApiClientError, ApiConflictError, DeviceApiClient, ApiNotFoundError
+from ._sample_data import (
+    CURRENT_USER,
+    STATUS_IDLE,
+    STATUS_OCCUPIED,
+    STATUS_OTHER,
+    STATUS_PIPELINE,
+    large_sample_devices,
+    sample_devices,
+)
+from .data import Device
 
 
 class RepositoryError(Exception):

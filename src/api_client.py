@@ -5,10 +5,7 @@ import os
 from typing import Any, Protocol
 from urllib import error, parse, request
 
-try:
-    from ._sample_data import CURRENT_USER
-except ImportError:
-    from _sample_data import CURRENT_USER
+from ._sample_data import CURRENT_USER
 
 
 class ApiClientError(Exception):

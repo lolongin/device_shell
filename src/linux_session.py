@@ -4,10 +4,7 @@ import asyncio
 
 import asyncssh
 
-try:
-    from .session_protocol import SessionCallbacks, SessionUnavailableError
-except ImportError:
-    from session_protocol import SessionCallbacks, SessionUnavailableError
+from .session_protocol import SessionCallbacks, SessionUnavailableError
 
 
 READ_CHUNK_SIZE = 16384
