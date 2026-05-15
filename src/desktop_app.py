@@ -164,6 +164,7 @@ try:
     from .session_protocol import SessionCallbacks, SessionUnavailableError
     from .telnet_session import HuaweiTelnetSession, TelnetSessionError
     from .widgets.device_table import CopyableDeviceTable
+    from .widgets.search_input import SelectAllLineEdit
 except ImportError:
     from _sample_data import (
         STATUS_IDLE,
@@ -186,6 +187,7 @@ except ImportError:
     from session_protocol import SessionCallbacks, SessionUnavailableError
     from telnet_session import HuaweiTelnetSession, TelnetSessionError
     from widgets.device_table import CopyableDeviceTable
+    from widgets.search_input import SelectAllLineEdit
 
 
 ALL_DOMAINS = "全部领域"
@@ -197,16 +199,6 @@ SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
 if PYSIDE6_IMPORT_ERROR is None:
 
-
-    class SelectAllLineEdit(QLineEdit):
-        def __init__(self) -> None:
-            super().__init__()
-            self.setReadOnly(True)
-            self.setObjectName("detailValueInput")
-
-        def mouseDoubleClickEvent(self, event: Any) -> None:  # noqa: N802
-            super().mouseDoubleClickEvent(event)
-            self.selectAll()
 
     class TerminalSyntaxHighlighter(QSyntaxHighlighter):
         ANSI_COLORS = {
