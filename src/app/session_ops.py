@@ -104,7 +104,7 @@ class SessionOpsMixin:
         )
 
     def clone_serial_session(self, device: Device) -> None:
-        if not self.is_my_occupied_device(device):
+        if not self.is_temporary_device(device) and not self.is_my_occupied_device(device):
             self.show_warning("请先占用设备后再连接串口。")
             self.set_status_message("串口连接需要先占用当前设备。")
             return
@@ -114,7 +114,11 @@ class SessionOpsMixin:
             return
         username = self.device_serial_username(device).strip()
         password = self.device_serial_password(device)
-        if not device.serial_ip.strip() or not username or not password:
+        if self.is_temporary_device(device):
+            if not password:
+                self.show_warning("临时串口需要填写串口密码。")
+                return
+        elif not username or not password:
             self.show_warning("设备串口地址、用户名和密码不完整。")
             return
         self.ensure_session_tab(
@@ -248,6 +252,7 @@ class SessionOpsMixin:
             copy_selection_action = menu.addAction("复制选中文本")
             menu.addSeparator()
         actions = self._add_device_quick_actions(menu)
+        self.update_device_quick_actions_for_device(actions, device)
         log_actions = self._add_session_log_actions(menu)
         menu.addSeparator()
         split_actions = self._add_session_split_actions(menu)
@@ -273,6 +278,7 @@ class SessionOpsMixin:
             return
         menu = QMenu(widget)
         actions = self._add_device_quick_actions(menu)
+        self.update_device_quick_actions_for_device(actions, device)
         log_actions = self._add_session_log_actions(menu)
         menu.addSeparator()
         split_actions = self._add_session_split_actions(menu)
@@ -391,7 +397,7 @@ class SessionOpsMixin:
 
     def session_jump_text(self, state: SessionTabState) -> str:
         device = self.get_device_by_id(state.device_id)
-        device_name = device.name if device is not None else state.device_id
+        device_name = self.temporary_device_display_name(device) if device is not None else state.device_id
         kind = self.session_kind_label(state.kind)
         return f"{device_name} · {self.session_display_title(state, kind)} · {self.session_status_label(state.status_text)}"
 
@@ -631,11 +637,12 @@ class SessionOpsMixin:
         self.connect_session_tab(tab_id)
 
     def ensure_device_tab(self, device: Device) -> DeviceTabState:
+        display_name = self.temporary_device_display_name(device)
         existing = self.device_tabs_by_id.get(device.id)
         if existing is not None:
-            existing.title = device.name
+            existing.title = display_name
             if existing.tab_title_label is not None:
-                existing.tab_title_label.setText(device.name)
+                existing.tab_title_label.setText(display_name)
             index = self.session_tab_widget.indexOf(existing.page)
             if index >= 0:
                 self.session_tab_widget.setCurrentIndex(index)
@@ -662,7 +669,7 @@ class SessionOpsMixin:
 
         state = DeviceTabState(
             device_id=device.id,
-            title=device.name,
+            title=display_name,
             page=page,
             session_tab_widget=child_tabs,
             session_splitter=session_splitter,
@@ -670,7 +677,7 @@ class SessionOpsMixin:
             active_session_tab_widget=child_tabs,
         )
         self.device_tabs_by_id[device.id] = state
-        index = self.session_tab_widget.addTab(page, device.name)
+        index = self.session_tab_widget.addTab(page, display_name)
         self._install_device_tab_header(index, state)
         self.session_tab_widget.setCurrentIndex(index)
         self.update_center_stage_state()

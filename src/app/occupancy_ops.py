@@ -18,6 +18,9 @@ class OccupancyOpsMixin:
     def toggle_occupancy(self, device: Device | None = None) -> None:
         device = device if isinstance(device, Device) else None
         device = device or self.get_quick_action_device()
+        if device is not None and self.is_temporary_device(device):
+            self.show_warning("临时设备不会同步到资产库，不能执行占用/释放。")
+            return
         if device is None:
             self.show_warning("请先选择设备。")
             return
@@ -42,6 +45,9 @@ class OccupancyOpsMixin:
         self.power_off_device(device)
 
     def power_off_device(self, device: Device) -> None:
+        if self.is_temporary_device(device):
+            self.show_warning("临时设备不能执行掉电。")
+            return
         if not device.supports_power_off:
             self.show_warning("当前设备不支持掉电。")
             return

@@ -206,6 +206,7 @@ from .occupancy_ops import OccupancyOpsMixin
 from .command_record_ops import CommandRecordOpsMixin
 from .desktop_state import DesktopStateMixin
 from .table_ops import TableOpsMixin
+from .temporary_device_ops import TemporaryDeviceOpsMixin
 
 
 ALL_DOMAINS = "全部领域"
@@ -218,6 +219,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         OccupancyOpsMixin,
         CommandRecordOpsMixin,
         DesktopStateMixin,
+        TemporaryDeviceOpsMixin,
         TableOpsMixin,
         QMainWindow,
     ):
@@ -249,6 +251,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.closed = False
             self.loading_snapshot = False
             self.my_occupancy_filter_enabled = False
+            self.temporary_devices: list[Device] = []
+            self.editing_temporary_device_id = ""
             self.recent_device_ids: list[str] = []
             self.command_record_groups: list[dict[str, object]] = [
                 {"name": "终端", "content": ""},
@@ -259,6 +263,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_record_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
             self.connection_params_collapsed = True
             self.left_sidebar_collapsed = False
+            self.left_sidebar_active_panel = "devices"
             self.left_sidebar_animation = None
             self.command_tab_buttons: list[QToolButton] = []
             self.command_tab_close_buttons: list[QToolButton] = []
@@ -381,9 +386,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             scroll.setMinimumWidth(420)
             scroll.setMaximumWidth(520)
 
-            panel = QWidget()
-            panel.setObjectName("leftRail")
-            layout = QVBoxLayout(panel)
+            device_panel = QWidget()
+            device_panel.setObjectName("leftRail")
+            self.device_sidebar_panel = device_panel
+            layout = QVBoxLayout(device_panel)
             layout.setContentsMargins(0, 0, 8, 0)
             layout.setSpacing(8)
 
@@ -486,7 +492,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addWidget(navigation_group)
             layout.addWidget(self._build_device_context_panel())
             layout.addStretch(1)
-            scroll.setWidget(panel)
+            stack_container = QWidget()
+            stack_container.setObjectName("leftRail")
+            self.left_sidebar_stack = QStackedLayout(stack_container)
+            self.left_sidebar_stack.setContentsMargins(0, 0, 0, 0)
+            self.left_sidebar_stack.addWidget(device_panel)
+            self.left_sidebar_stack.addWidget(self._build_temporary_panel())
+            scroll.setWidget(stack_container)
             shell_layout.addWidget(scroll, 1)
             self.apply_left_sidebar_state(animated=True)
             return shell
@@ -504,11 +516,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "设备导航",
                 checked=not self.left_sidebar_collapsed,
             )
+            self.activity_temporary_button = self._new_activity_button(
+                "connector",
+                "临时连接",
+            )
 
             layout.addWidget(self.activity_device_button)
+            layout.addWidget(self.activity_temporary_button)
             layout.addStretch(1)
 
-            self.activity_device_button.clicked.connect(lambda: self.toggle_left_sidebar())
+            self.activity_device_button.clicked.connect(lambda: self.show_left_sidebar_panel("devices"))
+            self.activity_temporary_button.clicked.connect(lambda: self.show_left_sidebar_panel("temporary"))
             return rail
 
         def _new_activity_button(self, icon_name: str, tooltip: str, *, checked: bool = False) -> QToolButton:
@@ -594,6 +612,179 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.owned_table.setMinimumHeight(150)
             layout.addWidget(self.owned_table, 1)
             return frame
+
+        def _build_temporary_panel(self) -> QWidget:
+            panel = QWidget()
+            panel.setObjectName("leftRail")
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(0, 0, 8, 0)
+            layout.setSpacing(8)
+
+            group = QGroupBox("临时连接")
+            group.setObjectName("navShell")
+            group_layout = QVBoxLayout(group)
+            group_layout.setSpacing(8)
+
+            header = QHBoxLayout()
+            title_col = QVBoxLayout()
+            title_col.setSpacing(2)
+            title = QLabel("临时连接")
+            title.setObjectName("railTitle")
+            copy = QLabel("不进入设备表，直接打开一次性 Telnet / SSH 会话")
+            copy.setObjectName("railCopy")
+            copy.setWordWrap(True)
+            copy.setMinimumWidth(0)
+            if QSizePolicy is not None:
+                copy.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            title_col.addWidget(title)
+            title_col.addWidget(copy)
+            header.addLayout(title_col, 1)
+
+            group_layout.addLayout(header)
+
+            form_frame = QFrame()
+            form_frame.setObjectName("navFilterBar")
+            form_layout = QFormLayout(form_frame)
+            form_layout.setContentsMargins(8, 8, 8, 8)
+            form_layout.setVerticalSpacing(6)
+            form_layout.setHorizontalSpacing(6)
+            form_layout.setLabelAlignment(Qt.AlignRight)
+
+            self.temporary_name_input = QLineEdit()
+            self.temporary_name_input.setPlaceholderText("Temp-10.1.2.3")
+            form_layout.addRow("名称", self.temporary_name_input)
+
+            telnet_row = QHBoxLayout()
+            telnet_row.setSpacing(6)
+            self.temporary_telnet_ip_input = QLineEdit()
+            self.temporary_telnet_ip_input.setPlaceholderText("Telnet IP")
+            self.temporary_telnet_port_input = QLineEdit()
+            self.temporary_telnet_port_input.setPlaceholderText("23")
+            self.temporary_telnet_port_input.setMaximumWidth(64)
+            telnet_row.addWidget(self.temporary_telnet_ip_input, 1)
+            telnet_row.addWidget(self.temporary_telnet_port_input)
+            form_layout.addRow("管理口", telnet_row)
+            self.temporary_telnet_username_input = QLineEdit()
+            self.temporary_telnet_password_input = QLineEdit()
+            self.temporary_telnet_password_input.setEchoMode(QLineEdit.Password)
+            form_layout.addRow("管理口账号", self.temporary_telnet_username_input)
+            form_layout.addRow("管理口密码", self.temporary_telnet_password_input)
+
+            ssh_row = QHBoxLayout()
+            ssh_row.setSpacing(6)
+            self.temporary_ssh_ip_input = QLineEdit()
+            self.temporary_ssh_ip_input.setPlaceholderText("SSH IP")
+            self.temporary_ssh_port_input = QLineEdit()
+            self.temporary_ssh_port_input.setPlaceholderText("22")
+            self.temporary_ssh_port_input.setMaximumWidth(64)
+            ssh_row.addWidget(self.temporary_ssh_ip_input, 1)
+            ssh_row.addWidget(self.temporary_ssh_port_input)
+            form_layout.addRow("SSH", ssh_row)
+            self.temporary_ssh_username_input = QLineEdit()
+            self.temporary_ssh_password_input = QLineEdit()
+            self.temporary_ssh_password_input.setEchoMode(QLineEdit.Password)
+            form_layout.addRow("SSH 账号", self.temporary_ssh_username_input)
+            form_layout.addRow("SSH 密码", self.temporary_ssh_password_input)
+
+            serial_row = QHBoxLayout()
+            serial_row.setSpacing(6)
+            self.temporary_serial_ip_input = QLineEdit()
+            self.temporary_serial_ip_input.setPlaceholderText("串口 IP")
+            self.temporary_serial_port_input = QLineEdit()
+            self.temporary_serial_port_input.setPlaceholderText("23")
+            self.temporary_serial_port_input.setMaximumWidth(64)
+            serial_row.addWidget(self.temporary_serial_ip_input, 1)
+            serial_row.addWidget(self.temporary_serial_port_input)
+            form_layout.addRow("串口", serial_row)
+            self.temporary_serial_password_input = QLineEdit()
+            self.temporary_serial_password_input.setEchoMode(QLineEdit.Password)
+            form_layout.addRow("串口密码", self.temporary_serial_password_input)
+
+            self.temporary_notes_input = QLineEdit()
+            form_layout.addRow("备注", self.temporary_notes_input)
+
+            form_button_row = QHBoxLayout()
+            form_button_row.setSpacing(6)
+            self.temporary_save_button = QPushButton("保存并打开")
+            self.temporary_save_button.setObjectName("primaryButton")
+            self.temporary_clear_button = QPushButton("清空")
+            self.temporary_clear_button.setObjectName("compactGhostButton")
+            form_button_row.addWidget(self.temporary_save_button, 1)
+            form_button_row.addWidget(self.temporary_clear_button, 0)
+            form_layout.addRow("", form_button_row)
+            group_layout.addWidget(form_frame)
+
+            self.temporary_empty_label = QLabel("暂无临时连接")
+            self.temporary_empty_label.setObjectName("sectionCopy")
+            self.temporary_empty_label.setWordWrap(True)
+            group_layout.addWidget(self.temporary_empty_label)
+
+            self.temporary_list_container = QWidget()
+            self.temporary_list_container.setObjectName("leftRail")
+            self.temporary_list_layout = QVBoxLayout(self.temporary_list_container)
+            self.temporary_list_layout.setContentsMargins(0, 0, 0, 0)
+            self.temporary_list_layout.setSpacing(6)
+            group_layout.addWidget(self.temporary_list_container)
+            group_layout.addStretch(1)
+
+            layout.addWidget(group)
+            layout.addStretch(1)
+            self.refresh_temporary_panel()
+            return panel
+
+        def refresh_temporary_panel(self) -> None:
+            if not hasattr(self, "temporary_list_layout"):
+                return
+            while self.temporary_list_layout.count():
+                item = self.temporary_list_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self.temporary_empty_label.setVisible(not self.temporary_devices)
+            for device in self.temporary_devices:
+                row = QFrame()
+                row.setObjectName("myOccupancyCard")
+                row.setContextMenuPolicy(Qt.CustomContextMenu)
+                row.customContextMenuRequested.connect(
+                    lambda pos, widget=row, item=device: self.show_temporary_device_context_menu(item, widget, pos)
+                )
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(8, 8, 8, 8)
+                row_layout.setSpacing(6)
+
+                info = QLabel(
+                    (
+                        f"<div style='font-weight:700;color:#ededed'>"
+                        f"{html.escape(self.temporary_device_display_name(device))}</div>"
+                        f"<div style='color:#808080;font-size:11px'>"
+                        f"{html.escape(self.temporary_device_endpoint_text(device))}</div>"
+                    )
+                )
+                info.setObjectName("inspectorText")
+                info.setTextFormat(Qt.RichText)
+                info.setWordWrap(True)
+                row_layout.addWidget(info, 1)
+
+                open_button = QPushButton("打开")
+                open_button.setObjectName("compactGhostButton")
+                open_button.setFixedWidth(58)
+                open_button.clicked.connect(lambda _checked=False, item=device: self.open_temporary_device(item))
+                row_layout.addWidget(open_button)
+
+                edit_button = QPushButton("编辑")
+                edit_button.setObjectName("compactGhostButton")
+                edit_button.setFixedWidth(58)
+                edit_button.clicked.connect(lambda _checked=False, item=device: self.edit_temporary_device(item))
+                row_layout.addWidget(edit_button)
+
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("compactGhostButton")
+                delete_button.setFixedWidth(58)
+                delete_button.clicked.connect(lambda _checked=False, item=device: self.delete_temporary_device(item))
+                row_layout.addWidget(delete_button)
+
+                self.temporary_list_layout.addWidget(row)
+            self.temporary_list_layout.addStretch(1)
 
         def _build_device_context_panel(self) -> QWidget:
             panel = QWidget()
@@ -1110,6 +1301,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.my_occupancy_filter_button.toggled.connect(self.set_my_occupancy_filter)
 
             self.toolbar_refresh_button.clicked.connect(self.refresh_snapshot)
+            self.temporary_save_button.clicked.connect(self.add_and_open_temporary_device)
+            self.temporary_clear_button.clicked.connect(self.clear_temporary_form)
             self.clear_filters_button.clicked.connect(self.clear_filters)
 
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
@@ -1178,6 +1371,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.apply_left_sidebar_state()
             self.schedule_desktop_state_save()
 
+        def show_left_sidebar_panel(self, panel: str) -> None:
+            if panel not in {"devices", "temporary"}:
+                panel = "devices"
+            self.left_sidebar_active_panel = panel
+            if hasattr(self, "left_sidebar_stack"):
+                self.left_sidebar_stack.setCurrentIndex(1 if panel == "temporary" else 0)
+            if self.left_sidebar_collapsed:
+                self.left_sidebar_collapsed = False
+            self.apply_left_sidebar_state()
+            self.schedule_desktop_state_save()
+
         def apply_left_sidebar_state(self, *, animated: bool = False) -> None:
             if not hasattr(self, "left_sidebar_content"):
                 return
@@ -1205,11 +1409,21 @@ if PYSIDE6_IMPORT_ERROR is None:
                     left_width = 46 if collapsed else 520
                     if total > 0:
                         splitter.setSizes([left_width, max(1, total - left_width)])
+            if hasattr(self, "left_sidebar_stack"):
+                self.left_sidebar_stack.setCurrentIndex(1 if self.left_sidebar_active_panel == "temporary" else 0)
             if hasattr(self, "activity_device_button"):
-                self.activity_device_button.setChecked(not collapsed)
-                self.activity_device_button.setToolTip("显示设备导航" if collapsed else "隐藏设备导航")
+                device_active = not collapsed and self.left_sidebar_active_panel == "devices"
+                self.activity_device_button.setChecked(device_active)
+                self.activity_device_button.setToolTip("设备导航")
                 self.activity_device_button.setIcon(
-                    self._activity_icon("devices", "#808080" if collapsed else "#ededed")
+                    self._activity_icon("devices", "#ededed" if device_active else "#808080")
+                )
+            if hasattr(self, "activity_temporary_button"):
+                temporary_active = not collapsed and self.left_sidebar_active_panel == "temporary"
+                self.activity_temporary_button.setChecked(temporary_active)
+                self.activity_temporary_button.setToolTip("临时连接")
+                self.activity_temporary_button.setIcon(
+                    self._activity_icon("connector", "#ededed" if temporary_active else "#808080")
                 )
 
         def animate_left_sidebar_state(self, collapsed: bool) -> None:
@@ -1371,8 +1585,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             state = self.current_session_state()
             self.quick_telnet_button.setEnabled(selected)
             self.quick_ssh_button.setEnabled(selected)
-            self.quick_serial_button.setEnabled(selected)
-            self.quick_occupancy_button.setEnabled(selected)
+            self.quick_serial_button.setEnabled(selected and not self.is_temporary_device(device))
+            self.quick_occupancy_button.setEnabled(selected and not self.is_temporary_device(device))
             self.quick_power_off_button.setEnabled(bool(device and self.can_power_off_device(device)))
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
             self.quick_log_button.setEnabled(state is not None)

@@ -23,7 +23,7 @@ except ModuleNotFoundError:
 from .._sample_data import STATUS_IDLE, STATUS_OCCUPIED, STATUS_OTHER, STATUS_PIPELINE
 from ..app_state import RepositorySnapshot
 from ..data import Device
-from ..helpers import build_search_text, status_color
+from ..helpers import status_color
 
 ALL_DOMAINS = "全部领域"
 ALL_STATUS = "全部状态"
@@ -60,10 +60,7 @@ class TableOpsMixin:
             self.current_user = snapshot.current_user
             self.devices = snapshot.devices
             self.owned_device_ids = snapshot.owned_device_ids
-            self.device_by_id = {device.id: device for device in self.devices}
-            self.search_index = {device.id: build_search_text(device) for device in self.devices}
-            self._last_device_table_signature = ()
-            self._last_owned_table_signature = ()
+            self.rebuild_device_indexes()
             self.refresh_domain_options()
             self.apply_filters()
             self.set_status_message(f"已加载 {len(self.devices)} 台设备")
@@ -184,11 +181,15 @@ class TableOpsMixin:
         return sum(1 for device in self.devices if device.owner == self.current_user)
 
     def is_my_occupied_device(self, device: Device) -> bool:
+        if self.is_temporary_device(device):
+            return False
         if self.owned_device_ids is not None:
             return device.id in self.owned_device_ids
         return bool(self.current_user and device.owner == self.current_user)
 
     def can_power_off_device(self, device: Device) -> bool:
+        if self.is_temporary_device(device):
+            return False
         return bool(device.supports_power_off and self.is_my_occupied_device(device))
 
     def cancel_table_render_jobs(self) -> None:
@@ -278,7 +279,7 @@ class TableOpsMixin:
             self.device_table,
             row,
             1,
-            device.name,
+            self.temporary_device_display_name(device),
             device.id,
             highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
         )
@@ -348,6 +349,7 @@ class TableOpsMixin:
                 (device.id, device.board_id, device.name, device.domain, device.cpu, device.status)
                 for device in self.visible_devices
             ),
+            tuple(self.is_temporary_device(device) for device in self.visible_devices),
         )
         if signature == self._last_device_table_signature:
             return
@@ -455,7 +457,7 @@ class TableOpsMixin:
         return bool(keyword and keyword in value.lower())
 
     def device_search_text(self, device: Device) -> str:
-        return self.search_index.get(device.id) or build_search_text(device)
+        return self.search_index.get(device.id) or self.temporary_device_search_text(device)
 
     def device_matches_hidden_keyword(
         self,
@@ -546,7 +548,13 @@ class TableOpsMixin:
         self.set_status_message(message)
 
     def device_row_copy_text(self, device: Device) -> str:
-        return "\t".join([device.board_id, device.name, device.domain, device.cpu, device.status])
+        return "\t".join([
+            device.board_id,
+            self.temporary_device_display_name(device),
+            device.domain,
+            device.cpu,
+            device.status,
+        ])
 
     def device_connection_copy_text(self, device: Device) -> str:
         serial_text = (
@@ -591,18 +599,28 @@ class TableOpsMixin:
         self.copy_text_to_clipboard(value, f"已复制{label}: {value}")
 
     def device_ssh_username(self, device: Device) -> str:
+        if self.is_temporary_device(device):
+            return device.ssh_username
         return device.ssh_username or device.username
 
     def device_ssh_password(self, device: Device) -> str:
+        if self.is_temporary_device(device):
+            return device.ssh_password
         return device.ssh_password or device.password
 
     def device_serial_username(self, device: Device) -> str:
+        if self.is_temporary_device(device):
+            return device.serial_username
         return device.serial_username or device.username
 
     def device_serial_password(self, device: Device) -> str:
+        if self.is_temporary_device(device):
+            return device.serial_password
         return device.serial_password or device.password
 
     def can_view_serial_connection(self, device: Device) -> bool:
+        if self.is_temporary_device(device):
+            return bool(device.serial_ip.strip())
         return bool(device.serial_ip.strip() and self.is_my_occupied_device(device))
 
     def copy_selected_device_field(self, table: QTableWidget, field: str) -> None:
@@ -765,6 +783,7 @@ class TableOpsMixin:
             return
         menu = QMenu(widget)
         actions = self._add_device_quick_actions(menu)
+        self.update_device_quick_actions_for_device(actions, device)
         chosen = menu.exec(widget.mapToGlobal(pos))
         if chosen is None:
             return
@@ -844,13 +863,18 @@ class TableOpsMixin:
         ssh_text = f"{device.ssh_ip}:{device.ssh_port}"
         serial_text = f"{device.serial_ip}:{device.serial_port}" if serial_visible else "占用后可见"
         serial_color = "#c0c0c0" if serial_visible else "#707070"
+        if self.is_temporary_device(device):
+            serial_text = "-"
+            serial_color = "#707070"
         self.device_summary_card.setText(
             (
-                f"<div style='font-size:15px;font-weight:600;color:#ededed'>{html.escape(device.name)}</div>"
+                f"<div style='font-size:15px;font-weight:600;color:#ededed'>"
+                f"{html.escape(self.temporary_device_display_name(device))}</div>"
                 f"<div style='margin-top:4px;color:#808080;font-size:11px'>"
                 f"<span style='color:#c0c0c0;font-weight:600'>{html.escape(device.id)}</span>"
                 f" &nbsp;·&nbsp; {html.escape(device.domain)}"
                 f"</div>"
+                f"{self.temporary_device_detail_badge(device)}"
                 f"<div style='margin-top:10px;color:#c0c0c0;line-height:1.8'>"
                 f"<span style='color:#808080'>状态</span>&nbsp;&nbsp;"
                 f"<span style='color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span><br>"

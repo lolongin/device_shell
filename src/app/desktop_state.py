@@ -18,6 +18,7 @@ except ModuleNotFoundError:
 
 from ..app_state import SessionTabState
 from ..data import Device
+from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
 DESKTOP_STATE_VERSION = 3
@@ -89,6 +90,16 @@ class DesktopStateMixin:
         loaded_log_directory = str(payload.get("log_directory") or "").strip()
         if loaded_log_directory:
             self.log_directory = Path(loaded_log_directory).expanduser()
+        temporary_devices: list[Device] = []
+        raw_temporary_devices = payload.get("temporary_devices", [])
+        if isinstance(raw_temporary_devices, list):
+            for item in raw_temporary_devices:
+                device = deserialize_temporary_device(item)
+                if device is not None:
+                    temporary_devices.append(device)
+        self.temporary_devices = temporary_devices
+        if hasattr(self, "rebuild_device_indexes"):
+            self.rebuild_device_indexes()
 
     def schedule_desktop_state_save(self) -> None:
         if hasattr(self, "state_save_timer"):
@@ -107,6 +118,10 @@ class DesktopStateMixin:
                 "connection_params_collapsed": self.connection_params_collapsed,
                 "left_sidebar_collapsed": self.left_sidebar_collapsed,
                 "log_directory": str(self.log_directory),
+                "temporary_devices": [
+                    serialize_temporary_device(device)
+                    for device in self.temporary_devices
+                ],
             }
             serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             if serialized == self._last_desktop_state_payload:
