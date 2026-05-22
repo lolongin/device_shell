@@ -476,6 +476,36 @@ QPlainTextEdit#terminalLog {
 QPlainTextEdit#terminalLog:focus {
     border-color: #3b4450;
 }
+QWidget#terminalLog {
+    background: #06090d;
+    color: #d6deeb;
+    border: 1px solid #18212b;
+    border-radius: 10px;
+    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", "Microsoft YaHei UI";
+    font-size: 15px;
+    font-weight: 400;
+}
+QWidget#terminalLog:focus {
+    border-color: #3b4450;
+}
+QScrollBar#terminalScrollBar:vertical {
+    background: #06090d;
+    border: 0;
+    width: 14px;
+    margin: 2px;
+}
+QScrollBar#terminalScrollBar::handle:vertical {
+    background: #334155;
+    border-radius: 5px;
+    min-height: 28px;
+}
+QScrollBar#terminalScrollBar::handle:vertical:hover {
+    background: #475569;
+}
+QScrollBar#terminalScrollBar::add-line:vertical,
+QScrollBar#terminalScrollBar::sub-line:vertical {
+    height: 0;
+}
 QFrame#commandRecordDock {
     background: #06090d;
     border: 1px solid #151b22;
@@ -1266,6 +1296,36 @@ QPlainTextEdit#terminalLog {
 }
 QPlainTextEdit#terminalLog:focus {
     border-color: #3b4450;
+}
+QWidget#terminalLog {
+    background: #06090d;
+    color: #d6deeb;
+    border: 1px solid #18212b;
+    border-radius: 8px;
+    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", "Microsoft YaHei UI";
+    font-size: 14px;
+    font-weight: 400;
+}
+QWidget#terminalLog:focus {
+    border-color: #3b4450;
+}
+QScrollBar#terminalScrollBar:vertical {
+    background: #06090d;
+    border: 0;
+    width: 14px;
+    margin: 2px;
+}
+QScrollBar#terminalScrollBar::handle:vertical {
+    background: #2f3744;
+    border-radius: 5px;
+    min-height: 28px;
+}
+QScrollBar#terminalScrollBar::handle:vertical:hover {
+    background: #475569;
+}
+QScrollBar#terminalScrollBar::add-line:vertical,
+QScrollBar#terminalScrollBar::sub-line:vertical {
+    height: 0;
 }
 QFrame#commandRecordDock {
     background: #080808;

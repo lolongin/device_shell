@@ -166,6 +166,7 @@ try:
     from ..widgets.device_table import CopyableDeviceTable
     from ..widgets.search_input import SelectAllLineEdit
     from ..widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
+    from ..widgets.password_field import configure_password_visibility
     from ..widgets.terminal_widget import (
         ANSI_ESCAPE_RE,
         InteractiveTerminal,
@@ -195,6 +196,7 @@ except ImportError:
     from widgets.device_table import CopyableDeviceTable
     from widgets.search_input import SelectAllLineEdit
     from widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
+    from widgets.password_field import configure_password_visibility
     from widgets.terminal_widget import (
         ANSI_ESCAPE_RE,
         InteractiveTerminal,
@@ -252,6 +254,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.loading_snapshot = False
             self.my_occupancy_filter_enabled = False
             self.temporary_devices: list[Device] = []
+            self.local_credential_overrides: dict[str, dict[str, dict[str, str]]] = {}
             self.editing_temporary_device_id = ""
             self.recent_device_ids: list[str] = []
             self.command_record_groups: list[dict[str, object]] = [
@@ -666,7 +669,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             form_layout.addRow("管理口", telnet_row)
             self.temporary_telnet_username_input = QLineEdit()
             self.temporary_telnet_password_input = QLineEdit()
-            self.temporary_telnet_password_input.setEchoMode(QLineEdit.Password)
+            configure_password_visibility(self.temporary_telnet_password_input)
             form_layout.addRow("管理口账号", self.temporary_telnet_username_input)
             form_layout.addRow("管理口密码", self.temporary_telnet_password_input)
 
@@ -682,7 +685,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             form_layout.addRow("SSH", ssh_row)
             self.temporary_ssh_username_input = QLineEdit()
             self.temporary_ssh_password_input = QLineEdit()
-            self.temporary_ssh_password_input.setEchoMode(QLineEdit.Password)
+            configure_password_visibility(self.temporary_ssh_password_input)
             form_layout.addRow("SSH 账号", self.temporary_ssh_username_input)
             form_layout.addRow("SSH 密码", self.temporary_ssh_password_input)
 
@@ -697,7 +700,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             serial_row.addWidget(self.temporary_serial_port_input)
             form_layout.addRow("串口", serial_row)
             self.temporary_serial_password_input = QLineEdit()
-            self.temporary_serial_password_input.setEchoMode(QLineEdit.Password)
+            configure_password_visibility(self.temporary_serial_password_input)
             form_layout.addRow("串口密码", self.temporary_serial_password_input)
 
             self.temporary_notes_input = QLineEdit()
@@ -849,9 +852,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_telnet_ip_value = SelectAllLineEdit()
             self.device_username_input = QLineEdit()
             self.device_password_input = QLineEdit()
+            configure_password_visibility(self.device_password_input)
             device_form.addRow("Telnet IP", self.device_telnet_ip_value)
             device_form.addRow("用户名", self.device_username_input)
             device_form.addRow("密码", self.device_password_input)
+            self.connection_telnet_button = QPushButton("连接 Telnet")
+            self.connection_telnet_button.setObjectName("primaryButton")
+            device_form.addRow("", self.connection_telnet_button)
 
             serial_form_group = QGroupBox("串口 Telnet")
             serial_form = QFormLayout(serial_form_group)
@@ -862,6 +869,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_serial_ip_value = SelectAllLineEdit()
             self.device_serial_ip_value.setPlaceholderText("占用后可见")
             serial_form.addRow("串口地址", self.device_serial_ip_value)
+            self.serial_username_input = QLineEdit()
+            self.serial_password_input = QLineEdit()
+            configure_password_visibility(self.serial_password_input)
+            serial_form.addRow("用户名", self.serial_username_input)
+            serial_form.addRow("密码", self.serial_password_input)
+            self.connection_serial_button = QPushButton("连接串口")
+            self.connection_serial_button.setObjectName("primaryButton")
+            serial_form.addRow("", self.connection_serial_button)
 
             linux_form_group = QGroupBox("Linux SSH")
             linux_form = QFormLayout(linux_form_group)
@@ -872,9 +887,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_ssh_ip_value = SelectAllLineEdit()
             self.linux_username_input = QLineEdit()
             self.linux_password_input = QLineEdit()
+            configure_password_visibility(self.linux_password_input)
             linux_form.addRow("SSH IP", self.device_ssh_ip_value)
             linux_form.addRow("用户名", self.linux_username_input)
             linux_form.addRow("密码", self.linux_password_input)
+            self.connection_ssh_button = QPushButton("连接 SSH")
+            self.connection_ssh_button.setObjectName("primaryButton")
+            linux_form.addRow("", self.connection_ssh_button)
 
             body_layout.addWidget(device_form_group)
             body_layout.addWidget(serial_form_group)
@@ -1046,8 +1065,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._configure_quick_action_button(
                 self.quick_log_button,
                 "log",
-                "打开当前会话日志",
+                "日志",
             )
+            self.quick_log_menu = QMenu(self.quick_log_button)
+            self.quick_log_open_action = self.quick_log_menu.addAction("打开当前会话日志")
+            self.quick_log_directory_action = self.quick_log_menu.addAction("打开日志目录")
+            self.quick_log_menu.addSeparator()
+            self.quick_log_change_directory_action = self.quick_log_menu.addAction("更改日志位置...")
+            self.quick_log_button.setMenu(self.quick_log_menu)
+            self.quick_log_button.setPopupMode(QToolButton.MenuButtonPopup)
             self.quick_disconnect_button = QToolButton()
             self._configure_quick_action_button(
                 self.quick_disconnect_button,
@@ -1129,9 +1155,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_form.setLabelAlignment(Qt.AlignRight)
             self.device_username_input = QLineEdit()
             self.device_password_input = QLineEdit()
+            configure_password_visibility(self.device_password_input)
             device_form.addRow("用户名", self.device_username_input)
             device_form.addRow("密码", self.device_password_input)
 
+            serial_form_group = QGroupBox("串口 Telnet")
+            serial_form = QFormLayout(serial_form_group)
+            serial_form.setContentsMargins(8, 10, 8, 8)
+            serial_form.setVerticalSpacing(6)
+            serial_form.setHorizontalSpacing(6)
+            serial_form.setLabelAlignment(Qt.AlignRight)
+            self.serial_username_input = QLineEdit()
+            self.serial_password_input = QLineEdit()
+            configure_password_visibility(self.serial_password_input)
+            serial_form.addRow("用户名", self.serial_username_input)
+            serial_form.addRow("密码", self.serial_password_input)
 
             linux_form_group = QGroupBox("Linux SSH")
             linux_form = QFormLayout(linux_form_group)
@@ -1141,11 +1179,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             linux_form.setLabelAlignment(Qt.AlignRight)
             self.linux_username_input = QLineEdit()
             self.linux_password_input = QLineEdit()
+            configure_password_visibility(self.linux_password_input)
             linux_form.addRow("用户名", self.linux_username_input)
             linux_form.addRow("密码", self.linux_password_input)
 
 
             auth_layout.addWidget(device_form_group)
+            auth_layout.addWidget(serial_form_group)
             auth_layout.addWidget(linux_form_group)
             layout.addWidget(auth_group)
             layout.addStretch(1)
@@ -1316,10 +1356,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_telnet_button.clicked.connect(self.open_device_session)
             self.quick_ssh_button.clicked.connect(self.open_linux_session)
             self.quick_serial_button.clicked.connect(self.open_serial_session)
+            self.connection_telnet_button.clicked.connect(self.open_selected_device_session)
+            self.connection_ssh_button.clicked.connect(self.open_selected_linux_session)
+            self.connection_serial_button.clicked.connect(self.open_selected_serial_session)
             self.quick_occupancy_button.clicked.connect(self.toggle_occupancy)
             self.quick_power_off_button.clicked.connect(self.power_off_selected_device)
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
             self.quick_log_button.clicked.connect(self.open_current_session_log)
+            self.quick_log_open_action.triggered.connect(self.open_current_session_log)
+            self.quick_log_directory_action.triggered.connect(self.open_log_directory)
+            self.quick_log_change_directory_action.triggered.connect(self.change_log_directory)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
             self.session_jump_combo.activated.connect(self.handle_session_jump_activated)
             self.command_send_button.clicked.connect(self.submit_current_command_record)
@@ -1586,10 +1632,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_telnet_button.setEnabled(selected)
             self.quick_ssh_button.setEnabled(selected)
             self.quick_serial_button.setEnabled(selected and not self.is_temporary_device(device))
+            self.connection_telnet_button.setEnabled(selected)
+            self.connection_ssh_button.setEnabled(selected)
+            self.connection_serial_button.setEnabled(selected and not self.is_temporary_device(device))
             self.quick_occupancy_button.setEnabled(selected and not self.is_temporary_device(device))
             self.quick_power_off_button.setEnabled(bool(device and self.can_power_off_device(device)))
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
-            self.quick_log_button.setEnabled(state is not None)
+            self.quick_log_button.setEnabled(True)
+            self.quick_log_open_action.setEnabled(state is not None)
             self.quick_disconnect_button.setEnabled(
                 state is not None and (state.session.is_connected or state.connecting)
             )

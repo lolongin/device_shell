@@ -38,6 +38,7 @@ from ..temporary_devices import (
     make_temporary_device,
     next_temporary_device_id,
 )
+from ..widgets.password_field import configure_password_visibility
 
 
 if QDialog is not None:
@@ -91,7 +92,7 @@ if QDialog is not None:
 
             self.username_input = QLineEdit()
             self.password_input = QLineEdit()
-            self.password_input.setEchoMode(QLineEdit.Password)
+            configure_password_visibility(self.password_input)
             self.notes_input = QLineEdit()
             form.addRow("用户名", self.username_input)
             form.addRow("密码", self.password_input)

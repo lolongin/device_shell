@@ -21,7 +21,7 @@ from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 3
+DESKTOP_STATE_VERSION = 4
 
 
 class DesktopStateMixin:
@@ -98,6 +98,24 @@ class DesktopStateMixin:
                 if device is not None:
                     temporary_devices.append(device)
         self.temporary_devices = temporary_devices
+        credential_overrides: dict[str, dict[str, dict[str, str]]] = {}
+        raw_credential_overrides = payload.get("local_credential_overrides", {})
+        if isinstance(raw_credential_overrides, dict):
+            for device_id, per_device in raw_credential_overrides.items():
+                if not isinstance(per_device, dict):
+                    continue
+                device_key = str(device_id)
+                protocol_overrides: dict[str, dict[str, str]] = {}
+                for kind, credentials in per_device.items():
+                    if kind not in {"device", "linux", "serial"} or not isinstance(credentials, dict):
+                        continue
+                    protocol_overrides[str(kind)] = {
+                        "username": str(credentials.get("username") or ""),
+                        "password": str(credentials.get("password") or ""),
+                    }
+                if protocol_overrides:
+                    credential_overrides[device_key] = protocol_overrides
+        self.local_credential_overrides = credential_overrides
         if hasattr(self, "rebuild_device_indexes"):
             self.rebuild_device_indexes()
 
@@ -122,6 +140,7 @@ class DesktopStateMixin:
                     serialize_temporary_device(device)
                     for device in self.temporary_devices
                 ],
+                "local_credential_overrides": self.local_credential_overrides,
             }
             serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             if serialized == self._last_desktop_state_payload:
@@ -266,6 +285,9 @@ class DesktopStateMixin:
     def open_session_log_directory(self, state: SessionTabState) -> None:
         self.finish_session_log_record(state)
         self.open_local_path(state.log_path.parent, "日志目录", is_directory=True)
+
+    def open_log_directory(self) -> None:
+        self.open_local_path(self.log_directory.expanduser(), "日志目录", is_directory=True)
 
     def open_local_path(self, path: Path, label: str, *, is_directory: bool) -> None:
         try:

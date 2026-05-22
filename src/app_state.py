@@ -53,6 +53,7 @@ class SessionTabState:
     terminal: Any  # InteractiveTerminal (forward reference)
     session: HuaweiTelnetSession | LinuxSshSession
     log_path: Path
+    credential_candidates: list[tuple[str, str]] = field(default_factory=list)
     log_at_line_start: bool = True
     log_input_buffer: str = ""
     log_pending_records: list[tuple[str, str, bool]] = field(default_factory=list)

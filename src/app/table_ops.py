@@ -829,18 +829,33 @@ class TableOpsMixin:
         return actions
 
     def sync_auth_fields_from_selected(self) -> None:
-        device = self.get_quick_action_device()
+        device = self.get_selected_device()
         if device is None:
             return
+        telnet_username, telnet_password = self.local_session_credentials(device, "device") or (
+            device.username,
+            device.password,
+        )
+        ssh_username, ssh_password = self.local_session_credentials(device, "linux") or (
+            self.device_ssh_username(device),
+            self.device_ssh_password(device),
+        )
+        serial_username, serial_password = self.local_session_credentials(device, "serial") or (
+            self.device_serial_username(device),
+            self.device_serial_password(device),
+        )
         self.device_telnet_ip_value.setText(device.telnet_ip)
-        self.device_username_input.setText(device.username)
-        self.device_password_input.setText(device.password)
+        self.device_username_input.setText(telnet_username)
+        self.device_password_input.setText(telnet_password)
         self.device_ssh_ip_value.setText(device.ssh_ip)
         self.device_serial_ip_value.setText(
             f"{device.serial_ip}:{device.serial_port}" if self.can_view_serial_connection(device) else ""
         )
-        self.linux_username_input.setText(self.device_ssh_username(device))
-        self.linux_password_input.setText(self.device_ssh_password(device))
+        if hasattr(self, "serial_username_input"):
+            self.serial_username_input.setText(serial_username)
+            self.serial_password_input.setText(serial_password)
+        self.linux_username_input.setText(ssh_username)
+        self.linux_password_input.setText(ssh_password)
 
     def refresh_device_context(self) -> None:
         device = self.get_selected_device()
@@ -849,6 +864,9 @@ class TableOpsMixin:
             self.device_ssh_ip_value.clear()
             self.device_telnet_ip_value.clear()
             self.device_serial_ip_value.clear()
+            if hasattr(self, "serial_username_input"):
+                self.serial_username_input.clear()
+                self.serial_password_input.clear()
             return
 
         self.device_ssh_ip_value.setText(device.ssh_ip)
@@ -857,6 +875,13 @@ class TableOpsMixin:
         self.device_serial_ip_value.setText(
             f"{device.serial_ip}:{device.serial_port}" if serial_visible else ""
         )
+        if hasattr(self, "serial_username_input"):
+            serial_username, serial_password = self.local_session_credentials(device, "serial") or (
+                self.device_serial_username(device),
+                self.device_serial_password(device),
+            )
+            self.serial_username_input.setText(serial_username)
+            self.serial_password_input.setText(serial_password)
         owner_text = device.owner or "未占用"
         owner_color = "#c0c0c0" if device.owner else "#808080"
         telnet_text = f"{device.telnet_ip}:{device.telnet_port}"

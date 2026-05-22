@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -63,7 +64,8 @@ from ..linux_session import LinuxSshSession
 from ..session_protocol import SessionCallbacks, SessionUnavailableError
 from ..styles import STATUS_COLORS
 from ..telnet_session import HuaweiTelnetSession, TelnetSessionError
-from ..widgets.terminal_widget import ANSI_ESCAPE_RE, InteractiveTerminal
+from ..widgets.terminal_canvas import TerminalCanvasWidget
+from ..widgets.terminal_widget import InteractiveTerminal
 
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
@@ -73,12 +75,111 @@ class SessionOpsMixin:
 
     # ---- Session cloning ----
 
+    def base_session_credentials(self, device: Device, kind: str) -> tuple[str, str]:
+        if kind == "device":
+            return device.username.strip(), device.password
+        if kind == "linux":
+            return self.device_ssh_username(device).strip(), self.device_ssh_password(device)
+        if kind == "serial":
+            return self.device_serial_username(device).strip(), self.device_serial_password(device)
+        return "", ""
+
+    def local_session_credentials(self, device: Device, kind: str) -> tuple[str, str] | None:
+        if self.is_temporary_device(device):
+            return None
+        overrides = getattr(self, "local_credential_overrides", {})
+        per_device = overrides.get(device.id, {})
+        credentials = per_device.get(kind, {})
+        if not isinstance(credentials, dict):
+            return None
+        if "username" not in credentials and "password" not in credentials:
+            return None
+        return str(credentials.get("username") or "").strip(), str(credentials.get("password") or "")
+
+    def remember_session_credentials_override(
+        self,
+        device: Device,
+        kind: str,
+        username: str,
+        password: str,
+    ) -> None:
+        if self.is_temporary_device(device):
+            return
+        base_username, base_password = self.base_session_credentials(device, kind)
+        overrides = getattr(self, "local_credential_overrides", {})
+        if username.strip() == base_username and password == base_password:
+            per_device = overrides.get(device.id)
+            if per_device is not None:
+                per_device.pop(kind, None)
+                if not per_device:
+                    overrides.pop(device.id, None)
+                self.schedule_desktop_state_save()
+            return
+        per_device = overrides.setdefault(device.id, {})
+        per_device[kind] = {"username": username.strip(), "password": password}
+        self.schedule_desktop_state_save()
+
+    def linux_ssh_credential_candidates(
+        self,
+        device: Device,
+        username: str,
+        password: str,
+    ) -> list[tuple[str, str]]:
+        if self.is_temporary_device(device) or self.local_session_credentials(device, "linux") is not None:
+            return [(username.strip(), password)]
+
+        candidates: list[tuple[str, str]] = []
+        for candidate in (
+            ("root", "root"),
+            ("root", "huawei"),
+            (username.strip(), password),
+        ):
+            candidate_username, candidate_password = candidate
+            if not candidate_username or not candidate_password:
+                continue
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    def session_telnet_credentials(self, device: Device) -> tuple[str, str]:
+        selected_device = self.get_selected_device()
+        if selected_device is not None and selected_device.id == device.id and hasattr(self, "device_username_input"):
+            return self.device_username_input.text().strip(), self.device_password_input.text()
+        return self.local_session_credentials(device, "device") or self.base_session_credentials(device, "device")
+
+    def session_ssh_credentials(self, device: Device) -> tuple[str, str]:
+        selected_device = self.get_selected_device()
+        if selected_device is not None and selected_device.id == device.id and hasattr(self, "linux_username_input"):
+            return self.linux_username_input.text().strip(), self.linux_password_input.text()
+        return self.local_session_credentials(device, "linux") or self.base_session_credentials(device, "linux")
+
+    def session_serial_credentials(self, device: Device) -> tuple[str, str]:
+        selected_device = self.get_selected_device()
+        if selected_device is not None and selected_device.id == device.id and hasattr(self, "serial_password_input"):
+            return self.serial_username_input.text().strip(), self.serial_password_input.text()
+        return self.local_session_credentials(device, "serial") or self.base_session_credentials(device, "serial")
+
+    def refresh_session_credentials_from_panel(self, state: SessionTabState) -> None:
+        device = self.get_device_by_id(state.device_id)
+        if device is None:
+            return
+        if state.kind == "device":
+            state.username, state.password = self.session_telnet_credentials(device)
+            self.remember_session_credentials_override(device, state.kind, state.username, state.password)
+        elif state.kind == "linux":
+            state.username, state.password = self.session_ssh_credentials(device)
+            self.remember_session_credentials_override(device, state.kind, state.username, state.password)
+            state.credential_candidates = self.linux_ssh_credential_candidates(device, state.username, state.password)
+        elif state.kind == "serial":
+            state.username, state.password = self.session_serial_credentials(device)
+            self.remember_session_credentials_override(device, state.kind, state.username, state.password)
+
     def clone_telnet_session(self, device: Device) -> None:
-        username = device.username.strip()
-        password = device.password
+        username, password = self.session_telnet_credentials(device)
         if not device.telnet_ip.strip() or not username or not password:
             self.show_warning("设备 Telnet 地址、用户名和密码不完整。")
             return
+        self.remember_session_credentials_override(device, "device", username, password)
         self.ensure_session_tab(
             kind="device",
             device=device,
@@ -89,11 +190,11 @@ class SessionOpsMixin:
         )
 
     def clone_ssh_session(self, device: Device) -> None:
-        username = self.device_ssh_username(device).strip()
-        password = self.device_ssh_password(device)
+        username, password = self.session_ssh_credentials(device)
         if not device.ssh_ip.strip() or not username or not password:
             self.show_warning("设备 SSH 地址、用户名和密码不完整。")
             return
+        self.remember_session_credentials_override(device, "linux", username, password)
         self.ensure_session_tab(
             kind="linux",
             device=device,
@@ -101,6 +202,7 @@ class SessionOpsMixin:
             port=device.ssh_port,
             username=username,
             password=password,
+            credential_candidates=self.linux_ssh_credential_candidates(device, username, password),
         )
 
     def clone_serial_session(self, device: Device) -> None:
@@ -112,8 +214,7 @@ class SessionOpsMixin:
             self.show_warning("当前设备未返回串口 IP 和端口，请刷新或检查接口数据。")
             self.set_status_message("串口地址不可用。")
             return
-        username = self.device_serial_username(device).strip()
-        password = self.device_serial_password(device)
+        username, password = self.session_serial_credentials(device)
         if self.is_temporary_device(device):
             if not password:
                 self.show_warning("临时串口需要填写串口密码。")
@@ -121,6 +222,7 @@ class SessionOpsMixin:
         elif not username or not password:
             self.show_warning("设备串口地址、用户名和密码不完整。")
             return
+        self.remember_session_credentials_override(device, "serial", username, password)
         self.ensure_session_tab(
             kind="serial",
             device=device,
@@ -216,29 +318,9 @@ class SessionOpsMixin:
         direction_label = {"left": "左侧", "right": "右侧", "top": "上方", "bottom": "下方"}.get(direction, "目标")
         self.set_status_message(f"已将会话移动到{direction_label}分屏: {state.title}")
 
-    def _add_session_split_actions(self, menu: QMenu) -> dict[str, Any]:
-        return {
-            "left": menu.addAction("向左分屏"),
-            "right": menu.addAction("向右分屏"),
-            "top": menu.addAction("向上分屏"),
-            "bottom": menu.addAction("向下分屏"),
-        }
-
-    def _handle_session_split_action(
-        self,
-        chosen: Any,
-        actions: dict[str, Any],
-        tab_id: str,
-    ) -> bool:
-        for direction, action in actions.items():
-            if chosen == action:
-                self.split_session(tab_id, direction)
-                return True
-        return False
-
     # ---- Session context menus ----
 
-    def show_terminal_context_menu(self, tab_id: str, terminal: InteractiveTerminal, pos: Any) -> None:
+    def show_terminal_context_menu(self, tab_id: str, terminal: Any, pos: Any) -> None:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             return
@@ -250,12 +332,11 @@ class SessionOpsMixin:
         copy_selection_action = None
         if terminal.textCursor().hasSelection():
             copy_selection_action = menu.addAction("复制选中文本")
-            menu.addSeparator()
+        copy_all_action = menu.addAction("复制全部")
+        clear_terminal_action = menu.addAction("清屏")
+        menu.addSeparator()
         actions = self._add_device_quick_actions(menu)
         self.update_device_quick_actions_for_device(actions, device)
-        log_actions = self._add_session_log_actions(menu)
-        menu.addSeparator()
-        split_actions = self._add_session_split_actions(menu)
 
         chosen = menu.exec(terminal.viewport().mapToGlobal(pos))
         if chosen is None:
@@ -263,9 +344,18 @@ class SessionOpsMixin:
         if copy_selection_action is not None and chosen == copy_selection_action:
             terminal.copy()
             return
-        if self._handle_session_split_action(chosen, split_actions, tab_id):
+        if chosen == copy_all_action:
+            if hasattr(terminal, "copy_all"):
+                terminal.copy_all()
+            else:
+                terminal.selectAll()
+                terminal.copy()
             return
-        if self._handle_session_log_action(chosen, log_actions, state):
+        if chosen == clear_terminal_action:
+            if hasattr(terminal, "clear_terminal"):
+                terminal.clear_terminal()
+            else:
+                terminal.clear()
             return
         self._handle_device_quick_action(chosen, actions, device)
 
@@ -279,42 +369,10 @@ class SessionOpsMixin:
         menu = QMenu(widget)
         actions = self._add_device_quick_actions(menu)
         self.update_device_quick_actions_for_device(actions, device)
-        log_actions = self._add_session_log_actions(menu)
-        menu.addSeparator()
-        split_actions = self._add_session_split_actions(menu)
         chosen = menu.exec(widget.mapToGlobal(pos))
         if chosen is None:
             return
-        if self._handle_session_split_action(chosen, split_actions, tab_id):
-            return
-        if self._handle_session_log_action(chosen, log_actions, state):
-            return
         self._handle_device_quick_action(chosen, actions, device)
-
-    def _add_session_log_actions(self, menu: QMenu) -> dict[str, Any]:
-        menu.addSeparator()
-        return {
-            "open_log": menu.addAction("打开本会话日志"),
-            "open_log_directory": menu.addAction("打开日志目录"),
-            "change_log_directory": menu.addAction("更改日志位置..."),
-        }
-
-    def _handle_session_log_action(
-        self,
-        chosen: Any,
-        actions: dict[str, Any],
-        state: SessionTabState,
-    ) -> bool:
-        if chosen == actions["open_log"]:
-            self.open_session_log(state)
-            return True
-        if chosen == actions["open_log_directory"]:
-            self.open_session_log_directory(state)
-            return True
-        if chosen == actions["change_log_directory"]:
-            self.change_log_directory()
-            return True
-        return False
 
     def _handle_device_quick_action(
         self,
@@ -538,17 +596,12 @@ class SessionOpsMixin:
             self.show_warning("请先选择设备。")
             return
 
-        selected_device = self.get_selected_device()
-        if selected_device is not None and selected_device.id == device.id:
-            username = self.device_username_input.text().strip()
-            password = self.device_password_input.text()
-        else:
-            username = device.username.strip()
-            password = device.password
+        username, password = self.session_telnet_credentials(device)
         if not username or not password:
             self.show_warning("设备终端需要用户名和密码。")
             return
 
+        self.remember_session_credentials_override(device, "device", username, password)
         self.ensure_session_tab(
             kind="device",
             device=device,
@@ -566,18 +619,13 @@ class SessionOpsMixin:
             return
 
         host = device.ssh_ip.strip()
-        selected_device = self.get_selected_device()
-        if selected_device is not None and selected_device.id == device.id:
-            username = self.linux_username_input.text().strip()
-            password = self.linux_password_input.text()
-        else:
-            username = self.device_ssh_username(device).strip()
-            password = self.device_ssh_password(device)
+        username, password = self.session_ssh_credentials(device)
         port = device.ssh_port
         if not host or not username or not password:
             self.show_warning("Linux 后台需要设备 SSH 地址、用户名和密码。")
             return
 
+        self.remember_session_credentials_override(device, "linux", username, password)
         self.ensure_session_tab(
             kind="linux",
             device=device,
@@ -585,6 +633,7 @@ class SessionOpsMixin:
             port=port,
             username=username,
             password=password,
+            credential_candidates=self.linux_ssh_credential_candidates(device, username, password),
         )
 
     def open_serial_session(self, device: Device | None = None) -> None:
@@ -594,6 +643,27 @@ class SessionOpsMixin:
             self.show_warning("请先选择设备。")
             return
         self.clone_serial_session(device)
+
+    def open_selected_device_session(self) -> None:
+        device = self.get_selected_device()
+        if device is None:
+            self.show_warning("请先选择设备。")
+            return
+        self.open_device_session(device)
+
+    def open_selected_linux_session(self) -> None:
+        device = self.get_selected_device()
+        if device is None:
+            self.show_warning("请先选择设备。")
+            return
+        self.open_linux_session(device)
+
+    def open_selected_serial_session(self) -> None:
+        device = self.get_selected_device()
+        if device is None:
+            self.show_warning("请先选择设备。")
+            return
+        self.open_serial_session(device)
 
     # ---- Session tab management ----
 
@@ -605,6 +675,7 @@ class SessionOpsMixin:
         port: int,
         username: str,
         password: str,
+        credential_candidates: list[tuple[str, str]] | None = None,
     ) -> None:
         if not host:
             self.show_warning("目标地址不能为空。")
@@ -622,6 +693,7 @@ class SessionOpsMixin:
             port=port,
             username=username,
             password=password,
+            credential_candidates=credential_candidates,
         )
         self.session_tabs_by_id[tab_id] = state
         target_tabs = self.active_session_tabs_for_device(device_tab)
@@ -744,13 +816,18 @@ class SessionOpsMixin:
         port: int,
         username: str,
         password: str,
+        credential_candidates: list[tuple[str, str]] | None = None,
     ) -> SessionTabState:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        terminal = InteractiveTerminal()
+        terminal = (
+            InteractiveTerminal()
+            if os.getenv("DEVICE_TUI_TERMINAL_WIDGET", "").lower() == "legacy"
+            else TerminalCanvasWidget()
+        )
         terminal.setContextMenuPolicy(Qt.CustomContextMenu)
         terminal.customContextMenuRequested.connect(
             lambda pos, tab_id=tab_id, terminal=terminal: self.show_terminal_context_menu(tab_id, terminal, pos)
@@ -779,6 +856,7 @@ class SessionOpsMixin:
             port=port,
             username=username,
             password=password,
+            credential_candidates=credential_candidates or [],
             page=page,
             terminal=terminal,
             session=session,
@@ -843,7 +921,7 @@ class SessionOpsMixin:
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
             if isinstance(state, SessionTabState):
                 widget.setProperty("sessionDragTabId", state.tab_id)
-                widget.setToolTip("拖动到终端区边缘分屏，右键可选择分屏方向")
+                widget.setToolTip("拖动到终端区边缘分屏")
                 widget.installEventFilter(self)
                 widget.customContextMenuRequested.connect(
                     lambda pos, widget=widget, tab_id=state.tab_id: self.show_session_quick_context_menu(
@@ -1018,27 +1096,52 @@ class SessionOpsMixin:
         self.write_session_log_line(state, "SYS", f"Connecting to {state.host}:{state.port}")
         self.update_controls()
 
-        async def connect() -> None:
+        async def connect() -> tuple[str, str] | None:
             if isinstance(state.session, LinuxSshSession):
-                await state.session.connect(
-                    state.host,
-                    state.port,
-                    state.username,
-                    state.password,
-                    term_size=state.terminal.terminal_dimensions(),
-                )
-                return
+                candidates = state.credential_candidates or [(state.username, state.password)]
+                last_error: Exception | None = None
+                for index, (username, password) in enumerate(candidates, start=1):
+                    try:
+                        if len(candidates) > 1:
+                            state.session.callbacks.on_output(
+                                f"\n=== Trying SSH credential {index}/{len(candidates)}: {username} ===\n"
+                            )
+                        await state.session.connect(
+                            state.host,
+                            state.port,
+                            username,
+                            password,
+                            term_size=state.terminal.terminal_dimensions(),
+                        )
+                        return username, password
+                    except SessionUnavailableError as exc:
+                        last_error = exc
+                        state.session.callbacks.on_output(f"=== SSH credential failed: {username} ===\n")
+                if last_error is not None:
+                    raise last_error
+                return None
             await state.session.connect(
                 state.host,
                 state.port,
                 state.username,
                 state.password,
             )
+            return None
 
-        def success(_result: object) -> None:
+        def success(result: object) -> None:
             current_state = self.session_tabs_by_id.get(tab_id)
             if current_state is None:
                 return
+            if isinstance(result, tuple) and len(result) == 2:
+                current_state.username, current_state.password = result
+                device = self.get_device_by_id(current_state.device_id)
+                if device is not None:
+                    self.remember_session_credentials_override(
+                        device,
+                        current_state.kind,
+                        current_state.username,
+                        current_state.password,
+                    )
             current_state.connecting = False
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Connected")
@@ -1054,6 +1157,7 @@ class SessionOpsMixin:
             self.write_session_log_line(current_state, "SYS", f"Connection failed: {exc}")
             if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
                 self.append_session_output(tab_id, f"\n连接失败: {exc}\n")
+                self.append_reconnect_hint(tab_id)
                 if self.is_connection_timeout(exc):
                     self.set_status_message(f"连接超时: {current_state.title}")
                     self.update_controls()
@@ -1080,9 +1184,16 @@ class SessionOpsMixin:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             return
+        previous_status = state.status_text
         state.status_text = status
         if status != "Connecting":
             state.connecting = False
+        if (
+            status.lower() == "disconnected"
+            and previous_status.lower() not in {"connecting", "disconnected"}
+            and not state.connecting
+        ):
+            self.append_reconnect_hint(tab_id)
         device_tab = self.device_tabs_by_id.get(state.device_id)
         if device_tab is not None:
             tabs = self.find_session_tab_widget(device_tab, state.page)
@@ -1096,6 +1207,12 @@ class SessionOpsMixin:
         self.refresh_workspace_context()
         self.update_center_stage_state()
         self.update_controls()
+
+    def append_reconnect_hint(self, tab_id: str) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            return
+        state.terminal.append_output("\n=== 会话已断开，按 Enter 重连 ===\n")
 
     def append_session_output(self, tab_id: str, message: str) -> None:
         state = self.session_tabs_by_id.get(tab_id)
@@ -1135,6 +1252,7 @@ class SessionOpsMixin:
             return True
         if state.session.is_connected:
             return False
+        self.refresh_session_credentials_from_panel(state)
         self.reconnect_session_tab(tab_id)
         return True
 
@@ -1163,19 +1281,53 @@ class SessionOpsMixin:
         self.write_session_log_line(state, "SYS", f"Reconnecting to {state.host}:{state.port}")
         self.set_status_message(f"正在重连会话: {state.title}")
 
-        async def reconnect() -> None:
+        async def reconnect() -> tuple[str, str] | None:
             await state.session.disconnect("")
+            if isinstance(state.session, LinuxSshSession):
+                candidates = state.credential_candidates or [(state.username, state.password)]
+                last_error: Exception | None = None
+                for index, (username, password) in enumerate(candidates, start=1):
+                    try:
+                        if len(candidates) > 1:
+                            state.session.callbacks.on_output(
+                                f"\n=== Trying SSH credential {index}/{len(candidates)}: {username} ===\n"
+                            )
+                        await state.session.connect(
+                            state.host,
+                            state.port,
+                            username,
+                            password,
+                            term_size=state.terminal.terminal_dimensions(),
+                        )
+                        return username, password
+                    except SessionUnavailableError as exc:
+                        last_error = exc
+                        state.session.callbacks.on_output(f"=== SSH credential failed: {username} ===\n")
+                if last_error is not None:
+                    raise last_error
+                return None
             await state.session.connect(
                 state.host,
                 state.port,
                 state.username,
                 state.password,
             )
+            return None
 
-        def success(_result: object) -> None:
+        def success(result: object) -> None:
             current_state = self.session_tabs_by_id.get(tab_id)
             if current_state is None:
                 return
+            if isinstance(result, tuple) and len(result) == 2:
+                current_state.username, current_state.password = result
+                device = self.get_device_by_id(current_state.device_id)
+                if device is not None:
+                    self.remember_session_credentials_override(
+                        device,
+                        current_state.kind,
+                        current_state.username,
+                        current_state.password,
+                    )
             current_state.connecting = False
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Reconnected")
@@ -1190,6 +1342,7 @@ class SessionOpsMixin:
                 self.write_session_log_line(current_state, "SYS", f"Reconnect failed: {exc}")
             if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
                 self.append_session_output(tab_id, f"\n重连失败: {exc}\n")
+                self.append_reconnect_hint(tab_id)
                 if self.is_connection_timeout(exc):
                     title = current_state.title if current_state is not None else tab_id
                     self.set_status_message(f"重连超时: {title}")
@@ -1388,6 +1541,13 @@ class SessionOpsMixin:
             self.set_status_message("当前没有可打开日志的终端会话。")
             return
         self.open_session_log(state)
+
+    def open_current_session_log_directory(self) -> None:
+        state = self.current_session_state()
+        if state is None:
+            self.set_status_message("当前没有可打开日志目录的终端会话。")
+            return
+        self.open_session_log_directory(state)
 
     def disconnect_current_session(self) -> None:
         state = self.current_session_state()
