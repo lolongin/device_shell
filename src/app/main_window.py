@@ -264,7 +264,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_record_collapsed = True
             self.command_enter_sends = False
             self.command_record_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
-            self.connection_params_collapsed = True
+            self.connection_params_collapsed = False
+            self.device_navigation_collapsed = False
             self.left_sidebar_collapsed = False
             self.left_sidebar_active_panel = "devices"
             self.left_sidebar_animation = None
@@ -419,12 +420,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.toolbar_refresh_button = QPushButton("刷新")
             self.toolbar_refresh_button.setObjectName("compactGhostButton")
             self.toolbar_refresh_button.setFixedWidth(58)
+            self.device_navigation_toggle_button = QPushButton("隐藏左侧")
+            self.device_navigation_toggle_button.setObjectName("compactGhostButton")
+            self.device_navigation_toggle_button.setFixedWidth(76)
             nav_header.addWidget(self.toolbar_refresh_button, 0, Qt.AlignTop)
+            nav_header.addWidget(self.device_navigation_toggle_button, 0, Qt.AlignTop)
             nav_layout.addLayout(nav_header)
+
+            self.device_navigation_body = QWidget()
+            nav_body_layout = QVBoxLayout(self.device_navigation_body)
+            nav_body_layout.setContentsMargins(0, 0, 0, 0)
+            nav_body_layout.setSpacing(8)
 
             self.search_input = QLineEdit()
             self.search_input.setPlaceholderText("搜索名称、ID、IP、型号")
-            nav_layout.addWidget(self.search_input)
+            nav_body_layout.addWidget(self.search_input)
 
             filter_frame = QFrame()
             filter_frame.setObjectName("navFilterBar")
@@ -451,7 +461,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             filter_row.addWidget(self.status_combo, 1)
             filter_row.addWidget(self.cpu_input, 0)
             filter_row.addWidget(self.my_occupancy_filter_button, 0)
-            nav_layout.addWidget(filter_frame)
+            nav_body_layout.addWidget(filter_frame)
 
             stats_frame = QFrame()
             stats_frame.setObjectName("navStatsBar")
@@ -486,14 +496,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             stats_bottom_row.addWidget(self.clear_filters_button)
             stats_layout.addLayout(stats_top_row)
             stats_layout.addLayout(stats_bottom_row)
-            nav_layout.addWidget(stats_frame)
+            nav_body_layout.addWidget(stats_frame)
 
             self.device_table = self._new_table(["序号", "设备", "领域", "CPU", "状态"])
-            self.device_table.setMinimumHeight(320)
-            self.device_table.setMaximumHeight(420)
-            nav_layout.addWidget(self.device_table)
+            self.device_table.setMinimumHeight(260)
+            self.device_table.setMaximumHeight(340)
+            nav_body_layout.addWidget(self.device_table)
+            nav_layout.addWidget(self.device_navigation_body)
+            nav_layout.addWidget(self._build_device_context_panel())
             layout.addWidget(navigation_group)
-            layout.addWidget(self._build_device_context_panel())
             layout.addStretch(1)
             stack_container = QWidget()
             stack_container.setObjectName("leftRail")
@@ -528,7 +539,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addWidget(self.activity_temporary_button)
             layout.addStretch(1)
 
-            self.activity_device_button.clicked.connect(lambda: self.show_left_sidebar_panel("devices"))
+            self.activity_device_button.clicked.connect(self.toggle_device_sidebar_panel)
             self.activity_temporary_button.clicked.connect(lambda: self.show_left_sidebar_panel("temporary"))
             return rail
 
@@ -796,8 +807,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(8)
 
-            detail_group = QGroupBox("当前设备")
-            detail_group.setObjectName("deviceDetailCard")
+            detail_group = QGroupBox("当前选中设备连接")
+            detail_group.setObjectName("authCard")
+            self.connection_params_group = detail_group
             detail_layout = QVBoxLayout(detail_group)
             detail_layout.setContentsMargins(10, 12, 10, 10)
             detail_layout.setSpacing(6)
@@ -808,13 +820,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_summary_card.setTextInteractionFlags(Qt.TextSelectableByMouse)
             detail_layout.addWidget(self.device_summary_card)
 
-            layout.addWidget(detail_group)
-
-            auth_group = QGroupBox("连接参数")
-            auth_group.setObjectName("authCard")
-            self.connection_params_group = auth_group
+            auth_group = QFrame()
+            auth_group.setObjectName("connectionParamsPanel")
             auth_layout = QVBoxLayout(auth_group)
-            auth_layout.setContentsMargins(10, 10, 10, 8)
+            auth_layout.setContentsMargins(0, 0, 0, 0)
             auth_layout.setSpacing(6)
 
             auth_header_frame = QFrame()
@@ -822,7 +831,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             auth_header = QHBoxLayout(auth_header_frame)
             auth_header.setContentsMargins(0, 0, 0, 0)
             auth_header.setSpacing(8)
-            auth_hint = QLabel("账号和密码来自设备信息")
+            auth_hint = QLabel("跟随左侧选中设备，本机覆盖不回写网站")
             auth_hint.setObjectName("sectionCopy")
             auth_hint.setWordWrap(True)
             auth_hint.setMinimumWidth(0)
@@ -831,7 +840,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.connection_params_toggle_button = QToolButton()
             self.connection_params_toggle_button.setObjectName("inspectorToggleButton")
             self.connection_params_toggle_button.setText("展开")
-            self.connection_params_toggle_button.setToolTip("展开或收起连接参数")
+            self.connection_params_toggle_button.setToolTip("展开或收起当前选中设备连接")
             self.connection_params_toggle_button.setFixedWidth(58)
             auth_header.addWidget(auth_hint)
             auth_header.addStretch(1)
@@ -895,13 +904,98 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.connection_ssh_button.setObjectName("primaryButton")
             linux_form.addRow("", self.connection_ssh_button)
 
+            self._add_connection_compact_row(
+                body_layout,
+                "Telnet",
+                self.device_telnet_ip_value,
+                self.device_username_input,
+                self.device_password_input,
+                self.connection_telnet_button,
+            )
+            self._add_connection_compact_row(
+                body_layout,
+                "SSH",
+                self.device_ssh_ip_value,
+                self.linux_username_input,
+                self.linux_password_input,
+                self.connection_ssh_button,
+            )
+            self._add_connection_compact_row(
+                body_layout,
+                "串口",
+                self.device_serial_ip_value,
+                self.serial_username_input,
+                self.serial_password_input,
+                self.connection_serial_button,
+            )
+            device_form_group.setVisible(False)
+            serial_form_group.setVisible(False)
+            linux_form_group.setVisible(False)
             body_layout.addWidget(device_form_group)
             body_layout.addWidget(serial_form_group)
             body_layout.addWidget(linux_form_group)
             auth_layout.addWidget(self.connection_params_body)
-            layout.addWidget(auth_group)
+            detail_layout.addWidget(auth_group)
+            layout.addWidget(detail_group)
             self.apply_connection_params_state()
             return panel
+
+        def _add_connection_compact_row(
+            self,
+            layout: QVBoxLayout,
+            title: str,
+            host_input: QLineEdit,
+            username_input: QLineEdit,
+            password_input: QLineEdit,
+            button: QPushButton,
+        ) -> None:
+            row = QFrame()
+            row.setObjectName("connectionCompactRow")
+            row_layout = QVBoxLayout(row)
+            row_layout.setContentsMargins(8, 7, 8, 7)
+            row_layout.setSpacing(5)
+
+            top_row = QHBoxLayout()
+            top_row.setContentsMargins(0, 0, 0, 0)
+            top_row.setSpacing(6)
+            title_label = QLabel(title)
+            title_label.setObjectName("connectionKindLabel")
+            title_label.setFixedWidth(48)
+            host_label = QLabel("地址")
+            host_label.setObjectName("connectionMiniLabel")
+            host_label.setFixedWidth(32)
+            host_input.setMinimumWidth(0)
+            if QSizePolicy is not None:
+                host_input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            button.setFixedWidth(92)
+            top_row.addWidget(title_label)
+            top_row.addWidget(host_label)
+            top_row.addWidget(host_input, 1)
+            top_row.addWidget(button)
+
+            credential_row = QHBoxLayout()
+            credential_row.setContentsMargins(0, 0, 0, 0)
+            credential_row.setSpacing(6)
+            user_label = QLabel("账号")
+            user_label.setObjectName("connectionMiniLabel")
+            user_label.setFixedWidth(32)
+            password_label = QLabel("密码")
+            password_label.setObjectName("connectionMiniLabel")
+            password_label.setFixedWidth(32)
+            username_input.setMinimumWidth(0)
+            password_input.setMinimumWidth(0)
+            if QSizePolicy is not None:
+                username_input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                password_input.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            credential_row.addSpacing(54)
+            credential_row.addWidget(user_label)
+            credential_row.addWidget(username_input, 1)
+            credential_row.addWidget(password_label)
+            credential_row.addWidget(password_input, 1)
+
+            row_layout.addLayout(top_row)
+            row_layout.addLayout(credential_row)
+            layout.addWidget(row)
 
         def _quick_action_icon(self, kind: str, color: str = "#a0a0a0") -> Any:
             if QIcon is None or QPainter is None or QPen is None or QPixmap is None:
@@ -1374,6 +1468,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_enter_mode_button.clicked.connect(self.toggle_command_enter_mode)
             self.command_record_toggle_button.clicked.connect(self.toggle_command_record_panel)
             self.connection_params_toggle_button.clicked.connect(self.toggle_connection_params)
+            self.device_navigation_toggle_button.clicked.connect(self.toggle_left_sidebar)
 
             self.session_tab_widget.currentChanged.connect(self.handle_session_tab_changed)
             self.session_tab_widget.tabCloseRequested.connect(self.close_device_tab_at_index)
@@ -1412,10 +1507,33 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.apply_connection_params_state()
             self.schedule_desktop_state_save()
 
+        def toggle_device_navigation(self) -> None:
+            self.device_navigation_collapsed = not self.device_navigation_collapsed
+            self.apply_device_navigation_state()
+            self.schedule_desktop_state_save()
+
+        def apply_device_navigation_state(self) -> None:
+            if not hasattr(self, "device_navigation_body"):
+                return
+            collapsed = self.device_navigation_collapsed
+            self.device_navigation_body.setVisible(not collapsed)
+            self.device_navigation_toggle_button.setText("显示导航" if collapsed else "隐藏导航")
+            self.device_navigation_toggle_button.setToolTip(
+                "显示设备列表和筛选" if collapsed else "隐藏设备列表和筛选"
+            )
+
         def toggle_left_sidebar(self) -> None:
             self.left_sidebar_collapsed = not self.left_sidebar_collapsed
             self.apply_left_sidebar_state()
             self.schedule_desktop_state_save()
+
+        def toggle_device_sidebar_panel(self) -> None:
+            if not self.left_sidebar_collapsed and self.left_sidebar_active_panel == "devices":
+                self.left_sidebar_collapsed = True
+                self.apply_left_sidebar_state()
+                self.schedule_desktop_state_save()
+                return
+            self.show_left_sidebar_panel("devices")
 
         def show_left_sidebar_panel(self, panel: str) -> None:
             if panel not in {"devices", "temporary"}:
@@ -1432,6 +1550,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             if not hasattr(self, "left_sidebar_content"):
                 return
             collapsed = self.left_sidebar_collapsed
+            if hasattr(self, "device_navigation_toggle_button"):
+                self.device_navigation_toggle_button.setText("隐藏左侧")
+                self.device_navigation_toggle_button.setToolTip("向左收起设备导航，扩大终端操作区域")
             if (
                 animated
                 and QVariantAnimation is not None
@@ -1537,8 +1658,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.connection_params_body.setVisible(not collapsed)
             self.connection_params_toggle_button.setText("展开" if collapsed else "收起")
             if hasattr(self, "connection_params_group"):
-                self.connection_params_group.setMinimumHeight(54 if collapsed else 0)
-                self.connection_params_group.setMaximumHeight(64 if collapsed else 16777215)
+                self.connection_params_group.setMinimumHeight(0)
+                self.connection_params_group.setMaximumHeight(16777215)
                 self.connection_params_group.updateGeometry()
 
         def apply_command_record_panel_state(self, focus_editor: bool = False) -> None:

@@ -180,6 +180,46 @@ def test_connection_parameter_buttons_exist(app: QApplication) -> None:
     assert window.connection_serial_button.text() == "连接串口"
 
 
+def test_collapsed_connection_panel_keeps_natural_height(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    window.connection_params_collapsed = True
+    window.apply_connection_params_state()
+
+    assert not window.connection_params_body.isVisible()
+    assert window.connection_params_group.maximumHeight() == 16777215
+
+
+def test_device_navigation_button_collapses_left_sidebar(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    window.toggle_left_sidebar()
+
+    assert window.left_sidebar_collapsed
+    assert not window.left_sidebar_content.isVisible()
+    assert window.left_sidebar_shell.maximumWidth() == 46
+    assert window.connection_telnet_button.width() >= 92
+
+
+def test_activity_device_button_toggles_left_sidebar(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.left_sidebar_active_panel = "devices"
+    window.left_sidebar_collapsed = False
+
+    window.toggle_device_sidebar_panel()
+
+    assert window.left_sidebar_collapsed
+    assert not window.left_sidebar_content.isVisible()
+
+    window.toggle_device_sidebar_panel()
+
+    assert not window.left_sidebar_collapsed
+    assert window.left_sidebar_stack.currentIndex() == 0
+
+
 def test_local_credential_overrides_round_trip_desktop_state(
     app: QApplication,
     monkeypatch: pytest.MonkeyPatch,

@@ -21,7 +21,7 @@ from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 4
+DESKTOP_STATE_VERSION = 5
 
 
 class DesktopStateMixin:
@@ -85,7 +85,10 @@ class DesktopStateMixin:
         except (TypeError, ValueError):
             loaded_command_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
         self.command_record_height = self.clamp_command_record_height(loaded_command_height)
-        self.connection_params_collapsed = bool(payload.get("connection_params_collapsed", True))
+        self.connection_params_collapsed = bool(payload.get("connection_params_collapsed", False))
+        if state_version < 5:
+            self.connection_params_collapsed = False
+        self.device_navigation_collapsed = bool(payload.get("device_navigation_collapsed", False))
         self.left_sidebar_collapsed = bool(payload.get("left_sidebar_collapsed", False))
         loaded_log_directory = str(payload.get("log_directory") or "").strip()
         if loaded_log_directory:
@@ -134,6 +137,7 @@ class DesktopStateMixin:
                 "command_enter_sends": self.command_enter_sends,
                 "command_record_height": self.command_record_height,
                 "connection_params_collapsed": self.connection_params_collapsed,
+                "device_navigation_collapsed": self.device_navigation_collapsed,
                 "left_sidebar_collapsed": self.left_sidebar_collapsed,
                 "log_directory": str(self.log_directory),
                 "temporary_devices": [

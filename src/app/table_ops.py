@@ -893,6 +893,21 @@ class TableOpsMixin:
             serial_color = "#707070"
         self.device_summary_card.setText(
             (
+                f"<div style='font-size:13px;font-weight:700;color:#ededed'>"
+                f"{html.escape(self.temporary_device_display_name(device))}</div>"
+                f"<div style='margin-top:3px;color:#808080;font-size:11px'>"
+                f"<span style='color:#c0c0c0;font-weight:600'>{html.escape(device.id)}</span>"
+                f" &nbsp;|&nbsp; {html.escape(device.domain)}"
+                f" &nbsp;|&nbsp; "
+                f"<span style='color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span>"
+                f" &nbsp;|&nbsp; "
+                f"<span style='color:{owner_color};font-weight:600'>{html.escape(owner_text)}</span>"
+                f"</div>"
+            )
+        )
+        return
+        self.device_summary_card.setText(
+            (
                 f"<div style='font-size:15px;font-weight:600;color:#ededed'>"
                 f"{html.escape(self.temporary_device_display_name(device))}</div>"
                 f"<div style='margin-top:4px;color:#808080;font-size:11px'>"

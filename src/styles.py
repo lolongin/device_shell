@@ -101,6 +101,27 @@ QFrame#connectionParamsHeader {
     min-height: 28px;
     max-height: 28px;
 }
+QFrame#connectionParamsPanel {
+    background: transparent;
+    border: none;
+}
+QFrame#connectionCompactRow {
+    background: #0a0f15;
+    border: 1px solid #1d2a38;
+    border-radius: 8px;
+}
+QLabel#connectionKindLabel {
+    background: transparent;
+    color: #e7f1ff;
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#connectionMiniLabel {
+    background: transparent;
+    color: #8ea7c2;
+    font-size: 11px;
+    font-weight: 600;
+}
 QGroupBox#navShell {
     border-color: #2a3644;
 }
@@ -942,6 +963,27 @@ QFrame#connectionParamsHeader {
     border: none;
     min-height: 24px;
     max-height: 24px;
+}
+QFrame#connectionParamsPanel {
+    background: transparent;
+    border: none;
+}
+QFrame#connectionCompactRow {
+    background: #0a0a0a;
+    border: 1px solid #1a1a1a;
+    border-radius: 6px;
+}
+QLabel#connectionKindLabel {
+    background: transparent;
+    color: #ededed;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#connectionMiniLabel {
+    background: transparent;
+    color: #808080;
+    font-size: 10px;
+    font-weight: 600;
 }
 QGroupBox#authCard QGroupBox {
     background: #0a0a0a;
