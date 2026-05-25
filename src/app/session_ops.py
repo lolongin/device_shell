@@ -1230,12 +1230,32 @@ class SessionOpsMixin:
         if text == "\x7f":
             text = "\x08" if state.kind in {"device", "serial"} else "\x7f"
         self.log_session_input(state, text)
+        state.pending_input_text += text
+        if state.input_flush_scheduled:
+            return
+        state.input_flush_scheduled = True
+        if QTimer is None:
+            self.flush_session_input(tab_id)
+            return
+        QTimer.singleShot(0, lambda tab_id=tab_id: self.flush_session_input(tab_id))
+
+    def flush_session_input(self, tab_id: str) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            return
+        text = state.pending_input_text
+        state.pending_input_text = ""
+        state.input_flush_scheduled = False
+        if not text:
+            return
 
         async def send() -> None:
             await state.session.send_text(text)
 
         def failure(exc: Exception) -> None:
-            self.write_session_log_line(state, "SYS", f"Send failed: {exc}")
+            current_state = self.session_tabs_by_id.get(tab_id)
+            if current_state is not None:
+                self.write_session_log_line(current_state, "SYS", f"Send failed: {exc}")
             if isinstance(exc, (TelnetSessionError, SessionUnavailableError)):
                 self.show_error(str(exc))
                 return

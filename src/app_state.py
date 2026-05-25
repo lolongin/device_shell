@@ -57,6 +57,8 @@ class SessionTabState:
     log_at_line_start: bool = True
     log_input_buffer: str = ""
     log_pending_records: list[tuple[str, str, bool]] = field(default_factory=list)
+    pending_input_text: str = ""
+    input_flush_scheduled: bool = False
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None

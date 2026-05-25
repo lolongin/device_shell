@@ -35,6 +35,7 @@ class TerminalCanvasWidget(QWidget):
     RENDER_INTERVAL_MS = 16
     MAX_FEED_BYTES_PER_FRAME = 65536
     PASTE_CHUNK_SIZE = 4096
+    MAX_COMMAND_RECORD_CHARS = 4096
     AUTO_SCROLL_INTERVAL_MS = 45
     AUTO_SCROLL_MARGIN_ROWS = 1
     TRIPLE_CLICK_INTERVAL_SECONDS = 0.45
@@ -97,6 +98,8 @@ class TerminalCanvasWidget(QWidget):
         self._stream: Any | None = None
         self._fallback_lines: list[str] = [""]
         self._last_reported_terminal_dimensions = (0, 0)
+        self._last_painted_default_font = False
+        self._last_painted_bold_font = False
         self._cell_width = 1
         self._cell_height = 1
         self._baseline_offset = 1
@@ -244,8 +247,10 @@ class TerminalCanvasWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         painter = QPainter(self)
+        self._last_painted_default_font = False
+        self._last_painted_bold_font = False
         painter.fillRect(event.rect(), self.DEFAULT_BG)
-        painter.setFont(self.font())
+        self._set_painter_font(painter, False)
         self._paint_screen(painter, event.rect())
 
     def event(self, event: Any) -> bool:
@@ -707,13 +712,24 @@ class TerminalCanvasWidget(QWidget):
 
         if self._stream is not None and self._screen is not None:
             self._sync_terminal_dimensions()
+            first_visible_before = self._first_visible_line_index()
+            total_lines_before = self._total_line_count()
             old_cursor = self._cursor_position()
             self._stream.feed(feed_payload)
             new_cursor = self._cursor_position()
             self._scroll_offset = min(self._scroll_offset, self._max_scroll_offset())
+            dirty_lines = set(getattr(self._screen, "dirty", set()))
             self._screen.dirty.clear()
             self._update_scrollbar()
-            self.update()
+            visible_range_changed = (
+                first_visible_before != self._first_visible_line_index()
+                or total_lines_before != self._total_line_count()
+                or self._scroll_offset > 0
+            )
+            if visible_range_changed:
+                self.update()
+            else:
+                self._repaint_dirty_lines(dirty_lines, old_cursor, new_cursor)
         else:
             self._append_fallback_output(feed_payload.decode("utf-8", errors="replace"))
             self._scroll_offset = min(self._scroll_offset, self._max_scroll_offset())
@@ -762,16 +778,120 @@ class TerminalCanvasWidget(QWidget):
         cursor_row = history_lines + int(getattr(cursor, "y", -1))
         cursor_col = int(getattr(cursor, "x", -1))
         cursor_hidden = bool(getattr(cursor, "hidden", False)) or self._scroll_offset > 0
+        default_cell = self._screen.default_char
 
         for row in range(start_row, end_row + 1):
             absolute_row = first_line_index + row
             line = visible_lines[row] if 0 <= row < len(visible_lines) else {}
             baseline = self.PADDING_TOP + row * self._cell_height + self._baseline_offset
-            for column in range(columns):
-                cell = line.get(column, self._screen.default_char) if hasattr(line, "get") else self._screen.default_char
-                is_cursor = absolute_row == cursor_row and column == cursor_col and not cursor_hidden
-                is_selected = self._is_cell_selected(absolute_row, column)
-                self._paint_cell(painter, cell, row, column, baseline, is_cursor, is_selected)
+            self._paint_terminal_row(
+                painter,
+                line,
+                row,
+                absolute_row,
+                columns,
+                baseline,
+                cursor_col if absolute_row == cursor_row and not cursor_hidden else -1,
+                default_cell,
+            )
+
+    def _paint_terminal_row(
+        self,
+        painter: QPainter,
+        line: Any,
+        row: int,
+        absolute_row: int,
+        columns: int,
+        baseline: int,
+        cursor_col: int,
+        default_cell: Any,
+    ) -> None:
+        if columns <= 0:
+            return
+
+        cells = line if hasattr(line, "get") else {}
+        segment_start = 0
+        segment_chars: list[str] = []
+        segment_style: tuple[QColor, QColor, bool, bool, bool, bool] | None = None
+
+        for column in range(columns):
+            cell = cells.get(column, default_cell)
+            char = str(getattr(cell, "data", " ") or " ")[:1]
+            is_cursor = column == cursor_col
+            is_selected = self._is_cell_selected(absolute_row, column)
+            fg, bg = self._cell_colors(cell)
+            bold = bool(getattr(cell, "bold", False))
+            underscore = bool(getattr(cell, "underscore", False))
+            style = (fg, bg, bold, underscore, is_cursor, is_selected)
+
+            if segment_style is None:
+                segment_style = style
+                segment_start = column
+                segment_chars = [char]
+                continue
+
+            if style == segment_style:
+                segment_chars.append(char)
+                continue
+
+            self._paint_text_segment(painter, row, segment_start, baseline, segment_chars, segment_style)
+            segment_style = style
+            segment_start = column
+            segment_chars = [char]
+
+        if segment_style is not None:
+            self._paint_text_segment(painter, row, segment_start, baseline, segment_chars, segment_style)
+
+    def _paint_text_segment(
+        self,
+        painter: QPainter,
+        row: int,
+        start_column: int,
+        baseline: int,
+        chars: list[str],
+        style: tuple[QColor, QColor, bool, bool, bool, bool],
+    ) -> None:
+        if not chars:
+            return
+        fg, bg, bold, underscore, is_cursor, is_selected = style
+        text = "".join(chars)
+        rect = QRect(
+            self.PADDING_LEFT + start_column * self._cell_width,
+            self.PADDING_TOP + row * self._cell_height,
+            self._cell_width * len(chars),
+            self._cell_height,
+        )
+
+        if is_selected:
+            painter.fillRect(rect, self.SELECTION_BG)
+            painter.setPen(self.SELECTION_FG)
+        elif is_cursor:
+            painter.fillRect(rect, self.CURSOR_BG)
+            painter.setPen(self.CURSOR_FG)
+        else:
+            if bg != self.DEFAULT_BG:
+                painter.fillRect(rect, bg)
+            painter.setPen(fg)
+
+        visible_text = text.rstrip()
+        if visible_text:
+            self._set_painter_font(painter, bold)
+            painter.drawText(QPoint(rect.left(), baseline), visible_text)
+        if underscore:
+            underline_y = rect.bottom() - 2
+            painter.drawLine(rect.left(), underline_y, rect.right(), underline_y)
+
+    def _set_painter_font(self, painter: QPainter, bold: bool) -> None:
+        if bold:
+            if not self._last_painted_bold_font:
+                painter.setFont(self._bold_font if self._bold_font is not None else self.font())
+                self._last_painted_bold_font = True
+                self._last_painted_default_font = False
+            return
+        if not self._last_painted_default_font:
+            painter.setFont(self.font())
+            self._last_painted_default_font = True
+            self._last_painted_bold_font = False
 
     def _paint_cell(
         self,
@@ -825,7 +945,7 @@ class TerminalCanvasWidget(QWidget):
         _columns, lines = self._screen_dimensions()
         end_row = min(lines - 1, (exposed.bottom() - self.PADDING_TOP) // self._cell_height + 1)
         first_line_index = self._first_visible_line_index()
-        painter.setFont(self.font())
+        self._set_painter_font(painter, False)
         for row in range(start_row, end_row + 1):
             absolute_row = first_line_index + row
             baseline = self.PADDING_TOP + row * self._cell_height + self._baseline_offset
@@ -889,6 +1009,9 @@ class TerminalCanvasWidget(QWidget):
         return "\n" in normalized.rstrip("\n")
 
     def _record_local_text(self, text: str) -> None:
+        if len(text) > self.MAX_COMMAND_RECORD_CHARS:
+            self._pending_command_chars.clear()
+            return
         for char in text:
             if char in ("\r", "\n"):
                 self._commit_pending_command()

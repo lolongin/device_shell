@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -251,3 +252,50 @@ def test_hot_paths_do_not_materialize_full_history(app: QApplication, monkeypatc
 
     image = terminal.grab()
     assert image.size().width() > 0
+
+
+def test_plain_terminal_row_is_drawn_as_one_text_run(app: QApplication) -> None:
+    terminal, _sent = _terminal_with_sender(app)
+    default_cell = terminal._screen.default_char
+    line = {index: SimpleNamespace(data=char) for index, char in enumerate("abc")}
+
+    class FakePainter:
+        def __init__(self) -> None:
+            self.text_runs: list[str] = []
+
+        def setFont(self, _font: object) -> None:  # noqa: N802
+            pass
+
+        def setPen(self, _pen: object) -> None:  # noqa: N802
+            pass
+
+        def fillRect(self, *_args: object) -> None:  # noqa: N802
+            pass
+
+        def drawText(self, _point: object, text: str) -> None:  # noqa: N802
+            self.text_runs.append(text)
+
+        def drawLine(self, *_args: object) -> None:  # noqa: N802
+            pass
+
+    painter = FakePainter()
+
+    terminal._paint_terminal_row(
+        painter,
+        line,
+        row=0,
+        absolute_row=0,
+        columns=80,
+        baseline=terminal._baseline_offset,
+        cursor_col=-1,
+        default_cell=default_cell,
+    )
+
+    assert painter.text_runs == ["abc"]
+
+
+def test_large_paste_does_not_fill_command_record_buffer(app: QApplication) -> None:
+    terminal, _sent = _terminal_with_sender(app)
+    terminal._record_local_text("x" * (terminal.MAX_COMMAND_RECORD_CHARS + 1))
+
+    assert terminal._pending_command_chars == []
