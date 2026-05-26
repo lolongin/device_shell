@@ -557,11 +557,7 @@ class TableOpsMixin:
         ])
 
     def device_connection_copy_text(self, device: Device) -> str:
-        serial_text = (
-            f"{device.serial_ip}:{device.serial_port}"
-            if self.can_view_serial_connection(device)
-            else "占用后可见"
-        )
+        serial_text = self.device_serial_connection_text(device)
         return (
             f"设备: {device.name}\n"
             f"Telnet: {device.telnet_ip}:{device.telnet_port}\n"
@@ -574,11 +570,7 @@ class TableOpsMixin:
         )
 
     def copy_device_field(self, device: Device, field: str) -> None:
-        serial_endpoint = (
-            f"{device.serial_ip}:{device.serial_port}"
-            if self.can_view_serial_connection(device)
-            else "占用后可见"
-        )
+        serial_endpoint = self.device_serial_connection_text(device)
         field_map = {
             "name": ("设备名", device.name),
             "ssh_ip": ("SSH IP", device.ssh_ip),
@@ -594,7 +586,10 @@ class TableOpsMixin:
         }
         label, value = field_map[field]
         if field == "serial_ip" and not value:
-            self.show_warning("请先占用设备后再查看串口 IP。")
+            if self.is_my_occupied_device(device) and not device.serial_ip.strip():
+                self.show_warning("当前设备无串口 IP。")
+            else:
+                self.show_warning("请先占用设备后再查看串口 IP。")
             return
         self.copy_text_to_clipboard(value, f"已复制{label}: {value}")
 
@@ -622,6 +617,20 @@ class TableOpsMixin:
         if self.is_temporary_device(device):
             return bool(device.serial_ip.strip())
         return bool(device.serial_ip.strip() and self.is_my_occupied_device(device))
+
+    def should_show_serial_connection_text(self, device: Device) -> bool:
+        return self.can_view_serial_connection(device) or (
+            self.is_my_occupied_device(device) and not device.serial_ip.strip()
+        )
+
+    def device_serial_connection_text(self, device: Device) -> str:
+        if self.can_view_serial_connection(device):
+            return f"{device.serial_ip}:{device.serial_port}"
+        if self.is_temporary_device(device):
+            return ""
+        if self.is_my_occupied_device(device) and not device.serial_ip.strip():
+            return "设备无串口 IP"
+        return "占用后可见"
 
     def copy_selected_device_field(self, table: QTableWidget, field: str) -> None:
         device = self._device_from_table(table)
@@ -849,7 +858,7 @@ class TableOpsMixin:
         self.device_password_input.setText(telnet_password)
         self.device_ssh_ip_value.setText(device.ssh_ip)
         self.device_serial_ip_value.setText(
-            f"{device.serial_ip}:{device.serial_port}" if self.can_view_serial_connection(device) else ""
+            self.device_serial_connection_text(device) if self.should_show_serial_connection_text(device) else ""
         )
         if hasattr(self, "serial_username_input"):
             self.serial_username_input.setText(serial_username)
@@ -873,7 +882,7 @@ class TableOpsMixin:
         self.device_telnet_ip_value.setText(device.telnet_ip)
         serial_visible = self.can_view_serial_connection(device)
         self.device_serial_ip_value.setText(
-            f"{device.serial_ip}:{device.serial_port}" if serial_visible else ""
+            self.device_serial_connection_text(device) if self.should_show_serial_connection_text(device) else ""
         )
         if hasattr(self, "serial_username_input"):
             serial_username, serial_password = self.local_session_credentials(device, "serial") or (
@@ -886,7 +895,7 @@ class TableOpsMixin:
         owner_color = "#c0c0c0" if device.owner else "#808080"
         telnet_text = f"{device.telnet_ip}:{device.telnet_port}"
         ssh_text = f"{device.ssh_ip}:{device.ssh_port}"
-        serial_text = f"{device.serial_ip}:{device.serial_port}" if serial_visible else "占用后可见"
+        serial_text = self.device_serial_connection_text(device)
         serial_color = "#c0c0c0" if serial_visible else "#707070"
         if self.is_temporary_device(device):
             serial_text = "-"

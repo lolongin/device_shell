@@ -533,6 +533,7 @@ class InteractiveTerminal(QPlainTextEdit):
             self._command_recorder(command)
 
     def append_output(self, message: str) -> None:
+        message = self._sanitize_output_controls(message)
         if self._pyte_stream is not None:
             self._pending_output_chunks.append(self._normalize_output_newlines(message))
             self._schedule_terminal_render("pyte", len(message))
@@ -687,6 +688,11 @@ class InteractiveTerminal(QPlainTextEdit):
         if previous == "\r" and message.startswith("\n"):
             return "\n" + message[1:].replace("\r\n", "\n").replace("\n", "\r\n")
         return message.replace("\r\n", "\n").replace("\n", "\r\n")
+
+    @staticmethod
+    def _sanitize_output_controls(message: str) -> str:
+        allowed_controls = {"\a", "\b", "\t", "\n", "\r", "\x1b", "\x7f"}
+        return "".join(char for char in message if char >= " " or char in allowed_controls)
 
     def _expand_tabs(self, text: str, tab_size: int = 8) -> str:
         if "\t" not in text:

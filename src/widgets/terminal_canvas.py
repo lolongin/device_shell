@@ -229,7 +229,10 @@ class TerminalCanvasWidget(QWidget):
         if isinstance(message, bytes):
             payload = self._normalize_output_bytes(message)
         else:
-            payload = self._normalize_output_newlines(message).encode("utf-8", errors="replace")
+            payload = self._normalize_output_newlines(self._sanitize_output_controls(message)).encode(
+                "utf-8",
+                errors="replace",
+            )
         if not payload:
             return
         self._pending_output_chunks.append(payload)
@@ -239,6 +242,11 @@ class TerminalCanvasWidget(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._layout_scrollbar()
+        if event.oldSize().isValid() and event.oldSize().width() == event.size().width():
+            self._scroll_offset = min(self._scroll_offset, self._max_scroll_offset())
+            self._update_scrollbar()
+            self.update()
+            return
         if self._sync_terminal_dimensions():
             self._notify_terminal_resize()
         self._scroll_offset = min(self._scroll_offset, self._max_scroll_offset())
@@ -347,6 +355,9 @@ class TerminalCanvasWidget(QWidget):
         if modifiers & Qt.ControlModifier:
             if key == Qt.Key_C and self.has_selection():
                 self.copy()
+                return
+            if key == Qt.Key_V:
+                self._paste_clipboard()
                 return
             control_text = self._control_sequence_for_key(key)
             if control_text is not None:
@@ -504,6 +515,9 @@ class TerminalCanvasWidget(QWidget):
             int(getattr(self._screen, "lines", self.DEFAULT_LINES)),
         )
 
+    def _viewport_dimensions(self) -> tuple[int, int]:
+        return self.terminal_dimensions()
+
     def _normalized_selection(self) -> tuple[int, int, int, int] | None:
         if not self.has_selection() or self._selection_anchor is None or self._selection_cursor is None:
             return None
@@ -558,7 +572,7 @@ class TerminalCanvasWidget(QWidget):
     def _update_scrollbar(self) -> None:
         if not hasattr(self, "_scrollbar"):
             return
-        _columns, lines = self._screen_dimensions()
+        _columns, lines = self._viewport_dimensions()
         max_offset = self._max_scroll_offset()
         value = max_offset - self._scroll_offset
         self._updating_scrollbar = True
@@ -579,7 +593,9 @@ class TerminalCanvasWidget(QWidget):
         self.update()
 
     def _max_scroll_offset(self) -> int:
-        _columns, lines = self._screen_dimensions()
+        if self._screen is not None:
+            return self._follow_anchor_first_visible_line()
+        _columns, lines = self._viewport_dimensions()
         return max(0, self._total_line_count() - lines)
 
     def _total_line_count(self) -> int:
@@ -588,8 +604,16 @@ class TerminalCanvasWidget(QWidget):
         return self._history_top_length() + int(getattr(self._screen, "lines", self.DEFAULT_LINES))
 
     def _first_visible_line_index(self) -> int:
-        _columns, lines = self._screen_dimensions()
-        return max(0, self._total_line_count() - lines - self._scroll_offset)
+        return max(0, self._follow_anchor_first_visible_line() - self._scroll_offset)
+
+    def _follow_anchor_first_visible_line(self) -> int:
+        _columns, lines = self._viewport_dimensions()
+        total_lines = self._total_line_count()
+        max_first_line = max(0, total_lines - lines)
+        if self._screen is None:
+            return max_first_line
+        cursor_line = self._cursor_absolute_line_index()
+        return min(max_first_line, max(0, cursor_line - lines + 1))
 
     def _all_terminal_lines(self) -> list[Any]:
         if self._screen is None:
@@ -600,7 +624,7 @@ class TerminalCanvasWidget(QWidget):
         return top + screen_lines
 
     def _visible_terminal_lines(self) -> list[Any]:
-        _columns, lines = self._screen_dimensions()
+        _columns, lines = self._viewport_dimensions()
         start = self._first_visible_line_index()
         return [self._line_at_absolute_index(index) or {} for index in range(start, start + lines)]
 
@@ -609,6 +633,13 @@ class TerminalCanvasWidget(QWidget):
             return 0
         history = getattr(self._screen, "history", None)
         return len(getattr(history, "top", [])) if history is not None else 0
+
+    def _cursor_absolute_line_index(self) -> int:
+        if self._screen is None:
+            return max(0, self._total_line_count() - 1)
+        cursor = getattr(self._screen, "cursor", None)
+        cursor_row = int(getattr(cursor, "y", 0))
+        return self._history_top_length() + max(0, cursor_row)
 
     def _line_at_absolute_index(self, index: int) -> Any | None:
         if self._screen is None:
@@ -658,6 +689,11 @@ class TerminalCanvasWidget(QWidget):
             return "\n" + message[1:].replace("\r\n", "\n").replace("\n", "\r\n")
         return message.replace("\r\n", "\n").replace("\n", "\r\n")
 
+    @staticmethod
+    def _sanitize_output_controls(message: str) -> str:
+        allowed_controls = {"\a", "\b", "\t", "\n", "\r", "\x1b", "\x7f"}
+        return "".join(char for char in message if char >= " " or char in allowed_controls)
+
     def _normalize_output_bytes(self, message: bytes) -> bytes:
         if not message:
             return message
@@ -683,6 +719,8 @@ class TerminalCanvasWidget(QWidget):
         current_columns = int(getattr(self._screen, "columns", columns))
         current_lines = int(getattr(self._screen, "lines", lines))
         if columns == current_columns and lines == current_lines:
+            return False
+        if columns == current_columns:
             return False
         self._screen.resize(lines=lines, columns=columns)
         self._screen.dirty.update(range(lines))
@@ -757,10 +795,16 @@ class TerminalCanvasWidget(QWidget):
                 rows.add(row)
         if not rows:
             return
+        history_lines = self._history_top_length()
+        first_visible_line = self._first_visible_line_index()
+        _columns, viewport_lines = self._viewport_dimensions()
         for row in rows:
             if row < 0:
                 continue
-            y = self.PADDING_TOP + row * self._cell_height
+            viewport_row = history_lines + row - first_visible_line
+            if viewport_row < 0 or viewport_row >= viewport_lines:
+                continue
+            y = self.PADDING_TOP + viewport_row * self._cell_height
             self.update(QRect(0, y, self.width(), self._cell_height + 1))
 
     def _paint_screen(self, painter: QPainter, exposed: QRect) -> None:
@@ -768,9 +812,9 @@ class TerminalCanvasWidget(QWidget):
             self._paint_fallback_lines(painter, exposed)
             return
         columns = int(getattr(self._screen, "columns", self.DEFAULT_COLUMNS))
-        lines = int(getattr(self._screen, "lines", self.DEFAULT_LINES))
+        _viewport_columns, viewport_lines = self._viewport_dimensions()
         start_row = max(0, (exposed.top() - self.PADDING_TOP) // self._cell_height)
-        end_row = min(lines - 1, (exposed.bottom() - self.PADDING_TOP) // self._cell_height + 1)
+        end_row = min(viewport_lines - 1, (exposed.bottom() - self.PADDING_TOP) // self._cell_height + 1)
         first_line_index = self._first_visible_line_index()
         visible_lines = self._visible_terminal_lines()
         history_lines = self._history_top_length()
@@ -942,7 +986,7 @@ class TerminalCanvasWidget(QWidget):
 
     def _paint_fallback_lines(self, painter: QPainter, exposed: QRect) -> None:
         start_row = max(0, (exposed.top() - self.PADDING_TOP) // self._cell_height)
-        _columns, lines = self._screen_dimensions()
+        _columns, lines = self._viewport_dimensions()
         end_row = min(lines - 1, (exposed.bottom() - self.PADDING_TOP) // self._cell_height + 1)
         first_line_index = self._first_visible_line_index()
         self._set_painter_font(painter, False)

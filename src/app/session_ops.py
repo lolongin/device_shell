@@ -211,7 +211,7 @@ class SessionOpsMixin:
             self.set_status_message("串口连接需要先占用当前设备。")
             return
         if not device.serial_ip.strip():
-            self.show_warning("当前设备未返回串口 IP 和端口，请刷新或检查接口数据。")
+            self.show_warning("当前设备无串口 IP。")
             self.set_status_message("串口地址不可用。")
             return
         username, password = self.session_serial_credentials(device)
