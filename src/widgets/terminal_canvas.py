@@ -34,6 +34,7 @@ class TerminalCanvasWidget(QWidget):
     MIN_LINES = 8
     RENDER_INTERVAL_MS = 16
     MAX_FEED_BYTES_PER_FRAME = 65536
+    FAST_PLAIN_OUTPUT_THRESHOLD = 131072
     PASTE_CHUNK_SIZE = 4096
     MAX_COMMAND_RECORD_CHARS = 4096
     AUTO_SCROLL_INTERVAL_MS = 45
@@ -97,6 +98,8 @@ class TerminalCanvasWidget(QWidget):
         self._screen: Any | None = None
         self._stream: Any | None = None
         self._fallback_lines: list[str] = [""]
+        self._plain_fast_mode = False
+        self._plain_fast_lines: list[str] = [""]
         self._last_reported_terminal_dimensions = (0, 0)
         self._last_painted_default_font = False
         self._last_painted_bold_font = False
@@ -154,6 +157,8 @@ class TerminalCanvasWidget(QWidget):
     def clear_terminal(self) -> None:
         self._pending_output_chunks.clear()
         self._last_output_char = ""
+        self._plain_fast_mode = False
+        self._plain_fast_lines = [""]
         self.clear_selection()
         if self._screen is not None:
             self._screen.reset()
@@ -190,13 +195,13 @@ class TerminalCanvasWidget(QWidget):
         return "\n".join(lines)
 
     def visible_text(self) -> str:
-        if self._screen is None:
-            return "\n".join(self._fallback_lines)
+        if self._screen is None or self._plain_fast_mode:
+            return "\n".join(self._active_plain_lines())
         return "\n".join(self._line_to_text(line).rstrip() for line in self._visible_terminal_lines()).rstrip()
 
     def all_text(self) -> str:
-        if self._screen is None:
-            return "\n".join(line.rstrip() for line in self._fallback_lines).rstrip()
+        if self._screen is None or self._plain_fast_mode:
+            return "\n".join(line.rstrip() for line in self._active_plain_lines()).rstrip()
         return "\n".join(self._line_to_text(line).rstrip() for line in self._all_terminal_lines()).rstrip()
 
     def set_raw_sender(self, sender: Callable[[str], None]) -> None:
@@ -507,9 +512,9 @@ class TerminalCanvasWidget(QWidget):
         )
 
     def _screen_dimensions(self) -> tuple[int, int]:
-        if self._screen is None:
+        if self._screen is None or self._plain_fast_mode:
             columns, lines = self.terminal_dimensions()
-            return columns, max(lines, len(self._fallback_lines))
+            return columns, max(lines, len(self._active_plain_lines()))
         return (
             int(getattr(self._screen, "columns", self.DEFAULT_COLUMNS)),
             int(getattr(self._screen, "lines", self.DEFAULT_LINES)),
@@ -593,14 +598,14 @@ class TerminalCanvasWidget(QWidget):
         self.update()
 
     def _max_scroll_offset(self) -> int:
-        if self._screen is not None:
+        if self._screen is not None and not self._plain_fast_mode:
             return self._follow_anchor_first_visible_line()
         _columns, lines = self._viewport_dimensions()
         return max(0, self._total_line_count() - lines)
 
     def _total_line_count(self) -> int:
-        if self._screen is None:
-            return len(self._fallback_lines)
+        if self._screen is None or self._plain_fast_mode:
+            return len(self._active_plain_lines())
         return self._history_top_length() + int(getattr(self._screen, "lines", self.DEFAULT_LINES))
 
     def _first_visible_line_index(self) -> int:
@@ -616,8 +621,8 @@ class TerminalCanvasWidget(QWidget):
         return min(max_first_line, max(0, cursor_line - lines + 1))
 
     def _all_terminal_lines(self) -> list[Any]:
-        if self._screen is None:
-            return list(self._fallback_lines)
+        if self._screen is None or self._plain_fast_mode:
+            return list(self._active_plain_lines())
         history = getattr(self._screen, "history", None)
         top = list(getattr(history, "top", [])) if history is not None else []
         screen_lines = [self._screen.buffer.get(row, {}) for row in range(self._screen.lines)]
@@ -629,22 +634,23 @@ class TerminalCanvasWidget(QWidget):
         return [self._line_at_absolute_index(index) or {} for index in range(start, start + lines)]
 
     def _history_top_length(self) -> int:
-        if self._screen is None:
+        if self._screen is None or self._plain_fast_mode:
             return 0
         history = getattr(self._screen, "history", None)
         return len(getattr(history, "top", [])) if history is not None else 0
 
     def _cursor_absolute_line_index(self) -> int:
-        if self._screen is None:
+        if self._screen is None or self._plain_fast_mode:
             return max(0, self._total_line_count() - 1)
         cursor = getattr(self._screen, "cursor", None)
         cursor_row = int(getattr(cursor, "y", 0))
         return self._history_top_length() + max(0, cursor_row)
 
     def _line_at_absolute_index(self, index: int) -> Any | None:
-        if self._screen is None:
-            if 0 <= index < len(self._fallback_lines):
-                return self._fallback_lines[index]
+        if self._screen is None or self._plain_fast_mode:
+            lines = self._active_plain_lines()
+            if 0 <= index < len(lines):
+                return lines[index]
             return None
         if index < 0:
             return None
@@ -703,6 +709,60 @@ class TerminalCanvasWidget(QWidget):
             return b"\n" + message[1:].replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         return message.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
 
+    def _should_fast_append_plain_output(self, payload: bytes) -> bool:
+        if not payload:
+            return False
+        if not self._plain_fast_mode and len(payload) < self.FAST_PLAIN_OUTPUT_THRESHOLD:
+            return False
+        return self._is_plain_stream_bytes(payload)
+
+    @staticmethod
+    def _is_plain_stream_bytes(payload: bytes) -> bool:
+        index = 0
+        while index < len(payload):
+            byte = payload[index]
+            if byte == 13:
+                if index + 1 >= len(payload) or payload[index + 1] != 10:
+                    return False
+                index += 2
+                continue
+            if byte in (9, 10) or byte >= 32:
+                index += 1
+                continue
+            return False
+        return True
+
+    def _append_plain_fast_output(self, payload: bytes) -> None:
+        if not self._plain_fast_mode:
+            self._enter_plain_fast_mode()
+        text = payload.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        if not text:
+            return
+        parts = text.split("\n")
+        self._plain_fast_lines[-1] += parts[0]
+        if len(parts) > 1:
+            self._plain_fast_lines.extend(parts[1:])
+        if len(self._plain_fast_lines) > self.DEFAULT_HISTORY:
+            self._plain_fast_lines = self._plain_fast_lines[-self.DEFAULT_HISTORY :]
+
+    def _enter_plain_fast_mode(self) -> None:
+        if self._plain_fast_mode:
+            return
+        text = self.all_text()
+        self._plain_fast_lines = text.split("\n") if text else [""]
+        self._plain_fast_mode = True
+
+    def _resync_terminal_from_plain_tail(self) -> None:
+        if not self._plain_fast_mode or self._stream is None or self._screen is None:
+            return
+        tail = "\n".join(self._plain_fast_lines[-self.DEFAULT_LINES :])
+        self._plain_fast_mode = False
+        self._plain_fast_lines = [""]
+        self._screen.reset()
+        self._screen.dirty.clear()
+        if tail:
+            self._stream.feed(tail.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
+
     def _refresh_font_metrics(self) -> None:
         metrics = self.fontMetrics()
         self._cell_width = max(1, metrics.horizontalAdvance("M"))
@@ -713,7 +773,7 @@ class TerminalCanvasWidget(QWidget):
         self._bold_font = bold_font
 
     def _sync_terminal_dimensions(self) -> bool:
-        if self._screen is None:
+        if self._screen is None or self._plain_fast_mode:
             return False
         columns, lines = self.terminal_dimensions()
         current_columns = int(getattr(self._screen, "columns", columns))
@@ -739,6 +799,13 @@ class TerminalCanvasWidget(QWidget):
         if not self._pending_output_chunks:
             return
         payload = b"".join(self._pending_output_chunks)
+        if self._stream is not None and self._screen is not None and self._should_fast_append_plain_output(payload):
+            self._pending_output_chunks.clear()
+            self._append_plain_fast_output(payload)
+            self._scroll_offset = min(self._scroll_offset, self._max_scroll_offset())
+            self._update_scrollbar()
+            self.update()
+            return
         if len(payload) > self.MAX_FEED_BYTES_PER_FRAME:
             feed_payload = payload[: self.MAX_FEED_BYTES_PER_FRAME]
             self._pending_output_chunks = [payload[self.MAX_FEED_BYTES_PER_FRAME :]]
@@ -749,6 +816,8 @@ class TerminalCanvasWidget(QWidget):
             has_more = False
 
         if self._stream is not None and self._screen is not None:
+            if self._plain_fast_mode:
+                self._resync_terminal_from_plain_tail()
             self._sync_terminal_dimensions()
             first_visible_before = self._first_visible_line_index()
             total_lines_before = self._total_line_count()
@@ -808,7 +877,7 @@ class TerminalCanvasWidget(QWidget):
             self.update(QRect(0, y, self.width(), self._cell_height + 1))
 
     def _paint_screen(self, painter: QPainter, exposed: QRect) -> None:
-        if self._screen is None:
+        if self._screen is None or self._plain_fast_mode:
             self._paint_fallback_lines(painter, exposed)
             return
         columns = int(getattr(self._screen, "columns", self.DEFAULT_COLUMNS))
@@ -989,12 +1058,23 @@ class TerminalCanvasWidget(QWidget):
         _columns, lines = self._viewport_dimensions()
         end_row = min(lines - 1, (exposed.bottom() - self.PADDING_TOP) // self._cell_height + 1)
         first_line_index = self._first_visible_line_index()
+        plain_lines = self._active_plain_lines()
         self._set_painter_font(painter, False)
+        has_selection = self.has_selection()
+        columns, _lines = self._viewport_dimensions()
         for row in range(start_row, end_row + 1):
             absolute_row = first_line_index + row
             baseline = self.PADDING_TOP + row * self._cell_height + self._baseline_offset
-            text = self._fallback_lines[absolute_row] if 0 <= absolute_row < len(self._fallback_lines) else ""
+            text = plain_lines[absolute_row] if 0 <= absolute_row < len(plain_lines) else ""
+            if not has_selection:
+                visible_text = text[:columns].rstrip()
+                if visible_text:
+                    painter.setPen(self.DEFAULT_FG)
+                    painter.drawText(QPoint(self.PADDING_LEFT, baseline), visible_text)
+                continue
             for column, char in enumerate(text):
+                if column >= columns:
+                    break
                 rect = QRect(
                     self.PADDING_LEFT + column * self._cell_width,
                     self.PADDING_TOP + row * self._cell_height,
@@ -1007,6 +1087,9 @@ class TerminalCanvasWidget(QWidget):
                 else:
                     painter.setPen(self.DEFAULT_FG)
                 painter.drawText(QPoint(rect.left(), baseline), char)
+
+    def _active_plain_lines(self) -> list[str]:
+        return self._plain_fast_lines if self._plain_fast_mode else self._fallback_lines
 
     def _append_fallback_output(self, text: str) -> None:
         for char in text:
