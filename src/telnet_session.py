@@ -55,6 +55,8 @@ class HuaweiTelnetSession:
         username: str,
         password: str,
         login_timeout_seconds: float = 12.0,
+        require_prompt: bool = True,
+        setup_command: str | None = None,
     ) -> None:
         if self.is_connected:
             await self.disconnect("Disconnected previous session.")
@@ -65,7 +67,13 @@ class HuaweiTelnetSession:
         self._closed = False
 
         try:
-            await self._login(username, password, login_timeout_seconds)
+            await self._login(
+                username,
+                password,
+                login_timeout_seconds,
+                require_prompt=require_prompt,
+                setup_command=setup_command,
+            )
         except Exception:
             await self.disconnect("Connection closed.")
             raise
@@ -109,31 +117,60 @@ class HuaweiTelnetSession:
             raise TelnetSessionError("Not connected.")
 
         payload = text.replace("\r\n", "\n").replace("\n", "\r\n")
-        self._writer.write(payload.encode("utf-8"))
-        await self._writer.drain()
+        try:
+            self._writer.write(payload.encode("utf-8"))
+            await self._writer.drain()
+        except OSError as exc:
+            await self.disconnect("Connection lost.")
+            raise TelnetSessionError(str(exc)) from exc
 
     async def _login(
         self,
         username: str,
         password: str,
         login_timeout_seconds: float,
+        *,
+        require_prompt: bool,
+        setup_command: str | None,
     ) -> None:
         self._on_status("Authenticating")
-        stage = await self._read_until_stage(login_timeout_seconds)
+        try:
+            stage = await self._read_until_stage(login_timeout_seconds)
+        except TelnetSessionError as exc:
+            if require_prompt or not self._is_login_timeout(exc):
+                raise
+            self._on_status("Connected")
+            return
 
-        if stage == "username":
+        if stage == "username" and username:
             await self._write_line(username)
-            stage = await self._read_until_stage(login_timeout_seconds)
+            try:
+                stage = await self._read_until_stage(login_timeout_seconds)
+            except TelnetSessionError as exc:
+                if require_prompt or not self._is_login_timeout(exc):
+                    raise
+                self._on_status("Connected")
+                return
 
-        if stage == "password":
+        if stage == "password" and password:
             await self._write_line(password)
-            stage = await self._read_until_stage(login_timeout_seconds)
+            try:
+                stage = await self._read_until_stage(login_timeout_seconds)
+            except TelnetSessionError as exc:
+                if require_prompt or not self._is_login_timeout(exc):
+                    raise
+                self._on_status("Connected")
+                return
 
         if stage != "prompt":
-            raise TelnetSessionError("Did not reach a Huawei CLI prompt.")
+            if require_prompt:
+                raise TelnetSessionError("Did not reach a Huawei CLI prompt.")
+            self._on_status("Connected")
+            return
 
         self._on_status("Connected")
-        await self.send_command("screen-length 0 temporary")
+        if setup_command:
+            await self.send_command(setup_command)
 
     async def _write_line(self, value: str) -> None:
         if self._writer is None:
@@ -153,7 +190,10 @@ class HuaweiTelnetSession:
                 if remaining <= 0:
                     raise TelnetSessionError("Timed out waiting for device prompt.")
 
-                chunk = await asyncio.wait_for(self._reader.read(READ_CHUNK_SIZE), timeout=remaining)
+                try:
+                    chunk = await asyncio.wait_for(self._reader.read(READ_CHUNK_SIZE), timeout=remaining)
+                except asyncio.TimeoutError as exc:
+                    raise TelnetSessionError("Timed out waiting for device prompt.") from exc
                 if not chunk:
                     raise TelnetSessionError("Connection closed during login.")
 
@@ -277,6 +317,10 @@ class HuaweiTelnetSession:
     def _looks_like_prompt(self, text: str) -> bool:
         tail = text.replace("\r", "\n").split("\n")[-1]
         return bool(PROMPT_PATTERN.search(tail))
+
+    @staticmethod
+    def _is_login_timeout(exc: TelnetSessionError) -> bool:
+        return "timed out" in str(exc).lower()
 
     def _safe_output(self, message: str) -> None:
         try:

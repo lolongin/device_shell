@@ -44,6 +44,7 @@ try:
         QPainter,
         QPen,
         QPixmap,
+        QShortcut,
         QTextBlockFormat,
         QSyntaxHighlighter,
         QTextCharFormat,
@@ -56,6 +57,7 @@ try:
         QFileDialog,
         QFormLayout,
         QFrame,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QHeaderView,
@@ -100,6 +102,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QPainter = None
     QPen = None
     QPixmap = None
+    QShortcut = None
     QPropertyAnimation = None
     QTextBlockFormat = None
     QSyntaxHighlighter = None
@@ -108,6 +111,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
     QComboBox = None
     QFormLayout = None
     QFrame = None
+    QGridLayout = None
     QGroupBox = None
     QHBoxLayout = None
     QHeaderView = None
@@ -263,6 +267,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.current_command_group = 0
             self.command_record_collapsed = True
             self.command_enter_sends = False
+            self.command_find_replace_visible = False
             self.command_record_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
             self.connection_params_collapsed = False
             self.device_navigation_collapsed = False
@@ -1327,6 +1332,55 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_record_input.set_submit_handler(self.submit_command_record_input)
             self.command_record_input.textChanged.connect(self.schedule_desktop_state_save)
             self.update_command_enter_mode()
+
+            find_replace_bar = QFrame(frame)
+            find_replace_bar.setObjectName("commandFindReplaceBar")
+            self.command_find_replace_bar = find_replace_bar
+            find_replace_bar.setMinimumWidth(380)
+            find_replace_bar.setMaximumWidth(420)
+            find_replace_layout = QGridLayout(find_replace_bar)
+            find_replace_layout.setContentsMargins(8, 7, 8, 7)
+            find_replace_layout.setHorizontalSpacing(5)
+            find_replace_layout.setVerticalSpacing(5)
+            find_replace_layout.setColumnStretch(0, 1)
+
+            self.command_find_input = QLineEdit()
+            self.command_find_input.setObjectName("commandFindInput")
+            self.command_find_input.setPlaceholderText("查找")
+            self.command_find_input.setMinimumWidth(220)
+
+            self.command_find_next_button = QToolButton()
+            self.command_find_next_button.setObjectName("commandFindIconButton")
+            self.command_find_next_button.setText("↓")
+            self.command_find_next_button.setToolTip("查找下一个")
+
+            self.command_find_close_button = QToolButton()
+            self.command_find_close_button.setObjectName("commandFindIconButton")
+            self.command_find_close_button.setText("×")
+            self.command_find_close_button.setToolTip("关闭查找")
+
+            self.command_replace_input = QLineEdit()
+            self.command_replace_input.setObjectName("commandReplaceInput")
+            self.command_replace_input.setPlaceholderText("替换为")
+            self.command_replace_input.setMinimumWidth(220)
+
+            self.command_replace_button = QToolButton()
+            self.command_replace_button.setObjectName("commandFindTextButton")
+            self.command_replace_button.setText("替换")
+            self.command_replace_all_button = QToolButton()
+            self.command_replace_all_button.setObjectName("commandFindTextButton")
+            self.command_replace_all_button.setText("全部")
+            self.command_replace_button.setToolTip("替换当前匹配")
+            self.command_replace_all_button.setToolTip("全部替换")
+
+            find_replace_layout.addWidget(self.command_find_input, 0, 0)
+            find_replace_layout.addWidget(self.command_find_next_button, 0, 1)
+            find_replace_layout.addWidget(self.command_find_close_button, 0, 2)
+            find_replace_layout.addWidget(self.command_replace_input, 1, 0)
+            find_replace_layout.addWidget(self.command_replace_button, 1, 1)
+            find_replace_layout.addWidget(self.command_replace_all_button, 1, 2)
+
+            find_replace_bar.setVisible(False)
             layout.addWidget(self.command_record_input)
 
             footer = QFrame()
@@ -1465,6 +1519,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_send_button.clicked.connect(self.submit_current_command_record)
             self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
             self.command_clear_button.clicked.connect(self.clear_current_command_record)
+            self.command_find_input.returnPressed.connect(self.find_next_command_record_match)
+            self.command_replace_input.returnPressed.connect(self.replace_current_command_record_match)
+            self.command_find_next_button.clicked.connect(self.find_next_command_record_match)
+            self.command_replace_button.clicked.connect(self.replace_current_command_record_match)
+            self.command_replace_all_button.clicked.connect(self.replace_all_command_record_matches)
+            self.command_find_close_button.clicked.connect(self.hide_command_find_replace)
             self.command_enter_mode_button.clicked.connect(self.toggle_command_enter_mode)
             self.command_record_toggle_button.clicked.connect(self.toggle_command_record_panel)
             self.connection_params_toggle_button.clicked.connect(self.toggle_connection_params)
@@ -1472,6 +1532,13 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.session_tab_widget.currentChanged.connect(self.handle_session_tab_changed)
             self.session_tab_widget.tabCloseRequested.connect(self.close_device_tab_at_index)
+            if QShortcut is not None:
+                self.command_find_shortcut = QShortcut(QKeySequence.Find, self)
+                self.command_find_shortcut.setContext(Qt.ApplicationShortcut)
+                self.command_find_shortcut.activated.connect(self.toggle_command_find_replace)
+                self.command_find_escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self.command_find_replace_bar)
+                self.command_find_escape_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+                self.command_find_escape_shortcut.activated.connect(self.hide_command_find_replace)
 
         def sync_left_search(self, value: str) -> None:
             del value
@@ -1666,6 +1733,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             collapsed = self.command_record_collapsed
             self.command_record_resize_handle.setVisible(not collapsed)
             self.command_record_input.setVisible(not collapsed)
+            self.command_find_replace_bar.setVisible(not collapsed and self.command_find_replace_visible)
+            if not collapsed and self.command_find_replace_visible:
+                bar_width = min(420, max(320, self.command_record_frame.width() - 28))
+                self.command_find_replace_bar.setFixedWidth(bar_width)
+                self.command_find_replace_bar.move(
+                    max(8, self.command_record_frame.width() - bar_width - 14),
+                    self.command_record_resize_handle.height() + 28,
+                )
+                self.command_find_replace_bar.raise_()
             self.command_record_footer.setVisible(not collapsed)
             self.command_enter_mode_button.setVisible(not collapsed)
             target_height = (

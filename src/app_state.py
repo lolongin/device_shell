@@ -65,3 +65,4 @@ class SessionTabState:
     tab_close_button: QToolButton | None = None
     connecting: bool = False
     status_text: str = "Disconnected"
+    reconnect_hint_visible: bool = False

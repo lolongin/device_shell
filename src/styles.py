@@ -571,6 +571,53 @@ QPlainTextEdit#commandRecordEditor {
 QPlainTextEdit#commandRecordEditor:focus {
     border: none;
 }
+QFrame#commandFindReplaceBar {
+    background: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 8px;
+    min-height: 70px;
+    max-height: 70px;
+}
+QLineEdit#commandFindInput,
+QLineEdit#commandReplaceInput {
+    background: #1e1e1e;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #cccccc;
+    padding: 4px 8px;
+    min-height: 22px;
+    selection-background-color: #264f78;
+    selection-color: #ffffff;
+}
+QLineEdit#commandFindInput:focus,
+QLineEdit#commandReplaceInput:focus {
+    border-color: #007acc;
+    background: #1e1e1e;
+}
+QToolButton#commandFindIconButton,
+QToolButton#commandFindTextButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #cccccc;
+    padding: 3px 7px;
+    min-height: 22px;
+    font-weight: 600;
+}
+QToolButton#commandFindIconButton {
+    min-width: 38px;
+    max-width: 38px;
+}
+QToolButton#commandFindTextButton {
+    min-width: 38px;
+    max-width: 38px;
+}
+QToolButton#commandFindIconButton:hover,
+QToolButton#commandFindTextButton:hover {
+    background: #2a2d2e;
+    border-color: #3c3c3c;
+    color: #ffffff;
+}
 QFrame#commandRecordFooter {
     background: transparent;
     border: none;

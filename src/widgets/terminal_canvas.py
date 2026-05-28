@@ -380,6 +380,7 @@ class TerminalCanvasWidget(QWidget):
             return
 
         if key in (Qt.Key_Return, Qt.Key_Enter):
+            self._scroll_to_live_input()
             if self._enter_reconnect_handler is not None and self._enter_reconnect_handler():
                 return
             self._commit_pending_command()
@@ -1106,6 +1107,7 @@ class TerminalCanvasWidget(QWidget):
 
     def _forward_text(self, text: str) -> None:
         if self._raw_sender is not None:
+            self._scroll_to_live_input()
             self._raw_sender(text)
 
     def _paste_clipboard(self) -> None:
@@ -1125,10 +1127,19 @@ class TerminalCanvasWidget(QWidget):
             self._send_paste_text(clipboard_text)
 
     def _send_paste_text(self, text: str) -> None:
+        self._scroll_to_live_input()
         self._record_local_text(text)
         payload = f"\x1b[200~{text}\x1b[201~" if self._bracketed_paste_enabled else text
         for index in range(0, len(payload), self.PASTE_CHUNK_SIZE):
             self._forward_text(payload[index : index + self.PASTE_CHUNK_SIZE])
+
+    def _scroll_to_live_input(self) -> None:
+        if self._scroll_offset == 0 and not self.has_selection():
+            return
+        self._scroll_offset = 0
+        self.clear_selection()
+        self._update_scrollbar()
+        self.update()
 
     @staticmethod
     def _is_multiline_paste(text: str) -> bool:

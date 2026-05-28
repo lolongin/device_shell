@@ -1,6 +1,7 @@
 """Command record management mixin for DeviceDesktopApp."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 try:
@@ -39,7 +40,7 @@ class CommandRecordOpsMixin:
             self.set_status_message("命令已记录，当前没有打开的终端会话。")
             return
         self.send_session_text(state.tab_id, self.command_record_payload(command))
-        self.command_record_input.setFocus()
+        self.focus_current_terminal(force=True)
 
     def broadcast_command_record_input(self) -> None:
         command = self.command_record_input.current_command_line()
@@ -62,6 +63,98 @@ class CommandRecordOpsMixin:
         normalized = command.replace("\r\n", "\n").replace("\r", "\n")
         payload = normalized.replace("\n", "\r")
         return f"{payload}\r"
+
+    def toggle_command_find_replace(self) -> None:
+        if self.command_find_replace_visible:
+            self.hide_command_find_replace()
+            return
+        self.show_command_find_replace()
+
+    def show_command_find_replace(self) -> None:
+        if self.command_record_collapsed:
+            self.command_record_collapsed = False
+        selected = self.command_record_input.textCursor().selectedText().replace("\u2029", "\n")
+        if selected:
+            self.command_find_input.setText(selected)
+        self.command_find_replace_visible = True
+        self.apply_command_record_panel_state()
+        self.command_find_input.setFocus()
+        self.command_find_input.selectAll()
+
+    def hide_command_find_replace(self) -> None:
+        self.command_find_replace_visible = False
+        self.command_find_replace_bar.setVisible(False)
+        if not self.command_record_collapsed:
+            self.command_record_input.setFocus()
+
+    def find_next_command_record_match(self) -> None:
+        query = self.command_find_input.text()
+        if not query:
+            self.set_status_message("请输入要查找的命令文本。")
+            self.command_find_input.setFocus()
+            return
+        cursor = self.command_record_input.textCursor()
+        start = cursor.selectionEnd() if cursor.hasSelection() else cursor.position()
+        if not self._select_command_record_match(query, start):
+            self.set_status_message(f"未找到: {query}")
+
+    def replace_current_command_record_match(self) -> None:
+        query = self.command_find_input.text()
+        if not query:
+            self.set_status_message("请输入要替换的命令文本。")
+            self.command_find_input.setFocus()
+            return
+        cursor = self.command_record_input.textCursor()
+        selected = cursor.selectedText().replace("\u2029", "\n")
+        if not cursor.hasSelection() or selected.lower() != query.lower():
+            start = cursor.position()
+            if not self._select_command_record_match(query, start):
+                self.set_status_message(f"未找到: {query}")
+                return
+            cursor = self.command_record_input.textCursor()
+        cursor.insertText(self.command_replace_input.text())
+        self._save_current_command_content()
+        self.schedule_desktop_state_save()
+        self.find_next_command_record_match()
+
+    def replace_all_command_record_matches(self) -> None:
+        query = self.command_find_input.text()
+        if not query:
+            self.set_status_message("请输入要替换的命令文本。")
+            self.command_find_input.setFocus()
+            return
+        content = self.command_record_input.toPlainText()
+        replacement = self.command_replace_input.text()
+        updated, count = re.subn(re.escape(query), lambda _match: replacement, content, flags=re.IGNORECASE)
+        if count == 0:
+            self.set_status_message(f"未找到: {query}")
+            return
+        self.command_record_input.setPlainText(updated)
+        self._save_current_command_content()
+        self.schedule_desktop_state_save()
+        self.set_status_message(f"已替换 {count} 处命令文本。")
+        self.command_record_input.setFocus()
+
+    def _select_command_record_match(self, query: str, start: int) -> bool:
+        content = self.command_record_input.toPlainText()
+        lowered_content = content.lower()
+        lowered_query = query.lower()
+        index = lowered_content.find(lowered_query, max(0, start))
+        wrapped = False
+        if index < 0 and start > 0:
+            index = lowered_content.find(lowered_query)
+            wrapped = index >= 0
+        if index < 0:
+            return False
+        cursor = self.command_record_input.textCursor()
+        cursor.setPosition(index)
+        cursor.setPosition(index + len(query), QTextCursor.KeepAnchor)
+        self.command_record_input.setTextCursor(cursor)
+        self.command_record_input.ensureCursorVisible()
+        self.command_record_input.setFocus()
+        suffix = "（已回到开头）" if wrapped else ""
+        self.set_status_message(f"已定位: {query}{suffix}")
+        return True
 
     def add_command_record(self, command: str) -> None:
         normalized = command.strip()

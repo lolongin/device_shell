@@ -19,6 +19,7 @@ class LinuxSshSession:
         self._process: asyncssh.SSHClientProcess | None = None
         self._reader_tasks: list[asyncio.Task[None]] = []
         self._write_lock = asyncio.Lock()
+        self._remote_close_reported = False
 
     @property
     def is_connected(self) -> bool:
@@ -35,6 +36,7 @@ class LinuxSshSession:
         if self.is_connected:
             await self.disconnect("Disconnected previous Linux session.")
 
+        self._remote_close_reported = False
         self.callbacks.on_status("Connecting")
         self.callbacks.on_output(f"\n=== Connecting SSH {host}:{port} ===\n")
 
@@ -80,6 +82,7 @@ class LinuxSshSession:
         connection = self._connection
         self._process = None
         self._connection = None
+        self._remote_close_reported = True
 
         for task in self._reader_tasks:
             task.cancel()
@@ -122,8 +125,12 @@ class LinuxSshSession:
             raise SessionUnavailableError("Linux SSH session is not connected.")
 
         async with self._write_lock:
-            process.stdin.write(text)
-            await process.stdin.drain()
+            try:
+                process.stdin.write(text)
+                await process.stdin.drain()
+            except (asyncssh.Error, OSError) as exc:
+                await self._mark_remote_closed()
+                raise SessionUnavailableError(str(exc)) from exc
 
     async def resize_terminal(self, columns: int, lines: int) -> None:
         process = self._process
@@ -138,9 +145,47 @@ class LinuxSshSession:
             while True:
                 chunk = await stream.read(READ_CHUNK_SIZE)
                 if not chunk:
+                    await self._mark_remote_closed()
                     return
                 self.callbacks.on_output(chunk)
         except asyncio.CancelledError:
             raise
         except (asyncssh.Error, OSError) as exc:
             self.callbacks.on_output(f"\n=== Linux stream error: {exc} ===\n")
+            await self._mark_remote_closed()
+
+    async def _mark_remote_closed(self) -> None:
+        if self._remote_close_reported:
+            return
+        self._remote_close_reported = True
+        process = self._process
+        connection = self._connection
+        self._process = None
+        self._connection = None
+
+        current_task = asyncio.current_task()
+        other_tasks = [task for task in self._reader_tasks if task is not current_task]
+        for task in other_tasks:
+            task.cancel()
+        if other_tasks:
+            await asyncio.gather(*other_tasks, return_exceptions=True)
+        self._reader_tasks.clear()
+
+        if process is not None:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+            try:
+                await process.wait_closed()
+            except (asyncssh.Error, OSError):
+                pass
+
+        if connection is not None:
+            connection.close()
+            try:
+                await connection.wait_closed()
+            except asyncssh.Error:
+                pass
+
+        self.callbacks.on_status("Disconnected")

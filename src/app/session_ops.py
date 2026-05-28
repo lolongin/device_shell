@@ -314,7 +314,7 @@ class SessionOpsMixin:
         self._refresh_tab_header_styles()
         self.refresh_workspace_context()
         self.update_controls()
-        state.terminal.setFocus()
+        self.focus_current_terminal()
         direction_label = {"left": "左侧", "right": "右侧", "top": "上方", "bottom": "下方"}.get(direction, "目标")
         self.set_status_message(f"已将会话移动到{direction_label}分屏: {state.title}")
 
@@ -510,7 +510,7 @@ class SessionOpsMixin:
         device = self.get_device_by_id(state.device_id)
         if device is not None:
             self.activate_device(device.id)
-        state.terminal.setFocus()
+        self.focus_current_terminal()
         self.refresh_session_jump_combo()
         self.set_status_message(f"已跳转到会话: {self.session_jump_text(state)}")
 
@@ -520,7 +520,7 @@ class SessionOpsMixin:
         self.update_controls()
         state = self.current_session_state()
         if state is not None:
-            state.terminal.setFocus()
+            self.focus_current_terminal()
 
     def handle_split_session_tab_changed(self, device_id: str, tabs: QTabWidget) -> None:
         self.mark_active_session_tab_widget(device_id, tabs)
@@ -537,7 +537,7 @@ class SessionOpsMixin:
         self.update_controls()
         state = self._session_state_for_page(tabs.widget(index))
         if state is not None:
-            state.terminal.setFocus()
+            self.focus_current_terminal()
 
     def update_center_stage_state(self) -> None:
         if not hasattr(self, "center_stage_stack"):
@@ -706,6 +706,7 @@ class SessionOpsMixin:
         self.refresh_workspace_context()
         self.update_center_stage_state()
         self.update_controls()
+        self.focus_current_terminal()
         self.connect_session_tab(tab_id)
 
     def ensure_device_tab(self, device: Device) -> DeviceTabState:
@@ -1125,6 +1126,9 @@ class SessionOpsMixin:
                 state.port,
                 state.username,
                 state.password,
+                login_timeout_seconds=3.0 if state.kind == "serial" else 12.0,
+                require_prompt=state.kind != "serial",
+                setup_command=None,
             )
             return None
 
@@ -1146,7 +1150,7 @@ class SessionOpsMixin:
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Connected")
             self.set_status_message(f"会话已连接: {current_state.title}")
-            current_state.terminal.setFocus()
+            self.focus_current_terminal()
 
         def failure(exc: Exception) -> None:
             current_state = self.session_tabs_by_id.get(tab_id)
@@ -1186,6 +1190,10 @@ class SessionOpsMixin:
             return
         previous_status = state.status_text
         state.status_text = status
+
+        if status in {"Connecting", "Connected"}:
+            state.reconnect_hint_visible = False
+
         if status != "Connecting":
             state.connecting = False
         if (
@@ -1212,6 +1220,9 @@ class SessionOpsMixin:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             return
+        if state.reconnect_hint_visible:
+            return
+        state.reconnect_hint_visible = True
         state.terminal.append_output("\n=== 会话已断开，按 Enter 重连 ===\n")
 
     def append_session_output(self, tab_id: str, message: str) -> None:
@@ -1254,11 +1265,16 @@ class SessionOpsMixin:
 
         def failure(exc: Exception) -> None:
             current_state = self.session_tabs_by_id.get(tab_id)
+            if isinstance(exc, (TelnetSessionError, SessionUnavailableError)):
+                self.set_session_status(tab_id, "Disconnected")
+                if current_state is not None:
+                    self.write_session_log_line(
+                        current_state, "SYS", f"Send failed: {exc}"
+                    )
+                    self.set_status_message(f"发送失败/会话已断开: {current_state.title}")
+                return
             if current_state is not None:
                 self.write_session_log_line(current_state, "SYS", f"Send failed: {exc}")
-            if isinstance(exc, (TelnetSessionError, SessionUnavailableError)):
-                self.show_error(str(exc))
-                return
             self.handle_background_error(exc)
 
         self.run_coro(send(), on_error=failure)
@@ -1268,11 +1284,12 @@ class SessionOpsMixin:
         if state is None:
             return False
         if state.connecting:
-            self.set_status_message(f"Session is connecting: {state.title}")
+            self.set_status_message("正在连接中，请稍候...")
             return True
         if state.session.is_connected:
             return False
         self.refresh_session_credentials_from_panel(state)
+        state.terminal.append_output("\n=== 正在重连... ===\n")
         self.reconnect_session_tab(tab_id)
         return True
 
@@ -1331,6 +1348,9 @@ class SessionOpsMixin:
                 state.port,
                 state.username,
                 state.password,
+                login_timeout_seconds=3.0 if state.kind == "serial" else 12.0,
+                require_prompt=state.kind != "serial",
+                setup_command=None,
             )
             return None
 
@@ -1351,7 +1371,7 @@ class SessionOpsMixin:
             current_state.connecting = False
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Reconnected")
-            current_state.terminal.setFocus()
+            self.focus_current_terminal()
             self.set_status_message(f"会话已重连: {current_state.title}")
 
         def failure(exc: Exception) -> None:
@@ -1547,6 +1567,67 @@ class SessionOpsMixin:
             return None
         tabs = self.active_session_tabs_for_device(device_tab)
         return self._session_state_for_page(tabs.currentWidget())
+
+    def focus_current_terminal(self, *, deferred: bool = True, force: bool = False) -> None:
+        """Focus the current session terminal.
+
+        Preserves focus on protected input widgets (search, credentials,
+        command panel) unless force=True is passed.
+        """
+        tab_id = self.current_session_key()
+        if tab_id is None:
+            return
+        if deferred and QTimer is not None:
+            QTimer.singleShot(0, lambda tid=tab_id, forced=force: self._apply_terminal_focus(tid, forced))
+        else:
+            self._apply_terminal_focus(tab_id, force)
+
+    def _apply_terminal_focus(self, tab_id: str, force: bool = False) -> None:
+        """Re-lookup state by tab_id and focus, avoiding stale references."""
+        if not force and self._focus_should_skip():
+            return
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            return
+        state.terminal.setFocus()
+
+    def _focus_should_skip(self) -> bool:
+        """Return True if focus is on a protected input widget."""
+        if QApplication is None:
+            return False
+        focused = QApplication.focusWidget()
+        if focused is None:
+            return False
+        protected: set[object] = set()
+        for attr in (
+            "search_input",
+            "device_username_input",
+            "device_password_input",
+            "serial_username_input",
+            "serial_password_input",
+            "linux_username_input",
+            "linux_password_input",
+            "command_record_input",
+            "command_find_input",
+            "command_replace_input",
+            "temporary_name_input",
+            "temporary_telnet_ip_input",
+            "temporary_telnet_port_input",
+            "temporary_telnet_username_input",
+            "temporary_telnet_password_input",
+            "temporary_ssh_ip_input",
+            "temporary_ssh_port_input",
+            "temporary_ssh_username_input",
+            "temporary_ssh_password_input",
+            "temporary_serial_ip_input",
+            "temporary_serial_port_input",
+            "temporary_serial_password_input",
+            "temporary_notes_input",
+        ):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                protected.add(widget)
+        return focused in protected
 
     def reconnect_current_session(self) -> None:
         state = self.current_session_state()
