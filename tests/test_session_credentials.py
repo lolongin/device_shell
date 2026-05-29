@@ -10,9 +10,11 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
 from src._sample_data import sample_devices
+from src.app_state import SessionTabState
 from src.app.main_window import DeviceDesktopApp
 from src.app.temporary_device_ops import TemporaryDeviceDialog
 
@@ -241,6 +243,71 @@ def test_local_credential_overrides_round_trip_desktop_state(
         "username": "local-linux",
         "password": "root",
     }
+
+
+def test_always_on_top_round_trips_desktop_state(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _ = app
+    state_path = tmp_path / "desktop_state.json"
+    monkeypatch.setenv("DEVICE_TUI_DESKTOP_STATE_PATH", str(state_path))
+    first = DeviceDesktopApp()
+
+    first.toggle_always_on_top(True)
+    first.save_desktop_state()
+    second = DeviceDesktopApp()
+
+    assert second.always_on_top
+    assert second.always_on_top_button.isChecked()
+    if os.name != "nt":
+        assert bool(second.windowFlags() & Qt.WindowStaysOnTopHint)
+
+
+def test_always_on_top_keeps_visible_window_visible(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.show()
+
+    window.toggle_always_on_top(True)
+
+    assert window.always_on_top
+    assert window.isVisible()
+
+
+def test_create_session_log_rotates_current_session_log(app: QApplication, tmp_path) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    device = sample_devices()[0]
+    window.log_directory = tmp_path
+    window.devices = [device]
+    window.rebuild_device_indexes()
+    old_path = tmp_path / "old.log"
+    state = SessionTabState(
+        tab_id="test:device:1",
+        kind="device",
+        device_id=device.id,
+        title="Telnet #1",
+        host=device.telnet_ip,
+        port=device.telnet_port,
+        username=device.username,
+        password=device.password,
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=old_path,
+    )
+
+    window.write_session_log_line(state, "SYS", "before rotation")
+    new_path = window.create_session_log(state)
+
+    assert new_path != old_path
+    assert state.log_path == new_path
+    assert old_path.exists()
+    assert new_path.exists()
+    assert "before rotation" in old_path.read_text(encoding="utf-8")
+    assert "New log created; previous log:" in new_path.read_text(encoding="utf-8")
 
 
 def assert_password_visibility_toggle(field: QLineEdit) -> None:

@@ -1643,6 +1643,14 @@ class SessionOpsMixin:
             return
         self.open_session_log(state)
 
+    def create_current_session_log(self) -> None:
+        state = self.current_session_state()
+        if state is None:
+            self.set_status_message("当前没有可新建日志的终端会话。")
+            return
+        new_path = self.create_session_log(state)
+        self.set_status_message(f"已新建当前会话日志: {new_path}")
+
     def open_current_session_log_directory(self) -> None:
         state = self.current_session_state()
         if state is None:

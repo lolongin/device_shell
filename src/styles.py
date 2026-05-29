@@ -198,6 +198,11 @@ QPushButton#compactGhostButton {
     padding: 7px 10px;
     min-width: 44px;
 }
+QPushButton#compactGhostButton:checked {
+    background: #102019;
+    border-color: #2f7d5b;
+    color: #d1fae5;
+}
 QPushButton#filterToggleButton {
     background: #0b1117;
     border: 1px solid #263544;
@@ -1105,6 +1110,11 @@ QPushButton#compactGhostButton:hover {
 QPushButton#compactGhostButton {
     padding: 5px 8px;
     min-width: 44px;
+}
+QPushButton#compactGhostButton:checked {
+    background: #102019;
+    border-color: #2f7d5b;
+    color: #d1fae5;
 }
 QPushButton#filterToggleButton {
     background: #0e0e0e;

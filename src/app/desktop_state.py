@@ -21,7 +21,7 @@ from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 5
+DESKTOP_STATE_VERSION = 6
 
 
 class DesktopStateMixin:
@@ -90,6 +90,7 @@ class DesktopStateMixin:
             self.connection_params_collapsed = False
         self.device_navigation_collapsed = bool(payload.get("device_navigation_collapsed", False))
         self.left_sidebar_collapsed = bool(payload.get("left_sidebar_collapsed", False))
+        self.always_on_top = bool(payload.get("always_on_top", False))
         loaded_log_directory = str(payload.get("log_directory") or "").strip()
         if loaded_log_directory:
             self.log_directory = Path(loaded_log_directory).expanduser()
@@ -139,6 +140,7 @@ class DesktopStateMixin:
                 "connection_params_collapsed": self.connection_params_collapsed,
                 "device_navigation_collapsed": self.device_navigation_collapsed,
                 "left_sidebar_collapsed": self.left_sidebar_collapsed,
+                "always_on_top": self.always_on_top,
                 "log_directory": str(self.log_directory),
                 "temporary_devices": [
                     serialize_temporary_device(device)
@@ -285,6 +287,24 @@ class DesktopStateMixin:
     def open_session_log(self, state: SessionTabState) -> None:
         self.finish_session_log_record(state)
         self.open_local_path(state.log_path, "日志文件", is_directory=False)
+
+    def create_session_log(self, state: SessionTabState) -> Path:
+        old_path = state.log_path
+        self.finish_session_log_record(state)
+        device = self.get_device_by_id(state.device_id) if hasattr(self, "get_device_by_id") else None
+        if device is not None:
+            new_path = self.session_log_path(device, state.title, state.kind)
+        else:
+            timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            device_name = self.safe_log_component(state.device_id, "device")
+            session_name = self.safe_log_component(state.title, "session")
+            kind_name = "serial" if state.kind == "serial" else ("telnet" if state.kind == "device" else "ssh")
+            filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
+            new_path = self.unique_log_path(self.log_directory.expanduser() / filename)
+        state.log_path = new_path
+        state.log_at_line_start = True
+        self.write_session_log_line(state, "SYS", f"New log created; previous log: {old_path}")
+        return new_path
 
     def open_session_log_directory(self, state: SessionTabState) -> None:
         self.finish_session_log_record(state)

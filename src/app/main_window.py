@@ -272,6 +272,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.connection_params_collapsed = False
             self.device_navigation_collapsed = False
             self.left_sidebar_collapsed = False
+            self.always_on_top = False
             self.left_sidebar_active_panel = "devices"
             self.left_sidebar_animation = None
             self.command_tab_buttons: list[QToolButton] = []
@@ -312,6 +313,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.load_desktop_state()
             self._build_window()
             self._build_layout()
+            self.apply_always_on_top_state()
             self._wire_events()
             self.update_controls()
             self.ui_timer.start()
@@ -425,10 +427,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.toolbar_refresh_button = QPushButton("刷新")
             self.toolbar_refresh_button.setObjectName("compactGhostButton")
             self.toolbar_refresh_button.setFixedWidth(58)
+            self.always_on_top_button = QPushButton("置顶")
+            self.always_on_top_button.setObjectName("compactGhostButton")
+            self.always_on_top_button.setCheckable(True)
+            self.always_on_top_button.setFixedWidth(58)
+            self.always_on_top_button.setToolTip("窗口置顶")
             self.device_navigation_toggle_button = QPushButton("隐藏左侧")
             self.device_navigation_toggle_button.setObjectName("compactGhostButton")
             self.device_navigation_toggle_button.setFixedWidth(76)
             nav_header.addWidget(self.toolbar_refresh_button, 0, Qt.AlignTop)
+            nav_header.addWidget(self.always_on_top_button, 0, Qt.AlignTop)
             nav_header.addWidget(self.device_navigation_toggle_button, 0, Qt.AlignTop)
             nav_layout.addLayout(nav_header)
 
@@ -1123,37 +1131,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_jump_combo.setToolTip("快速跳转到已打开的终端会话")
             quick_action_row.addWidget(self.session_jump_combo)
             quick_action_row.addStretch(1)
-            self.quick_telnet_button = QToolButton()
-            self._configure_quick_action_button(
-                self.quick_telnet_button,
-                "terminal",
-                "连接设备 Telnet",
-            )
-            self.quick_ssh_button = QToolButton()
-            self._configure_quick_action_button(
-                self.quick_ssh_button,
-                "ssh",
-                "连接 Linux SSH",
-            )
-            self.quick_serial_button = QToolButton()
-            self._configure_quick_action_button(
-                self.quick_serial_button,
-                "serial",
-                "连接串口 Telnet（占用后可用）",
-            )
-            self.quick_occupancy_button = QToolButton()
-            self._configure_quick_action_button(
-                self.quick_occupancy_button,
-                "owner",
-                "占用 / 释放",
-            )
-            self.quick_power_off_button = QToolButton()
-            self._configure_quick_action_button(
-                self.quick_power_off_button,
-                "power",
-                "掉电当前占用设备",
-                danger=True,
-            )
             self.quick_reconnect_button = QToolButton()
             self._configure_quick_action_button(
                 self.quick_reconnect_button,
@@ -1167,12 +1144,14 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "日志",
             )
             self.quick_log_menu = QMenu(self.quick_log_button)
+            self.quick_log_new_action = self.quick_log_menu.addAction("新建日志")
             self.quick_log_open_action = self.quick_log_menu.addAction("打开当前会话日志")
             self.quick_log_directory_action = self.quick_log_menu.addAction("打开日志目录")
             self.quick_log_menu.addSeparator()
             self.quick_log_change_directory_action = self.quick_log_menu.addAction("更改日志位置...")
             self.quick_log_button.setMenu(self.quick_log_menu)
-            self.quick_log_button.setPopupMode(QToolButton.MenuButtonPopup)
+            self.quick_log_button.setPopupMode(QToolButton.InstantPopup)
+            self.quick_log_button.setToolTip("日志菜单")
             self.quick_disconnect_button = QToolButton()
             self._configure_quick_action_button(
                 self.quick_disconnect_button,
@@ -1180,12 +1159,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "断开当前会话",
                 danger=True,
             )
-            quick_action_row.addWidget(self.quick_telnet_button)
-            quick_action_row.addWidget(self.quick_ssh_button)
-            quick_action_row.addWidget(self.quick_serial_button)
-            quick_action_row.addSpacing(6)
-            quick_action_row.addWidget(self.quick_occupancy_button)
-            quick_action_row.addWidget(self.quick_power_off_button)
             quick_action_row.addWidget(self.quick_reconnect_button)
             quick_action_row.addWidget(self.quick_log_button)
             quick_action_row.addSpacing(6)
@@ -1501,20 +1474,16 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.owned_table.setContextMenuPolicy(Qt.CustomContextMenu)
                 self.owned_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
 
-            self.quick_telnet_button.clicked.connect(self.open_device_session)
-            self.quick_ssh_button.clicked.connect(self.open_linux_session)
-            self.quick_serial_button.clicked.connect(self.open_serial_session)
             self.connection_telnet_button.clicked.connect(self.open_selected_device_session)
             self.connection_ssh_button.clicked.connect(self.open_selected_linux_session)
             self.connection_serial_button.clicked.connect(self.open_selected_serial_session)
-            self.quick_occupancy_button.clicked.connect(self.toggle_occupancy)
-            self.quick_power_off_button.clicked.connect(self.power_off_selected_device)
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
-            self.quick_log_button.clicked.connect(self.open_current_session_log)
+            self.quick_log_new_action.triggered.connect(self.create_current_session_log)
             self.quick_log_open_action.triggered.connect(self.open_current_session_log)
             self.quick_log_directory_action.triggered.connect(self.open_log_directory)
             self.quick_log_change_directory_action.triggered.connect(self.change_log_directory)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
+            self.always_on_top_button.toggled.connect(self.toggle_always_on_top)
             self.session_jump_combo.activated.connect(self.handle_session_jump_activated)
             self.command_send_button.clicked.connect(self.submit_current_command_record)
             self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
@@ -1561,6 +1530,52 @@ if PYSIDE6_IMPORT_ERROR is None:
         def set_my_occupancy_filter(self, enabled: bool) -> None:
             self.my_occupancy_filter_enabled = enabled
             self.apply_filters()
+
+        def toggle_always_on_top(self, enabled: bool) -> None:
+            self.always_on_top = enabled
+            self.apply_always_on_top_state()
+            self.schedule_desktop_state_save()
+            self.set_status_message("窗口已置顶" if enabled else "窗口已取消置顶")
+
+        def apply_always_on_top_state(self) -> None:
+            was_visible = self.isVisible()
+            was_maximized = self.isMaximized()
+            was_fullscreen = self.isFullScreen()
+            native_applied = self._apply_native_always_on_top()
+            if not native_applied:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
+            if hasattr(self, "always_on_top_button"):
+                self.always_on_top_button.blockSignals(True)
+                self.always_on_top_button.setChecked(self.always_on_top)
+                self.always_on_top_button.setToolTip(
+                    "取消窗口置顶" if self.always_on_top else "窗口置顶"
+                )
+                self.always_on_top_button.blockSignals(False)
+            if was_visible and not native_applied:
+                if was_fullscreen:
+                    self.showFullScreen()
+                elif was_maximized:
+                    self.showMaximized()
+                else:
+                    self.show()
+                if self.always_on_top:
+                    self.raise_()
+                    self.activateWindow()
+
+        def _apply_native_always_on_top(self) -> bool:
+            if os.name != "nt":
+                return False
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                hwnd = wintypes.HWND(int(self.winId()))
+                insert_after = wintypes.HWND(-1 if self.always_on_top else -2)
+                flags = 0x0001 | 0x0002 | 0x0010 | 0x0200  # NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
+                result = ctypes.windll.user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags)
+            except (AttributeError, OSError, TypeError, ValueError):
+                return False
+            return bool(result)
 
         def toggle_connection_params(self) -> None:
             self.connection_params_collapsed = not self.connection_params_collapsed
@@ -1826,16 +1841,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             device = self.get_quick_action_device()
             selected = device is not None
             state = self.current_session_state()
-            self.quick_telnet_button.setEnabled(selected)
-            self.quick_ssh_button.setEnabled(selected)
-            self.quick_serial_button.setEnabled(selected and not self.is_temporary_device(device))
             self.connection_telnet_button.setEnabled(selected)
             self.connection_ssh_button.setEnabled(selected)
             self.connection_serial_button.setEnabled(selected and not self.is_temporary_device(device))
-            self.quick_occupancy_button.setEnabled(selected and not self.is_temporary_device(device))
-            self.quick_power_off_button.setEnabled(bool(device and self.can_power_off_device(device)))
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
             self.quick_log_button.setEnabled(True)
+            self.quick_log_new_action.setEnabled(state is not None)
             self.quick_log_open_action.setEnabled(state is not None)
             self.quick_disconnect_button.setEnabled(
                 state is not None and (state.session.is_connected or state.connecting)
