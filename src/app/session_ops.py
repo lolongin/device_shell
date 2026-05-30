@@ -513,11 +513,6 @@ class SessionOpsMixin:
         boot_ctrl_b_action.triggered.connect(
             lambda _checked=False: self.add_boot_ctrl_b_auto_response_rule()
         )
-        clear_rules_action = menu.addAction(f"清空规则 ({len(rules)})")
-        clear_rules_action.setEnabled(bool(rules))
-        clear_rules_action.triggered.connect(
-            lambda _checked=False: self.clear_auto_response_rules()
-        )
         if not rules:
             return
         menu.addSeparator()
