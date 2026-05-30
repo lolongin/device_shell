@@ -751,6 +751,38 @@ QToolButton#quickActionIconButton:hover {
     border-color: #464e59;
     color: #f8fafc;
 }
+QToolButton#autoResponseMenuButton,
+QToolButton#autoResponseRuleButton {
+    background: #0b1016;
+    border: 1px solid #202832;
+    border-radius: 7px;
+    color: #cbd5e1;
+    padding: 0px 8px;
+    min-height: 28px;
+    max-height: 28px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QToolButton#autoResponseMenuButton:hover,
+QToolButton#autoResponseRuleButton:hover {
+    background: #171d24;
+    border-color: #464e59;
+    color: #f8fafc;
+}
+QToolButton#autoResponseRuleButton:checked {
+    background: #102019;
+    border-color: #2f7d5b;
+    color: #d1fae5;
+}
+QToolButton#autoResponseRuleButton:!checked {
+    color: #7f8b99;
+}
+QLabel#autoResponseOverflowLabel {
+    color: #9fb0c2;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0px 4px;
+}
 QToolButton#quickActionIconButton:disabled {
     color: #64748b;
     background: #090e13;
@@ -1587,6 +1619,38 @@ QToolButton#quickActionIconButton:hover {
     border-color: #333333;
     color: #ededed;
 }
+QToolButton#autoResponseMenuButton,
+QToolButton#autoResponseRuleButton {
+    background: #0e0e0e;
+    border: 1px solid #1e1e1e;
+    border-radius: 5px;
+    color: #a0a0a0;
+    padding: 0px 7px;
+    min-height: 26px;
+    max-height: 26px;
+    font-size: 11px;
+    font-weight: 700;
+}
+QToolButton#autoResponseMenuButton:hover,
+QToolButton#autoResponseRuleButton:hover {
+    background: #161616;
+    border-color: #333333;
+    color: #ededed;
+}
+QToolButton#autoResponseRuleButton:checked {
+    background: #102019;
+    border-color: #2f7d5b;
+    color: #d1fae5;
+}
+QToolButton#autoResponseRuleButton:!checked {
+    color: #707070;
+}
+QLabel#autoResponseOverflowLabel {
+    color: #808080;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0px 3px;
+}
 QToolButton#quickActionIconButton:disabled,
 QToolButton#quickDangerIconButton:disabled {
     color: #707070;
@@ -1685,5 +1749,29 @@ QLabel#activeFilterText {
     background: transparent;
     color: #c0c0c0;
     font-size: 11px;
+}
+QCheckBox {
+    background: transparent;
+    color: #ededed;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #5b6ef5;
+    border-radius: 3px;
+    background: #111111;
+}
+QCheckBox::indicator:hover {
+    border-color: #8d9aff;
+    background: #181818;
+}
+QCheckBox::indicator:checked {
+    background: #5b6ef5;
+    border-color: #8d9aff;
+}
+QCheckBox::indicator:disabled {
+    background: #0a0a0a;
+    border-color: #333333;
 }
 """

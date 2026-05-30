@@ -80,12 +80,20 @@ class TableOpsMixin:
 
     def refresh_domain_options(self) -> None:
         current = self.domain_combo.currentText() or ALL_DOMAINS
-        domains = sorted({device.domain for device in self.devices})
+        domains = sorted({device.domain for device in self.navigation_devices()})
         self.domain_combo.blockSignals(True)
         self.domain_combo.clear()
         self.domain_combo.addItems([ALL_DOMAINS, *domains])
         self.domain_combo.setCurrentText(current if current in {ALL_DOMAINS, *domains} else ALL_DOMAINS)
         self.domain_combo.blockSignals(False)
+
+    def navigation_devices(self) -> list[Device]:
+        devices = list(self.devices)
+        if hasattr(self, "simulated_device"):
+            simulated = self.simulated_device()
+            if simulated.id not in {device.id for device in devices}:
+                devices.append(simulated)
+        return devices
 
     def apply_filters(self) -> None:
         if hasattr(self, "filter_timer"):
@@ -103,7 +111,7 @@ class TableOpsMixin:
             STATUS_PIPELINE: 0,
             STATUS_OTHER: 0,
         }
-        for device in self.devices:
+        for device in self.navigation_devices():
             if search_text and search_text not in self.device_search_text(device):
                 continue
             if domain_filter != ALL_DOMAINS and device.domain != domain_filter:
@@ -181,6 +189,8 @@ class TableOpsMixin:
         return sum(1 for device in self.devices if device.owner == self.current_user)
 
     def is_my_occupied_device(self, device: Device) -> bool:
+        if self.is_simulated_device(device):
+            return False
         if self.is_temporary_device(device):
             return False
         if self.owned_device_ids is not None:
@@ -188,6 +198,8 @@ class TableOpsMixin:
         return bool(self.current_user and device.owner == self.current_user)
 
     def can_power_off_device(self, device: Device) -> bool:
+        if self.is_simulated_device(device):
+            return False
         if self.is_temporary_device(device):
             return False
         return bool(device.supports_power_off and self.is_my_occupied_device(device))
@@ -745,12 +757,18 @@ class TableOpsMixin:
         toggle_action = menu.addAction("占用 / 释放")
         power_off_action = menu.addAction("掉电")
         menu.addSeparator()
-        open_device_action = menu.addAction("打开设备管理口")
+        open_device_action = menu.addAction("打开模拟终端" if self.is_simulated_device(device) else "打开设备管理口")
         open_linux_action = menu.addAction("打开 Linux 后台")
         open_serial_action = menu.addAction("打开串口")
+        simulated = self.is_simulated_device(device)
         serial_available = self.can_view_serial_connection(device)
+        copy_ssh_ip_action.setEnabled(not simulated)
+        copy_telnet_ip_action.setEnabled(not simulated)
+        copy_connection_action.setEnabled(not simulated)
+        toggle_action.setEnabled(not simulated)
         copy_serial_ip_action.setEnabled(serial_available)
-        open_serial_action.setEnabled(serial_available)
+        open_linux_action.setEnabled(not simulated)
+        open_serial_action.setEnabled(serial_available and not simulated)
         power_off_action.setEnabled(self.can_power_off_device(device))
 
         chosen = menu.exec(table.viewport().mapToGlobal(pos))

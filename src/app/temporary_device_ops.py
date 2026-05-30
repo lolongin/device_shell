@@ -143,6 +143,10 @@ class TemporaryDeviceOpsMixin:
     def is_temporary_device(device: Device | None) -> bool:
         return bool(device is not None and is_temporary_device(device))
 
+    @staticmethod
+    def is_simulated_device(device: Device | None) -> bool:
+        return bool(device is not None and device.id == "SIM-TERMINAL")
+
     def add_temporary_device(self) -> None:
         self.save_temporary_device_from_form()
 
@@ -366,11 +370,16 @@ class TemporaryDeviceOpsMixin:
         self.schedule_desktop_state_save()
 
     def rebuild_device_indexes(self) -> None:
+        simulated_devices = [self.simulated_device()] if hasattr(self, "simulated_device") else []
         self.device_by_id = {
             **{device.id: device for device in self.devices},
             **{device.id: device for device in self.temporary_devices},
+            **{device.id: device for device in simulated_devices},
         }
-        self.search_index = {device.id: build_search_text(device) for device in self.devices}
+        self.search_index = {
+            device.id: build_search_text(device)
+            for device in [*self.devices, *simulated_devices]
+        }
         self._last_device_table_signature = ()
         self._last_owned_table_signature = ()
 
@@ -444,9 +453,13 @@ class TemporaryDeviceOpsMixin:
         search_text = build_search_text(device)
         if self.is_temporary_device(device):
             search_text = f"{search_text} temporary 临时"
+        if self.is_simulated_device(device):
+            search_text = f"{search_text} simulated simulator mock terminal 模拟 终端 测试"
         return search_text
 
     def temporary_device_display_name(self, device: Device) -> str:
+        if self.is_simulated_device(device):
+            return "[模拟] 模拟终端"
         return f"[临时] {device.name}" if self.is_temporary_device(device) else device.name
 
     @staticmethod
@@ -482,6 +495,14 @@ class TemporaryDeviceOpsMixin:
             self.session_tab_widget.setTabText(index, "")
 
     def update_device_quick_actions_for_device(self, actions: dict[str, Any], device: Device) -> None:
+        if self.is_simulated_device(device):
+            for name, action in actions.items():
+                action.setEnabled(name in {"locate", "clone_telnet", "clone_serial"})
+            if "clone_telnet" in actions:
+                actions["clone_telnet"].setText("打开模拟终端")
+            if "clone_serial" in actions:
+                actions["clone_serial"].setText("打开模拟终端")
+            return
         if "clone_serial" in actions:
             actions["clone_serial"].setEnabled(self.can_view_serial_connection(device))
         if "copy_serial_ip" in actions:

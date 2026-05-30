@@ -153,6 +153,7 @@ try:
         STATUS_OTHER,
         STATUS_PIPELINE,
     )
+    from ..auto_response import default_quick_send_buttons
     from ..data import Device
     from ..styles import APP_STYLE
     from ..helpers import build_search_text, mask_password, status_color
@@ -183,6 +184,7 @@ except ImportError:
         STATUS_OTHER,
         STATUS_PIPELINE,
     )
+    from auto_response import default_quick_send_buttons
     from data import Device
     from styles import APP_STYLE
     from helpers import build_search_text, mask_password, status_color
@@ -273,6 +275,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_navigation_collapsed = False
             self.left_sidebar_collapsed = False
             self.always_on_top = False
+            self.remembered_auto_response_rules = []
+            self.remembered_quick_send_buttons = default_quick_send_buttons()
             self.left_sidebar_active_panel = "devices"
             self.left_sidebar_animation = None
             self.command_tab_buttons: list[QToolButton] = []
@@ -1050,6 +1054,18 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawArc(4, 4, 12, 12, 35 * 16, 260 * 16)
                 painter.drawLine(15, 5, 15, 9)
                 painter.drawLine(15, 5, 11, 5)
+            elif kind == "auto":
+                painter.drawLine(11, 3, 6, 10)
+                painter.drawLine(6, 10, 10, 10)
+                painter.drawLine(10, 10, 7, 17)
+                painter.drawLine(7, 17, 14, 8)
+                painter.drawLine(14, 8, 10, 8)
+            elif kind == "simulate":
+                painter.drawRoundedRect(3, 4, 14, 11, 2, 2)
+                painter.drawLine(6, 8, 8, 10)
+                painter.drawLine(8, 10, 6, 12)
+                painter.drawLine(10, 12, 14, 12)
+                painter.drawLine(6, 17, 14, 17)
             elif kind == "log":
                 painter.drawRoundedRect(5, 3, 10, 14, 1, 1)
                 painter.drawLine(8, 7, 13, 7)
@@ -1130,6 +1146,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_jump_combo.setMaximumWidth(360)
             self.session_jump_combo.setToolTip("快速跳转到已打开的终端会话")
             quick_action_row.addWidget(self.session_jump_combo)
+            self.auto_response_rule_bar = QWidget()
+            self.auto_response_rule_bar.setObjectName("autoResponseRuleBar")
+            self.auto_response_rule_bar_layout = QHBoxLayout(self.auto_response_rule_bar)
+            self.auto_response_rule_bar_layout.setContentsMargins(0, 0, 0, 0)
+            self.auto_response_rule_bar_layout.setSpacing(4)
+            self.auto_response_rule_bar.setVisible(False)
+            quick_action_row.addWidget(self.auto_response_rule_bar)
             quick_action_row.addStretch(1)
             self.quick_reconnect_button = QToolButton()
             self._configure_quick_action_button(
@@ -1137,6 +1160,20 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "refresh",
                 "重连当前会话",
             )
+            self.quick_auto_response_button = QToolButton()
+            self._configure_quick_action_button(
+                self.quick_auto_response_button,
+                "auto",
+                "自动响应",
+            )
+            self.quick_auto_response_menu = QMenu(self.quick_auto_response_button)
+            self.quick_auto_response_button.setMenu(self.quick_auto_response_menu)
+            self.quick_auto_response_button.setPopupMode(QToolButton.InstantPopup)
+            self.quick_auto_response_button.setObjectName("autoResponseMenuButton")
+            self.quick_auto_response_button.setText("自动响应")
+            self.quick_auto_response_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            self.quick_auto_response_button.setFixedSize(88, 26)
+            self.quick_auto_response_button.setIconSize(QSize(14, 14))
             self.quick_log_button = QToolButton()
             self._configure_quick_action_button(
                 self.quick_log_button,
@@ -1160,6 +1197,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 danger=True,
             )
             quick_action_row.addWidget(self.quick_reconnect_button)
+            quick_action_row.addWidget(self.quick_auto_response_button)
             quick_action_row.addWidget(self.quick_log_button)
             quick_action_row.addSpacing(6)
             quick_action_row.addWidget(self.quick_disconnect_button)
@@ -1478,6 +1516,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.connection_ssh_button.clicked.connect(self.open_selected_linux_session)
             self.connection_serial_button.clicked.connect(self.open_selected_serial_session)
             self.quick_reconnect_button.clicked.connect(self.reconnect_current_session)
+            self.quick_auto_response_menu.aboutToShow.connect(self.refresh_quick_auto_response_menu)
             self.quick_log_new_action.triggered.connect(self.create_current_session_log)
             self.quick_log_open_action.triggered.connect(self.open_current_session_log)
             self.quick_log_directory_action.triggered.connect(self.open_log_directory)
@@ -1841,10 +1880,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             device = self.get_quick_action_device()
             selected = device is not None
             state = self.current_session_state()
+            simulated_selected = self.is_simulated_device(device)
             self.connection_telnet_button.setEnabled(selected)
-            self.connection_ssh_button.setEnabled(selected)
-            self.connection_serial_button.setEnabled(selected and not self.is_temporary_device(device))
+            self.connection_telnet_button.setText("打开模拟终端" if simulated_selected else "连接 Telnet")
+            self.connection_ssh_button.setEnabled(selected and not simulated_selected)
+            self.connection_serial_button.setEnabled(
+                selected and not simulated_selected and not self.is_temporary_device(device)
+            )
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
+            self.quick_auto_response_button.setEnabled(True)
             self.quick_log_button.setEnabled(True)
             self.quick_log_new_action.setEnabled(state is not None)
             self.quick_log_open_action.setEnabled(state is not None)

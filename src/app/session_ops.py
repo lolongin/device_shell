@@ -11,10 +11,15 @@ try:
     from PySide6.QtGui import QAction, QColor, QDrag, QFont, QIcon, QKeySequence, QPixmap, QTextBlockFormat
     from PySide6.QtWidgets import (
         QApplication,
+        QCheckBox,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
         QFrame,
         QGroupBox,
         QHBoxLayout,
         QLabel,
+        QLineEdit,
         QMenu,
         QMessageBox,
         QPushButton,
@@ -41,10 +46,15 @@ except ModuleNotFoundError:
     QPixmap = None
     QTextBlockFormat = None
     QApplication = None
+    QCheckBox = None
+    QDialog = None
+    QDialogButtonBox = None
+    QFormLayout = None
     QFrame = None
     QGroupBox = None
     QHBoxLayout = None
     QLabel = None
+    QLineEdit = None
     QMenu = None
     QMessageBox = None
     QPushButton = None
@@ -58,16 +68,116 @@ except ModuleNotFoundError:
     QWidget = None
 
 from ..app_state import DeviceTabState, SessionTabState
+from ..auto_response import AutoResponseRule, TerminalQuickButton, decode_response_text
 from ..data import Device
 from ..helpers import mask_password
 from ..linux_session import LinuxSshSession
 from ..session_protocol import SessionCallbacks, SessionUnavailableError
+from ..simulated_session import SimulatedTerminalSession
 from ..styles import STATUS_COLORS
 from ..telnet_session import HuaweiTelnetSession, TelnetSessionError
 from ..widgets.terminal_canvas import TerminalCanvasWidget
 from ..widgets.terminal_widget import InteractiveTerminal
 
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
+
+
+if QDialog is not None:
+
+    class AutoResponseRuleDialog(QDialog):
+        """Single-form editor for a current-session auto-response rule."""
+
+        def __init__(
+            self,
+            parent: QWidget | None = None,
+            rule: AutoResponseRule | None = None,
+        ) -> None:
+            super().__init__(parent)
+            self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
+            self.setMinimumWidth(420)
+
+            layout = QFormLayout(self)
+            layout.setContentsMargins(18, 16, 18, 14)
+            layout.setSpacing(10)
+
+            self.name_input = QLineEdit(rule.name if rule is not None else "启动菜单 Ctrl+B")
+            self.pattern_input = QLineEdit(rule.pattern if rule is not None else "Ctrl+B")
+            self.response_input = QLineEdit(
+                rule.response_text if rule is not None and rule.response_text else "Ctrl+B"
+            )
+            self.append_enter_input = QCheckBox("发送后追加 Enter")
+            self.append_enter_input.setChecked(rule.append_enter if rule is not None else False)
+            self.once_input = QCheckBox("命中一次后自动停用")
+            self.once_input.setChecked(rule.once if rule is not None else True)
+
+            self.pattern_input.setPlaceholderText("例如 Press Ctrl+B、Password:、login:")
+            self.response_input.setPlaceholderText(r"例如 Ctrl+B、admin、\x02、Enter")
+
+            layout.addRow("规则名称", self.name_input)
+            layout.addRow("匹配输出包含", self.pattern_input)
+            layout.addRow("发送内容", self.response_input)
+            layout.addRow("", self.append_enter_input)
+            layout.addRow("", self.once_input)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
+            layout.addRow(buttons)
+
+        def values(self) -> dict[str, object]:
+            return {
+                "name": self.name_input.text().strip(),
+                "pattern": self.pattern_input.text().strip(),
+                "response_text": self.response_input.text(),
+                "append_enter": self.append_enter_input.isChecked(),
+                "once": self.once_input.isChecked(),
+            }
+
+
+    class QuickSendButtonDialog(QDialog):
+        """Single-form editor for a direct terminal send button."""
+
+        def __init__(
+            self,
+            parent: QWidget | None = None,
+            button: TerminalQuickButton | None = None,
+        ) -> None:
+            super().__init__(parent)
+            self.setWindowTitle("编辑快捷发送按钮" if button is not None else "新增快捷发送按钮")
+            self.setMinimumWidth(420)
+
+            layout = QFormLayout(self)
+            layout.setContentsMargins(18, 16, 18, 14)
+            layout.setSpacing(10)
+
+            self.name_input = QLineEdit(button.name if button is not None else "发送 Ctrl+B")
+            self.response_input = QLineEdit(
+                button.response_text if button is not None and button.response_text else "Ctrl+B"
+            )
+            self.append_enter_input = QCheckBox("发送后追加 Enter")
+            self.append_enter_input.setChecked(button.append_enter if button is not None else False)
+            self.response_input.setPlaceholderText(r"例如 Ctrl+B、admin、\x02、Enter")
+
+            layout.addRow("按钮名称", self.name_input)
+            layout.addRow("发送内容", self.response_input)
+            layout.addRow("", self.append_enter_input)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
+            layout.addRow(buttons)
+
+        def values(self) -> dict[str, object]:
+            return {
+                "name": self.name_input.text().strip(),
+                "response_text": self.response_input.text(),
+                "append_enter": self.append_enter_input.isChecked(),
+            }
+
+
+else:
+    AutoResponseRuleDialog = None
+    QuickSendButtonDialog = None
 
 
 class SessionOpsMixin:
@@ -175,6 +285,9 @@ class SessionOpsMixin:
             self.remember_session_credentials_override(device, state.kind, state.username, state.password)
 
     def clone_telnet_session(self, device: Device) -> None:
+        if self.is_simulated_device(device):
+            self.open_simulated_session(device)
+            return
         username, password = self.session_telnet_credentials(device)
         if not device.telnet_ip.strip() or not username or not password:
             self.show_warning("设备 Telnet 地址、用户名和密码不完整。")
@@ -190,6 +303,9 @@ class SessionOpsMixin:
         )
 
     def clone_ssh_session(self, device: Device) -> None:
+        if self.is_simulated_device(device):
+            self.show_warning("模拟终端不支持 SSH。")
+            return
         username, password = self.session_ssh_credentials(device)
         if not device.ssh_ip.strip() or not username or not password:
             self.show_warning("设备 SSH 地址、用户名和密码不完整。")
@@ -206,6 +322,9 @@ class SessionOpsMixin:
         )
 
     def clone_serial_session(self, device: Device) -> None:
+        if self.is_simulated_device(device):
+            self.open_simulated_session(device)
+            return
         if not self.is_temporary_device(device) and not self.is_my_occupied_device(device):
             self.show_warning("请先占用设备后再连接串口。")
             self.set_status_message("串口连接需要先占用当前设备。")
@@ -374,6 +493,383 @@ class SessionOpsMixin:
             return
         self._handle_device_quick_action(chosen, actions, device)
 
+    def refresh_quick_auto_response_menu(self) -> None:
+        menu = getattr(self, "quick_auto_response_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        state = self.current_session_state()
+        rules = self.remembered_auto_response_rules
+
+        add_quick_button_action = menu.addAction("新增发送按钮...")
+        add_quick_button_action.triggered.connect(
+            lambda _checked=False: self.add_quick_send_button()
+        )
+        add_rule_action = menu.addAction("新增规则...")
+        add_rule_action.triggered.connect(
+            lambda _checked=False: self.add_auto_response_rule_for_session()
+        )
+        boot_ctrl_b_action = menu.addAction("模板：启动菜单 Ctrl+B")
+        boot_ctrl_b_action.triggered.connect(
+            lambda _checked=False: self.add_boot_ctrl_b_auto_response_rule()
+        )
+        clear_rules_action = menu.addAction(f"清空规则 ({len(rules)})")
+        clear_rules_action.setEnabled(bool(rules))
+        clear_rules_action.triggered.connect(
+            lambda _checked=False: self.clear_auto_response_rules()
+        )
+        if not rules:
+            return
+        menu.addSeparator()
+        for rule in rules:
+            rule_menu = menu.addMenu(rule.name)
+            rule_action = rule_menu.addAction("启用规则")
+            rule_action.setCheckable(True)
+            rule_action.setChecked(rule.enabled)
+            rule_action.triggered.connect(
+                lambda checked=False, current_rule=rule: self.set_auto_response_rule_enabled(
+                    current_rule,
+                    checked,
+                )
+            )
+            edit_action = rule_menu.addAction("编辑规则...")
+            edit_action.triggered.connect(
+                lambda _checked=False, current_rule=rule: self.edit_auto_response_rule(current_rule)
+            )
+            delete_action = rule_menu.addAction("删除规则")
+            delete_action.triggered.connect(
+                lambda _checked=False, current_rule=rule: self.delete_auto_response_rule(current_rule)
+            )
+
+    def send_manual_ctrl_b(self, tab_id: str) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            return
+        self.send_session_text(tab_id, "\x02")
+        self.write_session_log_line(state, "SYS", "Manual send: Ctrl+B")
+        self.set_status_message("已发送 Ctrl+B")
+
+    def refresh_auto_response_rule_buttons(self) -> None:
+        bar = getattr(self, "auto_response_rule_bar", None)
+        layout = getattr(self, "auto_response_rule_bar_layout", None)
+        if bar is None or layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        state = self.current_session_state()
+        quick_buttons = self.remembered_quick_send_buttons
+        rules = self.remembered_auto_response_rules
+        if state is None and not quick_buttons and not rules:
+            bar.setVisible(False)
+            return
+
+        bar.setVisible(True)
+        visible_quick_buttons = quick_buttons[:3]
+        for quick_button in visible_quick_buttons:
+            button = QToolButton()
+            button.setObjectName("autoResponseRuleButton")
+            button.setText(self.quick_send_button_text(quick_button))
+            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            button.setToolTip(
+                f"{quick_button.name}\n点击发送: {quick_button.response_text or '<原始内容>'}\n"
+                "右键编辑"
+            )
+            button.clicked.connect(
+                lambda _checked=False, current_button=quick_button: self.send_quick_button(current_button)
+            )
+            button.setContextMenuPolicy(Qt.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, current_button=quick_button, current_widget=button: self.show_quick_send_button_menu(
+                    current_button,
+                    current_widget,
+                    pos,
+                )
+            )
+            layout.addWidget(button)
+
+        visible_rules = rules[:3]
+        for rule in visible_rules:
+            button = QToolButton()
+            button.setObjectName("autoResponseRuleButton")
+            button.setText(self.auto_response_rule_button_text(rule))
+            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            button.setCheckable(True)
+            button.setChecked(rule.enabled)
+            button.setToolTip(
+                f"{rule.name}\n匹配: {rule.pattern}\n"
+                f"{'启用' if rule.enabled else '停用'}，对当前选中终端生效；左键切换，右键编辑"
+            )
+            button.clicked.connect(
+                lambda checked=False, current_rule=rule: self.toggle_auto_response_rule_from_button(
+                    current_rule,
+                    checked,
+                )
+            )
+            button.setContextMenuPolicy(Qt.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, current_rule=rule, current_button=button: self.show_auto_response_rule_button_menu(
+                    current_rule,
+                    current_button,
+                    pos,
+                )
+            )
+            layout.addWidget(button)
+
+        overflow = len(quick_buttons) + len(rules) - len(visible_quick_buttons) - len(visible_rules)
+        if overflow > 0:
+            more = QLabel(f"+{overflow}")
+            more.setObjectName("autoResponseOverflowLabel")
+            more.setToolTip("更多自动响应规则在“自动响应”菜单中管理")
+            layout.addWidget(more)
+
+    @staticmethod
+    def auto_response_rule_button_text(rule: AutoResponseRule) -> str:
+        name = rule.name.strip() or "规则"
+        if len(name) > 8:
+            name = f"{name[:7]}..."
+        return name
+
+    @staticmethod
+    def quick_send_button_text(button: TerminalQuickButton) -> str:
+        name = button.name.strip() or "快捷发送"
+        if len(name) > 12:
+            name = f"{name[:11]}..."
+        return name
+
+    def send_quick_button(self, button: TerminalQuickButton) -> None:
+        state = self.current_session_state()
+        if state is None:
+            self.show_warning("请先打开或选中一个终端。")
+            return
+        self.send_session_text(state.tab_id, button.response)
+        button.trigger_count += 1
+        self.write_session_log_line(state, "SYS", f"Manual send: {button.name}")
+        self.set_status_message(f"已发送快捷按钮: {button.name}（点击 {button.trigger_count} 次）")
+        self.refresh_auto_response_rule_buttons()
+
+    def show_quick_send_button_menu(
+        self,
+        quick_button: TerminalQuickButton,
+        button: QToolButton,
+        pos: Any,
+    ) -> None:
+        if quick_button not in self.remembered_quick_send_buttons:
+            return
+        menu = QMenu(button)
+        edit_action = menu.addAction("编辑按钮...")
+        reset_action = menu.addAction("清零点击次数")
+        delete_action = menu.addAction("删除按钮")
+        reset_action.setEnabled(bool(quick_button.trigger_count))
+        chosen = menu.exec(button.mapToGlobal(pos))
+        if chosen == edit_action:
+            self.edit_quick_send_button(quick_button)
+            return
+        if chosen == reset_action:
+            quick_button.trigger_count = 0
+            self.schedule_desktop_state_save()
+            self.refresh_auto_response_rule_buttons()
+            return
+        if chosen == delete_action:
+            self.delete_quick_send_button(quick_button)
+
+    def add_quick_send_button(self) -> None:
+        if QuickSendButtonDialog is None:
+            return
+        dialog = QuickSendButtonDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        quick_button = self.create_quick_send_button(**dialog.values())
+        if quick_button is None:
+            return
+        self.remembered_quick_send_buttons.append(quick_button)
+        self.schedule_desktop_state_save()
+        self.set_status_message(f"已添加快捷发送按钮: {quick_button.name}")
+        self.refresh_auto_response_rule_buttons()
+
+    def edit_quick_send_button(self, quick_button: TerminalQuickButton) -> None:
+        if QuickSendButtonDialog is None:
+            return
+        dialog = QuickSendButtonDialog(self, quick_button)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        updated = self.create_quick_send_button(**dialog.values())
+        if updated is None:
+            return
+        quick_button.name = updated.name
+        quick_button.response = updated.response
+        quick_button.response_text = updated.response_text
+        quick_button.append_enter = updated.append_enter
+        quick_button.trigger_count = 0
+        self.schedule_desktop_state_save()
+        self.set_status_message(f"已更新快捷发送按钮: {quick_button.name}")
+        self.refresh_auto_response_rule_buttons()
+
+    def delete_quick_send_button(self, quick_button: TerminalQuickButton) -> None:
+        self.remembered_quick_send_buttons = [
+            button for button in self.remembered_quick_send_buttons if button is not quick_button
+        ]
+        self.schedule_desktop_state_save()
+        self.set_status_message(f"已删除快捷发送按钮: {quick_button.name}")
+        self.refresh_auto_response_rule_buttons()
+
+    def create_quick_send_button(
+        self,
+        *,
+        name: object,
+        response_text: object,
+        append_enter: object = False,
+    ) -> TerminalQuickButton | None:
+        text = str(response_text)
+        response = decode_response_text(text, append_enter=bool(append_enter))
+        if not response:
+            self.show_warning("发送内容不能为空。")
+            return None
+        return TerminalQuickButton(
+            name=str(name).strip() or "快捷发送",
+            response=response,
+            response_text=text,
+            append_enter=bool(append_enter),
+        )
+
+    def toggle_auto_response_rule_from_button(self, rule: AutoResponseRule, enabled: bool) -> None:
+        self.set_auto_response_rule_enabled(rule, enabled)
+        self.refresh_auto_response_rule_buttons()
+
+    def show_auto_response_rule_button_menu(self, rule: AutoResponseRule, button: QToolButton, pos: Any) -> None:
+        if rule not in self.remembered_auto_response_rules:
+            return
+        menu = QMenu(button)
+        edit_action = menu.addAction("编辑规则...")
+        delete_action = menu.addAction("删除规则")
+        chosen = menu.exec(button.mapToGlobal(pos))
+        if chosen == edit_action:
+            self.edit_auto_response_rule(rule)
+            return
+        if chosen == delete_action:
+            self.delete_auto_response_rule(rule)
+
+    def delete_auto_response_rule(self, rule: AutoResponseRule) -> None:
+        self.forget_auto_response_rule(rule)
+        self.set_status_message(f"已删除自动响应规则: {rule.name}")
+        self.refresh_auto_response_rule_buttons()
+
+    def clear_auto_response_rules(self) -> None:
+        self.remembered_auto_response_rules = []
+        self.schedule_desktop_state_save()
+        self.set_status_message("已清空自动响应规则")
+        self.refresh_auto_response_rule_buttons()
+
+    def set_auto_response_rule_enabled(self, rule: AutoResponseRule, enabled: bool) -> None:
+        rule.enabled = enabled
+        if enabled:
+            self.reset_auto_response_rule_hits(rule)
+        self.remember_auto_response_rule(rule)
+        reset_text = "，命中次数已清零" if enabled else ""
+        self.set_status_message(f"自动响应规则已{'启用' if rule.enabled else '停用'}: {rule.name}{reset_text}")
+        self.refresh_auto_response_rule_buttons()
+
+    def add_auto_response_rule_for_session(self) -> None:
+        if AutoResponseRuleDialog is None:
+            return
+        dialog = AutoResponseRuleDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values()
+        pattern = str(values["pattern"]).strip()
+        if not pattern:
+            self.show_warning("匹配内容不能为空。")
+            return
+        rule = self.create_auto_response_rule(
+            name=str(values["name"]),
+            pattern=pattern,
+            response_text=str(values["response_text"]),
+            append_enter=bool(values["append_enter"]),
+            once=bool(values["once"]),
+        )
+        if rule is None:
+            return
+        self.remember_auto_response_rule(rule)
+        self.set_status_message(f"已添加自动响应规则: {rule.name}")
+        self.refresh_auto_response_rule_buttons()
+        state = self.current_session_state()
+        if state is not None:
+            self.apply_auto_response_rules(state, "")
+
+    def edit_auto_response_rule(self, rule: AutoResponseRule) -> None:
+        if AutoResponseRuleDialog is None:
+            return
+        dialog = AutoResponseRuleDialog(self, rule)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values()
+        pattern = str(values["pattern"]).strip()
+        if not pattern:
+            self.show_warning("匹配内容不能为空。")
+            return
+        old_signature = self.auto_response_rule_signature(rule)
+        updated = self.create_auto_response_rule(
+            name=str(values["name"]),
+            pattern=pattern,
+            response_text=str(values["response_text"]),
+            append_enter=bool(values["append_enter"]),
+            once=bool(values["once"]),
+        )
+        if updated is None:
+            return
+        rule.name = updated.name
+        rule.pattern = updated.pattern
+        rule.response = updated.response
+        rule.response_text = updated.response_text
+        rule.append_enter = updated.append_enter
+        rule.once = updated.once
+        rule.enabled = True
+        rule.trigger_count = 0
+        self.remember_auto_response_rule(rule, old_signature=old_signature)
+        self.set_status_message(f"已更新自动响应规则: {rule.name}")
+        self.refresh_auto_response_rule_buttons()
+        state = self.current_session_state()
+        if state is not None:
+            self.apply_auto_response_rules(state, "")
+
+    def add_boot_ctrl_b_auto_response_rule(self) -> None:
+        rule = self.create_auto_response_rule(
+            name="启动菜单 Ctrl+B",
+            pattern="Ctrl+B",
+            response_text="Ctrl+B",
+            once=True,
+        )
+        if rule is None:
+            return
+        self.remember_auto_response_rule(rule)
+        self.set_status_message("已添加自动响应模板: 启动菜单 Ctrl+B")
+        self.refresh_auto_response_rule_buttons()
+
+    def create_auto_response_rule(
+        self,
+        *,
+        name: str,
+        pattern: str,
+        response_text: str,
+        append_enter: bool = False,
+        once: bool = True,
+    ) -> AutoResponseRule | None:
+        response = decode_response_text(response_text, append_enter=append_enter)
+        if not response:
+            self.show_warning("发送内容不能为空。")
+            return None
+        return AutoResponseRule(
+            name=name.strip() or "自动响应",
+            pattern=pattern.strip(),
+            response=response,
+            response_text=response_text,
+            append_enter=append_enter,
+            once=once,
+        )
+
     def _handle_device_quick_action(
         self,
         chosen: Any,
@@ -414,6 +910,7 @@ class SessionOpsMixin:
 
     def refresh_workspace_context(self) -> None:
         self.refresh_session_jump_combo()
+        self.refresh_auto_response_rule_buttons()
 
     def refresh_session_jump_combo(self) -> None:
         if not hasattr(self, "session_jump_combo"):
@@ -461,6 +958,8 @@ class SessionOpsMixin:
 
     @staticmethod
     def session_kind_label(kind: str) -> str:
+        if kind == "simulated":
+            return "模拟"
         if kind == "device":
             return "Telnet"
         if kind == "serial":
@@ -595,6 +1094,9 @@ class SessionOpsMixin:
         if device is None:
             self.show_warning("请先选择设备。")
             return
+        if self.is_simulated_device(device):
+            self.open_simulated_session(device)
+            return
 
         username, password = self.session_telnet_credentials(device)
         if not username or not password:
@@ -616,6 +1118,9 @@ class SessionOpsMixin:
         device = device or self.get_quick_action_device()
         if device is None:
             self.show_warning("请先选择设备。")
+            return
+        if self.is_simulated_device(device):
+            self.show_warning("模拟终端不支持 Linux 后台。")
             return
 
         host = device.ssh_ip.strip()
@@ -642,6 +1147,9 @@ class SessionOpsMixin:
         if device is None:
             self.show_warning("请先选择设备。")
             return
+        if self.is_simulated_device(device):
+            self.open_simulated_session(device)
+            return
         self.clone_serial_session(device)
 
     def open_selected_device_session(self) -> None:
@@ -665,6 +1173,103 @@ class SessionOpsMixin:
             return
         self.open_serial_session(device)
 
+    def open_simulated_session(self, device: Device | None = None) -> None:
+        device = device if isinstance(device, Device) and self.is_simulated_device(device) else self.simulated_device()
+        self.device_by_id[device.id] = device
+        self.ensure_session_tab(
+            kind="simulated",
+            device=device,
+            host="localhost",
+            port=0,
+            username="sim",
+            password="",
+        )
+
+    @staticmethod
+    def clone_auto_response_rules(rules: list[AutoResponseRule]) -> list[AutoResponseRule]:
+        return [
+            AutoResponseRule(
+                name=rule.name,
+                pattern=rule.pattern,
+                response=rule.response,
+                response_text=rule.response_text,
+                append_enter=rule.append_enter,
+                enabled=rule.enabled,
+                case_sensitive=rule.case_sensitive,
+                once=rule.once,
+                trigger_count=0,
+            )
+            for rule in rules
+        ]
+
+    @staticmethod
+    def auto_response_rule_signature(rule: AutoResponseRule) -> tuple[object, ...]:
+        return (
+            rule.name,
+            rule.pattern,
+            rule.response,
+            rule.response_text,
+            rule.append_enter,
+            rule.case_sensitive,
+            rule.once,
+        )
+
+    def remember_auto_response_rule(
+        self,
+        rule: AutoResponseRule,
+        *,
+        old_signature: tuple[object, ...] | None = None,
+    ) -> None:
+        remembered = self.remembered_auto_response_rules
+        target_signature = old_signature or self.auto_response_rule_signature(rule)
+        for index, saved_rule in enumerate(remembered):
+            if saved_rule is rule:
+                self.schedule_desktop_state_save()
+                return
+            if self.auto_response_rule_signature(saved_rule) == target_signature:
+                remembered[index] = self.clone_auto_response_rules([rule])[0]
+                self.schedule_desktop_state_save()
+                return
+        remembered.append(self.clone_auto_response_rules([rule])[0])
+        self.schedule_desktop_state_save()
+
+    def reset_auto_response_rule_hits(self, rule: AutoResponseRule) -> None:
+        signature = self.auto_response_rule_signature(rule)
+        rule.trigger_count = 0
+        for state in self.session_tabs_by_id.values():
+            state.auto_response_triggered_rules.discard(signature)
+
+    def forget_auto_response_rule(self, rule: AutoResponseRule) -> None:
+        target_signature = self.auto_response_rule_signature(rule)
+        self.remembered_auto_response_rules = [
+            saved_rule
+            for saved_rule in self.remembered_auto_response_rules
+            if self.auto_response_rule_signature(saved_rule) != target_signature
+        ]
+        self.schedule_desktop_state_save()
+
+    @staticmethod
+    def simulated_device() -> Device:
+        return Device(
+            id="SIM-TERMINAL",
+            name="模拟终端",
+            domain="LOCAL",
+            device_type="Simulator",
+            cpu="local",
+            status="空闲",
+            owner=None,
+            ssh_ip="localhost",
+            telnet_ip="localhost",
+            username="sim",
+            password="",
+            vendor="Local",
+            model="Terminal Simulator",
+            site="Local",
+            rack="-",
+            version="SimOS V1.0",
+            notes="Local simulated terminal for testing auto responses.",
+        )
+
     # ---- Session tab management ----
 
     def ensure_session_tab(
@@ -676,10 +1281,10 @@ class SessionOpsMixin:
         username: str,
         password: str,
         credential_candidates: list[tuple[str, str]] | None = None,
-    ) -> None:
+    ) -> SessionTabState | None:
         if not host:
             self.show_warning("目标地址不能为空。")
-            return
+            return None
 
         device_tab = self.ensure_device_tab(device)
         title = self.next_session_title(device_tab, kind)
@@ -708,6 +1313,7 @@ class SessionOpsMixin:
         self.update_controls()
         self.focus_current_terminal()
         self.connect_session_tab(tab_id)
+        return state
 
     def ensure_device_tab(self, device: Device) -> DeviceTabState:
         display_name = self.temporary_device_display_name(device)
@@ -790,6 +1396,10 @@ class SessionOpsMixin:
         return child_tabs
 
     def next_session_title(self, device_tab: DeviceTabState, kind: str) -> str:
+        if kind == "simulated":
+            number = device_tab.next_session_index
+            device_tab.next_session_index += 1
+            return f"模拟 #{number}"
         if kind == "device":
             number = device_tab.next_telnet_index
             device_tab.next_telnet_index += 1
@@ -835,7 +1445,14 @@ class SessionOpsMixin:
         )
         layout.addWidget(terminal, 1)
 
-        if kind in {"device", "serial"}:
+        if kind == "simulated":
+            session = SimulatedTerminalSession(
+                SessionCallbacks(
+                    on_output=lambda message, tab_id=tab_id: self.dispatch_ui(self.append_session_output, tab_id, message),
+                    on_status=lambda status, tab_id=tab_id: self.dispatch_ui(self.set_session_status, tab_id, status),
+                )
+            )
+        elif kind in {"device", "serial"}:
             session = HuaweiTelnetSession(
                 on_output=lambda message, tab_id=tab_id: self.dispatch_ui(self.append_session_output, tab_id, message),
                 on_status=lambda status, tab_id=tab_id: self.dispatch_ui(self.set_session_status, tab_id, status),
@@ -1098,6 +1715,9 @@ class SessionOpsMixin:
         self.update_controls()
 
         async def connect() -> tuple[str, str] | None:
+            if isinstance(state.session, SimulatedTerminalSession):
+                await state.session.connect()
+                return None
             if isinstance(state.session, LinuxSshSession):
                 candidates = state.credential_candidates or [(state.username, state.password)]
                 last_error: Exception | None = None
@@ -1232,6 +1852,41 @@ class SessionOpsMixin:
 
         state.terminal.append_output(message)
         self.write_session_log(state, "OUT", message)
+        self.apply_auto_response_rules(state, message)
+
+    def apply_auto_response_rules(self, state: SessionTabState, message: str) -> None:
+        selected_state = self.current_session_state()
+        if selected_state is not None and selected_state is not state:
+            return
+        previous_buffer = state.auto_response_buffer
+        state.auto_response_buffer = (previous_buffer + message)[-4096:]
+        rules = self.remembered_auto_response_rules or state.auto_response_rules
+        for rule in list(rules):
+            signature = self.auto_response_rule_signature(rule)
+            if rule.once and signature in state.auto_response_triggered_rules:
+                continue
+            scan_text = self.auto_response_scan_text(previous_buffer, message, rule)
+            if not rule.matches(scan_text):
+                continue
+            response = rule.response
+            rule.trigger_count += 1
+            if rule.once:
+                state.auto_response_triggered_rules.add(signature)
+            state.auto_response_buffer = ""
+            self.write_session_log_line(state, "SYS", f"Auto response sent: {rule.name}")
+            self.set_status_message(f"自动响应已发送: {rule.name}（命中 {rule.trigger_count} 次）")
+            self.send_session_text(state.tab_id, response)
+            self.refresh_auto_response_rule_buttons()
+            return
+
+    @staticmethod
+    def auto_response_scan_text(
+        previous_buffer: str, message: str, rule: AutoResponseRule
+    ) -> str:
+        if not message:
+            return previous_buffer
+        overlap_length = max(len(rule.pattern) - 1, 0)
+        return previous_buffer[-overlap_length:] + message
 
     def send_session_text(self, tab_id: str, text: str) -> None:
         state = self.session_tabs_by_id.get(tab_id)

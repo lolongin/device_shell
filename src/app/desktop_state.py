@@ -17,11 +17,17 @@ except ModuleNotFoundError:
     QFileDialog = None
 
 from ..app_state import SessionTabState
+from ..auto_response import (
+    deserialize_auto_response_rule,
+    deserialize_quick_send_button,
+    serialize_auto_response_rule,
+    serialize_quick_send_button,
+)
 from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 6
+DESKTOP_STATE_VERSION = 8
 
 
 class DesktopStateMixin:
@@ -91,6 +97,22 @@ class DesktopStateMixin:
         self.device_navigation_collapsed = bool(payload.get("device_navigation_collapsed", False))
         self.left_sidebar_collapsed = bool(payload.get("left_sidebar_collapsed", False))
         self.always_on_top = bool(payload.get("always_on_top", False))
+        remembered_rules = []
+        raw_auto_response_rules = payload.get("auto_response_rules", [])
+        if isinstance(raw_auto_response_rules, list):
+            for item in raw_auto_response_rules:
+                rule = deserialize_auto_response_rule(item)
+                if rule is not None:
+                    remembered_rules.append(rule)
+        self.remembered_auto_response_rules = remembered_rules
+        raw_quick_buttons = payload.get("quick_send_buttons")
+        if isinstance(raw_quick_buttons, list):
+            quick_buttons = []
+            for item in raw_quick_buttons:
+                button = deserialize_quick_send_button(item)
+                if button is not None:
+                    quick_buttons.append(button)
+            self.remembered_quick_send_buttons = quick_buttons
         loaded_log_directory = str(payload.get("log_directory") or "").strip()
         if loaded_log_directory:
             self.log_directory = Path(loaded_log_directory).expanduser()
@@ -141,6 +163,14 @@ class DesktopStateMixin:
                 "device_navigation_collapsed": self.device_navigation_collapsed,
                 "left_sidebar_collapsed": self.left_sidebar_collapsed,
                 "always_on_top": self.always_on_top,
+                "auto_response_rules": [
+                    serialize_auto_response_rule(rule)
+                    for rule in self.remembered_auto_response_rules
+                ],
+                "quick_send_buttons": [
+                    serialize_quick_send_button(button)
+                    for button in self.remembered_quick_send_buttons
+                ],
                 "log_directory": str(self.log_directory),
                 "temporary_devices": [
                     serialize_temporary_device(device)
@@ -167,7 +197,11 @@ class DesktopStateMixin:
         timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         device_name = self.safe_log_component(device.name or device.id, "device")
         session_name = self.safe_log_component(title, "session")
-        kind_name = "serial" if kind == "serial" else ("telnet" if kind == "device" else "ssh")
+        kind_name = (
+            "serial"
+            if kind == "serial"
+            else ("telnet" if kind == "device" else ("simulated" if kind == "simulated" else "ssh"))
+        )
         filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
         return self.unique_log_path(self.log_directory.expanduser() / filename)
 

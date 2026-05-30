@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtWidgets import QLabel, QSplitter, QTabWidget, QToolButton, QWidget
 
+from .auto_response import AutoResponseRule
 from .data import Device
 from .telnet_session import HuaweiTelnetSession
 from .linux_session import LinuxSshSession
@@ -57,6 +58,9 @@ class SessionTabState:
     log_at_line_start: bool = True
     log_input_buffer: str = ""
     log_pending_records: list[tuple[str, str, bool]] = field(default_factory=list)
+    auto_response_rules: list[AutoResponseRule] = field(default_factory=list)
+    auto_response_buffer: str = ""
+    auto_response_triggered_rules: set[tuple[object, ...]] = field(default_factory=set)
     pending_input_text: str = ""
     input_flush_scheduled: bool = False
     tab_title_label: QLabel | None = None
