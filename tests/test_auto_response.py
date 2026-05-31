@@ -74,6 +74,29 @@ def test_create_auto_response_rule_supports_workflow_steps(app: QApplication) ->
     assert rule.steps[1].responses == ["\x01"]
 
 
+def test_create_auto_response_rule_supports_regex_and_trigger_limits(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    rule = window.create_auto_response_rule(
+        name="Prompt",
+        pattern=r"Password:\s*$",
+        response_text="admin",
+        append_enter=True,
+        match_type="regex",
+        delay_ms=250,
+        max_triggers=2,
+        once=False,
+    )
+
+    assert rule is not None
+    assert rule.match_type == "regex"
+    assert rule.delay_ms == 250
+    assert rule.max_triggers == 2
+    assert rule.matches("Password: ")
+    assert not rule.matches("Password needed later")
+
+
 def test_auto_response_rule_dialog_builds_steps_with_buttons(app: QApplication) -> None:
     _ = app
     dialog = AutoResponseRuleDialog()
@@ -177,6 +200,9 @@ def test_remembered_auto_response_rules_round_trip_desktop_state(
             response="\x01",
             response_text="Ctrl+A",
             once=True,
+            match_type="regex",
+            delay_ms=150,
+            max_triggers=3,
             trigger_count=3,
         )
     ]
@@ -191,6 +217,9 @@ def test_remembered_auto_response_rules_round_trip_desktop_state(
     assert loaded_rule.response == "\x01"
     assert loaded_rule.response_text == "Ctrl+A"
     assert loaded_rule.once
+    assert loaded_rule.match_type == "regex"
+    assert loaded_rule.delay_ms == 150
+    assert loaded_rule.max_triggers == 3
     assert loaded_rule.trigger_count == 0
 
 
@@ -732,6 +761,128 @@ def test_auto_response_rule_can_match_existing_recent_buffer(
     window.apply_auto_response_rules(state, "")
 
     assert sent == [("device:device:1", "\x01")]
+
+
+def test_auto_response_regex_rule_matches_terminal_output(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    )
+    window.remembered_auto_response_rules = [
+        AutoResponseRule(
+            name="Password",
+            pattern=r"Password:\s*$",
+            response="admin\r",
+            match_type="regex",
+        )
+    ]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "Password: ")
+
+    assert sent == [("device:device:1", "admin\r")]
+
+
+def test_auto_response_rule_honors_max_triggers(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    )
+    rule = AutoResponseRule(
+        name="Prompt",
+        pattern=">",
+        response="display version\r",
+        once=False,
+        max_triggers=2,
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, ">")
+    window.apply_auto_response_rules(state, ">")
+    window.apply_auto_response_rules(state, ">")
+
+    assert sent == [
+        ("device:device:1", "display version\r"),
+        ("device:device:1", "display version\r"),
+    ]
+    assert rule.trigger_count == 2
+
+
+def test_auto_response_rule_can_delay_sending(
+    app: QApplication,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    )
+    rule = AutoResponseRule(name="Prompt", pattern=">", response="display clock\r", delay_ms=300)
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    scheduled: list[tuple[int, object]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.app.session_ops.QTimer",
+        SimpleNamespace(singleShot=lambda delay, callback: scheduled.append((delay, callback))),
+    )
+
+    window.apply_auto_response_rules(state, ">")
+
+    assert sent == []
+    assert len(scheduled) == 1
+    delay, callback = scheduled[0]
+    assert delay == 300
+    callback()
+    assert sent == [("device:device:1", "display clock\r")]
 
 
 def test_auto_response_rule_ignores_stale_buffer_on_new_output(

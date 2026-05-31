@@ -52,3 +52,26 @@ def test_simulated_session_enters_admin_menu_with_ctrl_a() -> None:
     text = "".join(output)
     assert "Press Ctrl+A to enter ADMIN menu" in text
     assert "ADMIN MENU" in text
+
+
+def test_simulated_session_biglog_emits_requested_lines() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command("biglog 3")
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    text = "".join(output)
+    assert "Generating 3 log lines" in text
+    assert "000001" in text
+    assert "000003" in text
+    assert "Completed 3 log lines" in text

@@ -217,6 +217,11 @@ from .file_transfer_ops import FileTransferOpsMixin
 from .table_ops import TableOpsMixin
 from .temporary_device_ops import TemporaryDeviceOpsMixin
 
+try:
+    from ..widgets.xterm_web_widget import prewarm_xterm_webengine
+except ImportError:
+    prewarm_xterm_webengine = None
+
 
 ALL_DOMAINS = "全部领域"
 ALL_STATUS = "全部状态"
@@ -303,6 +308,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._table_render_jobs: list[dict[str, object]] = []
             self._table_render_generation = 0
             self.next_session_sequence = 1
+            self._xterm_prewarm_page = None
 
             self.refresh_timer = QTimer(self)
             self.refresh_timer.setSingleShot(True)
@@ -332,6 +338,19 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.update_controls()
             self.ui_timer.start()
             self.refresh_snapshot()
+            QTimer.singleShot(300, self._prewarm_terminal_webengine)
+
+        def _prewarm_terminal_webengine(self) -> None:
+            if prewarm_xterm_webengine is None:
+                return
+            terminal_mode = os.getenv("DEVICE_TUI_TERMINAL_WIDGET", "xterm").lower()
+            if terminal_mode in {"canvas", "pyte", "legacy"}:
+                return
+            try:
+                self._xterm_prewarm_page = prewarm_xterm_webengine(self)
+                self._xterm_prewarm_page.destroyed.connect(lambda: setattr(self, "_xterm_prewarm_page", None))
+            except Exception:
+                self._xterm_prewarm_page = None
 
         def _build_window(self) -> None:
             self.setWindowTitle("设备工作台")
@@ -339,7 +358,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.setMinimumSize(1280, 800)
             base_font = self.font()
             if base_font.pointSize() <= 0:
-                base_font.setPointSize(9)
+                base_font.setPixelSize(13)
                 self.setFont(base_font)
             self.setStyleSheet(APP_STYLE)
 

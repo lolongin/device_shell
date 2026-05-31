@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 
@@ -40,12 +41,21 @@ class AutoResponseRule:
     enabled: bool = True
     case_sensitive: bool = False
     once: bool = True
+    match_type: str = "contains"
+    delay_ms: int = 0
+    max_triggers: int = 0
     trigger_count: int = 0
     steps: list[AutoResponseStep] = field(default_factory=list)
 
     def matches(self, output: str) -> bool:
         if not self.enabled or not self.pattern:
             return False
+        if self.match_type == "regex":
+            flags = 0 if self.case_sensitive else re.IGNORECASE
+            try:
+                return re.search(self.pattern, output, flags) is not None
+            except re.error:
+                return False
         haystack = output if self.case_sensitive else output.lower()
         needle = self.pattern if self.case_sensitive else self.pattern.lower()
         return needle in haystack
@@ -89,6 +99,9 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
         "enabled": rule.enabled,
         "case_sensitive": rule.case_sensitive,
         "once": rule.once,
+        "match_type": rule.match_type,
+        "delay_ms": rule.delay_ms,
+        "max_triggers": rule.max_triggers,
     }
     if rule.steps:
         payload["steps"] = [
@@ -128,6 +141,17 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         return None
     if not response:
         return None
+    match_type = str(value.get("match_type") or "contains").strip().lower()
+    if match_type not in {"contains", "regex"}:
+        match_type = "contains"
+    try:
+        delay_ms = max(0, int(value.get("delay_ms", 0)))
+    except (TypeError, ValueError):
+        delay_ms = 0
+    try:
+        max_triggers = max(0, int(value.get("max_triggers", 0)))
+    except (TypeError, ValueError):
+        max_triggers = 0
     return AutoResponseRule(
         name=name,
         pattern=pattern,
@@ -137,6 +161,9 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         enabled=bool(value.get("enabled", True)),
         case_sensitive=bool(value.get("case_sensitive", False)),
         once=bool(value.get("once", True)),
+        match_type=match_type,
+        delay_ms=delay_ms,
+        max_triggers=max_triggers,
         trigger_count=0,
         steps=steps,
     )

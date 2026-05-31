@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self' https://cdn.jsdelivr.net qrc: data: blob:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net qrc:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;"
+  >
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xterm terminal</title>
+  <link rel="stylesheet" href="assets/xterm.css" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css';">
+  <style>
+    :root {
+      color-scheme: dark;
+      background: #06090d;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #06090d;
+    }
+
+    body {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+    }
+
+    #terminal {
+      width: 100%;
+      height: 100%;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      overflow: hidden;
+      background: #06090d;
+    }
+
+    .xterm {
+      padding: 0;
+    }
+
+    .xterm .xterm-viewport {
+      background-color: transparent;
+      scrollbar-color: #263241 #06090d;
+      scrollbar-width: thin;
+    }
+
+    .xterm .xterm-viewport::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    .xterm .xterm-viewport::-webkit-scrollbar-track {
+      background: #06090d;
+    }
+
+    .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+      background: #263241;
+      border: 2px solid #06090d;
+      border-radius: 8px;
+    }
+
+    .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+      background: #344256;
+    }
+
+
+    #fallback {
+      display: none;
+      color: #d6deeb;
+      padding: 16px;
+      font: 13px/1.5 "Cascadia Mono", Consolas, monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <div id="fallback">xterm.js failed to load. Put xterm.js, xterm.css, and addon-fit.js in src/web/assets, or allow CDN access.</div>
+
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script>
+    const DEFAULT_FONT_SIZE = 14;
+    const MIN_FONT_SIZE = 9;
+    const MAX_FONT_SIZE = 28;
+    const localScripts = [
+      'assets/xterm.js',
+      'assets/addon-fit.js'
+    ];
+    const cdnScripts = [
+      'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js',
+      'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js'
+    ];
+
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    }
+
+    async function loadTerminalScripts() {
+      for (let index = 0; index < localScripts.length; index += 1) {
+        try {
+          await loadScript(localScripts[index]);
+        } catch (_error) {
+          for (let cdnIndex = index; cdnIndex < cdnScripts.length; cdnIndex += 1) {
+            await loadScript(cdnScripts[cdnIndex]);
+          }
+          return;
+        }
+      }
+    }
+
+    function makeFitAddon() {
+      if (window.FitAddon && window.FitAddon.FitAddon) {
+        return new window.FitAddon.FitAddon();
+      }
+      if (window.FitAddon) {
+        return new window.FitAddon();
+      }
+      return null;
+    }
+
+    function runWhenReady(callback) {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', callback, { once: true });
+      } else {
+        callback();
+      }
+    }
+
+    runWhenReady(async () => {
+      try {
+        await loadTerminalScripts();
+      } catch (error) {
+        document.getElementById('fallback').style.display = 'block';
+        return;
+      }
+
+      const term = new window.Terminal({
+        allowProposedApi: true,
+        cursorBlink: true,
+        cursorStyle: 'block',
+        convertEol: true,
+        allowTransparency: false,
+        fontFamily: '"Cascadia Mono", "JetBrains Mono", "Fira Code", Consolas, monospace',
+        fontSize: DEFAULT_FONT_SIZE,
+        fontWeight: 400,
+        fontWeightBold: 700,
+        lineHeight: 1.18,
+        letterSpacing: 0,
+        scrollback: 5000,
+        scrollSensitivity: 1,
+        fastScrollSensitivity: 4,
+        theme: {
+          background: '#06090d',
+          foreground: '#d7dee9',
+          cursor: '#c8d3f5',
+          cursorAccent: '#06090d',
+          selectionBackground: '#2f3b52',
+          black: '#5f6b7a',
+          red: '#f87171',
+          green: '#8bd5ca',
+          yellow: '#eed49f',
+          blue: '#8aadf4',
+          magenta: '#c4b5fd',
+          cyan: '#91d7e3',
+          white: '#d7dee9',
+          brightBlack: '#7f8ea3',
+          brightRed: '#fca5a5',
+          brightGreen: '#a6e3d4',
+          brightYellow: '#f5d99a',
+          brightBlue: '#b7c8ff',
+          brightMagenta: '#ddd6fe',
+          brightCyan: '#b5eff7',
+          brightWhite: '#f6f8fb'
+        }
+      });
+      const fitAddon = makeFitAddon();
+      if (fitAddon) {
+        term.loadAddon(fitAddon);
+      }
+      term.open(document.getElementById('terminal'));
+
+      let bridge = null;
+      let ready = false;
+      const semanticTokenPattern = /\b(error|failed?|failure|fatal|critical|success|succeeded|pass(?:ed)?|ok|done|warn(?:ing)?|caution|timeout|info|notice|debug|trace)\b/ig;
+      const semanticTokenColors = {
+        error: '\x1b[91;1m',
+        fail: '\x1b[91;1m',
+        failed: '\x1b[91;1m',
+        failure: '\x1b[91;1m',
+        fatal: '\x1b[91;1m',
+        critical: '\x1b[91;1m',
+        success: '\x1b[92;1m',
+        succeeded: '\x1b[92;1m',
+        pass: '\x1b[92;1m',
+        passed: '\x1b[92;1m',
+        ok: '\x1b[92;1m',
+        done: '\x1b[92;1m',
+        warn: '\x1b[93;1m',
+        warning: '\x1b[93;1m',
+        caution: '\x1b[93;1m',
+        timeout: '\x1b[93;1m',
+        info: '\x1b[94;1m',
+        notice: '\x1b[94;1m',
+        debug: '\x1b[94;1m',
+        trace: '\x1b[94;1m'
+      };
+      const semanticTokenReset = '\x1b[39;22m';
+
+      function colorizeSemanticTokens(data) {
+        if (!data || data.indexOf('\x1b') >= 0) {
+          return data;
+        }
+        semanticTokenPattern.lastIndex = 0;
+        return data.replace(semanticTokenPattern, (token) => {
+          const color = semanticTokenColors[token.toLowerCase()];
+          return color ? `${color}${token}${semanticTokenReset}` : token;
+        });
+      }
+
+      function fitAndNotify() {
+        if (fitAddon) {
+          fitAddon.fit();
+        }
+        if (bridge && term.cols && term.rows) {
+          bridge.resize(term.cols, term.rows);
+        }
+      }
+
+      function setTerminalFontSize(fontSize) {
+        const nextSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(fontSize)));
+        if (term.options.fontSize === nextSize) {
+          return;
+        }
+        term.options.fontSize = nextSize;
+        fitAndNotify();
+      }
+
+      function adjustTerminalFontSize(delta) {
+        setTerminalFontSize(term.options.fontSize + delta);
+      }
+
+      window.deviceTerminal = {
+        write(data) {
+          term.write(colorizeSemanticTokens(data));
+        },
+        clear() {
+          term.clear();
+        },
+        focus() {
+          term.focus();
+        },
+        fit() {
+          fitAndNotify();
+        },
+        copySelection() {
+          const selection = term.getSelection();
+          if (selection) {
+            navigator.clipboard.writeText(selection);
+          }
+        },
+        copyAll() {
+          const buffer = term.buffer.active;
+          const lines = [];
+          for (let index = 0; index < buffer.length; index += 1) {
+            lines.push(buffer.getLine(index).translateToString(true));
+          }
+          navigator.clipboard.writeText(lines.join('\n').replace(/\s+$/g, ''));
+        },
+        dimensions() {
+          return { cols: term.cols, rows: term.rows };
+        },
+        setFontSize(fontSize) {
+          setTerminalFontSize(fontSize);
+        },
+        debugColorizedText(text) {
+          return colorizeSemanticTokens(text);
+        }
+      };
+
+      function writeClipboardText(text) {
+        if (!text || !bridge) {
+          return;
+        }
+        bridge.copyText(text);
+      }
+
+      term.attachCustomKeyEventHandler((event) => {
+        if (event.type !== 'keydown') {
+          return true;
+        }
+        const key = event.key.toLowerCase();
+        const ctrl = event.ctrlKey || event.metaKey;
+        const shift = event.shiftKey;
+
+        if (ctrl && shift && key === 'c') {
+          writeClipboardText(term.getSelection());
+          event.preventDefault();
+          return false;
+        }
+
+        if (ctrl && key === 'c') {
+          const selection = term.getSelection();
+          if (selection) {
+            writeClipboardText(selection);
+            event.preventDefault();
+            return false;
+          }
+          return true;
+        }
+
+        if ((ctrl && key === 'v') || (shift && event.key === 'Insert')) {
+          if (bridge) {
+            bridge.pasteFromClipboard();
+          }
+          event.preventDefault();
+          return false;
+        }
+
+        if (ctrl && key === '0') {
+          setTerminalFontSize(DEFAULT_FONT_SIZE);
+          event.preventDefault();
+          return false;
+        }
+
+        return true;
+      });
+
+      window.addEventListener('wheel', (event) => {
+        if (!event.ctrlKey && !event.metaKey) {
+          return;
+        }
+        event.preventDefault();
+        adjustTerminalFontSize(event.deltaY < 0 ? 1 : -1);
+      }, { passive: false });
+
+      term.onData((data) => {
+        if (bridge) {
+          bridge.sendData(data);
+        }
+      });
+      term.onResize((size) => {
+        if (bridge) {
+          bridge.resize(size.cols, size.rows);
+        }
+      });
+
+      window.addEventListener('resize', fitAndNotify);
+      setTimeout(fitAndNotify, 0);
+
+      new QWebChannel(qt.webChannelTransport, (channel) => {
+        bridge = channel.objects.terminalBridge;
+        ready = true;
+        fitAndNotify();
+        bridge.ready();
+        term.focus();
+      });
+    });
+  </script>
+</body>
+</html>

@@ -7,6 +7,7 @@ terminal sessions.
 
 - Device list with keyword, domain, status, CPU, and "my occupancy" filters
 - Device detail panel with Telnet, SSH, serial, asset, and owner information
+- Embedded xterm.js terminal sessions through PySide6 WebEngine
 - Embedded Telnet, Linux SSH, and serial Telnet sessions
 - Multi-session device tabs, split terminal panes, reconnect, disconnect, and logs
 - Command note panel with persisted command tabs
@@ -21,7 +22,7 @@ pip install -e .
 or install the runtime dependencies directly:
 
 ```bash
-pip install PySide6 asyncssh pyte
+pip install PySide6 PySide6-WebEngine asyncssh "telnetlib3>=4.0,<5" pyte
 ```
 
 ## Run
@@ -68,6 +69,31 @@ Useful environment variables:
 - `DEVICE_TUI_API_TIMEOUT_SECONDS`: backend API timeout in seconds
 - `DEVICE_TUI_REFRESH_SECONDS`: polling interval in API mode
 - `DEVICE_TUI_SAMPLE_DEVICE_COUNT`: generated sample device count for GUI testing
+- `DEVICE_TUI_TERMINAL_WIDGET`: terminal renderer, defaults to `xterm`.
+  Use `canvas` for the previous PySide/pyte renderer or `legacy` for the
+  previous `QPlainTextEdit` renderer.
+- `DEVICE_TUI_XTERM_LOCAL_ECHO`: set to `1` only for endpoints which do not
+  echo typed characters themselves. Leave it unset for normal SSH shells.
+
+## xterm.js Terminal
+
+The default terminal widget is `PySide6 + QWebEngineView + xterm.js`, bridged
+to the existing Python session layer with `QtWebChannel`.
+
+Runtime layout:
+
+```text
+QWebEngineView xterm.js -> QtWebChannel -> AsyncSSH/Telnet session
+```
+
+The bundled HTML first tries to load xterm assets from `src/web/assets/`:
+
+- `xterm.js`
+- `xterm.css`
+- `addon-fit.js`
+
+If those files are not present, it falls back to the jsDelivr CDN. For offline
+deployments, copy the matching xterm.js build artifacts into `src/web/assets/`.
 
 ## Project Layout
 

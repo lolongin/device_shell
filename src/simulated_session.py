@@ -8,6 +8,9 @@ from .session_protocol import SessionCallbacks
 class SimulatedTerminalSession:
     """Local terminal simulator for testing startup prompts and auto responses."""
 
+    LARGE_LOG_DEFAULT_LINES = 10000
+    LARGE_LOG_CHUNK_LINES = 200
+
     def __init__(self, callbacks: SessionCallbacks) -> None:
         self.callbacks = callbacks
         self._connected = False
@@ -128,7 +131,7 @@ class SimulatedTerminalSession:
         self.callbacks.on_output("\n")
         if lowered == "help":
             self.callbacks.on_output(
-                "Commands: help, reboot, display version, menu, admin, exit\n"
+                "Commands: help, reboot, display version, menu, admin, biglog [lines], exit\n"
                 "Use 'menu' to test Ctrl+B, 'admin' to test Ctrl+A.\n<sim> "
             )
             return
@@ -147,6 +150,9 @@ class SimulatedTerminalSession:
             self._admin_waiting = True
             self.callbacks.on_output("Press Ctrl+A to enter ADMIN menu: ")
             return
+        if lowered == "biglog" or lowered.startswith("biglog "):
+            await self._emit_large_log(lowered)
+            return
         if lowered in {"exit", "quit"}:
             await self.disconnect("Simulated terminal closed.")
             return
@@ -154,3 +160,31 @@ class SimulatedTerminalSession:
             self.callbacks.on_output(f"Selected menu option {lowered}.\n<sim> ")
             return
         self.callbacks.on_output(f"Unknown command: {command}\n<sim> ")
+
+    async def _emit_large_log(self, command: str) -> None:
+        parts = command.split()
+        line_count = self.LARGE_LOG_DEFAULT_LINES
+        if len(parts) >= 2:
+            try:
+                line_count = max(1, min(200000, int(parts[1])))
+            except ValueError:
+                self.callbacks.on_output("Usage: biglog [line_count]\n<sim> ")
+                return
+
+        self.callbacks.on_output(f"Generating {line_count} log lines...\n")
+        emitted = 0
+        while emitted < line_count and self.is_connected:
+            chunk_size = min(self.LARGE_LOG_CHUNK_LINES, line_count - emitted)
+            lines = []
+            for offset in range(chunk_size):
+                index = emitted + offset + 1
+                lines.append(
+                    f"{index:06d} 2026-05-31 17:00:{index % 60:02d}.000 "
+                    f"slot={index % 16:02d} level=INFO cpu={index % 100:02d}% "
+                    f"if=GE0/0/{index % 48:02d} event=simulated-throughput-test "
+                    f"message=\"large terminal output rendering benchmark\"\n"
+                )
+            self.callbacks.on_output("".join(lines))
+            emitted += chunk_size
+            await asyncio.sleep(0)
+        self.callbacks.on_output(f"Completed {emitted} log lines.\n<sim> ")

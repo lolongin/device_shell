@@ -8,6 +8,7 @@ from .session_protocol import SessionCallbacks, SessionUnavailableError
 
 
 READ_CHUNK_SIZE = 16384
+TERM_TYPE = "xterm-256color"
 
 
 class LinuxSshSession:
@@ -38,7 +39,7 @@ class LinuxSshSession:
 
         self._remote_close_reported = False
         self.callbacks.on_status("Connecting")
-        self.callbacks.on_output(f"\n=== Connecting SSH {host}:{port} ===\n")
+        self.callbacks.on_output(self._system_message(f"Connecting SSH {host}:{port}"))
 
         try:
             self._connection = await asyncssh.connect(
@@ -55,7 +56,7 @@ class LinuxSshSession:
 
         try:
             self._process = await self._connection.create_process(
-                term_type="xterm",
+                term_type=TERM_TYPE,
                 term_size=term_size,
             )
         except (asyncssh.Error, OSError) as exc:
@@ -75,7 +76,7 @@ class LinuxSshSession:
             asyncio.create_task(self._pump_stream(self._process.stderr)),
         ]
         self.callbacks.on_status("Connected")
-        self.callbacks.on_output("=== Linux SSH connected ===\n")
+        self.callbacks.on_output(self._system_message("Linux SSH connected"))
 
     async def disconnect(self, message: str = "Disconnected.") -> None:
         process = self._process
@@ -109,7 +110,7 @@ class LinuxSshSession:
 
         self.callbacks.on_status("Disconnected")
         if message:
-            self.callbacks.on_output(f"\n=== {message} ===\n")
+            self.callbacks.on_output(self._system_message(message))
 
     async def send_command(self, command: str) -> None:
         process = self._process
@@ -151,8 +152,12 @@ class LinuxSshSession:
         except asyncio.CancelledError:
             raise
         except (asyncssh.Error, OSError) as exc:
-            self.callbacks.on_output(f"\n=== Linux stream error: {exc} ===\n")
+            self.callbacks.on_output(self._system_message(f"Linux stream error: {exc}"))
             await self._mark_remote_closed()
+
+    @staticmethod
+    def _system_message(message: str) -> str:
+        return f"\r\n=== {message} ===\r\n"
 
     async def _mark_remote_closed(self) -> None:
         if self._remote_close_reported:

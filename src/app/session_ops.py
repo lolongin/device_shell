@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -81,6 +82,11 @@ from ..telnet_session import HuaweiTelnetSession, TelnetSessionError
 from ..widgets.terminal_canvas import TerminalCanvasWidget
 from ..widgets.terminal_widget import InteractiveTerminal
 
+try:
+    from ..widgets.xterm_web_widget import XtermWebWidget
+except ImportError:
+    XtermWebWidget = None
+
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
 
 
@@ -109,8 +115,20 @@ if QDialog is not None:
             self.case_sensitive_input.setChecked(rule.case_sensitive if rule is not None else True)
             self.once_input = QCheckBox("命中一次后自动停用")
             self.once_input.setChecked(rule.once if rule is not None else True)
+            self.match_type_input = QComboBox()
+            self.match_type_input.addItem("包含", "contains")
+            self.match_type_input.addItem("正则", "regex")
+            match_type = rule.match_type if rule is not None else "contains"
+            match_index = self.match_type_input.findData(match_type)
+            self.match_type_input.setCurrentIndex(match_index if match_index >= 0 else 0)
+            self.delay_ms_input = QLineEdit(str(rule.delay_ms if rule is not None else 0))
+            self.delay_ms_input.setPlaceholderText("0")
+            self.max_triggers_input = QLineEdit(str(rule.max_triggers if rule is not None else 0))
+            self.max_triggers_input.setPlaceholderText("0 = 不限制")
 
             layout.addRow("规则名称", self.name_input)
+
+            layout.addRow("匹配方式", self.match_type_input)
 
             self.condition_blocks: list[dict[str, Any]] = []
             step_panel = QWidget()
@@ -151,6 +169,9 @@ if QDialog is not None:
             layout.addRow("", self.case_sensitive_input)
             layout.addRow("", self.once_input)
 
+            layout.addRow("延迟发送(ms)", self.delay_ms_input)
+            layout.addRow("最大触发次数", self.max_triggers_input)
+
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
             buttons.accepted.connect(self.accept)
             buttons.rejected.connect(self.reject)
@@ -167,7 +188,17 @@ if QDialog is not None:
                 "append_enter": self.append_enter_input.isChecked(),
                 "case_sensitive": self.case_sensitive_input.isChecked(),
                 "once": self.once_input.isChecked(),
+                "match_type": self.match_type_input.currentData() or "contains",
+                "delay_ms": self.parse_nonnegative_int(self.delay_ms_input.text()),
+                "max_triggers": self.parse_nonnegative_int(self.max_triggers_input.text()),
             }
+
+        @staticmethod
+        def parse_nonnegative_int(value: str) -> int:
+            try:
+                return max(0, int(value.strip() or "0"))
+            except ValueError:
+                return 0
 
         def populate_step_rows(self, rule: AutoResponseRule | None) -> None:
             if rule is not None and rule.steps:
@@ -1112,6 +1143,9 @@ class SessionOpsMixin:
             append_enter=bool(values["append_enter"]),
             case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
+            match_type=str(values.get("match_type") or "contains"),
+            delay_ms=int(values.get("delay_ms") or 0),
+            max_triggers=int(values.get("max_triggers") or 0),
         )
         if rule is None:
             return
@@ -1140,6 +1174,9 @@ class SessionOpsMixin:
             append_enter=bool(values["append_enter"]),
             case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
+            match_type=str(values.get("match_type") or "contains"),
+            delay_ms=int(values.get("delay_ms") or 0),
+            max_triggers=int(values.get("max_triggers") or 0),
         )
         if updated is None:
             return
@@ -1150,6 +1187,9 @@ class SessionOpsMixin:
         rule.append_enter = updated.append_enter
         rule.case_sensitive = updated.case_sensitive
         rule.once = updated.once
+        rule.match_type = updated.match_type
+        rule.delay_ms = updated.delay_ms
+        rule.max_triggers = updated.max_triggers
         rule.steps = updated.steps
         rule.enabled = True
         rule.trigger_count = 0
@@ -1185,7 +1225,19 @@ class SessionOpsMixin:
         append_enter: bool = False,
         case_sensitive: bool = False,
         once: bool = True,
+        match_type: str = "contains",
+        delay_ms: int = 0,
+        max_triggers: int = 0,
     ) -> AutoResponseRule | None:
+        normalized_match_type = match_type if match_type in {"contains", "regex"} else "contains"
+        try:
+            normalized_delay_ms = max(0, int(delay_ms))
+        except (TypeError, ValueError):
+            normalized_delay_ms = 0
+        try:
+            normalized_max_triggers = max(0, int(max_triggers))
+        except (TypeError, ValueError):
+            normalized_max_triggers = 0
         steps = self.parse_auto_response_steps(
             steps_text,
             append_enter=append_enter,
@@ -1193,6 +1245,15 @@ class SessionOpsMixin:
         )
         if steps is None:
             return None
+        if normalized_match_type == "regex":
+            for pattern_candidate in [pattern, *(step.pattern for step in steps)]:
+                if not pattern_candidate.strip():
+                    continue
+                try:
+                    re.compile(pattern_candidate)
+                except re.error as exc:
+                    self.show_warning(f"Invalid regex pattern: {exc}")
+                    return None
         if steps:
             response = steps[0].responses[0]
             response_text = steps[0].response_texts[0]
@@ -1213,6 +1274,9 @@ class SessionOpsMixin:
             append_enter=append_enter,
             case_sensitive=case_sensitive,
             once=once,
+            match_type=normalized_match_type,
+            delay_ms=normalized_delay_ms,
+            max_triggers=normalized_max_triggers,
             steps=steps,
         )
 
@@ -1604,6 +1668,9 @@ class SessionOpsMixin:
                 enabled=rule.enabled,
                 case_sensitive=rule.case_sensitive,
                 once=rule.once,
+                match_type=rule.match_type,
+                delay_ms=rule.delay_ms,
+                max_triggers=rule.max_triggers,
                 trigger_count=0,
                 steps=[
                     AutoResponseStep(
@@ -1637,6 +1704,9 @@ class SessionOpsMixin:
             rule.append_enter,
             rule.case_sensitive,
             rule.once,
+            rule.match_type,
+            rule.delay_ms,
+            rule.max_triggers,
             steps_signature,
         )
 
@@ -1862,11 +1932,13 @@ class SessionOpsMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        terminal = (
-            InteractiveTerminal()
-            if os.getenv("DEVICE_TUI_TERMINAL_WIDGET", "").lower() == "legacy"
-            else TerminalCanvasWidget()
-        )
+        terminal_mode = os.getenv("DEVICE_TUI_TERMINAL_WIDGET", "xterm").lower()
+        if terminal_mode == "legacy":
+            terminal = InteractiveTerminal()
+        elif terminal_mode in {"canvas", "pyte"} or XtermWebWidget is None:
+            terminal = TerminalCanvasWidget()
+        else:
+            terminal = XtermWebWidget()
         terminal.setContextMenuPolicy(Qt.CustomContextMenu)
         terminal.customContextMenuRequested.connect(
             lambda pos, tab_id=tab_id, terminal=terminal: self.show_terminal_context_menu(tab_id, terminal, pos)
@@ -2137,6 +2209,12 @@ class SessionOpsMixin:
         if state is None:
             return
 
+        if isinstance(state.session, LinuxSshSession) and self.defer_until_terminal_dimensions_ready(
+            state,
+            lambda tab_id=tab_id: self.connect_session_tab(tab_id),
+        ):
+            return
+
         state.connecting = True
         self.set_session_status(tab_id, "Connecting")
         self.write_session_log_line(state, "SYS", f"Connecting to {state.host}:{state.port}")
@@ -2153,7 +2231,9 @@ class SessionOpsMixin:
                     try:
                         if len(candidates) > 1:
                             state.session.callbacks.on_output(
-                                f"\n=== Trying SSH credential {index}/{len(candidates)}: {username} ===\n"
+                                self.format_terminal_system_message(
+                                    f"Trying SSH credential {index}/{len(candidates)}: {username}"
+                                )
                             )
                         await state.session.connect(
                             state.host,
@@ -2165,7 +2245,9 @@ class SessionOpsMixin:
                         return username, password
                     except SessionUnavailableError as exc:
                         last_error = exc
-                        state.session.callbacks.on_output(f"=== SSH credential failed: {username} ===\n")
+                        state.session.callbacks.on_output(
+                            self.format_terminal_system_message(f"SSH credential failed: {username}")
+                        )
                 if last_error is not None:
                     raise last_error
                 return None
@@ -2208,7 +2290,7 @@ class SessionOpsMixin:
             self.set_session_status(tab_id, "Disconnected")
             self.write_session_log_line(current_state, "SYS", f"Connection failed: {exc}")
             if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
-                self.append_session_output(tab_id, f"\n连接失败: {exc}\n")
+                self.append_session_output(tab_id, self.format_terminal_system_message(f"连接失败: {exc}"))
                 self.append_reconnect_hint(tab_id)
                 if self.is_connection_timeout(exc):
                     self.set_status_message(f"连接超时: {current_state.title}")
@@ -2221,6 +2303,33 @@ class SessionOpsMixin:
             self.handle_background_error(exc)
 
         self.run_coro(connect(), on_success=success, on_error=failure)
+
+    def defer_until_terminal_dimensions_ready(
+        self,
+        state: SessionTabState,
+        callback: Callable[[], None],
+        *,
+        mark_connecting: bool = True,
+    ) -> bool:
+        checker = getattr(state.terminal, "has_valid_terminal_dimensions", None)
+        if not callable(checker) or checker():
+            state.terminal_ready_wait_attempts = 0
+            return False
+        state.terminal_ready_wait_attempts += 1
+        if state.terminal_ready_wait_attempts > 40 or QTimer is None:
+            state.terminal_ready_wait_attempts = 0
+            return False
+        if mark_connecting and state.terminal_ready_wait_attempts == 1:
+            state.connecting = True
+            self.set_session_status(state.tab_id, "Connecting")
+            self.write_session_log_line(state, "SYS", "Waiting for terminal dimensions")
+            self.set_status_message(f"等待终端尺寸: {state.title}")
+        QTimer.singleShot(50, callback)
+        return True
+
+    @staticmethod
+    def format_terminal_system_message(message: str) -> str:
+        return f"\r\n=== {message} ===\r\n"
 
     def resize_session_pty(self, tab_id: str, columns: int, lines: int) -> None:
         state = self.session_tabs_by_id.get(tab_id)
@@ -2271,7 +2380,7 @@ class SessionOpsMixin:
         if state.reconnect_hint_visible:
             return
         state.reconnect_hint_visible = True
-        state.terminal.append_output("\n=== 会话已断开，按 Enter 重连 ===\n")
+        state.terminal.append_output(self.format_terminal_system_message("会话已断开，按 Enter 重连"))
 
     def append_session_output(self, tab_id: str, message: str) -> None:
         state = self.session_tabs_by_id.get(tab_id)
@@ -2292,6 +2401,8 @@ class SessionOpsMixin:
         for rule in list(rules):
             signature = self.auto_response_rule_signature(rule)
             if rule.once and signature in state.auto_response_triggered_rules:
+                continue
+            if rule.max_triggers and rule.trigger_count >= rule.max_triggers:
                 continue
             steps = self.effective_auto_response_steps(rule)
             if not steps:
@@ -2329,7 +2440,13 @@ class SessionOpsMixin:
                     self.write_session_log_line(state, "SYS", f"Auto response target missing: {target}")
                     self.set_status_message(f"自动响应目标终端不存在: {target}")
                     continue
-                self.send_session_text(target_tab_id, response)
+                if rule.delay_ms > 0 and QTimer is not None:
+                    QTimer.singleShot(
+                        rule.delay_ms,
+                        lambda tab_id=target_tab_id, text=response: self.send_session_text(tab_id, text),
+                    )
+                else:
+                    self.send_session_text(target_tab_id, response)
             self.refresh_auto_response_rule_buttons()
             return
 
@@ -2363,6 +2480,12 @@ class SessionOpsMixin:
     ) -> bool:
         if not rule.enabled or not step.pattern:
             return False
+        if rule.match_type == "regex":
+            flags = 0 if rule.case_sensitive else re.IGNORECASE
+            try:
+                return re.search(step.pattern, output, flags) is not None
+            except re.error:
+                return False
         haystack = output if rule.case_sensitive else output.lower()
         needle = step.pattern if rule.case_sensitive else step.pattern.lower()
         return needle in haystack
@@ -2459,7 +2582,7 @@ class SessionOpsMixin:
         if state.session.is_connected:
             return False
         self.refresh_session_credentials_from_panel(state)
-        state.terminal.append_output("\n=== 正在重连... ===\n")
+        state.terminal.append_output(self.format_terminal_system_message("正在重连..."))
         self.reconnect_session_tab(tab_id)
         return True
 
@@ -2483,6 +2606,13 @@ class SessionOpsMixin:
         if state is None or state.connecting:
             return
 
+        if isinstance(state.session, LinuxSshSession) and self.defer_until_terminal_dimensions_ready(
+            state,
+            lambda tab_id=tab_id: self.reconnect_session_tab(tab_id),
+            mark_connecting=False,
+        ):
+            return
+
         state.connecting = True
         self.set_session_status(tab_id, "Connecting")
         self.write_session_log_line(state, "SYS", f"Reconnecting to {state.host}:{state.port}")
@@ -2497,7 +2627,9 @@ class SessionOpsMixin:
                     try:
                         if len(candidates) > 1:
                             state.session.callbacks.on_output(
-                                f"\n=== Trying SSH credential {index}/{len(candidates)}: {username} ===\n"
+                                self.format_terminal_system_message(
+                                    f"Trying SSH credential {index}/{len(candidates)}: {username}"
+                                )
                             )
                         await state.session.connect(
                             state.host,
@@ -2509,7 +2641,9 @@ class SessionOpsMixin:
                         return username, password
                     except SessionUnavailableError as exc:
                         last_error = exc
-                        state.session.callbacks.on_output(f"=== SSH credential failed: {username} ===\n")
+                        state.session.callbacks.on_output(
+                            self.format_terminal_system_message(f"SSH credential failed: {username}")
+                        )
                 if last_error is not None:
                     raise last_error
                 return None
@@ -2551,7 +2685,7 @@ class SessionOpsMixin:
                 self.set_session_status(tab_id, "Disconnected")
                 self.write_session_log_line(current_state, "SYS", f"Reconnect failed: {exc}")
             if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
-                self.append_session_output(tab_id, f"\n重连失败: {exc}\n")
+                self.append_session_output(tab_id, self.format_terminal_system_message(f"重连失败: {exc}"))
                 self.append_reconnect_hint(tab_id)
                 if self.is_connection_timeout(exc):
                     title = current_state.title if current_state is not None else tab_id
