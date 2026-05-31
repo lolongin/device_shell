@@ -576,6 +576,26 @@ QPlainTextEdit#commandRecordEditor {
 QPlainTextEdit#commandRecordEditor:focus {
     border: none;
 }
+QFrame#commandSuggestionBar {
+    background: #070b10;
+    border-top: 1px solid #161d26;
+}
+QToolButton#commandSuggestionButton {
+    background: #0b1016;
+    border: 1px solid #243044;
+    border-radius: 6px;
+    color: #cbd5e1;
+    padding: 0px 8px;
+    min-height: 22px;
+    max-height: 22px;
+    font-size: 11px;
+    font-weight: 700;
+}
+QToolButton#commandSuggestionButton:hover {
+    background: #152033;
+    border-color: #4f7cff;
+    color: #f8fafc;
+}
 QFrame#commandFindReplaceBar {
     background: #252526;
     border: 1px solid #3c3c3c;
@@ -1510,6 +1530,26 @@ QPlainTextEdit#commandRecordEditor {
 }
 QPlainTextEdit#commandRecordEditor:focus {
     border: none;
+}
+QFrame#commandSuggestionBar {
+    background: #070707;
+    border-top: 1px solid #1c1c1c;
+}
+QToolButton#commandSuggestionButton {
+    background: #0e0e0e;
+    border: 1px solid #2b2b2b;
+    border-radius: 5px;
+    color: #bdbdbd;
+    padding: 0px 7px;
+    min-height: 22px;
+    max-height: 22px;
+    font-size: 11px;
+    font-weight: 700;
+}
+QToolButton#commandSuggestionButton:hover {
+    background: #161616;
+    border-color: #4f7cff;
+    color: #ededed;
 }
 QFrame#commandRecordFooter {
     background: transparent;

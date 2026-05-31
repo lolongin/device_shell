@@ -23,6 +23,7 @@ from src.auto_response import (
     decode_response_text,
     deserialize_auto_response_rule,
 )
+from src.command_suggestions import CommandHistoryItem
 
 
 @pytest.fixture(scope="module")
@@ -602,6 +603,46 @@ def test_send_ctrl_b_is_direct_button_for_current_session(
     send_buttons[0].click()
 
     assert sent == [(state.tab_id, "\x02")]
+
+
+def test_command_record_suggestions_fill_current_line(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.command_history = [
+        CommandHistoryItem(command="display version", count=2, last_used_at=100),
+    ]
+
+    window.command_record_input.setPlainText("dis")
+    window.refresh_command_suggestions()
+
+    assert window.current_command_suggestions[0] == "display version"
+    assert not window.command_suggestion_bar.isHidden()
+    assert window.accept_first_command_suggestion()
+    assert window.command_record_input.current_command_line() == "display version"
+
+
+def test_command_record_suggestions_include_saved_command_lines(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.command_record_groups[window.current_command_group_index()]["content"] = "star\nlay versionadmin\nsta"
+    window._load_current_command_content(move_cursor_to_end=True)
+
+    window.refresh_command_suggestions()
+
+    assert window.current_command_suggestions[0] == "star"
+    assert not window.command_suggestion_bar.isHidden()
+
+
+def test_terminal_command_suggestion_uses_history_and_defaults(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SimpleNamespace(device_id="sim-terminal", kind="simulated")
+
+    assert window.terminal_command_suggestion(state, "re") == "reboot"
+
+    window.remember_command_history("reset board", state=state)
+
+    assert window.terminal_command_suggestion(state, "res") == "reset board"
 
 
 def test_auto_response_rule_sends_when_split_output_matches(

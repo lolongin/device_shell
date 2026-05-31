@@ -2082,6 +2082,11 @@ class SessionOpsMixin:
         )
 
         terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
+        terminal.set_command_recorder(lambda command, state=state: self.remember_command_history(command, state=state))
+        if hasattr(terminal, "set_command_suggestion_provider"):
+            terminal.set_command_suggestion_provider(
+                lambda query, state=state: self.terminal_command_suggestion(state, query)
+            )
         terminal.set_enter_reconnect_handler(lambda tab_id=tab_id: self.reconnect_session_from_enter(tab_id))
         terminal.set_terminal_resize_handler(
             lambda columns, lines, tab_id=tab_id: self.resize_session_pty(tab_id, columns, lines)

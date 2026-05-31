@@ -18,11 +18,14 @@ except ModuleNotFoundError:
     QToolButton = None
     QWidget = None
 
+from ..command_suggestions import CommandHistoryItem, record_command_history, suggest_commands
+
 
 class CommandRecordOpsMixin:
     """Mixin providing command record (常用命令) input, tab, and panel operations."""
 
     def submit_command_record_input(self, command: str) -> None:
+        self.remember_command_history(command)
         self._save_current_command_content()
         self.schedule_desktop_state_save()
         self.send_command_text_to_current_session(command)
@@ -57,12 +60,97 @@ class CommandRecordOpsMixin:
         payload = self.command_record_payload(command)
         for state in connected_states:
             self.send_session_text(state.tab_id, payload)
+        self.remember_command_history(command)
+        self.schedule_desktop_state_save()
         self.set_status_message(f"已广播发送到 {len(connected_states)} 个终端会话。")
 
     def command_record_payload(self, command: str) -> str:
         normalized = command.replace("\r\n", "\n").replace("\r", "\n")
         payload = normalized.replace("\n", "\r")
         return f"{payload}\r"
+
+    def remember_command_history(self, command: str, state: Any | None = None) -> None:
+        if state is None:
+            state = self.current_session_state()
+        self.command_history = record_command_history(
+            self.command_history,
+            command,
+            device_id=state.device_id if state is not None else "",
+            session_kind=state.kind if state is not None else "",
+        )
+        self.refresh_command_suggestions()
+
+    def refresh_command_suggestions(self) -> None:
+        if not hasattr(self, "command_suggestion_bar") or not hasattr(self, "command_record_input"):
+            return
+        while self.command_suggestion_layout.count():
+            item = self.command_suggestion_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        query = self.command_record_input.current_command_line()
+        state = self.current_session_state()
+        suggestions = suggest_commands(
+            self.command_suggestion_history(),
+            query,
+            device_id=state.device_id if state is not None else "",
+            session_kind=state.kind if state is not None else "",
+            limit=5,
+        )
+        self.current_command_suggestions = suggestions
+        self.command_suggestion_buttons = []
+        if not suggestions:
+            self.command_suggestion_bar.setVisible(False)
+            return
+        self.command_suggestion_bar.setVisible(True)
+        for suggestion in suggestions:
+            button = QToolButton()
+            button.setObjectName("commandSuggestionButton")
+            button.setText(suggestion)
+            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            button.setToolTip("点击填入命令，Tab 使用第一条建议")
+            button.clicked.connect(
+                lambda _checked=False, command=suggestion: self.apply_command_suggestion(command)
+            )
+            self.command_suggestion_buttons.append(button)
+            self.command_suggestion_layout.addWidget(button)
+        self.command_suggestion_layout.addStretch(1)
+
+    def accept_first_command_suggestion(self) -> bool:
+        if not self.current_command_suggestions:
+            self.refresh_command_suggestions()
+        if not self.current_command_suggestions:
+            return False
+        self.apply_command_suggestion(self.current_command_suggestions[0])
+        return True
+
+    def apply_command_suggestion(self, command: str) -> None:
+        cursor = self.command_record_input.textCursor()
+        cursor.select(QTextCursor.LineUnderCursor)
+        cursor.insertText(command)
+        self.command_record_input.setTextCursor(cursor)
+        self.command_record_input.setFocus()
+        self.refresh_command_suggestions()
+
+    def command_suggestion_history(self) -> list[CommandHistoryItem]:
+        history = list(self.command_history)
+        known_commands = {item.command for item in history}
+        for command in self.current_command_records():
+            if command in known_commands:
+                continue
+            history.append(CommandHistoryItem(command=command, count=1, last_used_at=0))
+            known_commands.add(command)
+        return history
+
+    def terminal_command_suggestion(self, state: Any, query: str) -> str:
+        suggestions = suggest_commands(
+            self.command_suggestion_history(),
+            query,
+            device_id=getattr(state, "device_id", ""),
+            session_kind=getattr(state, "kind", ""),
+            limit=1,
+        )
+        return suggestions[0] if suggestions else ""
 
     def toggle_command_find_replace(self) -> None:
         if self.command_find_replace_visible:

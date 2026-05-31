@@ -15,6 +15,7 @@ class CommandRecordInput(QPlainTextEdit):
     def __init__(self) -> None:
         super().__init__()
         self._submit_handler: Callable[[str], None] | None = None
+        self._suggestion_accept_handler: Callable[[], bool] | None = None
         self._enter_sends = False
         self.setObjectName("commandRecordEditor")
         self.setMinimumHeight(72)
@@ -26,6 +27,9 @@ class CommandRecordInput(QPlainTextEdit):
 
     def set_submit_handler(self, handler: Callable[[str], None]) -> None:
         self._submit_handler = handler
+
+    def set_suggestion_accept_handler(self, handler: Callable[[], bool]) -> None:
+        self._suggestion_accept_handler = handler
 
     def set_enter_sends(self, enter_sends: bool) -> None:
         self._enter_sends = enter_sends
@@ -71,6 +75,9 @@ class CommandRecordInput(QPlainTextEdit):
                 return
             self.insertPlainText("\n")
             return
+        if key == Qt.Key_Tab and modifiers == Qt.NoModifier:
+            if self._suggestion_accept_handler is not None and self._suggestion_accept_handler():
+                return
         super().keyPressEvent(event)
 
 

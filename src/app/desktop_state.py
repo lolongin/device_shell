@@ -23,6 +23,10 @@ from ..auto_response import (
     serialize_auto_response_rule,
     serialize_quick_send_button,
 )
+from ..command_suggestions import (
+    deserialize_command_history_item,
+    serialize_command_history_item,
+)
 from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
@@ -84,6 +88,14 @@ class DesktopStateMixin:
         if state_version < 3:
             self.command_record_collapsed = True
         self.command_enter_sends = bool(payload.get("command_enter_sends", False))
+        command_history = []
+        raw_command_history = payload.get("command_history", [])
+        if isinstance(raw_command_history, list):
+            for item in raw_command_history:
+                history_item = deserialize_command_history_item(item)
+                if history_item is not None:
+                    command_history.append(history_item)
+        self.command_history = command_history
         try:
             loaded_command_height = int(
                 payload.get("command_record_height", self.COMMAND_RECORD_DEFAULT_HEIGHT)
@@ -179,6 +191,10 @@ class DesktopStateMixin:
                 "current_command_group": self.current_command_group_index(),
                 "command_record_collapsed": self.command_record_collapsed,
                 "command_enter_sends": self.command_enter_sends,
+                "command_history": [
+                    serialize_command_history_item(item)
+                    for item in self.command_history
+                ],
                 "command_record_height": self.command_record_height,
                 "connection_params_collapsed": self.connection_params_collapsed,
                 "device_navigation_collapsed": self.device_navigation_collapsed,

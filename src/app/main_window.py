@@ -154,6 +154,7 @@ try:
         STATUS_PIPELINE,
     )
     from ..auto_response import default_quick_send_buttons
+    from ..command_suggestions import CommandHistoryItem
     from ..data import Device
     from ..styles import APP_STYLE
     from ..helpers import build_search_text, mask_password, status_color
@@ -185,6 +186,7 @@ except ImportError:
         STATUS_PIPELINE,
     )
     from auto_response import default_quick_send_buttons
+    from command_suggestions import CommandHistoryItem
     from data import Device
     from styles import APP_STYLE
     from helpers import build_search_text, mask_password, status_color
@@ -278,6 +280,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_enter_sends = False
             self.command_find_replace_visible = False
             self.command_record_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
+            self.command_history: list[CommandHistoryItem] = []
+            self.command_suggestion_buttons: list[QToolButton] = []
+            self.current_command_suggestions: list[str] = []
             self.connection_params_collapsed = False
             self.device_navigation_collapsed = False
             self.left_sidebar_collapsed = False
@@ -1390,8 +1395,17 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.command_record_input = CommandRecordInput()
             self.command_record_input.set_submit_handler(self.submit_command_record_input)
+            self.command_record_input.set_suggestion_accept_handler(self.accept_first_command_suggestion)
             self.command_record_input.textChanged.connect(self.schedule_desktop_state_save)
+            self.command_record_input.textChanged.connect(self.refresh_command_suggestions)
             self.update_command_enter_mode()
+
+            self.command_suggestion_bar = QFrame()
+            self.command_suggestion_bar.setObjectName("commandSuggestionBar")
+            self.command_suggestion_layout = QHBoxLayout(self.command_suggestion_bar)
+            self.command_suggestion_layout.setContentsMargins(8, 4, 8, 4)
+            self.command_suggestion_layout.setSpacing(4)
+            self.command_suggestion_bar.setVisible(False)
 
             find_replace_bar = QFrame(frame)
             find_replace_bar.setObjectName("commandFindReplaceBar")
@@ -1441,6 +1455,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             find_replace_layout.addWidget(self.command_replace_all_button, 1, 2)
 
             find_replace_bar.setVisible(False)
+            layout.addWidget(self.command_suggestion_bar)
             layout.addWidget(self.command_record_input)
 
             footer = QFrame()
