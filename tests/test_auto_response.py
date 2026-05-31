@@ -10,18 +10,30 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QWidget
 
 from src._sample_data import sample_devices
 from src.app.main_window import DeviceDesktopApp
 from src.app.session_ops import AutoResponseRuleDialog
 from src.app_state import SessionTabState
-from src.auto_response import AutoResponseRule, AutoResponseStep, TerminalQuickButton, decode_response_text
+from src.auto_response import (
+    AutoResponseRule,
+    AutoResponseStep,
+    TerminalQuickButton,
+    decode_response_text,
+    deserialize_auto_response_rule,
+)
 
 
 @pytest.fixture(scope="module")
 def app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _allow_auto_response(state: SessionTabState) -> SessionTabState:
+    state.user_input_seen = True
+    state.suppress_auto_response_until_input = False
+    return state
 
 
 def test_decode_response_text_supports_control_keys_and_escapes() -> None:
@@ -59,6 +71,7 @@ def test_create_auto_response_rule_supports_workflow_steps(app: QApplication) ->
         pattern="",
         response_text="",
         steps_text="Ctrl+B => Ctrl+B\n=> display version\nADMIN => Ctrl+A",
+        step_delays=[0, 1200, 0],
         once=True,
     )
 
@@ -70,8 +83,10 @@ def test_create_auto_response_rule_supports_workflow_steps(app: QApplication) ->
     assert rule.steps[0].responses == ["\x02", "display version"]
     assert rule.steps[0].response_texts == ["Ctrl+B", "display version"]
     assert rule.steps[0].response_targets == ["current", "current"]
+    assert rule.steps[0].response_delays == [0, 1200]
     assert rule.steps[1].pattern == "ADMIN"
     assert rule.steps[1].responses == ["\x01"]
+    assert rule.steps[1].response_delays == [0]
 
 
 def test_create_auto_response_rule_supports_regex_and_trigger_limits(app: QApplication) -> None:
@@ -102,11 +117,15 @@ def test_auto_response_rule_dialog_builds_steps_with_buttons(app: QApplication) 
     dialog = AutoResponseRuleDialog()
 
     dialog.add_send_row("display version")
+    second_delay_input = dialog.condition_blocks[0]["response_rows"][1]["delay_input"]
+    assert isinstance(second_delay_input, QLineEdit)
+    second_delay_input.setText("1200")
     dialog.add_wait_row("ADMIN", "Ctrl+A")
     values = dialog.values()
 
     assert values["steps_text"] == "Ctrl+B => Ctrl+B\n=> display version\nADMIN => Ctrl+A"
     assert values["step_targets"] == ["current", "current", "current"]
+    assert values["step_delays"] == [0, 1200, 0]
     assert values["case_sensitive"] is True
     assert not hasattr(dialog, "steps_input")
 
@@ -131,7 +150,7 @@ def test_auto_response_rule_dialog_lists_open_terminal_targets(
     tmp_path,
 ) -> None:
     _ = app
-    target_state = SessionTabState(
+    target_state = _allow_auto_response(SessionTabState(
         tab_id="device:linux:2",
         kind="linux",
         device_id="device",
@@ -144,7 +163,7 @@ def test_auto_response_rule_dialog_lists_open_terminal_targets(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "target.log",
-    )
+    ))
 
     class Parent(QWidget):
         def ordered_session_states(self) -> list[SessionTabState]:
@@ -220,7 +239,7 @@ def test_remembered_auto_response_rules_round_trip_desktop_state(
     assert loaded_rule.match_type == "regex"
     assert loaded_rule.delay_ms == 150
     assert loaded_rule.max_triggers == 3
-    assert loaded_rule.trigger_count == 0
+    assert loaded_rule.trigger_count == 3
 
 
 def test_auto_response_workflow_steps_round_trip_desktop_state(
@@ -244,11 +263,13 @@ def test_auto_response_workflow_steps_round_trip_desktop_state(
                     responses=["\x02", "display version"],
                     response_texts=["Ctrl+B", "display version"],
                     response_targets=["source", "title:SSH #1"],
+                    response_delays=[0, 1200],
                 ),
                 AutoResponseStep(
                     pattern="ADMIN",
                     responses=["\x01"],
                     response_texts=["Ctrl+A"],
+                    response_delays=[250],
                 ),
             ],
         )
@@ -261,7 +282,9 @@ def test_auto_response_workflow_steps_round_trip_desktop_state(
     assert len(loaded_rule.steps) == 2
     assert loaded_rule.steps[0].responses == ["\x02", "display version"]
     assert loaded_rule.steps[0].response_targets == ["source", "title:SSH #1"]
+    assert loaded_rule.steps[0].response_delays == [0, 1200]
     assert loaded_rule.steps[1].pattern == "ADMIN"
+    assert loaded_rule.steps[1].response_delays == [250]
 
 
 def test_quick_send_buttons_round_trip_desktop_state(
@@ -316,6 +339,22 @@ def test_auto_response_template_can_be_remembered_without_session(
     assert len(window.remembered_auto_response_rules) == 1
     assert window.remembered_auto_response_rules[0].pattern == "Ctrl+B"
     assert window.remembered_auto_response_rules[0].response == "\x02"
+    assert window.remembered_auto_response_rules[0].allow_startup_trigger
+
+
+def test_old_boot_ctrl_b_rule_is_migrated_to_startup_trigger() -> None:
+    rule = deserialize_auto_response_rule(
+        {
+            "name": "启动菜单 Ctrl+B",
+            "pattern": "Ctrl+B",
+            "response": "\x02",
+            "response_text": "Ctrl+B",
+            "enabled": True,
+        }
+    )
+
+    assert rule is not None
+    assert rule.allow_startup_trigger
 
 
 def test_auto_response_menu_uses_remembered_rules_without_session(
@@ -406,9 +445,74 @@ def test_auto_response_rule_buttons_use_remembered_rules_without_session(app: QA
     window.refresh_auto_response_rule_buttons()
 
     assert not window.auto_response_rule_bar.isHidden()
+    buttons = [
+        window.auto_response_rule_bar_layout.itemAt(index).widget()
+        for index in range(window.auto_response_rule_bar_layout.count())
+    ]
+    button = next(button for button in buttons if button is not None and button.isCheckable())
+    assert not button.isChecked()
+    assert button.property("waitingForInput") == "true"
 
 
-def test_send_ctrl_b_is_direct_button_for_current_session(
+def test_startup_auto_response_rule_stays_active_without_session(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.current_session_state = lambda: None  # type: ignore[method-assign]
+    window.remembered_auto_response_rules = [
+        AutoResponseRule(
+            name="启动菜单 Ctrl+B",
+            pattern="Ctrl+B",
+            response="\x02",
+            allow_startup_trigger=True,
+        )
+    ]
+
+    window.refresh_auto_response_rule_buttons()
+
+    buttons = [
+        window.auto_response_rule_bar_layout.itemAt(index).widget()
+        for index in range(window.auto_response_rule_bar_layout.count())
+    ]
+    button = next(button for button in buttons if button is not None and button.isCheckable())
+    assert button.isChecked()
+    assert button.property("waitingForInput") == "false"
+
+
+def test_auto_response_rule_bar_renders_all_items_without_overflow_label(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.current_session_state = lambda: None  # type: ignore[method-assign]
+    window.remembered_quick_send_buttons = [
+        TerminalQuickButton(name=f"Send {index}", response=f"cmd{index}\r", response_text=f"cmd{index}")
+        for index in range(4)
+    ]
+    window.remembered_auto_response_rules = [
+        AutoResponseRule(name=f"Rule {index}", pattern=f"P{index}", response=f"r{index}\r")
+        for index in range(5)
+    ]
+
+    window.refresh_auto_response_rule_buttons()
+
+    widgets = [
+        window.auto_response_rule_bar_layout.itemAt(index).widget()
+        for index in range(window.auto_response_rule_bar_layout.count())
+    ]
+    action_buttons = [
+        widget
+        for widget in widgets
+        if widget is not None and widget.objectName() == "autoResponseRuleButton"
+    ]
+    overflow_labels = [
+        widget
+        for widget in widgets
+        if widget is not None and widget.objectName() == "autoResponseOverflowLabel"
+    ]
+    assert len(action_buttons) == 9
+    assert overflow_labels == []
+    assert not window.auto_response_rule_bar.isHidden()
+
+
+def test_auto_response_rule_button_shows_waiting_state_before_user_input(
     app: QApplication,
     tmp_path,
 ) -> None:
@@ -428,6 +532,56 @@ def test_send_ctrl_b_is_direct_button_for_current_session(
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
     )
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    window.remembered_auto_response_rules = [
+        AutoResponseRule(name="Admin", pattern="ADMIN", response="\x01")
+    ]
+
+    window.refresh_auto_response_rule_buttons()
+
+    buttons = [
+        window.auto_response_rule_bar_layout.itemAt(index).widget()
+        for index in range(window.auto_response_rule_bar_layout.count())
+    ]
+    button = next(button for button in buttons if button is not None and button.isCheckable())
+    assert button is not None
+    assert not button.isChecked()
+    assert button.property("waitingForInput") == "true"
+
+    state.user_input_seen = True
+    state.suppress_auto_response_until_input = False
+    window.refresh_auto_response_rule_buttons()
+
+    buttons = [
+        window.auto_response_rule_bar_layout.itemAt(index).widget()
+        for index in range(window.auto_response_rule_bar_layout.count())
+    ]
+    button = next(button for button in buttons if button is not None and button.isCheckable())
+    assert button is not None
+    assert button.isChecked()
+    assert button.property("waitingForInput") == "false"
+
+
+def test_send_ctrl_b_is_direct_button_for_current_session(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
     window.current_session_state = lambda: state  # type: ignore[method-assign]
     window.session_tabs_by_id = {state.tab_id: state}
     window.remembered_quick_send_buttons = [
@@ -456,7 +610,7 @@ def test_auto_response_rule_sends_when_split_output_matches(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -469,7 +623,7 @@ def test_auto_response_rule_sends_when_split_output_matches(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     rule = AutoResponseRule(name="Boot Ctrl+B", pattern="Ctrl+B", response="\x02")
     window.remembered_auto_response_rules = [rule]
     window.current_session_state = lambda: state  # type: ignore[method-assign]
@@ -480,12 +634,12 @@ def test_auto_response_rule_sends_when_split_output_matches(
     window.apply_auto_response_rules(state, "B to enter menu")
 
     assert sent == [("device:device:1", "\x02")]
-    assert rule.enabled
+    assert not rule.enabled
     assert window.auto_response_rule_signature(rule) in state.auto_response_triggered_rules
     assert "Auto response sent: Boot Ctrl+B" in state.log_path.read_text(encoding="utf-8")
 
 
-def test_auto_response_workflow_sends_multiple_actions_then_waits_for_next_match(
+def test_auto_response_rule_ignores_initial_session_output_until_user_input(
     app: QApplication,
     tmp_path,
 ) -> None:
@@ -505,6 +659,74 @@ def test_auto_response_workflow_sends_multiple_actions_then_waits_for_next_match
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
     )
+    rule = AutoResponseRule(name="Manual Ctrl+B", pattern="Ctrl+B", response="\x02")
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "Press Ctrl+B to enter menu")
+
+    assert sent == []
+    assert state.auto_response_buffer == ""
+
+
+def test_auto_response_rule_can_match_initial_output_when_allowed(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    )
+    rule = AutoResponseRule(
+        name="Boot Ctrl+B",
+        pattern="Ctrl+B",
+        response="\x02",
+        allow_startup_trigger=True,
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "Press Ctrl+B to enter menu")
+
+    assert sent == [("device:device:1", "\x02")]
+
+
+def test_auto_response_workflow_sends_multiple_actions_then_waits_for_next_match(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
     rule = AutoResponseRule(
         name="启动流程",
         pattern="Ctrl+B",
@@ -552,7 +774,7 @@ def test_auto_response_workflow_respects_case_sensitive_matching(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -565,7 +787,7 @@ def test_auto_response_workflow_respects_case_sensitive_matching(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     rule = AutoResponseRule(
         name="大小写测试",
         pattern="Ctrl+B",
@@ -596,7 +818,7 @@ def test_auto_response_can_send_to_another_terminal_by_title(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    source_state = SessionTabState(
+    source_state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -609,8 +831,8 @@ def test_auto_response_can_send_to_another_terminal_by_title(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "source.log",
-    )
-    target_state = SessionTabState(
+    ))
+    target_state = _allow_auto_response(SessionTabState(
         tab_id="device:linux:2",
         kind="linux",
         device_id="device",
@@ -623,7 +845,7 @@ def test_auto_response_can_send_to_another_terminal_by_title(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "target.log",
-    )
+    ))
     rule = AutoResponseRule(
         name="跨终端流程",
         pattern="READY",
@@ -655,7 +877,7 @@ def test_auto_response_reenable_resets_hit_count_and_rearms_once_rule(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -668,7 +890,7 @@ def test_auto_response_reenable_resets_hit_count_and_rearms_once_rule(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     rule = AutoResponseRule(name="Boot Ctrl+B", pattern="Ctrl+B", response="\x02")
     window.remembered_auto_response_rules = [rule]
     window.session_tabs_by_id = {state.tab_id: state}
@@ -699,7 +921,7 @@ def test_once_auto_response_button_turns_inactive_after_current_session_hit(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -712,7 +934,7 @@ def test_once_auto_response_button_turns_inactive_after_current_session_hit(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     rule = AutoResponseRule(name="登录B菜单", pattern="ADMIN", response="\x01", response_text="Ctrl+A")
     state.auto_response_triggered_rules.add(window.auto_response_rule_signature(rule))
     window.remembered_auto_response_rules = [rule]
@@ -736,7 +958,7 @@ def test_auto_response_rule_can_match_existing_recent_buffer(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -750,7 +972,7 @@ def test_auto_response_rule_can_match_existing_recent_buffer(
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
         auto_response_buffer="Press Ctrl+A to enter ADMIN menu:",
-    )
+    ))
     window.remembered_auto_response_rules = [
         AutoResponseRule(name="Admin Ctrl+A", pattern="ADMIN", response="\x01")
     ]
@@ -769,7 +991,7 @@ def test_auto_response_regex_rule_matches_terminal_output(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -782,7 +1004,7 @@ def test_auto_response_regex_rule_matches_terminal_output(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     window.remembered_auto_response_rules = [
         AutoResponseRule(
             name="Password",
@@ -806,7 +1028,7 @@ def test_auto_response_rule_honors_max_triggers(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -819,7 +1041,7 @@ def test_auto_response_rule_honors_max_triggers(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     rule = AutoResponseRule(
         name="Prompt",
         pattern=">",
@@ -841,6 +1063,7 @@ def test_auto_response_rule_honors_max_triggers(
         ("device:device:1", "display version\r"),
     ]
     assert rule.trigger_count == 2
+    assert not rule.enabled
 
 
 def test_auto_response_rule_can_delay_sending(
@@ -850,7 +1073,7 @@ def test_auto_response_rule_can_delay_sending(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -863,7 +1086,7 @@ def test_auto_response_rule_can_delay_sending(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
-    )
+    ))
     rule = AutoResponseRule(name="Prompt", pattern=">", response="display clock\r", delay_ms=300)
     window.remembered_auto_response_rules = [rule]
     window.current_session_state = lambda: state  # type: ignore[method-assign]
@@ -885,13 +1108,68 @@ def test_auto_response_rule_can_delay_sending(
     assert sent == [("device:device:1", "display clock\r")]
 
 
+def test_auto_response_workflow_can_delay_between_responses(
+    app: QApplication,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Boot sequence",
+        pattern="Ctrl+B",
+        response="\x02",
+        steps=[
+            AutoResponseStep(
+                pattern="Ctrl+B",
+                responses=["\x02", "display version\r"],
+                response_texts=["Ctrl+B", "display version"],
+                response_targets=["source", "source"],
+                response_delays=[0, 1000],
+            )
+        ],
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    scheduled: list[tuple[int, object]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.app.session_ops.QTimer",
+        SimpleNamespace(singleShot=lambda delay, callback: scheduled.append((delay, callback))),
+    )
+
+    window.apply_auto_response_rules(state, "Press Ctrl+B to enter menu")
+
+    assert sent == [("device:device:1", "\x02")]
+    assert len(scheduled) == 1
+    delay, callback = scheduled[0]
+    assert delay == 1000
+    callback()
+    assert sent == [("device:device:1", "\x02"), ("device:device:1", "display version\r")]
+
+
 def test_auto_response_rule_ignores_stale_buffer_on_new_output(
     app: QApplication,
     tmp_path,
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    state = SessionTabState(
+    state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -905,7 +1183,7 @@ def test_auto_response_rule_ignores_stale_buffer_on_new_output(
         session=SimpleNamespace(),
         log_path=tmp_path / "session.log",
         auto_response_buffer="Press Ctrl+A to enter ADMIN menu: ",
-    )
+    ))
     rule = AutoResponseRule(name="Admin Ctrl+A", pattern="ADMIN", response="\x01")
     window.remembered_auto_response_rules = [rule]
     window.current_session_state = lambda: state  # type: ignore[method-assign]
@@ -924,7 +1202,7 @@ def test_auto_response_rule_only_applies_to_selected_session(
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
-    selected_state = SessionTabState(
+    selected_state = _allow_auto_response(SessionTabState(
         tab_id="device:device:1",
         kind="device",
         device_id="device",
@@ -937,8 +1215,8 @@ def test_auto_response_rule_only_applies_to_selected_session(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "selected.log",
-    )
-    background_state = SessionTabState(
+    ))
+    background_state = _allow_auto_response(SessionTabState(
         tab_id="device:device:2",
         kind="device",
         device_id="device",
@@ -951,7 +1229,7 @@ def test_auto_response_rule_only_applies_to_selected_session(
         terminal=SimpleNamespace(),
         session=SimpleNamespace(),
         log_path=tmp_path / "background.log",
-    )
+    ))
     window.remembered_auto_response_rules = [
         AutoResponseRule(name="Boot Ctrl+B", pattern="Ctrl+B", response="\x02")
     ]
@@ -963,3 +1241,4 @@ def test_auto_response_rule_only_applies_to_selected_session(
     window.apply_auto_response_rules(selected_state, "Press Ctrl+B to enter menu")
 
     assert sent == [("device:device:1", "\x02")]
+

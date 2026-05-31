@@ -18,6 +18,7 @@ try:
         QDialogButtonBox,
         QFormLayout,
         QFrame,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,
@@ -54,6 +55,7 @@ except ModuleNotFoundError:
     QDialogButtonBox = None
     QFormLayout = None
     QFrame = None
+    QGridLayout = None
     QGroupBox = None
     QHBoxLayout = None
     QLabel = None
@@ -71,7 +73,13 @@ except ModuleNotFoundError:
     QWidget = None
 
 from ..app_state import DeviceTabState, SessionTabState
-from ..auto_response import AutoResponseRule, AutoResponseStep, TerminalQuickButton, decode_response_text
+from ..auto_response import (
+    AutoResponseRule,
+    AutoResponseStep,
+    TerminalQuickButton,
+    auto_response_rule_allows_startup_trigger,
+    decode_response_text,
+)
 from ..data import Device
 from ..helpers import mask_password
 from ..linux_session import LinuxSshSession
@@ -102,7 +110,8 @@ if QDialog is not None:
         ) -> None:
             super().__init__(parent)
             self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
-            self.setMinimumWidth(620)
+            self.setMinimumWidth(820)
+            self.resize(860, 620)
 
             layout = QFormLayout(self)
             layout.setContentsMargins(18, 16, 18, 14)
@@ -115,6 +124,10 @@ if QDialog is not None:
             self.case_sensitive_input.setChecked(rule.case_sensitive if rule is not None else True)
             self.once_input = QCheckBox("命中一次后自动停用")
             self.once_input.setChecked(rule.once if rule is not None else True)
+            self.allow_startup_trigger_input = QCheckBox("连接启动阶段允许触发")
+            self.allow_startup_trigger_input.setChecked(
+                rule.allow_startup_trigger if rule is not None else False
+            )
             self.match_type_input = QComboBox()
             self.match_type_input.addItem("包含", "contains")
             self.match_type_input.addItem("正则", "regex")
@@ -168,6 +181,7 @@ if QDialog is not None:
             layout.addRow("", self.append_enter_input)
             layout.addRow("", self.case_sensitive_input)
             layout.addRow("", self.once_input)
+            layout.addRow("", self.allow_startup_trigger_input)
 
             layout.addRow("延迟发送(ms)", self.delay_ms_input)
             layout.addRow("最大触发次数", self.max_triggers_input)
@@ -185,9 +199,11 @@ if QDialog is not None:
                 "response_text": first_response,
                 "steps_text": self.steps_text(),
                 "step_targets": self.step_targets(),
+                "step_delays": self.step_delays(),
                 "append_enter": self.append_enter_input.isChecked(),
                 "case_sensitive": self.case_sensitive_input.isChecked(),
                 "once": self.once_input.isChecked(),
+                "allow_startup_trigger": self.allow_startup_trigger_input.isChecked(),
                 "match_type": self.match_type_input.currentData() or "contains",
                 "delay_ms": self.parse_nonnegative_int(self.delay_ms_input.text()),
                 "max_triggers": self.parse_nonnegative_int(self.max_triggers_input.text()),
@@ -203,7 +219,12 @@ if QDialog is not None:
         def populate_step_rows(self, rule: AutoResponseRule | None) -> None:
             if rule is not None and rule.steps:
                 for step in rule.steps:
-                    self.add_condition_block(step.pattern, step.response_texts, step.response_targets)
+                    self.add_condition_block(
+                        step.pattern,
+                        step.response_texts,
+                        step.response_targets,
+                        step.response_delays,
+                    )
                 return
             self.add_wait_row(
                 rule.pattern if rule is not None else "Ctrl+B",
@@ -218,6 +239,7 @@ if QDialog is not None:
             pattern: str = "",
             response_texts: list[str] | None = None,
             response_targets: list[str] | None = None,
+            response_delays: list[int] | None = None,
         ) -> None:
             frame = QFrame()
             frame.setObjectName("navFilterBar")
@@ -285,8 +307,14 @@ if QDialog is not None:
             self.condition_blocks.append(block)
             self.steps_layout.addWidget(frame)
             targets = response_targets or []
+            delays = response_delays or []
             for index, response_text in enumerate(response_texts or [""]):
-                self.add_response_row(block, response_text, targets[index] if index < len(targets) else "current")
+                self.add_response_row(
+                    block,
+                    response_text,
+                    targets[index] if index < len(targets) else "current",
+                    delays[index] if index < len(delays) else 0,
+                )
             self.refresh_condition_block_titles()
 
         def add_send_row(self, response_text: str = "") -> None:
@@ -299,6 +327,7 @@ if QDialog is not None:
             block: dict[str, Any],
             response_text: str = "",
             response_target: str = "current",
+            response_delay: int = 0,
         ) -> None:
             responses_layout = block.get("responses_layout")
             if not isinstance(responses_layout, QVBoxLayout):
@@ -313,10 +342,14 @@ if QDialog is not None:
 
             response_input = QLineEdit(response_text)
             response_input.setPlaceholderText(r"要发给设备的内容，例如 admin / display version / Ctrl+A")
+            delay_input = QLineEdit(str(max(0, int(response_delay or 0))))
+            delay_input.setPlaceholderText("0")
+            delay_input.setFixedWidth(72)
             target_combo = QComboBox()
             for label, value in self.response_target_options():
                 self.add_response_target_option(target_combo, label, value)
-            target_combo.setFixedWidth(190)
+            target_combo.setFixedWidth(160)
+            response_input.setMinimumWidth(180)
             self.fit_response_target_combo_popup(target_combo)
             remove_button = QPushButton("删除")
             remove_button.setObjectName("compactGhostButton")
@@ -327,6 +360,8 @@ if QDialog is not None:
             row_layout.addWidget(QLabel("到"))
             row_layout.addWidget(target_combo)
             row_layout.addWidget(response_input, 1)
+            row_layout.addWidget(QLabel("等待(ms)"))
+            row_layout.addWidget(delay_input)
             row_layout.addWidget(remove_button)
 
             row = {
@@ -334,6 +369,7 @@ if QDialog is not None:
                 "label": response_label,
                 "target_combo": target_combo,
                 "response_input": response_input,
+                "delay_input": delay_input,
                 "remove_button": remove_button,
             }
             self.set_response_target_widgets(row, response_target)
@@ -480,6 +516,20 @@ if QDialog is not None:
                         continue
                     targets.append(SessionOpsMixin.normalize_auto_response_target(target_combo.currentData()))
             return targets
+
+        def step_delays(self) -> list[int]:
+            delays: list[int] = []
+            for block in self.condition_blocks:
+                response_rows = block.get("response_rows")
+                if not isinstance(response_rows, list):
+                    continue
+                for row in response_rows:
+                    delay_input = row.get("delay_input")
+                    if not isinstance(delay_input, QLineEdit):
+                        delays.append(0)
+                        continue
+                    delays.append(self.parse_nonnegative_int(delay_input.text()))
+            return delays
 
 
     class QuickSendButtonDialog(QDialog):
@@ -911,8 +961,8 @@ class SessionOpsMixin:
             return
 
         bar.setVisible(True)
-        visible_quick_buttons = quick_buttons[:3]
-        for quick_button in visible_quick_buttons:
+        button_index = 0
+        for quick_button in quick_buttons:
             button = QToolButton()
             button.setObjectName("autoResponseRuleButton")
             button.setText(self.quick_send_button_text(quick_button))
@@ -932,26 +982,43 @@ class SessionOpsMixin:
                     pos,
                 )
             )
-            layout.addWidget(button)
+            self.add_auto_response_bar_button(layout, button_index, button)
+            button_index += 1
 
-        visible_rules = rules[:3]
-        for rule in visible_rules:
+        for rule in rules:
             signature = self.auto_response_rule_signature(rule)
             completed_once = bool(
                 state is not None
                 and rule.once
                 and signature in state.auto_response_triggered_rules
             )
+            startup_suppressed = bool(
+                state is None
+                or (state.suppress_auto_response_until_input and not state.user_input_seen)
+            )
+            allows_startup_trigger = auto_response_rule_allows_startup_trigger(rule)
+            waiting_for_input = bool(startup_suppressed and rule.enabled and not allows_startup_trigger)
+            trigger_limit_reached = bool(rule.max_triggers and rule.trigger_count >= rule.max_triggers)
+            effective_enabled = bool(rule.enabled and not completed_once and not waiting_for_input and not trigger_limit_reached)
             button = QToolButton()
             button.setObjectName("autoResponseRuleButton")
             button.setText(self.auto_response_rule_button_text(rule))
             button.setToolButtonStyle(Qt.ToolButtonTextOnly)
             button.setCheckable(True)
-            button.setChecked(rule.enabled and not completed_once)
+            button.setChecked(effective_enabled)
+            button.setProperty("waitingForInput", "true" if waiting_for_input else "false")
             status_text = (
                 "已执行，本终端不会再次自动发送；左键可重新启用"
                 if completed_once
-                else f"{'启用' if rule.enabled else '停用'}，对当前选中终端生效；左键切换，右键编辑"
+                else (
+                    "触发次数已用完；左键可重新启用，右键编辑"
+                    if trigger_limit_reached
+                    else (
+                    "已启用，等待本终端第一次用户输入后开始监听；左键停用，右键编辑"
+                    if waiting_for_input
+                    else f"{'启用' if rule.enabled else '停用'}，对当前选中终端生效；左键切换，右键编辑"
+                    )
+                )
             )
             button.setToolTip(
                 f"{rule.name}\n匹配: {rule.pattern}\n"
@@ -971,14 +1038,19 @@ class SessionOpsMixin:
                     pos,
                 )
             )
-            layout.addWidget(button)
+            self.add_auto_response_bar_button(layout, button_index, button)
+            button_index += 1
 
-        overflow = len(quick_buttons) + len(rules) - len(visible_quick_buttons) - len(visible_rules)
-        if overflow > 0:
-            more = QLabel(f"+{overflow}")
-            more.setObjectName("autoResponseOverflowLabel")
-            more.setToolTip("更多自动响应规则在“自动响应”菜单中管理")
-            layout.addWidget(more)
+        layout.addStretch(1)
+        layout.activate()
+
+    @staticmethod
+    def add_auto_response_bar_button(layout: Any, index: int, button: QToolButton) -> None:
+        if QGridLayout is not None and isinstance(layout, QGridLayout):
+            columns = 8
+            layout.addWidget(button, index // columns, index % columns)
+            return
+        layout.addWidget(button)
 
     @staticmethod
     def auto_response_rule_button_text(rule: AutoResponseRule) -> str:
@@ -1090,6 +1162,8 @@ class SessionOpsMixin:
         )
 
     def toggle_auto_response_rule_from_button(self, rule: AutoResponseRule, enabled: bool) -> None:
+        if enabled:
+            rule.trigger_count = 0
         self.set_auto_response_rule_enabled(rule, enabled)
         self.refresh_auto_response_rule_buttons()
 
@@ -1120,6 +1194,7 @@ class SessionOpsMixin:
     def set_auto_response_rule_enabled(self, rule: AutoResponseRule, enabled: bool) -> None:
         rule.enabled = enabled
         if enabled:
+            rule.trigger_count = 0
             self.reset_auto_response_rule_hits(rule)
         self.remember_auto_response_rule(rule)
         reset_text = "，命中次数已清零" if enabled else ""
@@ -1140,9 +1215,11 @@ class SessionOpsMixin:
             response_text=str(values["response_text"]),
             steps_text=str(values["steps_text"]),
             step_targets=list(values.get("step_targets", [])),
+            step_delays=list(values.get("step_delays", [])),
             append_enter=bool(values["append_enter"]),
             case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
+            allow_startup_trigger=bool(values.get("allow_startup_trigger", False)),
             match_type=str(values.get("match_type") or "contains"),
             delay_ms=int(values.get("delay_ms") or 0),
             max_triggers=int(values.get("max_triggers") or 0),
@@ -1171,9 +1248,11 @@ class SessionOpsMixin:
             response_text=str(values["response_text"]),
             steps_text=str(values["steps_text"]),
             step_targets=list(values.get("step_targets", [])),
+            step_delays=list(values.get("step_delays", [])),
             append_enter=bool(values["append_enter"]),
             case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
+            allow_startup_trigger=bool(values.get("allow_startup_trigger", False)),
             match_type=str(values.get("match_type") or "contains"),
             delay_ms=int(values.get("delay_ms") or 0),
             max_triggers=int(values.get("max_triggers") or 0),
@@ -1187,6 +1266,7 @@ class SessionOpsMixin:
         rule.append_enter = updated.append_enter
         rule.case_sensitive = updated.case_sensitive
         rule.once = updated.once
+        rule.allow_startup_trigger = updated.allow_startup_trigger
         rule.match_type = updated.match_type
         rule.delay_ms = updated.delay_ms
         rule.max_triggers = updated.max_triggers
@@ -1207,6 +1287,7 @@ class SessionOpsMixin:
             response_text="Ctrl+B",
             case_sensitive=True,
             once=True,
+            allow_startup_trigger=True,
         )
         if rule is None:
             return
@@ -1222,9 +1303,11 @@ class SessionOpsMixin:
         response_text: str,
         steps_text: str = "",
         step_targets: list[str] | None = None,
+        step_delays: list[int] | None = None,
         append_enter: bool = False,
         case_sensitive: bool = False,
         once: bool = True,
+        allow_startup_trigger: bool = False,
         match_type: str = "contains",
         delay_ms: int = 0,
         max_triggers: int = 0,
@@ -1242,6 +1325,7 @@ class SessionOpsMixin:
             steps_text,
             append_enter=append_enter,
             step_targets=step_targets,
+            step_delays=step_delays,
         )
         if steps is None:
             return None
@@ -1274,6 +1358,7 @@ class SessionOpsMixin:
             append_enter=append_enter,
             case_sensitive=case_sensitive,
             once=once,
+            allow_startup_trigger=allow_startup_trigger,
             match_type=normalized_match_type,
             delay_ms=normalized_delay_ms,
             max_triggers=normalized_max_triggers,
@@ -1286,6 +1371,7 @@ class SessionOpsMixin:
         *,
         append_enter: bool,
         step_targets: list[str] | None = None,
+        step_delays: list[int] | None = None,
     ) -> list[AutoResponseStep] | None:
         if not steps_text.strip():
             return []
@@ -1322,6 +1408,14 @@ class SessionOpsMixin:
                     step_targets[target_index] if step_targets and target_index < len(step_targets) else "current"
                 )
             )
+            try:
+                response_delay = max(
+                    0,
+                    int(step_delays[target_index] if step_delays and target_index < len(step_delays) else 0),
+                )
+            except (TypeError, ValueError):
+                response_delay = 0
+            current_step.response_delays.append(response_delay)
             target_index += 1
         if not steps:
             self.show_warning("流程步骤不能为空。")
@@ -1668,6 +1762,7 @@ class SessionOpsMixin:
                 enabled=rule.enabled,
                 case_sensitive=rule.case_sensitive,
                 once=rule.once,
+                allow_startup_trigger=rule.allow_startup_trigger,
                 match_type=rule.match_type,
                 delay_ms=rule.delay_ms,
                 max_triggers=rule.max_triggers,
@@ -1678,6 +1773,7 @@ class SessionOpsMixin:
                         responses=list(step.responses),
                         response_texts=list(step.response_texts),
                         response_targets=list(step.response_targets),
+                        response_delays=list(step.response_delays),
                     )
                     for step in rule.steps
                 ],
@@ -1693,6 +1789,7 @@ class SessionOpsMixin:
                 tuple(step.responses),
                 tuple(step.response_texts),
                 tuple(step.response_targets),
+                tuple(step.response_delays),
             )
             for step in rule.steps
         )
@@ -1704,6 +1801,7 @@ class SessionOpsMixin:
             rule.append_enter,
             rule.case_sensitive,
             rule.once,
+            rule.allow_startup_trigger,
             rule.match_type,
             rule.delay_ms,
             rule.max_triggers,
@@ -2395,10 +2493,19 @@ class SessionOpsMixin:
         selected_state = self.current_session_state()
         if selected_state is not None and selected_state is not state:
             return
+        startup_suppressed = state.suppress_auto_response_until_input and not state.user_input_seen
+        rules = self.remembered_auto_response_rules or state.auto_response_rules
+        if startup_suppressed and not any(
+            rule.enabled and auto_response_rule_allows_startup_trigger(rule) for rule in rules
+        ):
+            if message:
+                state.auto_response_buffer = ""
+            return
         previous_buffer = state.auto_response_buffer
         state.auto_response_buffer = (previous_buffer + message)[-4096:]
-        rules = self.remembered_auto_response_rules or state.auto_response_rules
         for rule in list(rules):
+            if startup_suppressed and not auto_response_rule_allows_startup_trigger(rule):
+                continue
             signature = self.auto_response_rule_signature(rule)
             if rule.once and signature in state.auto_response_triggered_rules:
                 continue
@@ -2418,6 +2525,7 @@ class SessionOpsMixin:
                 continue
             rule.trigger_count += 1
             next_step_index = step_index + 1
+            completed_rule = next_step_index >= len(steps)
             if next_step_index >= len(steps):
                 state.auto_response_rule_steps.pop(signature, None)
                 if rule.once:
@@ -2426,6 +2534,10 @@ class SessionOpsMixin:
                 state.auto_response_rule_steps[signature] = next_step_index
             if rule.once and next_step_index >= len(steps):
                 state.auto_response_triggered_rules.add(signature)
+            if completed_rule and rule.once:
+                rule.enabled = False
+            if rule.max_triggers and rule.trigger_count >= rule.max_triggers:
+                rule.enabled = False
             state.auto_response_buffer = ""
             self.write_session_log_line(
                 state,
@@ -2433,21 +2545,28 @@ class SessionOpsMixin:
                 f"Auto response sent: {rule.name} step {step_index + 1}/{len(steps)}",
             )
             self.set_status_message(f"自动响应已发送: {rule.name}（命中 {rule.trigger_count} 次）")
+            cumulative_delay_ms = max(0, int(rule.delay_ms or 0))
             for index, response in enumerate(step.responses):
                 target = step.response_targets[index] if index < len(step.response_targets) else "source"
+                if index < len(step.response_delays):
+                    try:
+                        cumulative_delay_ms += max(0, int(step.response_delays[index]))
+                    except (TypeError, ValueError):
+                        pass
                 target_tab_id = self.auto_response_target_tab_id(state, target)
                 if not target_tab_id:
                     self.write_session_log_line(state, "SYS", f"Auto response target missing: {target}")
                     self.set_status_message(f"自动响应目标终端不存在: {target}")
                     continue
-                if rule.delay_ms > 0 and QTimer is not None:
+                if cumulative_delay_ms > 0 and QTimer is not None:
                     QTimer.singleShot(
-                        rule.delay_ms,
+                        cumulative_delay_ms,
                         lambda tab_id=target_tab_id, text=response: self.send_session_text(tab_id, text),
                     )
                 else:
                     self.send_session_text(target_tab_id, response)
             self.refresh_auto_response_rule_buttons()
+            self.schedule_desktop_state_save()
             return
 
     @staticmethod
@@ -2469,6 +2588,7 @@ class SessionOpsMixin:
                 responses=[rule.response],
                 response_texts=[rule.response_text or rule.response],
                 response_targets=["source"],
+                response_delays=[0],
             )
         ]
 
@@ -2531,6 +2651,14 @@ class SessionOpsMixin:
         if state is None:
             return
 
+        rule_buttons_need_refresh = bool(
+            text and state.suppress_auto_response_until_input and not state.user_input_seen
+        )
+        if text:
+            state.user_input_seen = True
+            state.suppress_auto_response_until_input = False
+            if rule_buttons_need_refresh:
+                self.refresh_auto_response_rule_buttons()
         if text == "\x7f":
             text = "\x08" if state.kind in {"device", "serial"} else "\x7f"
         self.log_session_input(state, text)

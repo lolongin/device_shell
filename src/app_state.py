@@ -64,6 +64,8 @@ class SessionTabState:
     auto_response_rule_steps: dict[tuple[object, ...], int] = field(default_factory=dict)
     pending_input_text: str = ""
     input_flush_scheduled: bool = False
+    user_input_seen: bool = False
+    suppress_auto_response_until_input: bool = True
     terminal_ready_wait_attempts: int = 0
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None

@@ -774,8 +774,17 @@ QToolButton#autoResponseRuleButton:checked {
     border-color: #2f7d5b;
     color: #d1fae5;
 }
+QToolButton#autoResponseRuleButton[waitingForInput="true"]:checked {
+    background: #101915;
+    border-color: #2b6049;
+    color: #b7e4cf;
+}
 QToolButton#autoResponseRuleButton:!checked {
     color: #7f8b99;
+}
+QFrame#autoResponseRuleBar {
+    background: transparent;
+    border: none;
 }
 QLabel#autoResponseOverflowLabel {
     color: #9fb0c2;
@@ -1642,8 +1651,17 @@ QToolButton#autoResponseRuleButton:checked {
     border-color: #2f7d5b;
     color: #d1fae5;
 }
+QToolButton#autoResponseRuleButton[waitingForInput="true"]:checked {
+    background: #101915;
+    border-color: #2b6049;
+    color: #b7e4cf;
+}
 QToolButton#autoResponseRuleButton:!checked {
     color: #707070;
+}
+QFrame#autoResponseRuleBar {
+    background: transparent;
+    border: none;
 }
 QLabel#autoResponseOverflowLabel {
     color: #808080;

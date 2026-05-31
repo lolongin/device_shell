@@ -27,6 +27,7 @@ class AutoResponseStep:
     responses: list[str] = field(default_factory=list)
     response_texts: list[str] = field(default_factory=list)
     response_targets: list[str] = field(default_factory=list)
+    response_delays: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -44,6 +45,7 @@ class AutoResponseRule:
     match_type: str = "contains"
     delay_ms: int = 0
     max_triggers: int = 0
+    allow_startup_trigger: bool = False
     trigger_count: int = 0
     steps: list[AutoResponseStep] = field(default_factory=list)
 
@@ -102,6 +104,8 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
         "match_type": rule.match_type,
         "delay_ms": rule.delay_ms,
         "max_triggers": rule.max_triggers,
+        "allow_startup_trigger": rule.allow_startup_trigger,
+        "trigger_count": rule.trigger_count,
     }
     if rule.steps:
         payload["steps"] = [
@@ -110,6 +114,7 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
                 "responses": step.responses,
                 "response_texts": step.response_texts,
                 "response_targets": step.response_targets,
+                "response_delays": step.response_delays,
             }
             for step in rule.steps
         ]
@@ -152,6 +157,19 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         max_triggers = max(0, int(value.get("max_triggers", 0)))
     except (TypeError, ValueError):
         max_triggers = 0
+    try:
+        trigger_count = max(0, int(value.get("trigger_count", 0)))
+    except (TypeError, ValueError):
+        trigger_count = 0
+    allow_startup_trigger = bool(value.get("allow_startup_trigger", False))
+    if "allow_startup_trigger" not in value:
+        allow_startup_trigger = _looks_like_boot_ctrl_b_rule(
+            name=name,
+            pattern=pattern,
+            response=response,
+            response_text=response_text,
+            steps=steps,
+        )
     return AutoResponseRule(
         name=name,
         pattern=pattern,
@@ -164,8 +182,41 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         match_type=match_type,
         delay_ms=delay_ms,
         max_triggers=max_triggers,
-        trigger_count=0,
+        allow_startup_trigger=allow_startup_trigger,
+        trigger_count=trigger_count,
         steps=steps,
+    )
+
+
+def _looks_like_boot_ctrl_b_rule(
+    *,
+    name: str,
+    pattern: str,
+    response: str,
+    response_text: str,
+    steps: list[AutoResponseStep],
+) -> bool:
+    """Backfill startup triggering for older saved boot-menu templates."""
+
+    normalized_name = name.casefold()
+    if "启动菜单" not in name and "boot" not in normalized_name:
+        return False
+    if steps:
+        first_step = steps[0]
+        first_response = first_step.responses[0] if first_step.responses else ""
+        return first_step.pattern.casefold() == "ctrl+b" and first_response == "\x02"
+    return pattern.casefold() == "ctrl+b" and (response == "\x02" or response_text.casefold() == "ctrl+b")
+
+
+def auto_response_rule_allows_startup_trigger(rule: AutoResponseRule) -> bool:
+    """Return whether a rule should be active during connection startup output."""
+
+    return rule.allow_startup_trigger or _looks_like_boot_ctrl_b_rule(
+        name=rule.name,
+        pattern=rule.pattern,
+        response=rule.response,
+        response_text=rule.response_text,
+        steps=rule.steps,
     )
 
 
@@ -182,6 +233,7 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
         raw_responses = item.get("responses")
         raw_response_texts = item.get("response_texts")
         raw_response_targets = item.get("response_targets")
+        raw_response_delays = item.get("response_delays")
         if not pattern or not isinstance(raw_responses, list):
             continue
         responses = [str(response) for response in raw_responses if str(response)]
@@ -195,10 +247,19 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
             if isinstance(raw_response_targets, list)
             else []
         )
+        response_delays = []
+        if isinstance(raw_response_delays, list):
+            for response_delay in raw_response_delays:
+                try:
+                    response_delays.append(max(0, int(response_delay)))
+                except (TypeError, ValueError):
+                    response_delays.append(0)
         if len(response_texts) < len(responses):
             response_texts.extend(responses[len(response_texts) :])
         if len(response_targets) < len(responses):
             response_targets.extend(["source"] * (len(responses) - len(response_targets)))
+        if len(response_delays) < len(responses):
+            response_delays.extend([0] * (len(responses) - len(response_delays)))
         if responses:
             steps.append(
                 AutoResponseStep(
@@ -206,6 +267,7 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
                     responses=responses,
                     response_texts=response_texts[: len(responses)],
                     response_targets=response_targets[: len(responses)],
+                    response_delays=response_delays[: len(responses)],
                 )
             )
     return steps
