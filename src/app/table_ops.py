@@ -757,7 +757,7 @@ class TableOpsMixin:
         toggle_action = menu.addAction("占用 / 释放")
         power_off_action = menu.addAction("掉电")
         menu.addSeparator()
-        open_device_action = menu.addAction("打开模拟终端" if self.is_simulated_device(device) else "打开设备管理口")
+        open_device_action = menu.addAction("打开设备管理口")
         open_linux_action = menu.addAction("打开 Linux 后台")
         open_serial_action = menu.addAction("打开串口")
         simulated = self.is_simulated_device(device)

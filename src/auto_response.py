@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -19,6 +19,16 @@ CONTROL_KEY_ALIASES = {
 
 
 @dataclass(slots=True)
+class AutoResponseStep:
+    """One step in an auto-response workflow."""
+
+    pattern: str
+    responses: list[str] = field(default_factory=list)
+    response_texts: list[str] = field(default_factory=list)
+    response_targets: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class AutoResponseRule:
     """A current-session rule that sends text when terminal output matches."""
 
@@ -31,6 +41,7 @@ class AutoResponseRule:
     case_sensitive: bool = False
     once: bool = True
     trigger_count: int = 0
+    steps: list[AutoResponseStep] = field(default_factory=list)
 
     def matches(self, output: str) -> bool:
         if not self.enabled or not self.pattern:
@@ -69,7 +80,7 @@ def default_quick_send_buttons() -> list[TerminalQuickButton]:
 def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
     """Serialize a rule template without current-session trigger state."""
 
-    return {
+    payload = {
         "name": rule.name,
         "pattern": rule.pattern,
         "response": rule.response,
@@ -79,6 +90,17 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
         "case_sensitive": rule.case_sensitive,
         "once": rule.once,
     }
+    if rule.steps:
+        payload["steps"] = [
+            {
+                "pattern": step.pattern,
+                "responses": step.responses,
+                "response_texts": step.response_texts,
+                "response_targets": step.response_targets,
+            }
+            for step in rule.steps
+        ]
+    return payload
 
 
 def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
@@ -89,14 +111,21 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
     name = str(value.get("name") or "").strip() or "自动响应"
     pattern = str(value.get("pattern") or "").strip()
     response_text = str(value.get("response_text") or "")
-    if not pattern:
-        return None
     response = str(value.get("response") or "")
     if not response and response_text:
         response = decode_response_text(
             response_text,
             append_enter=bool(value.get("append_enter", False)),
         )
+    steps = deserialize_auto_response_steps(value.get("steps"))
+    if not pattern and steps:
+        pattern = steps[0].pattern
+    if not response and steps and steps[0].responses:
+        response = steps[0].responses[0]
+    if not response_text and steps and steps[0].response_texts:
+        response_text = steps[0].response_texts[0]
+    if not pattern:
+        return None
     if not response:
         return None
     return AutoResponseRule(
@@ -109,7 +138,50 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         case_sensitive=bool(value.get("case_sensitive", False)),
         once=bool(value.get("once", True)),
         trigger_count=0,
+        steps=steps,
     )
+
+
+def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
+    """Load saved workflow steps, ignoring malformed entries."""
+
+    if not isinstance(value, list):
+        return []
+    steps: list[AutoResponseStep] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        pattern = str(item.get("pattern") or "").strip()
+        raw_responses = item.get("responses")
+        raw_response_texts = item.get("response_texts")
+        raw_response_targets = item.get("response_targets")
+        if not pattern or not isinstance(raw_responses, list):
+            continue
+        responses = [str(response) for response in raw_responses if str(response)]
+        response_texts = (
+            [str(response_text) for response_text in raw_response_texts]
+            if isinstance(raw_response_texts, list)
+            else []
+        )
+        response_targets = (
+            [str(response_target) for response_target in raw_response_targets]
+            if isinstance(raw_response_targets, list)
+            else []
+        )
+        if len(response_texts) < len(responses):
+            response_texts.extend(responses[len(response_texts) :])
+        if len(response_targets) < len(responses):
+            response_targets.extend(["source"] * (len(responses) - len(response_targets)))
+        if responses:
+            steps.append(
+                AutoResponseStep(
+                    pattern=pattern,
+                    responses=responses,
+                    response_texts=response_texts[: len(responses)],
+                    response_targets=response_targets[: len(responses)],
+                )
+            )
+    return steps
 
 
 def serialize_quick_send_button(button: TerminalQuickButton) -> dict[str, object]:

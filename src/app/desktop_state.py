@@ -27,7 +27,7 @@ from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 8
+DESKTOP_STATE_VERSION = 9
 
 
 class DesktopStateMixin:
@@ -113,6 +113,27 @@ class DesktopStateMixin:
                 if button is not None:
                     quick_buttons.append(button)
             self.remembered_quick_send_buttons = quick_buttons
+        transfer_config = payload.get("file_transfer_service", {})
+        if isinstance(transfer_config, dict):
+            protocol = str(transfer_config.get("protocol") or self.transfer_protocol).lower()
+            if protocol in {"ftp", "sftp"}:
+                self.transfer_protocol = protocol
+            self.transfer_host = str(transfer_config.get("host") or self.transfer_host)
+            try:
+                self.transfer_port = int(transfer_config.get("port", self.transfer_port))
+            except (TypeError, ValueError):
+                pass
+            if state_version < 9:
+                if self.transfer_protocol == "ftp" and self.transfer_port == 21:
+                    self.transfer_port = 2121
+                elif self.transfer_protocol == "sftp" and self.transfer_port == 22:
+                    self.transfer_port = 2222
+            root = str(transfer_config.get("root") or "").strip()
+            if root:
+                self.transfer_root_directory = Path(root).expanduser()
+            self.transfer_username = str(transfer_config.get("username") or self.transfer_username)
+            self.transfer_password = str(transfer_config.get("password") or self.transfer_password)
+            self.transfer_writable = bool(transfer_config.get("writable", self.transfer_writable))
         loaded_log_directory = str(payload.get("log_directory") or "").strip()
         if loaded_log_directory:
             self.log_directory = Path(loaded_log_directory).expanduser()
@@ -171,6 +192,15 @@ class DesktopStateMixin:
                     serialize_quick_send_button(button)
                     for button in self.remembered_quick_send_buttons
                 ],
+                "file_transfer_service": {
+                    "protocol": self.transfer_protocol,
+                    "host": self.transfer_host,
+                    "port": self.transfer_port,
+                    "root": str(self.transfer_root_directory),
+                    "username": self.transfer_username,
+                    "password": self.transfer_password,
+                    "writable": self.transfer_writable,
+                },
                 "log_directory": str(self.log_directory),
                 "temporary_devices": [
                     serialize_temporary_device(device)

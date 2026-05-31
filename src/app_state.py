@@ -61,6 +61,7 @@ class SessionTabState:
     auto_response_rules: list[AutoResponseRule] = field(default_factory=list)
     auto_response_buffer: str = ""
     auto_response_triggered_rules: set[tuple[object, ...]] = field(default_factory=set)
+    auto_response_rule_steps: dict[tuple[object, ...], int] = field(default_factory=dict)
     pending_input_text: str = ""
     input_flush_scheduled: bool = False
     tab_title_label: QLabel | None = None

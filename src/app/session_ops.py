@@ -12,6 +12,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
+        QComboBox,
         QDialog,
         QDialogButtonBox,
         QFormLayout,
@@ -47,6 +48,7 @@ except ModuleNotFoundError:
     QTextBlockFormat = None
     QApplication = None
     QCheckBox = None
+    QComboBox = None
     QDialog = None
     QDialogButtonBox = None
     QFormLayout = None
@@ -68,7 +70,7 @@ except ModuleNotFoundError:
     QWidget = None
 
 from ..app_state import DeviceTabState, SessionTabState
-from ..auto_response import AutoResponseRule, TerminalQuickButton, decode_response_text
+from ..auto_response import AutoResponseRule, AutoResponseStep, TerminalQuickButton, decode_response_text
 from ..data import Device
 from ..helpers import mask_password
 from ..linux_session import LinuxSshSession
@@ -94,29 +96,59 @@ if QDialog is not None:
         ) -> None:
             super().__init__(parent)
             self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
-            self.setMinimumWidth(420)
+            self.setMinimumWidth(620)
 
             layout = QFormLayout(self)
             layout.setContentsMargins(18, 16, 18, 14)
             layout.setSpacing(10)
 
             self.name_input = QLineEdit(rule.name if rule is not None else "启动菜单 Ctrl+B")
-            self.pattern_input = QLineEdit(rule.pattern if rule is not None else "Ctrl+B")
-            self.response_input = QLineEdit(
-                rule.response_text if rule is not None and rule.response_text else "Ctrl+B"
-            )
             self.append_enter_input = QCheckBox("发送后追加 Enter")
             self.append_enter_input.setChecked(rule.append_enter if rule is not None else False)
+            self.case_sensitive_input = QCheckBox("匹配时区分大小写")
+            self.case_sensitive_input.setChecked(rule.case_sensitive if rule is not None else True)
             self.once_input = QCheckBox("命中一次后自动停用")
             self.once_input.setChecked(rule.once if rule is not None else True)
 
-            self.pattern_input.setPlaceholderText("例如 Press Ctrl+B、Password:、login:")
-            self.response_input.setPlaceholderText(r"例如 Ctrl+B、admin、\x02、Enter")
-
             layout.addRow("规则名称", self.name_input)
-            layout.addRow("匹配输出包含", self.pattern_input)
-            layout.addRow("发送内容", self.response_input)
+
+            self.condition_blocks: list[dict[str, Any]] = []
+            step_panel = QWidget()
+            step_panel_layout = QVBoxLayout(step_panel)
+            step_panel_layout.setContentsMargins(0, 0, 0, 0)
+            step_panel_layout.setSpacing(8)
+
+            flow_hint = QLabel("从上到下执行：先等终端出现内容，再按顺序发送下面的动作。")
+            flow_hint.setObjectName("sectionCopy")
+            flow_hint.setWordWrap(True)
+            step_panel_layout.addWidget(flow_hint)
+
+            self.steps_container = QWidget()
+            self.steps_layout = QVBoxLayout(self.steps_container)
+            self.steps_layout.setContentsMargins(0, 0, 0, 0)
+            self.steps_layout.setSpacing(8)
+            step_panel_layout.addWidget(self.steps_container)
+
+            add_row = QHBoxLayout()
+            add_row.setSpacing(6)
+            self.add_wait_step_button = QPushButton("添加下一步")
+            self.add_wait_step_button.setObjectName("compactGhostButton")
+            self.add_wait_step_button.clicked.connect(lambda _checked=False: self.add_wait_row())
+            add_row.addWidget(self.add_wait_step_button)
+            add_row.addStretch(1)
+            step_panel_layout.addLayout(add_row)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setMinimumHeight(260)
+            scroll.setMaximumHeight(260)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setWidget(step_panel)
+            layout.addRow("执行流程", scroll)
+
+            self.populate_step_rows(rule)
             layout.addRow("", self.append_enter_input)
+            layout.addRow("", self.case_sensitive_input)
             layout.addRow("", self.once_input)
 
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -125,13 +157,298 @@ if QDialog is not None:
             layout.addRow(buttons)
 
         def values(self) -> dict[str, object]:
+            first_pattern, first_response = self.first_step_values()
             return {
                 "name": self.name_input.text().strip(),
-                "pattern": self.pattern_input.text().strip(),
-                "response_text": self.response_input.text(),
+                "pattern": first_pattern,
+                "response_text": first_response,
+                "steps_text": self.steps_text(),
+                "step_targets": self.step_targets(),
                 "append_enter": self.append_enter_input.isChecked(),
+                "case_sensitive": self.case_sensitive_input.isChecked(),
                 "once": self.once_input.isChecked(),
             }
+
+        def populate_step_rows(self, rule: AutoResponseRule | None) -> None:
+            if rule is not None and rule.steps:
+                for step in rule.steps:
+                    self.add_condition_block(step.pattern, step.response_texts, step.response_targets)
+                return
+            self.add_wait_row(
+                rule.pattern if rule is not None else "Ctrl+B",
+                rule.response_text if rule is not None and rule.response_text else "Ctrl+B",
+            )
+
+        def add_wait_row(self, pattern: str = "", response_text: str = "") -> None:
+            self.add_condition_block(pattern, [response_text])
+
+        def add_condition_block(
+            self,
+            pattern: str = "",
+            response_texts: list[str] | None = None,
+            response_targets: list[str] | None = None,
+        ) -> None:
+            frame = QFrame()
+            frame.setObjectName("navFilterBar")
+            if QSizePolicy is not None:
+                frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            block_layout = QVBoxLayout(frame)
+            block_layout.setContentsMargins(8, 8, 8, 8)
+            block_layout.setSpacing(6)
+
+            title_row = QHBoxLayout()
+            title_row.setSpacing(6)
+            title_label = QLabel("")
+            title_label.setObjectName("activeFilterText")
+            title_row.addWidget(title_label)
+            title_row.addStretch(1)
+            block_layout.addLayout(title_row)
+
+            header_layout = QHBoxLayout()
+            header_layout.setSpacing(6)
+
+            pattern_input = QLineEdit(pattern)
+            pattern_input.setPlaceholderText("设备打印了什么就填什么，例如 Password: / Ctrl+B")
+            remove_button = QPushButton("删除步骤")
+            remove_button.setObjectName("compactGhostButton")
+            remove_button.setFixedWidth(68)
+
+            header_layout.addWidget(QLabel("如果终端出现"))
+            header_layout.addWidget(pattern_input, 1)
+            header_layout.addWidget(remove_button)
+            block_layout.addLayout(header_layout)
+
+            send_title = QLabel("按顺序自动发送")
+            send_title.setObjectName("sectionCopy")
+            block_layout.addWidget(send_title)
+
+            responses_container = QWidget()
+            responses_layout = QVBoxLayout(responses_container)
+            responses_layout.setContentsMargins(18, 0, 0, 0)
+            responses_layout.setSpacing(4)
+            block_layout.addWidget(responses_container)
+
+            add_send_button = QPushButton("再发送一条")
+            add_send_button.setObjectName("compactGhostButton")
+            add_button_row = QHBoxLayout()
+            add_button_row.setContentsMargins(18, 0, 0, 0)
+            add_button_row.addWidget(add_send_button)
+            add_button_row.addStretch(1)
+            block_layout.addLayout(add_button_row)
+
+            block = {
+                "frame": frame,
+                "title_label": title_label,
+                "pattern_input": pattern_input,
+                "responses_layout": responses_layout,
+                "response_rows": [],
+                "remove_button": remove_button,
+                "add_send_button": add_send_button,
+            }
+            remove_button.clicked.connect(
+                lambda _checked=False, current_block=block: self.remove_condition_block(current_block)
+            )
+            add_send_button.clicked.connect(
+                lambda _checked=False, current_block=block: self.add_response_row(current_block)
+            )
+            self.condition_blocks.append(block)
+            self.steps_layout.addWidget(frame)
+            targets = response_targets or []
+            for index, response_text in enumerate(response_texts or [""]):
+                self.add_response_row(block, response_text, targets[index] if index < len(targets) else "current")
+            self.refresh_condition_block_titles()
+
+        def add_send_row(self, response_text: str = "") -> None:
+            if not self.condition_blocks:
+                self.add_condition_block()
+            self.add_response_row(self.condition_blocks[-1], response_text)
+
+        def add_response_row(
+            self,
+            block: dict[str, Any],
+            response_text: str = "",
+            response_target: str = "current",
+        ) -> None:
+            responses_layout = block.get("responses_layout")
+            if not isinstance(responses_layout, QVBoxLayout):
+                return
+
+            response_frame = QWidget()
+            if QSizePolicy is not None:
+                response_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            row_layout = QHBoxLayout(response_frame)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            response_input = QLineEdit(response_text)
+            response_input.setPlaceholderText(r"要发给设备的内容，例如 admin / display version / Ctrl+A")
+            target_combo = QComboBox()
+            for label, value in self.response_target_options():
+                self.add_response_target_option(target_combo, label, value)
+            target_combo.setFixedWidth(190)
+            self.fit_response_target_combo_popup(target_combo)
+            remove_button = QPushButton("删除")
+            remove_button.setObjectName("compactGhostButton")
+            remove_button.setFixedWidth(48)
+            response_label = QLabel("")
+
+            row_layout.addWidget(response_label)
+            row_layout.addWidget(QLabel("到"))
+            row_layout.addWidget(target_combo)
+            row_layout.addWidget(response_input, 1)
+            row_layout.addWidget(remove_button)
+
+            row = {
+                "frame": response_frame,
+                "label": response_label,
+                "target_combo": target_combo,
+                "response_input": response_input,
+                "remove_button": remove_button,
+            }
+            self.set_response_target_widgets(row, response_target)
+            remove_button.clicked.connect(
+                lambda _checked=False, current_block=block, current_row=row: self.remove_response_row(
+                    current_block,
+                    current_row,
+                )
+            )
+            response_rows = block.get("response_rows")
+            if isinstance(response_rows, list):
+                response_rows.append(row)
+            responses_layout.addWidget(response_frame)
+            self.refresh_response_row_labels(block)
+
+        def remove_condition_block(self, block: dict[str, Any]) -> None:
+            if block not in self.condition_blocks:
+                return
+            self.condition_blocks.remove(block)
+            frame = block.get("frame")
+            if isinstance(frame, QWidget):
+                frame.setParent(None)
+                frame.deleteLater()
+            if not self.condition_blocks:
+                self.add_wait_row()
+            self.refresh_condition_block_titles()
+
+        def remove_response_row(self, block: dict[str, Any], row: dict[str, Any]) -> None:
+            response_rows = block.get("response_rows")
+            if not isinstance(response_rows, list) or row not in response_rows:
+                return
+            response_rows.remove(row)
+            frame = row.get("frame")
+            if isinstance(frame, QWidget):
+                frame.setParent(None)
+                frame.deleteLater()
+            if not response_rows:
+                self.add_response_row(block)
+                return
+            self.refresh_response_row_labels(block)
+
+        def refresh_condition_block_titles(self) -> None:
+            for index, block in enumerate(self.condition_blocks, start=1):
+                title_label = block.get("title_label")
+                if isinstance(title_label, QLabel):
+                    title_label.setText(f"第 {index} 步：等待终端输出")
+
+        def refresh_response_row_labels(self, block: dict[str, Any]) -> None:
+            response_rows = block.get("response_rows")
+            if not isinstance(response_rows, list):
+                return
+            for index, row in enumerate(response_rows, start=1):
+                label = row.get("label")
+                if isinstance(label, QLabel):
+                    label.setText(f"发送 {index}")
+
+        def set_response_target_widgets(self, row: dict[str, Any], response_target: str) -> None:
+            target_combo = row.get("target_combo")
+            if not isinstance(target_combo, QComboBox):
+                return
+            target = SessionOpsMixin.normalize_auto_response_target(response_target)
+            index = target_combo.findData(target)
+            if index < 0 and target.startswith("title:"):
+                self.add_response_target_option(target_combo, f"标题包含：{target[6:]}", target)
+                self.fit_response_target_combo_popup(target_combo)
+                index = target_combo.findData(target)
+            target_combo.setCurrentIndex(index if index >= 0 else 0)
+
+        def add_response_target_option(self, combo: QComboBox, label: str, value: str) -> None:
+            combo.addItem(label, value)
+            if Qt is None:
+                return
+            role_group = getattr(Qt, "ItemDataRole", Qt)
+            tooltip_role = getattr(role_group, "ToolTipRole", None)
+            if tooltip_role is not None:
+                combo.setItemData(combo.count() - 1, label, tooltip_role)
+
+        def fit_response_target_combo_popup(self, combo: QComboBox) -> None:
+            longest_label_width = 0
+            for index in range(combo.count()):
+                longest_label_width = max(longest_label_width, combo.fontMetrics().horizontalAdvance(combo.itemText(index)))
+            popup_width = min(max(longest_label_width + 48, 260), 560)
+            combo.view().setMinimumWidth(popup_width)
+
+        def response_target_options(self) -> list[tuple[str, str]]:
+            options = [
+                ("当前选中终端", "current"),
+            ]
+            parent = self.parent()
+            if parent is None or not hasattr(parent, "ordered_session_states"):
+                return options
+            try:
+                states = parent.ordered_session_states()
+            except Exception:
+                return options
+            for state in states:
+                if not isinstance(state, SessionTabState):
+                    continue
+                label = parent.session_jump_text(state) if hasattr(parent, "session_jump_text") else state.title
+                options.append((f"已打开：{label}", f"session:{state.device_id}:{state.kind}:{state.title}"))
+            return options
+
+        def first_step_values(self) -> tuple[str, str]:
+            for block in self.condition_blocks:
+                pattern_input = block.get("pattern_input")
+                response_rows = block.get("response_rows")
+                if not isinstance(pattern_input, QLineEdit) or not isinstance(response_rows, list):
+                    continue
+                for row in response_rows:
+                    response_input = row.get("response_input")
+                    if isinstance(response_input, QLineEdit):
+                        return pattern_input.text().strip(), response_input.text()
+            return "", ""
+
+        def steps_text(self) -> str:
+            lines: list[str] = []
+            for block in self.condition_blocks:
+                pattern_input = block.get("pattern_input")
+                response_rows = block.get("response_rows")
+                if not isinstance(pattern_input, QLineEdit) or not isinstance(response_rows, list):
+                    continue
+                pattern = pattern_input.text().strip()
+                for index, row in enumerate(response_rows):
+                    response_input = row.get("response_input")
+                    if not isinstance(response_input, QLineEdit):
+                        continue
+                    response = response_input.text()
+                    if index == 0:
+                        lines.append(f"{pattern} => {response}")
+                    else:
+                        lines.append(f"=> {response}")
+            return "\n".join(lines)
+
+        def step_targets(self) -> list[str]:
+            targets: list[str] = []
+            for block in self.condition_blocks:
+                response_rows = block.get("response_rows")
+                if not isinstance(response_rows, list):
+                    continue
+                for row in response_rows:
+                    target_combo = row.get("target_combo")
+                    if not isinstance(target_combo, QComboBox):
+                        targets.append("source")
+                        continue
+                    targets.append(SessionOpsMixin.normalize_auto_response_target(target_combo.currentData()))
+            return targets
 
 
     class QuickSendButtonDialog(QDialog):
@@ -588,15 +905,26 @@ class SessionOpsMixin:
 
         visible_rules = rules[:3]
         for rule in visible_rules:
+            signature = self.auto_response_rule_signature(rule)
+            completed_once = bool(
+                state is not None
+                and rule.once
+                and signature in state.auto_response_triggered_rules
+            )
             button = QToolButton()
             button.setObjectName("autoResponseRuleButton")
             button.setText(self.auto_response_rule_button_text(rule))
             button.setToolButtonStyle(Qt.ToolButtonTextOnly)
             button.setCheckable(True)
-            button.setChecked(rule.enabled)
+            button.setChecked(rule.enabled and not completed_once)
+            status_text = (
+                "已执行，本终端不会再次自动发送；左键可重新启用"
+                if completed_once
+                else f"{'启用' if rule.enabled else '停用'}，对当前选中终端生效；左键切换，右键编辑"
+            )
             button.setToolTip(
                 f"{rule.name}\n匹配: {rule.pattern}\n"
-                f"{'启用' if rule.enabled else '停用'}，对当前选中终端生效；左键切换，右键编辑"
+                f"{status_text}"
             )
             button.clicked.connect(
                 lambda checked=False, current_rule=rule: self.toggle_auto_response_rule_from_button(
@@ -775,14 +1103,14 @@ class SessionOpsMixin:
             return
         values = dialog.values()
         pattern = str(values["pattern"]).strip()
-        if not pattern:
-            self.show_warning("匹配内容不能为空。")
-            return
         rule = self.create_auto_response_rule(
             name=str(values["name"]),
             pattern=pattern,
             response_text=str(values["response_text"]),
+            steps_text=str(values["steps_text"]),
+            step_targets=list(values.get("step_targets", [])),
             append_enter=bool(values["append_enter"]),
+            case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
         )
         if rule is None:
@@ -802,15 +1130,15 @@ class SessionOpsMixin:
             return
         values = dialog.values()
         pattern = str(values["pattern"]).strip()
-        if not pattern:
-            self.show_warning("匹配内容不能为空。")
-            return
         old_signature = self.auto_response_rule_signature(rule)
         updated = self.create_auto_response_rule(
             name=str(values["name"]),
             pattern=pattern,
             response_text=str(values["response_text"]),
+            steps_text=str(values["steps_text"]),
+            step_targets=list(values.get("step_targets", [])),
             append_enter=bool(values["append_enter"]),
+            case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
         )
         if updated is None:
@@ -820,7 +1148,9 @@ class SessionOpsMixin:
         rule.response = updated.response
         rule.response_text = updated.response_text
         rule.append_enter = updated.append_enter
+        rule.case_sensitive = updated.case_sensitive
         rule.once = updated.once
+        rule.steps = updated.steps
         rule.enabled = True
         rule.trigger_count = 0
         self.remember_auto_response_rule(rule, old_signature=old_signature)
@@ -835,6 +1165,7 @@ class SessionOpsMixin:
             name="启动菜单 Ctrl+B",
             pattern="Ctrl+B",
             response_text="Ctrl+B",
+            case_sensitive=True,
             once=True,
         )
         if rule is None:
@@ -849,10 +1180,28 @@ class SessionOpsMixin:
         name: str,
         pattern: str,
         response_text: str,
+        steps_text: str = "",
+        step_targets: list[str] | None = None,
         append_enter: bool = False,
+        case_sensitive: bool = False,
         once: bool = True,
     ) -> AutoResponseRule | None:
-        response = decode_response_text(response_text, append_enter=append_enter)
+        steps = self.parse_auto_response_steps(
+            steps_text,
+            append_enter=append_enter,
+            step_targets=step_targets,
+        )
+        if steps is None:
+            return None
+        if steps:
+            response = steps[0].responses[0]
+            response_text = steps[0].response_texts[0]
+            pattern = steps[0].pattern
+        else:
+            if not pattern.strip():
+                self.show_warning("匹配内容不能为空。")
+                return None
+            response = decode_response_text(response_text, append_enter=append_enter)
         if not response:
             self.show_warning("发送内容不能为空。")
             return None
@@ -862,8 +1211,71 @@ class SessionOpsMixin:
             response=response,
             response_text=response_text,
             append_enter=append_enter,
+            case_sensitive=case_sensitive,
             once=once,
+            steps=steps,
         )
+
+    def parse_auto_response_steps(
+        self,
+        steps_text: str,
+        *,
+        append_enter: bool,
+        step_targets: list[str] | None = None,
+    ) -> list[AutoResponseStep] | None:
+        if not steps_text.strip():
+            return []
+        steps: list[AutoResponseStep] = []
+        current_step: AutoResponseStep | None = None
+        target_index = 0
+        for line_number, raw_line in enumerate(steps_text.splitlines(), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if "=>" not in line:
+                self.show_warning(f"流程步骤第 {line_number} 行缺少 =>。")
+                return None
+            pattern_text, response_text = line.split("=>", 1)
+            pattern = pattern_text.strip()
+            response_text = response_text.strip()
+            if not response_text:
+                self.show_warning(f"流程步骤第 {line_number} 行发送内容不能为空。")
+                return None
+            if pattern:
+                current_step = AutoResponseStep(pattern=pattern)
+                steps.append(current_step)
+            elif current_step is None:
+                self.show_warning(f"流程步骤第 {line_number} 行缺少匹配内容。")
+                return None
+            response = decode_response_text(response_text, append_enter=append_enter)
+            if not response:
+                self.show_warning(f"流程步骤第 {line_number} 行发送内容不能为空。")
+                return None
+            current_step.responses.append(response)
+            current_step.response_texts.append(response_text)
+            current_step.response_targets.append(
+                self.normalize_auto_response_target(
+                    step_targets[target_index] if step_targets and target_index < len(step_targets) else "current"
+                )
+            )
+            target_index += 1
+        if not steps:
+            self.show_warning("流程步骤不能为空。")
+            return None
+        return steps
+
+    @staticmethod
+    def normalize_auto_response_target(target: object) -> str:
+        text = str(target or "source").strip()
+        if text in {"source", "current", "next"}:
+            return text
+        if text.startswith("title:") and text[6:].strip():
+            return f"title:{text[6:].strip()}"
+        if text.startswith("session:"):
+            parts = text.split(":", 3)
+            if len(parts) == 4 and all(part.strip() for part in parts[1:]):
+                return f"session:{parts[1].strip()}:{parts[2].strip()}:{parts[3].strip()}"
+        return "source"
 
     def _handle_device_quick_action(
         self,
@@ -1193,12 +1605,30 @@ class SessionOpsMixin:
                 case_sensitive=rule.case_sensitive,
                 once=rule.once,
                 trigger_count=0,
+                steps=[
+                    AutoResponseStep(
+                        pattern=step.pattern,
+                        responses=list(step.responses),
+                        response_texts=list(step.response_texts),
+                        response_targets=list(step.response_targets),
+                    )
+                    for step in rule.steps
+                ],
             )
             for rule in rules
         ]
 
     @staticmethod
     def auto_response_rule_signature(rule: AutoResponseRule) -> tuple[object, ...]:
+        steps_signature = tuple(
+            (
+                step.pattern,
+                tuple(step.responses),
+                tuple(step.response_texts),
+                tuple(step.response_targets),
+            )
+            for step in rule.steps
+        )
         return (
             rule.name,
             rule.pattern,
@@ -1207,6 +1637,7 @@ class SessionOpsMixin:
             rule.append_enter,
             rule.case_sensitive,
             rule.once,
+            steps_signature,
         )
 
     def remember_auto_response_rule(
@@ -1233,6 +1664,7 @@ class SessionOpsMixin:
         rule.trigger_count = 0
         for state in self.session_tabs_by_id.values():
             state.auto_response_triggered_rules.discard(signature)
+            state.auto_response_rule_steps.pop(signature, None)
 
     def forget_auto_response_rule(self, rule: AutoResponseRule) -> None:
         target_signature = self.auto_response_rule_signature(rule)
@@ -1248,21 +1680,22 @@ class SessionOpsMixin:
         return Device(
             id="SIM-TERMINAL",
             name="模拟终端",
-            domain="LOCAL",
-            device_type="Simulator",
-            cpu="local",
+            board_id="0000",
+            domain="测试",
+            device_type="本地终端",
+            cpu="ARM",
             status="空闲",
             owner=None,
             ssh_ip="localhost",
             telnet_ip="localhost",
             username="sim",
             password="",
-            vendor="Local",
-            model="Terminal Simulator",
-            site="Local",
+            vendor="本地",
+            model="终端",
+            site="本机",
             rack="-",
-            version="SimOS V1.0",
-            notes="Local simulated terminal for testing auto responses.",
+            version="V1.0",
+            notes="本机终端，用于验证自动响应规则。",
         )
 
     # ---- Session tab management ----
@@ -1860,28 +2293,115 @@ class SessionOpsMixin:
             signature = self.auto_response_rule_signature(rule)
             if rule.once and signature in state.auto_response_triggered_rules:
                 continue
-            scan_text = self.auto_response_scan_text(previous_buffer, message, rule)
-            if not rule.matches(scan_text):
+            steps = self.effective_auto_response_steps(rule)
+            if not steps:
                 continue
-            response = rule.response
+            step_index = state.auto_response_rule_steps.get(signature, 0)
+            if step_index >= len(steps):
+                if rule.once:
+                    state.auto_response_triggered_rules.add(signature)
+                continue
+            step = steps[step_index]
+            scan_text = self.auto_response_scan_text(previous_buffer, message, step.pattern)
+            if not self.auto_response_step_matches(rule, step, scan_text):
+                continue
             rule.trigger_count += 1
-            if rule.once:
+            next_step_index = step_index + 1
+            if next_step_index >= len(steps):
+                state.auto_response_rule_steps.pop(signature, None)
+                if rule.once:
+                    state.auto_response_triggered_rules.add(signature)
+            else:
+                state.auto_response_rule_steps[signature] = next_step_index
+            if rule.once and next_step_index >= len(steps):
                 state.auto_response_triggered_rules.add(signature)
             state.auto_response_buffer = ""
-            self.write_session_log_line(state, "SYS", f"Auto response sent: {rule.name}")
+            self.write_session_log_line(
+                state,
+                "SYS",
+                f"Auto response sent: {rule.name} step {step_index + 1}/{len(steps)}",
+            )
             self.set_status_message(f"自动响应已发送: {rule.name}（命中 {rule.trigger_count} 次）")
-            self.send_session_text(state.tab_id, response)
+            for index, response in enumerate(step.responses):
+                target = step.response_targets[index] if index < len(step.response_targets) else "source"
+                target_tab_id = self.auto_response_target_tab_id(state, target)
+                if not target_tab_id:
+                    self.write_session_log_line(state, "SYS", f"Auto response target missing: {target}")
+                    self.set_status_message(f"自动响应目标终端不存在: {target}")
+                    continue
+                self.send_session_text(target_tab_id, response)
             self.refresh_auto_response_rule_buttons()
             return
 
     @staticmethod
     def auto_response_scan_text(
-        previous_buffer: str, message: str, rule: AutoResponseRule
+        previous_buffer: str, message: str, pattern: str
     ) -> str:
         if not message:
             return previous_buffer
-        overlap_length = max(len(rule.pattern) - 1, 0)
+        overlap_length = max(len(pattern) - 1, 0)
         return previous_buffer[-overlap_length:] + message
+
+    @staticmethod
+    def effective_auto_response_steps(rule: AutoResponseRule) -> list[AutoResponseStep]:
+        if rule.steps:
+            return rule.steps
+        return [
+            AutoResponseStep(
+                pattern=rule.pattern,
+                responses=[rule.response],
+                response_texts=[rule.response_text or rule.response],
+                response_targets=["source"],
+            )
+        ]
+
+    @staticmethod
+    def auto_response_step_matches(
+        rule: AutoResponseRule,
+        step: AutoResponseStep,
+        output: str,
+    ) -> bool:
+        if not rule.enabled or not step.pattern:
+            return False
+        haystack = output if rule.case_sensitive else output.lower()
+        needle = step.pattern if rule.case_sensitive else step.pattern.lower()
+        return needle in haystack
+
+    def auto_response_target_tab_id(self, source_state: SessionTabState, target: str) -> str:
+        normalized = self.normalize_auto_response_target(target)
+        if normalized == "source":
+            return source_state.tab_id
+        if normalized == "current":
+            current = self.current_session_state()
+            return current.tab_id if current is not None else source_state.tab_id
+        if normalized == "next":
+            same_device_states = [
+                state
+                for state in self.ordered_session_states()
+                if state.device_id == source_state.device_id
+            ]
+            if not same_device_states:
+                return source_state.tab_id
+            for index, state in enumerate(same_device_states):
+                if state.tab_id == source_state.tab_id:
+                    return same_device_states[(index + 1) % len(same_device_states)].tab_id
+            return same_device_states[0].tab_id
+        if normalized.startswith("title:"):
+            needle = normalized[6:].strip().lower()
+            for state in self.ordered_session_states():
+                if needle in state.title.lower() or needle in self.session_jump_text(state).lower():
+                    return state.tab_id
+            return ""
+        if normalized.startswith("session:"):
+            parts = normalized.split(":", 3)
+            if len(parts) != 4:
+                return ""
+            _, device_id, kind, title = parts
+            for state in self.ordered_session_states():
+                if state.device_id == device_id and state.kind == kind and state.title == title:
+                    return state.tab_id
+            return ""
+        return source_state.tab_id
 
     def send_session_text(self, tab_id: str, text: str) -> None:
         state = self.session_tabs_by_id.get(tab_id)

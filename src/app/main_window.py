@@ -213,6 +213,7 @@ from .session_ops import SessionOpsMixin
 from .occupancy_ops import OccupancyOpsMixin
 from .command_record_ops import CommandRecordOpsMixin
 from .desktop_state import DesktopStateMixin
+from .file_transfer_ops import FileTransferOpsMixin
 from .table_ops import TableOpsMixin
 from .temporary_device_ops import TemporaryDeviceOpsMixin
 
@@ -227,6 +228,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         OccupancyOpsMixin,
         CommandRecordOpsMixin,
         DesktopStateMixin,
+        FileTransferOpsMixin,
         TemporaryDeviceOpsMixin,
         TableOpsMixin,
         QMainWindow,
@@ -277,12 +279,20 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.always_on_top = False
             self.remembered_auto_response_rules = []
             self.remembered_quick_send_buttons = default_quick_send_buttons()
+            self.state_path = self.desktop_state_path()
+            self.log_directory = self.default_log_directory()
+            self.transfer_protocol = "ftp"
+            self.transfer_host = "0.0.0.0"
+            self.transfer_port = 2121
+            self.transfer_root_directory = self.state_path.parent / "transfer"
+            self.transfer_username = "device"
+            self.transfer_password = "device"
+            self.transfer_writable = True
+            self.transfer_service = None
             self.left_sidebar_active_panel = "devices"
             self.left_sidebar_animation = None
             self.command_tab_buttons: list[QToolButton] = []
             self.command_tab_close_buttons: list[QToolButton] = []
-            self.state_path = self.desktop_state_path()
-            self.log_directory = self.default_log_directory()
             self.device_tabs_by_id: dict[str, DeviceTabState] = {}
             self.session_tabs_by_id: dict[str, SessionTabState] = {}
             self.pending_futures: set[Future] = set()
@@ -529,6 +539,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.left_sidebar_stack.setContentsMargins(0, 0, 0, 0)
             self.left_sidebar_stack.addWidget(device_panel)
             self.left_sidebar_stack.addWidget(self._build_temporary_panel())
+            self.left_sidebar_stack.addWidget(self._build_transfer_panel())
             scroll.setWidget(stack_container)
             shell_layout.addWidget(scroll, 1)
             self.apply_left_sidebar_state(animated=True)
@@ -551,13 +562,19 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "connector",
                 "临时连接",
             )
+            self.activity_transfer_button = self._new_activity_button(
+                "transfer",
+                "文件传输",
+            )
 
             layout.addWidget(self.activity_device_button)
             layout.addWidget(self.activity_temporary_button)
+            layout.addWidget(self.activity_transfer_button)
             layout.addStretch(1)
 
             self.activity_device_button.clicked.connect(self.toggle_device_sidebar_panel)
             self.activity_temporary_button.clicked.connect(lambda: self.show_left_sidebar_panel("temporary"))
+            self.activity_transfer_button.clicked.connect(lambda: self.show_left_sidebar_panel("transfer"))
             return rail
 
         def _new_activity_button(self, icon_name: str, tooltip: str, *, checked: bool = False) -> QToolButton:
@@ -614,6 +631,14 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawRoundedRect(11, 10, 9, 8, 2, 2)
                 painter.drawLine(12, 11, 15, 11)
                 painter.drawLine(9, 14, 12, 14)
+            elif kind == "transfer":
+                painter.drawRoundedRect(5, 5, 14, 14, 2, 2)
+                painter.drawLine(8, 9, 16, 9)
+                painter.drawLine(16, 9, 13, 6)
+                painter.drawLine(16, 9, 13, 12)
+                painter.drawLine(16, 15, 8, 15)
+                painter.drawLine(8, 15, 11, 12)
+                painter.drawLine(8, 15, 11, 18)
             else:
                 painter.drawEllipse(7, 7, 10, 10)
             painter.end()
@@ -1502,6 +1527,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.toolbar_refresh_button.clicked.connect(self.refresh_snapshot)
             self.temporary_save_button.clicked.connect(self.add_and_open_temporary_device)
             self.temporary_clear_button.clicked.connect(self.clear_temporary_form)
+            self.wire_transfer_events()
             self.clear_filters_button.clicked.connect(self.clear_filters)
 
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
@@ -1657,11 +1683,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_left_sidebar_panel("devices")
 
         def show_left_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"devices", "temporary"}:
+            if panel not in {"devices", "temporary", "transfer"}:
                 panel = "devices"
             self.left_sidebar_active_panel = panel
             if hasattr(self, "left_sidebar_stack"):
-                self.left_sidebar_stack.setCurrentIndex(1 if panel == "temporary" else 0)
+                panel_index = {"devices": 0, "temporary": 1, "transfer": 2}.get(panel, 0)
+                self.left_sidebar_stack.setCurrentIndex(panel_index)
             if self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = False
             self.apply_left_sidebar_state()
@@ -1698,7 +1725,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                     if total > 0:
                         splitter.setSizes([left_width, max(1, total - left_width)])
             if hasattr(self, "left_sidebar_stack"):
-                self.left_sidebar_stack.setCurrentIndex(1 if self.left_sidebar_active_panel == "temporary" else 0)
+                panel_index = {"devices": 0, "temporary": 1, "transfer": 2}.get(self.left_sidebar_active_panel, 0)
+                self.left_sidebar_stack.setCurrentIndex(panel_index)
             if hasattr(self, "activity_device_button"):
                 device_active = not collapsed and self.left_sidebar_active_panel == "devices"
                 self.activity_device_button.setChecked(device_active)
@@ -1712,6 +1740,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.activity_temporary_button.setToolTip("临时连接")
                 self.activity_temporary_button.setIcon(
                     self._activity_icon("connector", "#ededed" if temporary_active else "#808080")
+                )
+            if hasattr(self, "activity_transfer_button"):
+                transfer_active = not collapsed and self.left_sidebar_active_panel == "transfer"
+                self.activity_transfer_button.setChecked(transfer_active)
+                self.activity_transfer_button.setToolTip("文件传输")
+                self.activity_transfer_button.setIcon(
+                    self._activity_icon("transfer", "#ededed" if transfer_active else "#808080")
                 )
 
         def animate_left_sidebar_state(self, collapsed: bool) -> None:
@@ -1882,7 +1917,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             state = self.current_session_state()
             simulated_selected = self.is_simulated_device(device)
             self.connection_telnet_button.setEnabled(selected)
-            self.connection_telnet_button.setText("打开模拟终端" if simulated_selected else "连接 Telnet")
+            self.connection_telnet_button.setText("连接 Telnet")
             self.connection_ssh_button.setEnabled(selected and not simulated_selected)
             self.connection_serial_button.setEnabled(
                 selected and not simulated_selected and not self.is_temporary_device(device)
@@ -1954,6 +1989,8 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.cancel_pending_futures()
             self.async_loop.cancel_pending(timeout=2.0)
+            if self.transfer_service is not None and self.transfer_service.is_running:
+                self.transfer_service.stop()
 
             async def shutdown_sessions() -> None:
                 await asyncio.gather(

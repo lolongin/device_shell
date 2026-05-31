@@ -459,7 +459,7 @@ class TemporaryDeviceOpsMixin:
 
     def temporary_device_display_name(self, device: Device) -> str:
         if self.is_simulated_device(device):
-            return "[模拟] 模拟终端"
+            return device.name
         return f"[临时] {device.name}" if self.is_temporary_device(device) else device.name
 
     @staticmethod
@@ -497,11 +497,9 @@ class TemporaryDeviceOpsMixin:
     def update_device_quick_actions_for_device(self, actions: dict[str, Any], device: Device) -> None:
         if self.is_simulated_device(device):
             for name, action in actions.items():
-                action.setEnabled(name in {"locate", "clone_telnet", "clone_serial"})
+                action.setEnabled(name in {"locate", "clone_telnet"})
             if "clone_telnet" in actions:
-                actions["clone_telnet"].setText("打开模拟终端")
-            if "clone_serial" in actions:
-                actions["clone_serial"].setText("打开模拟终端")
+                actions["clone_telnet"].setText("打开设备管理口")
             return
         if "clone_serial" in actions:
             actions["clone_serial"].setEnabled(self.can_view_serial_connection(device))
