@@ -27,13 +27,11 @@
     body {
       font-family: "Cascadia Mono", Consolas, monospace;
       -webkit-font-smoothing: antialiased;
-      text-rendering: geometricPrecision;
     }
 
     #terminal {
       width: 100%;
       height: 100%;
-      padding: 10px 12px;
       box-sizing: border-box;
       overflow: hidden;
       background: #06090d;
@@ -43,6 +41,8 @@
       position: relative;
       width: 100%;
       height: 100%;
+      padding: 10px 18px 18px 12px;
+      box-sizing: border-box;
       background: #06090d;
     }
 
@@ -64,11 +64,11 @@
     .xterm .xterm-viewport {
       background-color: transparent;
       scrollbar-color: #263241 #06090d;
-      scrollbar-width: thin;
+      scrollbar-width: auto;
     }
 
     .xterm .xterm-viewport::-webkit-scrollbar {
-      width: 10px;
+      width: 14px;
     }
 
     .xterm .xterm-viewport::-webkit-scrollbar-track {
@@ -77,7 +77,7 @@
 
     .xterm .xterm-viewport::-webkit-scrollbar-thumb {
       background: #263241;
-      border: 2px solid #06090d;
+      border: 3px solid #06090d;
       border-radius: 8px;
     }
 
@@ -174,7 +174,7 @@
         fontFamily: '"Cascadia Mono", "JetBrains Mono", "Fira Code", Consolas, monospace',
         fontSize: DEFAULT_FONT_SIZE,
         fontWeight: 400,
-        fontWeightBold: 700,
+        fontWeightBold: 600,
         lineHeight: 1.18,
         letterSpacing: 0,
         scrollback: 5000,
@@ -204,6 +204,7 @@
           brightWhite: '#f6f8fb'
         }
       });
+      const terminalWrapElement = document.getElementById('terminal-wrap');
       const terminalElement = document.getElementById('terminal');
       const suggestionElement = document.getElementById('terminal-suggestion');
       const fitAddon = makeFitAddon();
@@ -218,28 +219,28 @@
       let activeSuggestionPrefix = '';
       const semanticTokenPattern = /\b(error|failed?|failure|fatal|critical|success|succeeded|pass(?:ed)?|ok|done|warn(?:ing)?|caution|timeout|info|notice|debug|trace)\b/ig;
       const semanticTokenColors = {
-        error: '\x1b[91;1m',
-        fail: '\x1b[91;1m',
-        failed: '\x1b[91;1m',
-        failure: '\x1b[91;1m',
-        fatal: '\x1b[91;1m',
-        critical: '\x1b[91;1m',
-        success: '\x1b[92;1m',
-        succeeded: '\x1b[92;1m',
-        pass: '\x1b[92;1m',
-        passed: '\x1b[92;1m',
-        ok: '\x1b[92;1m',
-        done: '\x1b[92;1m',
-        warn: '\x1b[93;1m',
-        warning: '\x1b[93;1m',
-        caution: '\x1b[93;1m',
-        timeout: '\x1b[93;1m',
-        info: '\x1b[94;1m',
-        notice: '\x1b[94;1m',
-        debug: '\x1b[94;1m',
-        trace: '\x1b[94;1m'
+        error: '\x1b[91m',
+        fail: '\x1b[91m',
+        failed: '\x1b[91m',
+        failure: '\x1b[91m',
+        fatal: '\x1b[91m',
+        critical: '\x1b[91m',
+        success: '\x1b[92m',
+        succeeded: '\x1b[92m',
+        pass: '\x1b[92m',
+        passed: '\x1b[92m',
+        ok: '\x1b[92m',
+        done: '\x1b[92m',
+        warn: '\x1b[93m',
+        warning: '\x1b[93m',
+        caution: '\x1b[93m',
+        timeout: '\x1b[93m',
+        info: '\x1b[94m',
+        notice: '\x1b[94m',
+        debug: '\x1b[94m',
+        trace: '\x1b[94m'
       };
-      const semanticTokenReset = '\x1b[39;22m';
+      const semanticTokenReset = '\x1b[39m';
 
       function colorizeSemanticTokens(data) {
         if (!data || data.indexOf('\x1b') >= 0) {
@@ -285,7 +286,7 @@
           suggestionElement.style.top = '10px';
           return;
         }
-        const computed = window.getComputedStyle(terminalElement);
+        const computed = window.getComputedStyle(terminalWrapElement);
         const paddingLeft = Number.parseFloat(computed.paddingLeft) || 0;
         const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
         const buffer = term.buffer.active;

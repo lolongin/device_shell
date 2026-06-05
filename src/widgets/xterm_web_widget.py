@@ -205,7 +205,11 @@ class XtermWebWidget(QWidget):
 
     def resizeEvent(self, event: object) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._run_terminal_js("fit()")
+        self._schedule_fit()
+
+    def showEvent(self, event: object) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._schedule_fit()
 
     def _handle_ready(self) -> None:
         self._ready = True
@@ -215,6 +219,9 @@ class XtermWebWidget(QWidget):
             pending = "".join(self._pending_output)
             self._pending_output.clear()
             self._queue_write(pending)
+        self._schedule_fit()
+
+    def _schedule_fit(self) -> None:
         QTimer.singleShot(0, lambda: self._run_terminal_js("fit()"))
         QTimer.singleShot(50, lambda: self._run_terminal_js("fit()"))
 
