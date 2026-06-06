@@ -139,6 +139,7 @@ class TableOpsMixin:
         self.refresh_device_table()
         self.refresh_owned_table()
         self.ensure_valid_selection()
+        self.refresh_device_navigation_web()
         self.refresh_device_context()
         self.refresh_workspace_context()
         self.update_controls()
@@ -316,6 +317,61 @@ class TableOpsMixin:
         device = row_data.get("device")
         if isinstance(device, Device):
             self.render_device_table_row(row, device, keyword, grouped=bool(row_data.get("grouped")))
+
+    def device_navigation_payload(self) -> dict[str, object]:
+        display_rows = self.build_device_table_display_rows(self.visible_devices)
+        rows: list[dict[str, object]] = []
+        for row_data in display_rows:
+            if row_data.get("kind") == "group":
+                rows.append(
+                    {
+                        "kind": "group",
+                        "name": str(row_data.get("name") or ""),
+                        "subdomain": str(row_data.get("subdomain") or ""),
+                        "count": int(row_data.get("count") or 0),
+                    }
+                )
+                continue
+            device = row_data.get("device")
+            if not isinstance(device, Device):
+                continue
+            grouped = bool(row_data.get("grouped"))
+            rows.append(
+                {
+                    "kind": "device",
+                    "id": device.id,
+                    "boardId": self.device_table_board_id_text(device, grouped=grouped),
+                    "name": device.device_type if grouped else self.device_table_device_name_text(device),
+                    "boardType": self.device_table_board_type_text(device),
+                    "cpu": device.cpu,
+                    "slot": device.rack,
+                    "statusText": self.device_table_status_text(device),
+                    "statusTooltip": self.device_occupancy_tooltip(device),
+                    "selected": device.id == self.selected_device_id,
+                }
+            )
+        return {
+            "domains": [self.domain_combo.itemText(index) for index in range(self.domain_combo.count())],
+            "statuses": [self.status_combo.itemText(index) for index in range(self.status_combo.count())],
+            "filters": {
+                "search": self.search_input.text(),
+                "domain": self.domain_combo.currentText(),
+                "status": self.status_combo.currentText(),
+                "cpu": self.cpu_input.text(),
+                "mine": self.my_occupancy_filter_enabled,
+            },
+            "stats": {
+                "total": len(self.visible_devices),
+                "idle": self.visible_status_counts.get(STATUS_IDLE, 0),
+                "occupied": self.visible_status_counts.get(STATUS_OCCUPIED, 0),
+                "pipeline": self.visible_status_counts.get(STATUS_PIPELINE, 0),
+                "other": self.visible_status_counts.get(STATUS_OTHER, 0),
+                "mine": len(getattr(self, "owned_visible_devices", [])),
+            },
+            "summary": self.filter_summary_plain_text(),
+            "hasFilters": self.has_active_device_filters(),
+            "rows": rows,
+        }
 
     def render_device_group_row(self, row: int, name: str, subdomain: str, count: int, keyword: str) -> None:
         self.device_table.setRowHeight(row, 24)
@@ -616,6 +672,72 @@ class TableOpsMixin:
             sync_rows,
         )
 
+    def refresh_device_navigation_web(self) -> None:
+        web_nav = getattr(self, "device_navigation_web", None)
+        if web_nav is not None and hasattr(web_nav, "set_payload"):
+            web_nav.set_payload(self.device_navigation_payload())
+
+    def web_shell_payload(self) -> dict[str, object]:
+        device = self.get_selected_device()
+        navigation_payload = self.device_navigation_payload()
+        selected_device = None
+        if device is not None:
+            selected_device = {
+                "id": device.id,
+                "name": self.temporary_device_display_name(device),
+                "domain": device.domain,
+                "boardType": self.device_table_board_type_text(device),
+                "cpu": device.cpu,
+                "slot": device.rack,
+                "statusText": self.device_table_status_text(device),
+                "owner": device.owner or "未占用",
+                "telnet": f"{device.telnet_ip}:{device.telnet_port}" if device.telnet_ip else "",
+                "ssh": f"{device.ssh_ip}:{device.ssh_port}" if device.ssh_ip else "",
+                "serial": self.device_serial_connection_text(device)
+                if self.should_show_serial_connection_text(device)
+                else "",
+                "canSerial": self.can_view_serial_connection(device),
+            }
+        sessions: list[dict[str, object]] = []
+        if hasattr(self, "ordered_session_states"):
+            for state in self.ordered_session_states():
+                session_device = self.get_device_by_id(state.device_id)
+                sessions.append(
+                    {
+                        "tabId": state.tab_id,
+                        "title": state.title,
+                        "kind": self.session_kind_label(state.kind),
+                        "deviceName": self.temporary_device_display_name(session_device)
+                        if session_device is not None
+                        else state.device_id,
+                        "status": state.status_text,
+                        "statusLabel": self.session_status_label(state.status_text),
+                    }
+                )
+        return {
+            "summary": self.filter_summary_plain_text(),
+            "domains": navigation_payload.get("domains", []),
+            "statuses": navigation_payload.get("statuses", []),
+            "filters": navigation_payload.get("filters", {}),
+            "hasFilters": navigation_payload.get("hasFilters", False),
+            "stats": {
+                "total": len(self.visible_devices),
+                "idle": self.visible_status_counts.get(STATUS_IDLE, 0),
+                "occupied": self.visible_status_counts.get(STATUS_OCCUPIED, 0),
+                "pipeline": self.visible_status_counts.get(STATUS_PIPELINE, 0),
+                "other": self.visible_status_counts.get(STATUS_OTHER, 0),
+                "mine": len(getattr(self, "owned_visible_devices", [])),
+            },
+            "selectedDevice": selected_device,
+            "rows": navigation_payload.get("rows", []),
+            "sessions": sessions,
+        }
+
+    def refresh_web_shell(self) -> None:
+        web_shell = getattr(self, "web_shell", None)
+        if web_shell is not None and hasattr(web_shell, "set_payload"):
+            web_shell.set_payload(self.web_shell_payload())
+
     def refresh_owned_table(self) -> None:
         if not hasattr(self, "owned_table"):
             self.owned_visible_devices = []
@@ -913,6 +1035,7 @@ class TableOpsMixin:
         self.refresh_device_context()
         self.refresh_workspace_context()
         self.update_controls()
+        self.refresh_device_navigation_web()
 
     def handle_owned_table_selected(self) -> None:
         device_id = self._device_id_from_table(self.owned_table, 0)
@@ -928,6 +1051,7 @@ class TableOpsMixin:
         self.refresh_device_context()
         self.refresh_workspace_context()
         self.update_controls()
+        self.refresh_device_navigation_web()
 
     def locate_device_in_list(self, device_id: str) -> None:
         device = self.get_device_by_id(device_id)
@@ -964,6 +1088,34 @@ class TableOpsMixin:
         summary = " / ".join(active_filters) if has_filters else "当前显示全部设备"
         self.filter_summary_label.setText(summary)
         self.clear_filters_button.setEnabled(has_filters)
+
+    def has_active_device_filters(self) -> bool:
+        return bool(
+            self.search_input.text().strip()
+            or self.my_occupancy_filter_enabled
+            or self.domain_combo.currentText().strip() != ALL_DOMAINS
+            or self.status_combo.currentText().strip() != ALL_STATUS
+            or self.cpu_input.text().strip()
+        )
+
+    def filter_summary_plain_text(self) -> str:
+        active_filters: list[str] = []
+        search_text = self.search_input.text().strip()
+        domain_filter = self.domain_combo.currentText().strip()
+        status_filter = self.status_combo.currentText().strip()
+        cpu_filter = self.cpu_input.text().strip()
+        if search_text:
+            active_filters.append(f"关键词 {search_text}")
+        if self.my_occupancy_filter_enabled:
+            label = self.current_user or "我的占用"
+            active_filters.append(f"占用 {label}")
+        if domain_filter and domain_filter != ALL_DOMAINS:
+            active_filters.append(f"领域 {domain_filter}")
+        if status_filter and status_filter != ALL_STATUS:
+            active_filters.append(f"状态 {status_filter}")
+        if cpu_filter:
+            active_filters.append(f"CPU {cpu_filter}")
+        return " / ".join(active_filters) if active_filters else "当前显示全部设备"
 
     def filter_chip_html(self, label: str, value: str) -> str:
         return (

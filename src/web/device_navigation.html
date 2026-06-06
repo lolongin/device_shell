@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <title>Device Navigation</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090c;
+      --panel: #0d1117;
+      --panel-2: #101620;
+      --line: #242b36;
+      --line-strong: #334155;
+      --text: #edf4ff;
+      --muted: #9aa8bc;
+      --soft: #6f7c91;
+      --accent: #34d399;
+      --blue: #60a5fa;
+      --warn: #fbbf24;
+      --selected: #464a7c;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      font-size: 12px;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .shell {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto auto 1fr;
+      gap: 8px;
+      padding: 0;
+      background: var(--bg);
+    }
+
+    .toolbar,
+    .filters,
+    .stats {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 82px 72px;
+      gap: 6px;
+      padding: 8px;
+    }
+
+    .stats {
+      display: grid;
+      gap: 5px;
+      padding: 8px;
+    }
+
+    input,
+    select {
+      min-width: 0;
+      width: 100%;
+      height: 32px;
+      color: var(--text);
+      background: #090d13;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      outline: none;
+      padding: 0 9px;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.22);
+    }
+
+    button {
+      height: 32px;
+      color: var(--text);
+      background: #0b1017;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      padding: 0 11px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover {
+      border-color: var(--blue);
+      background: #111827;
+    }
+
+    button.active {
+      border-color: rgba(52, 211, 153, 0.65);
+      color: #d8fff0;
+      background: rgba(16, 185, 129, 0.14);
+    }
+
+    .count-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    .count-line b {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .idle { color: var(--accent); }
+    .occupied { color: var(--warn); }
+    .pipeline { color: var(--blue); }
+    .other { color: var(--soft); }
+
+    .summary {
+      min-height: 18px;
+      color: var(--muted);
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .table {
+      min-height: 0;
+      border: 1px solid var(--line);
+      background: #05080c;
+      border-radius: 8px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 26px 1fr;
+    }
+
+    .thead,
+    .row {
+      display: grid;
+      grid-template-columns: 48px minmax(104px, 1.45fr) minmax(76px, 1fr) 58px 70px 90px;
+      align-items: center;
+    }
+
+    .thead {
+      color: var(--muted);
+      background: #080c11;
+      border-bottom: 1px solid var(--line);
+      padding-right: 10px;
+    }
+
+    .cell {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 0 7px;
+    }
+
+    .tbody {
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .row {
+      min-height: 28px;
+      color: var(--text);
+      border-bottom: 1px solid rgba(36, 43, 54, 0.55);
+      cursor: pointer;
+    }
+
+    .row:hover {
+      background: #101620;
+    }
+
+    .row.selected {
+      background: var(--selected);
+    }
+
+    .row.group {
+      min-height: 24px;
+      color: #d6deeb;
+      background: #0b0f14;
+      font-weight: 700;
+      cursor: default;
+    }
+
+    .row.group .muted {
+      color: var(--soft);
+      font-weight: 400;
+    }
+
+    .status {
+      font-weight: 700;
+    }
+
+    .empty {
+      color: var(--soft);
+      padding: 18px 10px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 560px) {
+      .filters {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .thead,
+      .row {
+        grid-template-columns: 42px minmax(104px, 1.3fr) 72px 54px 64px 78px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="toolbar">
+      <input id="search" autocomplete="off" placeholder="搜索名称、ID、IP、型号" />
+      <button id="refresh">刷新</button>
+      <button id="clear">清空</button>
+    </section>
+    <section class="filters">
+      <select id="domain"></select>
+      <select id="status"></select>
+      <input id="cpu" autocomplete="off" placeholder="CPU" />
+      <button id="mine">我的</button>
+    </section>
+    <section class="stats">
+      <div class="count-line" id="counts"></div>
+      <div class="summary" id="summary"></div>
+    </section>
+    <section class="table">
+      <div class="thead">
+        <div class="cell">序号</div>
+        <div class="cell">设备</div>
+        <div class="cell">板类型</div>
+        <div class="cell">CPU</div>
+        <div class="cell">Slot</div>
+        <div class="cell">状态</div>
+      </div>
+      <div class="tbody" id="rows"></div>
+    </section>
+  </main>
+
+  <script>
+    let bridge = null;
+    let payload = null;
+    let applying = false;
+    let filterTimer = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    function debounceFilters() {
+      if (applying || !bridge) return;
+      window.clearTimeout(filterTimer);
+      filterTimer = window.setTimeout(sendFilters, 80);
+    }
+
+    function sendFilters() {
+      if (!bridge) return;
+      bridge.updateFilters(JSON.stringify({
+        search: $("search").value,
+        domain: $("domain").value,
+        status: $("status").value,
+        cpu: $("cpu").value,
+        mine: $("mine").classList.contains("active")
+      }));
+    }
+
+    function setOptions(select, values, current) {
+      select.innerHTML = "";
+      values.forEach((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      select.value = current;
+      if (select.value !== current && values.length) select.value = values[0];
+    }
+
+    function statusClass(status) {
+      if (status.includes("空闲")) return "idle";
+      if (status.includes("占用") && !status.includes("流水线")) return "occupied";
+      if (status.includes("流水线")) return "pipeline";
+      return "other";
+    }
+
+    function renderCounts(data) {
+      $("counts").innerHTML = [
+        `设备 <b>${data.stats.total}</b>`,
+        `空闲 <b class="idle">${data.stats.idle}</b>`,
+        `占用 <b class="occupied">${data.stats.occupied}</b>`,
+        `流水线 <b class="pipeline">${data.stats.pipeline}</b>`,
+        `其他 <b class="other">${data.stats.other}</b>`
+      ].join("");
+      $("summary").textContent = data.summary || "当前显示全部设备";
+    }
+
+    function appendCell(row, text, title, extraClass) {
+      const cell = document.createElement("div");
+      cell.className = `cell ${extraClass || ""}`.trim();
+      cell.textContent = text || "";
+      cell.title = title || text || "";
+      row.appendChild(cell);
+    }
+
+    function renderRows(data) {
+      const container = $("rows");
+      container.innerHTML = "";
+      if (!data.rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "没有符合条件的设备。";
+        container.appendChild(empty);
+        return;
+      }
+      data.rows.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = item.kind === "group" ? "row group" : "row";
+        if (item.selected) row.classList.add("selected");
+        if (item.kind === "group") {
+          appendCell(row, item.name, item.name);
+          appendCell(row, item.subdomain || "", item.subdomain || "", "muted");
+          appendCell(row, `${item.count} 块板`, `${item.count} 块板`, "muted");
+          appendCell(row, "", "");
+          appendCell(row, "", "");
+          appendCell(row, "", "");
+          container.appendChild(row);
+          return;
+        }
+        row.addEventListener("click", () => bridge && bridge.selectDevice(item.id));
+        appendCell(row, item.boardId, item.boardId);
+        appendCell(row, item.name, item.name);
+        appendCell(row, item.boardType, item.boardType);
+        appendCell(row, item.cpu, item.cpu);
+        appendCell(row, item.slot, item.slot);
+        appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText)}`);
+        container.appendChild(row);
+      });
+    }
+
+    window.setDeviceNavigationPayload = function setDeviceNavigationPayload(nextPayload) {
+      payload = nextPayload || {};
+      applying = true;
+      setOptions($("domain"), payload.domains || [], payload.filters.domain || "");
+      setOptions($("status"), payload.statuses || [], payload.filters.status || "");
+      $("search").value = payload.filters.search || "";
+      $("cpu").value = payload.filters.cpu || "";
+      $("mine").classList.toggle("active", !!payload.filters.mine);
+      $("mine").textContent = `我的 ${payload.stats.mine || 0}`;
+      $("clear").disabled = !payload.hasFilters;
+      renderCounts(payload);
+      renderRows(payload);
+      applying = false;
+    };
+
+    function wire() {
+      ["search", "cpu"].forEach((id) => $(id).addEventListener("input", debounceFilters));
+      ["domain", "status"].forEach((id) => $(id).addEventListener("change", debounceFilters));
+      $("mine").addEventListener("click", () => {
+        $("mine").classList.toggle("active");
+        sendFilters();
+      });
+      $("refresh").addEventListener("click", () => bridge && bridge.requestRefresh());
+      $("clear").addEventListener("click", () => bridge && bridge.clearFilters());
+    }
+
+    new QWebChannel(qt.webChannelTransport, (channel) => {
+      bridge = channel.objects.deviceNavigationBridge;
+      wire();
+    });
+  </script>
+</body>
+</html>

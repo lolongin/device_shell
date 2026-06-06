@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <title>Device Workspace</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090c;
+      --panel: #0d1117;
+      --panel-2: #111720;
+      --line: #242b36;
+      --line-strong: #334155;
+      --text: #edf4ff;
+      --muted: #9aa8bc;
+      --soft: #6f7c91;
+      --accent: #34d399;
+      --blue: #60a5fa;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --selected: #464a7c;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      height: 32px;
+      color: var(--text);
+      background: #0b1017;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      padding: 0 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover { border-color: var(--blue); background: #111827; }
+    button.primary { border-color: rgba(52, 211, 153, 0.65); color: #d8fff0; background: rgba(16, 185, 129, 0.14); }
+    button.active { border-color: rgba(52, 211, 153, 0.65); color: #d8fff0; background: rgba(16, 185, 129, 0.14); }
+    button:disabled { cursor: default; color: var(--soft); border-color: #202733; background: #0a0d12; }
+
+    input,
+    select {
+      width: 100%;
+      min-width: 0;
+      height: 32px;
+      color: var(--text);
+      background: #090d13;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      outline: none;
+      padding: 0 9px;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.22);
+    }
+
+    .shell {
+      height: 100vh;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      background: var(--bg);
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #090c10;
+    }
+
+    .title { font-size: 17px; font-weight: 800; letter-spacing: 0; }
+    .subtitle { margin-top: 3px; color: var(--muted); line-height: 1.35; }
+
+    .content {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(520px, 1fr) 330px;
+      gap: 10px;
+      padding: 10px;
+      overflow: hidden;
+    }
+
+    .panel {
+      min-height: 0;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .side {
+      min-height: 0;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+      overflow: auto;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    .head-title { font-weight: 800; color: var(--text); }
+    .head-sub { color: var(--muted); font-size: 12px; }
+    .body { padding: 11px; }
+
+    .filterbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.4fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) 90px auto auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #080c11;
+    }
+
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    .stats b { color: var(--text); font-weight: 800; }
+    .idle { color: var(--accent); }
+    .occupied { color: var(--warn); }
+    .pipeline { color: var(--blue); }
+    .other { color: var(--soft); }
+
+    .table {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 28px 1fr;
+      background: #05080c;
+    }
+
+    .thead,
+    .row {
+      display: grid;
+      grid-template-columns: 58px minmax(160px, 1.45fr) minmax(116px, 1fr) 74px 86px 116px;
+      align-items: center;
+    }
+
+    .thead {
+      color: var(--muted);
+      background: #080c11;
+      border-bottom: 1px solid var(--line);
+      padding-right: 10px;
+    }
+
+    .tbody { min-height: 0; overflow: auto; }
+    .cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
+
+    .row {
+      min-height: 30px;
+      color: var(--text);
+      border-bottom: 1px solid rgba(36, 43, 54, 0.55);
+      cursor: pointer;
+    }
+
+    .row:hover { background: #101620; }
+    .row.selected { background: var(--selected); }
+    .row.group { min-height: 26px; color: #d6deeb; background: #0b0f14; font-weight: 800; cursor: default; }
+    .row.group .muted { color: var(--soft); font-weight: 400; }
+    .status { font-weight: 800; }
+
+    .device-name { font-size: 16px; font-weight: 800; line-height: 1.3; }
+    .meta { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+    }
+
+    .chip.good { color: var(--accent); border-color: rgba(52, 211, 153, 0.35); }
+    .chip.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.35); }
+    .chip.blue { color: var(--blue); border-color: rgba(96, 165, 250, 0.35); }
+
+    .kv { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 7px; line-height: 1.75; margin-top: 10px; }
+    .key { color: var(--soft); }
+    .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+    .sessions { display: grid; gap: 8px; }
+    .session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--line); background: #090d13; border-radius: 7px; padding: 8px 9px; }
+    .session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+    .session-sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .session-status { font-weight: 800; color: var(--muted); }
+    .session-status.connected { color: var(--accent); }
+    .session-status.connecting { color: var(--blue); }
+    .session-status.disconnected { color: var(--danger); }
+    .empty { color: var(--soft); line-height: 1.6; }
+
+    @media (max-width: 1100px) {
+      .content { grid-template-columns: 1fr; overflow: auto; }
+      .panel { min-height: 460px; }
+      .side { overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <div class="title">终端会话工作区</div>
+        <div class="subtitle" id="summary">当前显示全部设备</div>
+      </div>
+      <button id="refresh">刷新</button>
+    </header>
+    <section class="filterbar">
+      <input id="search" autocomplete="off" placeholder="搜索名称、ID、IP、型号" />
+      <select id="domain"></select>
+      <select id="status"></select>
+      <input id="cpu" autocomplete="off" placeholder="CPU" />
+      <button id="mine">我的</button>
+      <button id="clear">清空</button>
+    </section>
+    <section class="content">
+      <section class="panel">
+        <div class="head">
+          <div>
+            <div class="head-title">设备列表</div>
+            <div class="head-sub">中央工作区用于浏览设备；打开终端后切换为会话页</div>
+          </div>
+          <div class="stats" id="stats"></div>
+        </div>
+        <div class="table">
+          <div class="thead">
+            <div class="cell">序号</div>
+            <div class="cell">设备</div>
+            <div class="cell">板类型</div>
+            <div class="cell">CPU</div>
+            <div class="cell">Slot</div>
+            <div class="cell">状态</div>
+          </div>
+          <div class="tbody" id="deviceRows"></div>
+        </div>
+      </section>
+      <aside class="side">
+        <section class="card">
+          <div class="head"><div class="head-title">当前设备</div></div>
+          <div class="body" id="devicePanel"></div>
+        </section>
+        <section class="card">
+          <div class="head"><div class="head-title">连接动作</div></div>
+          <div class="body"><div class="actions">
+            <button class="primary" data-action="telnet">连接 Telnet</button>
+            <button class="primary" data-action="ssh">连接 SSH</button>
+            <button data-action="serial">连接串口</button>
+            <button data-action="occupancy">占用 / 释放</button>
+          </div></div>
+        </section>
+        <section class="card">
+          <div class="head"><div class="head-title">已打开会话</div></div>
+          <div class="body"><div class="sessions" id="sessionList"></div></div>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    let bridge = null;
+    let state = null;
+    let applying = false;
+    let filterTimer = null;
+    const $ = (id) => document.getElementById(id);
+
+    function debounceFilters() {
+      if (applying || !bridge) return;
+      window.clearTimeout(filterTimer);
+      filterTimer = window.setTimeout(sendFilters, 80);
+    }
+
+    function sendFilters() {
+      if (!bridge) return;
+      bridge.updateFilters(JSON.stringify({
+        search: $("search").value,
+        domain: $("domain").value,
+        status: $("status").value,
+        cpu: $("cpu").value,
+        mine: $("mine").classList.contains("active")
+      }));
+    }
+
+    function setOptions(select, values, current) {
+      select.innerHTML = "";
+      (values || []).forEach((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      select.value = current || "";
+      if (select.value !== (current || "") && values && values.length) select.value = values[0];
+    }
+
+    function statusClass(text) {
+      const value = String(text || "");
+      if (value.includes("空闲")) return "idle";
+      if (value.includes("占用") && !value.includes("流水线")) return "occupied";
+      if (value.includes("流水线")) return "pipeline";
+      return "other";
+    }
+
+    function chipClass(text) {
+      const value = String(text || "");
+      if (value.includes("空闲")) return "good";
+      if (value.includes("占用")) return "warn";
+      if (value.includes("流水线")) return "blue";
+      return "";
+    }
+
+    function sessionStatusClass(status) {
+      const normalized = String(status || "").toLowerCase();
+      if (normalized === "connected") return "connected";
+      if (normalized === "connecting") return "connecting";
+      if (normalized === "disconnected") return "disconnected";
+      return "";
+    }
+
+    function appendCell(row, text, title, extraClass) {
+      const cell = document.createElement("div");
+      cell.className = `cell ${extraClass || ""}`.trim();
+      cell.textContent = text || "";
+      cell.title = title || text || "";
+      row.appendChild(cell);
+    }
+
+    function renderStats(stats, sessionCount) {
+      $("stats").innerHTML = [
+        `设备 <b>${stats.total || 0}</b>`,
+        `空闲 <b class="idle">${stats.idle || 0}</b>`,
+        `占用 <b class="occupied">${stats.occupied || 0}</b>`,
+        `流水线 <b class="pipeline">${stats.pipeline || 0}</b>`,
+        `会话 <b>${sessionCount || 0}</b>`
+      ].join("");
+    }
+
+    function renderDeviceRows(rows) {
+      const container = $("deviceRows");
+      container.innerHTML = "";
+      if (!rows || !rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "没有符合条件的设备。";
+        container.appendChild(empty);
+        return;
+      }
+      rows.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = item.kind === "group" ? "row group" : "row";
+        if (item.selected) row.classList.add("selected");
+        if (item.kind === "group") {
+          appendCell(row, item.name, item.name);
+          appendCell(row, item.subdomain || "", item.subdomain || "", "muted");
+          appendCell(row, `${item.count} 块板`, `${item.count} 块板`, "muted");
+          appendCell(row, "", "");
+          appendCell(row, "", "");
+          appendCell(row, "", "");
+          container.appendChild(row);
+          return;
+        }
+        row.addEventListener("click", () => bridge && bridge.selectDevice(item.id));
+        appendCell(row, item.boardId, item.boardId);
+        appendCell(row, item.name, item.name);
+        appendCell(row, item.boardType, item.boardType);
+        appendCell(row, item.cpu, item.cpu);
+        appendCell(row, item.slot, item.slot);
+        appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText)}`);
+        container.appendChild(row);
+      });
+    }
+
+    function renderDevice(device) {
+      const panel = $("devicePanel");
+      panel.innerHTML = "";
+      if (!device) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "当前没有选中设备。";
+        panel.appendChild(empty);
+        document.querySelectorAll("[data-action]").forEach((button) => button.disabled = true);
+        return;
+      }
+      document.querySelectorAll("[data-action]").forEach((button) => {
+        const action = button.getAttribute("data-action");
+        button.disabled = action === "serial" && !device.canSerial;
+      });
+      const name = document.createElement("div");
+      name.className = "device-name";
+      name.textContent = device.name;
+      panel.appendChild(name);
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      [device.id, device.domain, device.statusText, device.owner].filter(Boolean).forEach((value) => {
+        const chip = document.createElement("span");
+        chip.className = `chip ${chipClass(value)}`;
+        chip.textContent = value;
+        chip.title = value;
+        meta.appendChild(chip);
+      });
+      panel.appendChild(meta);
+      const kv = document.createElement("div");
+      kv.className = "kv";
+      [
+        ["板类型", device.boardType],
+        ["CPU", device.cpu],
+        ["Slot", device.slot],
+        ["Telnet", device.telnet],
+        ["SSH", device.ssh],
+        ["串口", device.serial || "占用后可见"]
+      ].forEach(([key, value]) => {
+        const keyEl = document.createElement("div");
+        keyEl.className = "key";
+        keyEl.textContent = key;
+        const valueEl = document.createElement("div");
+        valueEl.className = "value";
+        valueEl.textContent = value || "-";
+        valueEl.title = value || "-";
+        kv.appendChild(keyEl);
+        kv.appendChild(valueEl);
+      });
+      panel.appendChild(kv);
+    }
+
+    function renderSessions(sessions) {
+      const list = $("sessionList");
+      list.innerHTML = "";
+      if (!sessions.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "当前没有打开终端会话。";
+        list.appendChild(empty);
+        return;
+      }
+      sessions.forEach((session) => {
+        const item = document.createElement("div");
+        item.className = "session";
+        const left = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "session-title";
+        title.textContent = session.title;
+        const sub = document.createElement("div");
+        sub.className = "session-sub";
+        sub.textContent = `${session.deviceName} · ${session.kind}`;
+        left.appendChild(title);
+        left.appendChild(sub);
+        const status = document.createElement("div");
+        status.className = `session-status ${sessionStatusClass(session.status)}`;
+        status.textContent = session.statusLabel || session.status;
+        item.appendChild(left);
+        item.appendChild(status);
+        list.appendChild(item);
+      });
+    }
+
+    window.setWebShellPayload = function setWebShellPayload(payload) {
+      state = payload || {};
+      applying = true;
+      setOptions($("domain"), state.domains || [], state.filters && state.filters.domain || "");
+      setOptions($("status"), state.statuses || [], state.filters && state.filters.status || "");
+      $("search").value = state.filters && state.filters.search || "";
+      $("cpu").value = state.filters && state.filters.cpu || "";
+      $("mine").classList.toggle("active", !!(state.filters && state.filters.mine));
+      $("mine").textContent = `我的 ${state.stats && state.stats.mine || 0}`;
+      $("clear").disabled = !state.hasFilters;
+      $("summary").textContent = state.summary || "当前显示全部设备";
+      renderStats(state.stats || {}, state.sessions ? state.sessions.length : 0);
+      renderDeviceRows(state.rows || []);
+      renderDevice(state.selectedDevice || null);
+      renderSessions(state.sessions || []);
+      applying = false;
+    };
+
+    function wire() {
+      $("refresh").addEventListener("click", () => bridge && bridge.requestRefresh());
+      $("clear").addEventListener("click", () => bridge && bridge.clearFilters());
+      ["search", "cpu"].forEach((id) => $(id).addEventListener("input", debounceFilters));
+      ["domain", "status"].forEach((id) => $(id).addEventListener("change", debounceFilters));
+      $("mine").addEventListener("click", () => {
+        $("mine").classList.toggle("active");
+        sendFilters();
+      });
+      document.querySelectorAll("[data-action]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (bridge) bridge.requestAction(button.getAttribute("data-action"));
+        });
+      });
+    }
+
+    new QWebChannel(qt.webChannelTransport, (channel) => {
+      bridge = channel.objects.webShellBridge;
+      wire();
+    });
+  </script>
+</body>
+</html>

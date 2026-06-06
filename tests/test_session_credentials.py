@@ -395,6 +395,53 @@ def test_device_table_shows_occupied_status_with_duration(app: QApplication, sam
     assert "占用时长" in status_item.toolTip()
 
 
+def test_device_navigation_payload_includes_web_rows(app: QApplication, sample_device) -> None:
+    _ = app
+    occupied = replace(
+        sample_device,
+        status=STATUS_OCCUPIED,
+        owner="li.wei",
+        extra={
+            **sample_device.extra,
+            "occupancy_started_at": (datetime.now(timezone.utc) - timedelta(minutes=40)).isoformat(),
+        },
+    )
+    window = DeviceDesktopApp()
+    window.devices = [occupied]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+
+    payload = window.device_navigation_payload()
+    rows = payload["rows"]
+
+    assert payload["stats"]["occupied"] == 1
+    assert isinstance(rows, list)
+    assert rows[0]["kind"] == "device"
+    assert rows[0]["id"] == occupied.id
+    assert rows[0]["boardType"] == occupied.device_type
+    assert rows[0]["slot"] == occupied.rack
+    assert STATUS_OCCUPIED in rows[0]["statusText"]
+    assert rows[0]["selected"] is True
+
+
+def test_web_shell_payload_includes_selected_device(app: QApplication, sample_device) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.devices = [sample_device]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+
+    payload = window.web_shell_payload()
+    selected = payload["selectedDevice"]
+
+    assert selected["id"] == sample_device.id
+    assert selected["name"] == sample_device.name
+    assert selected["boardType"] == sample_device.device_type
+    assert selected["telnet"] == f"{sample_device.telnet_ip}:{sample_device.telnet_port}"
+    assert payload["stats"]["total"] == 2
+    assert payload["sessions"] == []
+
+
 def test_device_table_groups_duplicate_device_names(app: QApplication, sample_device) -> None:
     _ = app
     first = replace(

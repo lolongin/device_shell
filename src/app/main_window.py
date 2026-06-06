@@ -170,6 +170,8 @@ try:
     from ..session_protocol import SessionCallbacks, SessionUnavailableError
     from ..telnet_session import HuaweiTelnetSession, TelnetSessionError
     from ..widgets.device_table import CopyableDeviceTable
+    from ..widgets.device_navigation_web_widget import DeviceNavigationWebWidget
+    from ..widgets.web_shell_widget import WebShellWidget
     from ..widgets.search_input import SelectAllLineEdit
     from ..widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
     from ..widgets.password_field import configure_password_visibility
@@ -202,6 +204,8 @@ except ImportError:
     from session_protocol import SessionCallbacks, SessionUnavailableError
     from telnet_session import HuaweiTelnetSession, TelnetSessionError
     from widgets.device_table import CopyableDeviceTable
+    from widgets.device_navigation_web_widget import DeviceNavigationWebWidget
+    from widgets.web_shell_widget import WebShellWidget
     from widgets.search_input import SelectAllLineEdit
     from widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
     from widgets.password_field import configure_password_visibility
@@ -485,9 +489,11 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.search_input = QLineEdit()
             self.search_input.setPlaceholderText("搜索名称、ID、IP、型号")
+            self.search_input.setVisible(False)
             nav_body_layout.addWidget(self.search_input)
 
             filter_frame = QFrame()
+            self.device_filter_frame = filter_frame
             filter_frame.setObjectName("navFilterBar")
             filter_row = QHBoxLayout(filter_frame)
             filter_row.setContentsMargins(8, 8, 8, 8)
@@ -512,6 +518,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             filter_row.addWidget(self.status_combo, 1)
             filter_row.addWidget(self.cpu_input, 0)
             filter_row.addWidget(self.my_occupancy_filter_button, 0)
+            filter_frame.setVisible(False)
             nav_body_layout.addWidget(filter_frame)
 
             stats_frame = QFrame()
@@ -547,12 +554,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             stats_bottom_row.addWidget(self.clear_filters_button)
             stats_layout.addLayout(stats_top_row)
             stats_layout.addLayout(stats_bottom_row)
+            stats_frame.setVisible(False)
             nav_body_layout.addWidget(stats_frame)
 
             self.device_table = self._new_table(["序号", "设备", "板类型", "CPU", "Slot", "状态"])
             self.device_table.setMinimumHeight(260)
             self.device_table.setMaximumHeight(340)
+            self.device_table.setVisible(False)
             nav_body_layout.addWidget(self.device_table)
+            self.device_navigation_web = DeviceNavigationWebWidget(self)
+            self.device_navigation_web.setMinimumHeight(360)
+            nav_body_layout.addWidget(self.device_navigation_web, 1)
             nav_layout.addWidget(self.device_navigation_body)
             nav_layout.addWidget(self._build_device_context_panel())
             layout.addWidget(navigation_group)
@@ -1158,22 +1170,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.center_stage_stack.setStackingMode(QStackedLayout.StackOne)
             layout.addLayout(self.center_stage_stack, 1)
 
-            empty_state = QFrame()
-            empty_state.setObjectName("sessionEmptyState")
-            empty_layout = QVBoxLayout(empty_state)
-            empty_layout.setContentsMargins(44, 36, 44, 36)
-            empty_layout.addStretch(1)
-            empty_title = QLabel("终端会话工作区")
-            empty_title.setObjectName("sessionEmptyTitle")
-            empty_copy = QLabel(
-                "从左侧选择设备，使用右下角快捷动作发起连接。\n"
-                "Telnet / SSH 会话会在这里打开，下方可记录和发送常用命令。"
-            )
-            empty_copy.setObjectName("sessionEmptyCopy")
-            empty_copy.setWordWrap(True)
-            empty_layout.addWidget(empty_title, 0, Qt.AlignHCenter)
-            empty_layout.addWidget(empty_copy, 0, Qt.AlignHCenter)
-            empty_layout.addStretch(1)
+            empty_state = WebShellWidget(self)
+            self.web_shell = empty_state
 
             self.session_tab_widget = QTabWidget()
             self.session_tab_widget.setObjectName("sessionTabs")
@@ -1185,6 +1183,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.center_stage_stack.addWidget(empty_state)
             self.center_stage_stack.addWidget(self.session_tab_widget)
             quick_action_bar = QFrame()
+            self.session_quick_action_bar = quick_action_bar
             quick_action_bar.setObjectName("sessionQuickBar")
             quick_action_layout = QVBoxLayout(quick_action_bar)
             quick_action_layout.setContentsMargins(8, 4, 8, 4)
@@ -1579,6 +1578,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.temporary_clear_button.clicked.connect(self.clear_temporary_form)
             self.wire_transfer_events()
             self.clear_filters_button.clicked.connect(self.clear_filters)
+            if hasattr(self, "device_navigation_web"):
+                self.device_navigation_web.device_selected.connect(self.activate_device)
+                self.device_navigation_web.filters_changed.connect(self.apply_web_device_filters)
+                self.device_navigation_web.refresh_requested.connect(self.refresh_snapshot)
+                self.device_navigation_web.clear_requested.connect(self.clear_filters)
+            if hasattr(self, "web_shell"):
+                self.web_shell.device_selected.connect(self.activate_device)
+                self.web_shell.filters_changed.connect(self.apply_web_device_filters)
+                self.web_shell.action_requested.connect(self.handle_web_shell_action)
+                self.web_shell.refresh_requested.connect(self.refresh_snapshot)
+                self.web_shell.clear_requested.connect(self.clear_filters)
 
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
             self.device_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1645,6 +1655,42 @@ if PYSIDE6_IMPORT_ERROR is None:
         def set_my_occupancy_filter(self, enabled: bool) -> None:
             self.my_occupancy_filter_enabled = enabled
             self.apply_filters()
+
+        def apply_web_device_filters(self, filters: dict[str, object]) -> None:
+            self.search_input.blockSignals(True)
+            self.domain_combo.blockSignals(True)
+            self.status_combo.blockSignals(True)
+            self.cpu_input.blockSignals(True)
+            self.my_occupancy_filter_button.blockSignals(True)
+            try:
+                self.search_input.setText(str(filters.get("search") or ""))
+                domain = str(filters.get("domain") or ALL_DOMAINS)
+                self.domain_combo.setCurrentText(domain if self.domain_combo.findText(domain) >= 0 else ALL_DOMAINS)
+                status = str(filters.get("status") or ALL_STATUS)
+                self.status_combo.setCurrentText(status if self.status_combo.findText(status) >= 0 else ALL_STATUS)
+                self.cpu_input.setText(str(filters.get("cpu") or ""))
+                self.my_occupancy_filter_enabled = bool(filters.get("mine"))
+                self.my_occupancy_filter_button.setChecked(self.my_occupancy_filter_enabled)
+            finally:
+                self.search_input.blockSignals(False)
+                self.domain_combo.blockSignals(False)
+                self.status_combo.blockSignals(False)
+                self.cpu_input.blockSignals(False)
+                self.my_occupancy_filter_button.blockSignals(False)
+            self.apply_filters()
+
+        def handle_web_shell_action(self, action: str) -> None:
+            if action == "telnet":
+                self.open_selected_device_session()
+                return
+            if action == "ssh":
+                self.open_selected_linux_session()
+                return
+            if action == "serial":
+                self.open_selected_serial_session()
+                return
+            if action == "occupancy":
+                self.toggle_occupancy()
 
         def toggle_always_on_top(self, enabled: bool) -> None:
             self.always_on_top = enabled

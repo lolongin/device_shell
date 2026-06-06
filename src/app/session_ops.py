@@ -1822,6 +1822,8 @@ class SessionOpsMixin:
     def refresh_workspace_context(self) -> None:
         self.refresh_session_jump_combo()
         self.refresh_auto_response_rule_buttons()
+        if hasattr(self, "refresh_web_shell"):
+            self.refresh_web_shell()
 
     def refresh_session_jump_combo(self) -> None:
         if not hasattr(self, "session_jump_combo"):
@@ -1952,7 +1954,28 @@ class SessionOpsMixin:
     def update_center_stage_state(self) -> None:
         if not hasattr(self, "center_stage_stack"):
             return
-        self.center_stage_stack.setCurrentIndex(1 if self.session_tab_widget.count() > 0 else 0)
+        has_sessions = self.session_tab_widget.count() > 0
+        self.center_stage_stack.setCurrentIndex(1 if has_sessions else 0)
+        for widget_name in ("session_quick_action_bar", "command_record_frame"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.setVisible(has_sessions)
+        can_auto_collapse_left = os.environ.get("QT_QPA_PLATFORM", "").lower() != "offscreen"
+        if (
+            can_auto_collapse_left
+            and not has_sessions
+            and getattr(self, "left_sidebar_active_panel", "devices") == "devices"
+        ):
+            if not getattr(self, "_web_shell_auto_collapsed_left", False):
+                self._web_shell_restore_left_sidebar_collapsed = getattr(self, "left_sidebar_collapsed", False)
+            self._web_shell_auto_collapsed_left = True
+            self.left_sidebar_collapsed = True
+            self.apply_left_sidebar_state()
+            return
+        if has_sessions and getattr(self, "_web_shell_auto_collapsed_left", False):
+            self.left_sidebar_collapsed = bool(getattr(self, "_web_shell_restore_left_sidebar_collapsed", False))
+            self._web_shell_auto_collapsed_left = False
+            self.apply_left_sidebar_state()
 
     def current_session_key(self) -> str | None:
         state = self.current_session_state()
