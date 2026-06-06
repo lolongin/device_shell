@@ -74,43 +74,70 @@ def suggest_commands(
     normalized_query = normalize_command_text(query).casefold()
     if not normalized_query:
         return []
-    candidates: dict[str, float] = {}
+    candidates: dict[str, tuple[float, int]] = {}
     now = time.time()
 
     for command in DEFAULT_COMMAND_SUGGESTIONS:
-        candidates[command] = max(candidates.get(command, 0.0), _score_command(command, normalized_query, 0, 0, now))
+        score = _score_command(command, normalized_query, 0, 0, now, default=True)
+        if score > 0:
+            candidates[command] = _best_candidate(candidates.get(command), score, 2)
 
     for item in history:
         score = _score_command(item.command, normalized_query, item.count, item.last_used_at, now)
         if item.device_id and item.device_id == device_id:
-            score += 18
+            score += 30
         if item.session_kind and item.session_kind == session_kind:
-            score += 8
-        candidates[item.command] = max(candidates.get(item.command, 0.0), score)
+            score += 12
+        if score > 0:
+            candidates[item.command] = _best_candidate(candidates.get(item.command), score, 0)
 
     ranked = [
-        (command, score)
-        for command, score in candidates.items()
+        (command, score, source_priority)
+        for command, (score, source_priority) in candidates.items()
         if score > 0 and command.casefold() != normalized_query
     ]
-    ranked.sort(key=lambda pair: (-pair[1], pair[0]))
-    return [command for command, _score in ranked[:limit]]
+    ranked.sort(key=lambda pair: (-pair[1], pair[2], pair[0]))
+    return [command for command, _score, _source_priority in ranked[:limit]]
 
 
-def _score_command(command: str, query: str, count: int, last_used_at: float, now: float) -> float:
+def _best_candidate(current: tuple[float, int] | None, score: float, source_priority: int) -> tuple[float, int]:
+    if current is None:
+        return score, source_priority
+    current_score, current_priority = current
+    if score > current_score:
+        return score, source_priority
+    if score == current_score and source_priority < current_priority:
+        return score, source_priority
+    return current
+
+
+def _score_command(
+    command: str,
+    query: str,
+    count: int,
+    last_used_at: float,
+    now: float,
+    *,
+    default: bool = False,
+) -> float:
     lowered = command.casefold()
     if lowered.startswith(query):
-        score = 100.0
+        score = 120.0
+        first_word = lowered.split(maxsplit=1)[0]
+        if first_word == query:
+            score += 16
     elif query in lowered:
-        score = 55.0
+        score = 46.0
     elif _fuzzy_initials_match(lowered, query):
-        score = 35.0
+        score = 32.0
     else:
         return 0.0
-    score += min(count, 50) * 2
+    score += min(count, 50) * 3
     if last_used_at > 0:
         age_hours = max((now - last_used_at) / 3600, 0)
-        score += max(0.0, 20.0 - age_hours)
+        score += max(0.0, 32.0 - age_hours)
+    if default:
+        score -= 18
     return score
 
 

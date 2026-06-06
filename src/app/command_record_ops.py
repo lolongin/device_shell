@@ -99,22 +99,7 @@ class CommandRecordOpsMixin:
         )
         self.current_command_suggestions = suggestions
         self.command_suggestion_buttons = []
-        if not suggestions:
-            self.command_suggestion_bar.setVisible(False)
-            return
-        self.command_suggestion_bar.setVisible(True)
-        for suggestion in suggestions:
-            button = QToolButton()
-            button.setObjectName("commandSuggestionButton")
-            button.setText(suggestion)
-            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
-            button.setToolTip("点击填入命令，Tab 使用第一条建议")
-            button.clicked.connect(
-                lambda _checked=False, command=suggestion: self.apply_command_suggestion(command)
-            )
-            self.command_suggestion_buttons.append(button)
-            self.command_suggestion_layout.addWidget(button)
-        self.command_suggestion_layout.addStretch(1)
+        self.command_suggestion_bar.setVisible(False)
 
     def accept_first_command_suggestion(self) -> bool:
         if not self.current_command_suggestions:
@@ -143,14 +128,18 @@ class CommandRecordOpsMixin:
         return history
 
     def terminal_command_suggestion(self, state: Any, query: str) -> str:
+        suggestions = self.terminal_command_suggestions(state, query, limit=1)
+        return suggestions[0] if suggestions else ""
+
+    def terminal_command_suggestions(self, state: Any, query: str, *, limit: int = 5) -> list[str]:
         suggestions = suggest_commands(
             self.command_suggestion_history(),
             query,
             device_id=getattr(state, "device_id", ""),
             session_kind=getattr(state, "kind", ""),
-            limit=1,
+            limit=limit,
         )
-        return suggestions[0] if suggestions else ""
+        return suggestions
 
     def toggle_command_find_replace(self) -> None:
         if self.command_find_replace_visible:

@@ -371,15 +371,14 @@ class TemporaryDeviceOpsMixin:
 
     def rebuild_device_indexes(self) -> None:
         simulated_devices = [self.simulated_device()] if hasattr(self, "simulated_device") else []
-        self.device_by_id = {
-            **{device.id: device for device in self.devices},
-            **{device.id: device for device in self.temporary_devices},
-            **{device.id: device for device in simulated_devices},
-        }
-        self.search_index = {
-            device.id: build_search_text(device)
-            for device in [*self.devices, *simulated_devices]
-        }
+        self.device_by_id = {}
+        for device in [*self.devices, *self.temporary_devices, *simulated_devices]:
+            self.device_by_id.setdefault(device.id, device)
+        self.search_index = {}
+        for device in [*self.devices, *simulated_devices]:
+            current = self.search_index.get(device.id, "")
+            text = build_search_text(device)
+            self.search_index[device.id] = f"{current} {text}".strip() if current else text
         self._last_device_table_signature = ()
         self._last_owned_table_signature = ()
 

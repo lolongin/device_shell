@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Protocol
 
@@ -91,8 +92,11 @@ class SampleDeviceRepository:
         if device.owner is not None or device.status != STATUS_IDLE:
             raise RepositoryConflictError(f"{device.name} is {device.status}")
 
-        device.owner = user
-        device.status = STATUS_OCCUPIED
+        for board in self._find_devices(device_id):
+            board.owner = user
+            board.status = STATUS_OCCUPIED
+            board.extra = dict(board.extra)
+            board.extra["occupancy_started_at"] = datetime.now(timezone.utc).isoformat()
         return f"Claimed {device.name}"
 
     def release_device(self, device_id: str, user: str) -> str:
@@ -100,8 +104,20 @@ class SampleDeviceRepository:
         if device.owner != user:
             raise RepositoryConflictError(f"{device.name} is {device.status}")
 
-        device.owner = None
-        device.status = STATUS_IDLE
+        for board in self._find_devices(device_id):
+            board.owner = None
+            board.status = STATUS_IDLE
+            board.extra = dict(board.extra)
+            for key in (
+                "occupied_since",
+                "occupied_at",
+                "occupancy_started_at",
+                "claimed_at",
+                "claim_time",
+                "owner_since",
+                "since",
+            ):
+                board.extra.pop(key, None)
         return f"Released {device.name}"
 
     def power_off_device(self, device_id: str, user: str) -> str:
@@ -117,6 +133,12 @@ class SampleDeviceRepository:
             if device.id == device_id:
                 return device
         raise RepositoryError(f"Unknown device id: {device_id}")
+
+    def _find_devices(self, device_id: str) -> list[Device]:
+        devices = [device for device in self._devices if device.id == device_id]
+        if not devices:
+            raise RepositoryError(f"Unknown device id: {device_id}")
+        return devices
 
     def current_revision(self) -> int:
         return 0
@@ -263,6 +285,19 @@ class ApiDeviceRepository:
             or asset.get("boardId")
             or ""
         )
+        occupancy_started_at = (
+            occupancy.get("started_at")
+            or occupancy.get("startedAt")
+            or occupancy.get("occupied_since")
+            or occupancy.get("occupiedSince")
+            or occupancy.get("occupied_at")
+            or occupancy.get("occupiedAt")
+            or occupancy.get("claimed_at")
+            or occupancy.get("claimedAt")
+            or occupancy.get("owner_since")
+            or occupancy.get("ownerSince")
+            or occupancy.get("since")
+        )
         return Device(
             id=str(payload.get("device_id", "")),
             board_id=str(board_id),
@@ -299,6 +334,13 @@ class ApiDeviceRepository:
                 or payload.get("supports_power_off")
                 or payload.get("can_power_off")
             ),
+            extra={
+                "occupancy_started_at": occupancy_started_at or "",
+                "occupied_since": occupancy.get("occupied_since") or occupancy.get("occupiedSince") or "",
+                "occupied_at": occupancy.get("occupied_at") or occupancy.get("occupiedAt") or "",
+                "claimed_at": occupancy.get("claimed_at") or occupancy.get("claimedAt") or "",
+                "owner_since": occupancy.get("owner_since") or occupancy.get("ownerSince") or "",
+            },
         )
 
     @staticmethod

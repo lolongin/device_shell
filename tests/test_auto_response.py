@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QWidget
 
 from src._sample_data import sample_devices
 from src.app.main_window import DeviceDesktopApp
-from src.app.session_ops import AutoResponseRuleDialog
+from src.app.session_ops import AutoResponseRuleDialog, AutoResponseRuleWebDialog
 from src.app_state import SessionTabState
 from src.auto_response import (
     AutoResponseRule,
@@ -73,6 +73,7 @@ def test_create_auto_response_rule_supports_workflow_steps(app: QApplication) ->
         response_text="",
         steps_text="Ctrl+B => Ctrl+B\n=> display version\nADMIN => Ctrl+A",
         step_delays=[0, 1200, 0],
+        step_append_enters=[False, True, False],
         once=True,
     )
 
@@ -81,13 +82,15 @@ def test_create_auto_response_rule_supports_workflow_steps(app: QApplication) ->
     assert rule.response == "\x02"
     assert len(rule.steps) == 2
     assert rule.steps[0].pattern == "Ctrl+B"
-    assert rule.steps[0].responses == ["\x02", "display version"]
+    assert rule.steps[0].responses == ["\x02", "display version\r"]
     assert rule.steps[0].response_texts == ["Ctrl+B", "display version"]
     assert rule.steps[0].response_targets == ["current", "current"]
     assert rule.steps[0].response_delays == [0, 1200]
+    assert rule.steps[0].response_append_enters == [False, True]
     assert rule.steps[1].pattern == "ADMIN"
     assert rule.steps[1].responses == ["\x01"]
     assert rule.steps[1].response_delays == [0]
+    assert rule.steps[1].response_append_enters == [False]
 
 
 def test_create_auto_response_rule_supports_regex_and_trigger_limits(app: QApplication) -> None:
@@ -204,6 +207,71 @@ def test_open_simulated_session_does_not_copy_rule_objects(
     assert "auto_response_rules" not in captured
 
 
+def test_auto_response_web_dialog_values_match_workflow_payload(app: QApplication) -> None:
+    _ = app
+    payload = {
+        "name": "Boot workflow",
+        "matchType": "contains",
+        "appendEnter": False,
+        "caseSensitive": True,
+        "once": True,
+        "allowStartupTrigger": True,
+        "delayMs": 100,
+        "maxTriggers": 2,
+        "steps": [
+            {
+                "pattern": "Ctrl+B",
+                "responses": [
+                    {"text": "Ctrl+B", "target": "current", "delay": 0, "appendEnter": False},
+                    {
+                        "text": "display version",
+                        "target": "session:device:linux:SSH #1",
+                        "delay": 1200,
+                        "appendEnter": True,
+                    },
+                ],
+            },
+            {
+                "pattern": "ADMIN",
+                "responses": [{"text": "Ctrl+A", "target": "current", "delay": 0, "appendEnter": False}],
+            },
+        ],
+    }
+
+    values = AutoResponseRuleWebDialog.values_from_payload(payload)
+
+    assert values["steps_text"] == "Ctrl+B => Ctrl+B\n=> display version\nADMIN => Ctrl+A"
+    assert values["step_targets"] == ["current", "session:device:linux:SSH #1", "current"]
+    assert values["step_delays"] == [0, 1200, 0]
+    assert values["step_append_enters"] == [False, True, False]
+    assert values["append_enter"] is True
+    assert values["allow_startup_trigger"] is True
+    assert values["delay_ms"] == 100
+    assert values["max_triggers"] == 2
+
+
+def test_deserialize_legacy_workflow_append_enter_backfills_actions() -> None:
+    rule = deserialize_auto_response_rule(
+        {
+            "name": "Legacy login",
+            "pattern": "login:",
+            "response": "admin\r",
+            "response_text": "admin",
+            "append_enter": True,
+            "steps": [
+                {
+                    "pattern": "login:",
+                    "responses": ["admin\r", "display version\r"],
+                    "response_texts": ["admin", "display version"],
+                }
+            ],
+        }
+    )
+
+    assert rule is not None
+    assert rule.steps[0].response_append_enters == [True, True]
+
+
 def test_remembered_auto_response_rules_round_trip_desktop_state(
     app: QApplication,
     monkeypatch: pytest.MonkeyPatch,
@@ -265,12 +333,14 @@ def test_auto_response_workflow_steps_round_trip_desktop_state(
                     response_texts=["Ctrl+B", "display version"],
                     response_targets=["source", "title:SSH #1"],
                     response_delays=[0, 1200],
+                    response_append_enters=[False, True],
                 ),
                 AutoResponseStep(
                     pattern="ADMIN",
                     responses=["\x01"],
                     response_texts=["Ctrl+A"],
                     response_delays=[250],
+                    response_append_enters=[False],
                 ),
             ],
         )
@@ -284,8 +354,10 @@ def test_auto_response_workflow_steps_round_trip_desktop_state(
     assert loaded_rule.steps[0].responses == ["\x02", "display version"]
     assert loaded_rule.steps[0].response_targets == ["source", "title:SSH #1"]
     assert loaded_rule.steps[0].response_delays == [0, 1200]
+    assert loaded_rule.steps[0].response_append_enters == [False, True]
     assert loaded_rule.steps[1].pattern == "ADMIN"
     assert loaded_rule.steps[1].response_delays == [250]
+    assert loaded_rule.steps[1].response_append_enters == [False]
 
 
 def test_quick_send_buttons_round_trip_desktop_state(
@@ -455,6 +527,68 @@ def test_auto_response_rule_buttons_use_remembered_rules_without_session(app: QA
     assert button.property("waitingForInput") == "true"
 
 
+def test_terminal_web_actions_include_quick_buttons_and_rule_state(app: QApplication, tmp_path) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    )
+    window.remembered_quick_send_buttons = [
+        TerminalQuickButton(name="Send Ctrl+B", response="\x02", response_text="Ctrl+B")
+    ]
+    window.remembered_auto_response_rules = [
+        AutoResponseRule(name="Password", pattern="Password:", response="admin\r")
+    ]
+
+    actions = window.terminal_web_actions(state)
+
+    assert actions[0]["kind"] == "quick"
+    assert actions[0]["label"]
+    assert actions[1]["kind"] == "rule"
+    assert actions[1]["status"] == "waiting"
+    assert actions[1]["checked"] is False
+
+
+def test_terminal_web_quick_action_sends_to_action_tab(app: QApplication, tmp_path) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    )
+    window.session_tabs_by_id[state.tab_id] = state
+    button = TerminalQuickButton(name="Send Ctrl+B", response="\x02", response_text="Ctrl+B")
+    window.remembered_quick_send_buttons = [button]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.handle_terminal_web_action(state.tab_id, {"kind": "quick", "index": 0})
+
+    assert sent == [(state.tab_id, "\x02")]
+    assert button.trigger_count == 1
+
+
 def test_startup_auto_response_rule_stays_active_without_session(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
@@ -616,7 +750,7 @@ def test_command_record_suggestions_fill_current_line(app: QApplication) -> None
     window.refresh_command_suggestions()
 
     assert window.current_command_suggestions[0] == "display version"
-    assert not window.command_suggestion_bar.isHidden()
+    assert window.command_suggestion_bar.isHidden()
     assert window.accept_first_command_suggestion()
     assert window.command_record_input.current_command_line() == "display version"
 
@@ -630,7 +764,7 @@ def test_command_record_suggestions_include_saved_command_lines(app: QApplicatio
     window.refresh_command_suggestions()
 
     assert window.current_command_suggestions[0] == "star"
-    assert not window.command_suggestion_bar.isHidden()
+    assert window.command_suggestion_bar.isHidden()
 
 
 def test_terminal_command_suggestion_uses_history_and_defaults(app: QApplication) -> None:
@@ -643,6 +777,19 @@ def test_terminal_command_suggestion_uses_history_and_defaults(app: QApplication
     window.remember_command_history("reset board", state=state)
 
     assert window.terminal_command_suggestion(state, "res") == "reset board"
+
+
+def test_terminal_command_suggestions_return_ranked_candidates(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = SimpleNamespace(device_id="sim-terminal", kind="simulated")
+    window.remember_command_history("reset board", state=state)
+    window.remember_command_history("reboot", state=state)
+
+    suggestions = window.terminal_command_suggestions(state, "re", limit=3)
+
+    assert suggestions[:2] == ["reboot", "reset board"]
+    assert len(suggestions) <= 3
 
 
 def test_auto_response_rule_sends_when_split_output_matches(

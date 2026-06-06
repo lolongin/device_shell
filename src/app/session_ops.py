@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 try:
-    from PySide6.QtCore import QEvent, QMimeData, Qt, QTimer
+    from PySide6.QtCore import QObject, QEvent, QMimeData, Qt, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QAction, QColor, QDrag, QFont, QIcon, QKeySequence, QPixmap, QTextBlockFormat
     from PySide6.QtWidgets import (
         QApplication,
@@ -36,10 +38,14 @@ try:
         QWidget,
     )
 except ModuleNotFoundError:
+    QObject = None
     QEvent = None
     QMimeData = None
     Qt = None
     QTimer = None
+    QUrl = None
+    Signal = None
+    Slot = None
     QAction = None
     QColor = None
     QDrag = None
@@ -71,6 +77,13 @@ except ModuleNotFoundError:
     QToolButton = None
     QVBoxLayout = None
     QWidget = None
+
+try:
+    from PySide6.QtWebChannel import QWebChannel
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+except ImportError:
+    QWebChannel = None
+    QWebEngineView = None
 
 from ..app_state import DeviceTabState, SessionTabState
 from ..auto_response import (
@@ -200,6 +213,7 @@ if QDialog is not None:
                 "steps_text": self.steps_text(),
                 "step_targets": self.step_targets(),
                 "step_delays": self.step_delays(),
+                "step_append_enters": self.step_append_enters(),
                 "append_enter": self.append_enter_input.isChecked(),
                 "case_sensitive": self.case_sensitive_input.isChecked(),
                 "once": self.once_input.isChecked(),
@@ -531,6 +545,209 @@ if QDialog is not None:
                     delays.append(self.parse_nonnegative_int(delay_input.text()))
             return delays
 
+        def step_append_enters(self) -> list[bool]:
+            return [self.append_enter_input.isChecked() for _target in self.step_targets()]
+
+
+    class AutoResponseRuleWebBridge(QObject):
+        """Bridge between the web rule editor and the Python dialog."""
+
+        payload_changed = Signal(str)
+
+        def __init__(self, payload: dict[str, Any], parent: QObject | None = None) -> None:
+            super().__init__(parent)
+            self._payload = payload
+
+        @Slot(result=str)
+        def initialPayload(self) -> str:
+            return json.dumps(self._payload, ensure_ascii=False)
+
+        @Slot(str)
+        def updatePayload(self, payload: str) -> None:
+            self.payload_changed.emit(payload)
+
+
+    class AutoResponseRuleWebDialog(QDialog):
+        """Web-based editor for auto-response workflow rules."""
+
+        def __init__(
+            self,
+            parent: QWidget | None = None,
+            rule: AutoResponseRule | None = None,
+        ) -> None:
+            if QWebChannel is None or QWebEngineView is None or QUrl is None:
+                raise RuntimeError("QWebEngineView is not available")
+            super().__init__(parent)
+            self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
+            self.setMinimumSize(960, 680)
+            self.resize(1040, 740)
+
+            self._payload = self.payload_from_rule(rule, parent)
+            self._bridge = AutoResponseRuleWebBridge(self._payload, self)
+            self._bridge.payload_changed.connect(self._set_payload_from_json)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            self.web_view = QWebEngineView(self)
+            self.web_channel = QWebChannel(self.web_view.page())
+            self.web_channel.registerObject("autoResponseBridge", self._bridge)
+            self.web_view.page().setWebChannel(self.web_channel)
+            layout.addWidget(self.web_view, 1)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.setContentsMargins(16, 10, 16, 12)
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+
+            editor_path = Path(__file__).resolve().parents[1] / "web" / "auto_response_editor.html"
+            self.web_view.load(QUrl.fromLocalFile(str(editor_path)))
+
+        def _set_payload_from_json(self, payload: str) -> None:
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                return
+            if isinstance(data, dict):
+                self._payload = data
+
+        def values(self) -> dict[str, object]:
+            return self.values_from_payload(self._payload)
+
+        @staticmethod
+        def parse_nonnegative_int(value: object) -> int:
+            try:
+                return max(0, int(str(value).strip() or "0"))
+            except (TypeError, ValueError):
+                return 0
+
+        @classmethod
+        def payload_from_rule(
+            cls,
+            rule: AutoResponseRule | None,
+            parent: QWidget | None = None,
+        ) -> dict[str, Any]:
+            steps = cls.steps_payload_from_rule(rule)
+            return {
+                "name": rule.name if rule is not None else "启动菜单 Ctrl+B",
+                "matchType": rule.match_type if rule is not None else "contains",
+                "appendEnter": rule.append_enter if rule is not None else False,
+                "caseSensitive": rule.case_sensitive if rule is not None else True,
+                "once": rule.once if rule is not None else True,
+                "allowStartupTrigger": rule.allow_startup_trigger if rule is not None else False,
+                "delayMs": rule.delay_ms if rule is not None else 0,
+                "maxTriggers": rule.max_triggers if rule is not None else 0,
+                "steps": steps,
+                "targets": cls.response_target_payload(parent),
+            }
+
+        @staticmethod
+        def steps_payload_from_rule(rule: AutoResponseRule | None) -> list[dict[str, Any]]:
+            if rule is not None and rule.steps:
+                return [
+                    {
+                        "pattern": step.pattern,
+                        "responses": [
+                            {
+                                "text": response_text,
+                                "target": step.response_targets[index]
+                                if index < len(step.response_targets)
+                                else "current",
+                                "delay": step.response_delays[index]
+                                if index < len(step.response_delays)
+                                else 0,
+                                "appendEnter": step.response_append_enters[index]
+                                if index < len(step.response_append_enters)
+                                else (rule.append_enter if rule is not None else False),
+                            }
+                            for index, response_text in enumerate(step.response_texts or [""])
+                        ],
+                    }
+                    for step in rule.steps
+                ]
+            pattern = rule.pattern if rule is not None else "Ctrl+B"
+            response = rule.response_text if rule is not None and rule.response_text else "Ctrl+B"
+            append_enter = rule.append_enter if rule is not None else False
+            return [
+                {
+                    "pattern": pattern,
+                    "responses": [
+                        {"text": response, "target": "current", "delay": 0, "appendEnter": append_enter}
+                    ],
+                }
+            ]
+
+        @staticmethod
+        def response_target_payload(parent: QWidget | None) -> list[dict[str, str]]:
+            targets = [{"label": "当前选中终端", "value": "current"}]
+            if parent is None or not hasattr(parent, "ordered_session_states"):
+                return targets
+            try:
+                states = parent.ordered_session_states()
+            except Exception:
+                return targets
+            for state in states:
+                if not isinstance(state, SessionTabState):
+                    continue
+                label = parent.session_jump_text(state) if hasattr(parent, "session_jump_text") else state.title
+                targets.append(
+                    {
+                        "label": f"已打开：{label}",
+                        "value": f"session:{state.device_id}:{state.kind}:{state.title}",
+                    }
+                )
+            return targets
+
+        @classmethod
+        def values_from_payload(cls, payload: dict[str, Any]) -> dict[str, object]:
+            steps = payload.get("steps")
+            if not isinstance(steps, list) or not steps:
+                steps = [{"pattern": "", "responses": [{"text": "", "target": "current", "delay": 0}]}]
+            lines: list[str] = []
+            step_targets: list[str] = []
+            step_delays: list[int] = []
+            step_append_enters: list[bool] = []
+            first_pattern = ""
+            first_response = ""
+            first_seen = False
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                pattern = str(step.get("pattern") or "").strip()
+                responses = step.get("responses")
+                if not isinstance(responses, list) or not responses:
+                    responses = [{"text": "", "target": "current", "delay": 0}]
+                for index, response in enumerate(responses):
+                    if not isinstance(response, dict):
+                        response = {}
+                    text = str(response.get("text") or "")
+                    lines.append(f"{pattern} => {text}" if index == 0 else f"=> {text}")
+                    step_targets.append(SessionOpsMixin.normalize_auto_response_target(response.get("target")))
+                    step_delays.append(cls.parse_nonnegative_int(response.get("delay")))
+                    step_append_enters.append(bool(response.get("appendEnter")))
+                    if not first_seen:
+                        first_pattern = pattern
+                        first_response = text
+                        first_seen = True
+            return {
+                "name": str(payload.get("name") or "").strip(),
+                "pattern": first_pattern,
+                "response_text": first_response,
+                "steps_text": "\n".join(lines),
+                "step_targets": step_targets,
+                "step_delays": step_delays,
+                "step_append_enters": step_append_enters,
+                "append_enter": any(step_append_enters) if step_append_enters else bool(payload.get("appendEnter")),
+                "case_sensitive": bool(payload.get("caseSensitive", True)),
+                "once": bool(payload.get("once", True)),
+                "allow_startup_trigger": bool(payload.get("allowStartupTrigger")),
+                "match_type": str(payload.get("matchType") or "contains"),
+                "delay_ms": cls.parse_nonnegative_int(payload.get("delayMs")),
+                "max_triggers": cls.parse_nonnegative_int(payload.get("maxTriggers")),
+            }
+
 
     class QuickSendButtonDialog(QDialog):
         """Single-form editor for a direct terminal send button."""
@@ -575,6 +792,7 @@ if QDialog is not None:
 
 else:
     AutoResponseRuleDialog = None
+    AutoResponseRuleWebDialog = None
     QuickSendButtonDialog = None
 
 
@@ -943,6 +1161,7 @@ class SessionOpsMixin:
         self.set_status_message("已发送 Ctrl+B")
 
     def refresh_auto_response_rule_buttons(self) -> None:
+        self.refresh_terminal_web_actions()
         bar = getattr(self, "auto_response_rule_bar", None)
         layout = getattr(self, "auto_response_rule_bar_layout", None)
         if bar is None or layout is None:
@@ -1044,6 +1263,112 @@ class SessionOpsMixin:
         layout.addStretch(1)
         layout.activate()
 
+    def refresh_terminal_web_actions(self) -> None:
+        for state in getattr(self, "session_tabs_by_id", {}).values():
+            terminal = getattr(state, "terminal", None)
+            if hasattr(terminal, "refresh_terminal_actions"):
+                terminal.refresh_terminal_actions()
+
+    def terminal_web_actions(self, state: SessionTabState) -> list[dict[str, object]]:
+        actions: list[dict[str, object]] = []
+        for index, quick_button in enumerate(self.remembered_quick_send_buttons):
+            actions.append(
+                {
+                    "kind": "quick",
+                    "index": index,
+                    "label": self.quick_send_button_text(quick_button),
+                    "title": (
+                        f"{quick_button.name}\n"
+                        f"点击发送: {quick_button.response_text or '<原始内容>'}\n"
+                        f"已点击 {quick_button.trigger_count} 次"
+                    ),
+                    "enabled": True,
+                    "checked": False,
+                    "status": "quick",
+                }
+            )
+
+        for index, rule in enumerate(self.remembered_auto_response_rules):
+            status = self.auto_response_rule_effective_status(rule, state)
+            actions.append(
+                {
+                    "kind": "rule",
+                    "index": index,
+                    "label": self.auto_response_rule_button_text(rule),
+                    "title": self.auto_response_rule_action_tooltip(rule, status),
+                    "enabled": bool(status["clickable"]),
+                    "checked": bool(status["effective_enabled"]),
+                    "status": status["status"],
+                }
+            )
+        return actions
+
+    def auto_response_rule_effective_status(
+        self,
+        rule: AutoResponseRule,
+        state: SessionTabState | None,
+    ) -> dict[str, object]:
+        signature = self.auto_response_rule_signature(rule)
+        completed_once = bool(
+            state is not None
+            and rule.once
+            and signature in state.auto_response_triggered_rules
+        )
+        startup_suppressed = bool(
+            state is None
+            or (state.suppress_auto_response_until_input and not state.user_input_seen)
+        )
+        allows_startup_trigger = auto_response_rule_allows_startup_trigger(rule)
+        waiting_for_input = bool(startup_suppressed and rule.enabled and not allows_startup_trigger)
+        trigger_limit_reached = bool(rule.max_triggers and rule.trigger_count >= rule.max_triggers)
+        effective_enabled = bool(rule.enabled and not completed_once and not waiting_for_input and not trigger_limit_reached)
+        if completed_once:
+            status = "completed"
+        elif trigger_limit_reached:
+            status = "exhausted"
+        elif waiting_for_input:
+            status = "waiting"
+        elif effective_enabled:
+            status = "enabled"
+        else:
+            status = "disabled"
+        return {
+            "completed_once": completed_once,
+            "waiting_for_input": waiting_for_input,
+            "trigger_limit_reached": trigger_limit_reached,
+            "effective_enabled": effective_enabled,
+            "clickable": True,
+            "status": status,
+        }
+
+    def auto_response_rule_action_tooltip(self, rule: AutoResponseRule, status: dict[str, object]) -> str:
+        state_text = {
+            "completed": "已执行，本终端不会再次自动发送；点击可重新启用",
+            "exhausted": "触发次数已用完；点击可重新启用",
+            "waiting": "已启用，等待本终端第一次用户输入后开始监听；点击可停用",
+            "enabled": "已启用，对本终端生效；点击停用",
+            "disabled": "已停用；点击启用",
+        }.get(str(status.get("status")), "")
+        return f"{rule.name}\n匹配: {rule.pattern}\n{state_text}"
+
+    def handle_terminal_web_action(self, tab_id: str, action: dict[str, object]) -> None:
+        kind = str(action.get("kind") or "")
+        try:
+            index = int(action.get("index", -1))
+        except (TypeError, ValueError):
+            return
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            return
+        if kind == "quick":
+            if 0 <= index < len(self.remembered_quick_send_buttons):
+                self.send_quick_button_to_state(self.remembered_quick_send_buttons[index], state)
+            return
+        if kind == "rule":
+            if 0 <= index < len(self.remembered_auto_response_rules):
+                checked = bool(action.get("checked"))
+                self.toggle_auto_response_rule_from_button(self.remembered_auto_response_rules[index], checked)
+
     @staticmethod
     def add_auto_response_bar_button(layout: Any, index: int, button: QToolButton) -> None:
         if QGridLayout is not None and isinstance(layout, QGridLayout):
@@ -1071,6 +1396,9 @@ class SessionOpsMixin:
         if state is None:
             self.show_warning("请先打开或选中一个终端。")
             return
+        self.send_quick_button_to_state(button, state)
+
+    def send_quick_button_to_state(self, button: TerminalQuickButton, state: SessionTabState) -> None:
         self.send_session_text(state.tab_id, button.response)
         button.trigger_count += 1
         self.write_session_log_line(state, "SYS", f"Manual send: {button.name}")
@@ -1202,9 +1530,10 @@ class SessionOpsMixin:
         self.refresh_auto_response_rule_buttons()
 
     def add_auto_response_rule_for_session(self) -> None:
-        if AutoResponseRuleDialog is None:
+        dialog_class = self.auto_response_rule_dialog_class()
+        if dialog_class is None:
             return
-        dialog = AutoResponseRuleDialog(self)
+        dialog = dialog_class(self)
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
@@ -1216,6 +1545,7 @@ class SessionOpsMixin:
             steps_text=str(values["steps_text"]),
             step_targets=list(values.get("step_targets", [])),
             step_delays=list(values.get("step_delays", [])),
+            step_append_enters=list(values.get("step_append_enters", [])),
             append_enter=bool(values["append_enter"]),
             case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
@@ -1234,9 +1564,10 @@ class SessionOpsMixin:
             self.apply_auto_response_rules(state, "")
 
     def edit_auto_response_rule(self, rule: AutoResponseRule) -> None:
-        if AutoResponseRuleDialog is None:
+        dialog_class = self.auto_response_rule_dialog_class()
+        if dialog_class is None:
             return
-        dialog = AutoResponseRuleDialog(self, rule)
+        dialog = dialog_class(self, rule)
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
@@ -1249,6 +1580,7 @@ class SessionOpsMixin:
             steps_text=str(values["steps_text"]),
             step_targets=list(values.get("step_targets", [])),
             step_delays=list(values.get("step_delays", [])),
+            step_append_enters=list(values.get("step_append_enters", [])),
             append_enter=bool(values["append_enter"]),
             case_sensitive=bool(values["case_sensitive"]),
             once=bool(values["once"]),
@@ -1280,6 +1612,11 @@ class SessionOpsMixin:
         if state is not None:
             self.apply_auto_response_rules(state, "")
 
+    def auto_response_rule_dialog_class(self) -> type[QDialog] | None:
+        if AutoResponseRuleWebDialog is not None and QWebChannel is not None and QWebEngineView is not None:
+            return AutoResponseRuleWebDialog
+        return AutoResponseRuleDialog
+
     def add_boot_ctrl_b_auto_response_rule(self) -> None:
         rule = self.create_auto_response_rule(
             name="启动菜单 Ctrl+B",
@@ -1304,6 +1641,7 @@ class SessionOpsMixin:
         steps_text: str = "",
         step_targets: list[str] | None = None,
         step_delays: list[int] | None = None,
+        step_append_enters: list[bool] | None = None,
         append_enter: bool = False,
         case_sensitive: bool = False,
         once: bool = True,
@@ -1326,6 +1664,7 @@ class SessionOpsMixin:
             append_enter=append_enter,
             step_targets=step_targets,
             step_delays=step_delays,
+            step_append_enters=step_append_enters,
         )
         if steps is None:
             return None
@@ -1372,6 +1711,7 @@ class SessionOpsMixin:
         append_enter: bool,
         step_targets: list[str] | None = None,
         step_delays: list[int] | None = None,
+        step_append_enters: list[bool] | None = None,
     ) -> list[AutoResponseStep] | None:
         if not steps_text.strip():
             return []
@@ -1397,7 +1737,12 @@ class SessionOpsMixin:
             elif current_step is None:
                 self.show_warning(f"流程步骤第 {line_number} 行缺少匹配内容。")
                 return None
-            response = decode_response_text(response_text, append_enter=append_enter)
+            response_append_enter = (
+                bool(step_append_enters[target_index])
+                if step_append_enters is not None and target_index < len(step_append_enters)
+                else append_enter
+            )
+            response = decode_response_text(response_text, append_enter=response_append_enter)
             if not response:
                 self.show_warning(f"流程步骤第 {line_number} 行发送内容不能为空。")
                 return None
@@ -1416,6 +1761,7 @@ class SessionOpsMixin:
             except (TypeError, ValueError):
                 response_delay = 0
             current_step.response_delays.append(response_delay)
+            current_step.response_append_enters.append(response_append_enter)
             target_index += 1
         if not steps:
             self.show_warning("流程步骤不能为空。")
@@ -1774,6 +2120,7 @@ class SessionOpsMixin:
                         response_texts=list(step.response_texts),
                         response_targets=list(step.response_targets),
                         response_delays=list(step.response_delays),
+                        response_append_enters=list(step.response_append_enters),
                     )
                     for step in rule.steps
                 ],
@@ -1790,6 +2137,7 @@ class SessionOpsMixin:
                 tuple(step.response_texts),
                 tuple(step.response_targets),
                 tuple(step.response_delays),
+                tuple(step.response_append_enters),
             )
             for step in rule.steps
         )
@@ -2594,6 +2942,7 @@ class SessionOpsMixin:
                 response_texts=[rule.response_text or rule.response],
                 response_targets=["source"],
                 response_delays=[0],
+                response_append_enters=[rule.append_enter],
             )
         ]
 

@@ -22,12 +22,21 @@ class _XtermTextCursor:
 
 class _XtermBridge(QObject):
     data_received = Signal(str)
+    data_with_line_received = Signal(str, str)
     resized = Signal(int, int)
     terminal_ready = Signal()
+
+    def __init__(self, terminal: "XtermWebWidget") -> None:
+        super().__init__(terminal)
+        self._terminal = terminal
 
     @Slot(str)
     def sendData(self, data: str) -> None:  # noqa: N802 - called from JavaScript
         self.data_received.emit(data)
+
+    @Slot(str, str)
+    def sendDataWithLine(self, data: str, line: str) -> None:  # noqa: N802 - called from JavaScript
+        self.data_with_line_received.emit(data, line)
 
     @Slot(int, int)
     def resize(self, columns: int, lines: int) -> None:
@@ -113,6 +122,7 @@ class XtermWebWidget(QWidget):
 
         self._bridge = _XtermBridge(self)
         self._bridge.data_received.connect(self._handle_input)
+        self._bridge.data_with_line_received.connect(self._handle_input_with_terminal_line)
         self._bridge.resized.connect(self._handle_resize)
         self._bridge.terminal_ready.connect(self._handle_ready)
 
@@ -237,8 +247,6 @@ class XtermWebWidget(QWidget):
             self._terminal_resize_handler(columns, lines)
 
     def _handle_input(self, text: str) -> None:
-        if text == "\t" and self._accept_command_suggestion():
-            return
         if text in {"\r", "\n"}:
             if self._enter_reconnect_handler is not None and self._enter_reconnect_handler():
                 return
@@ -251,8 +259,35 @@ class XtermWebWidget(QWidget):
         if self._raw_sender is not None:
             self._raw_sender(text)
 
+    def _handle_input_with_terminal_line(self, text: str, terminal_line: str) -> None:
+        if text in {"\r", "\n"}:
+            self._sync_pending_command_from_terminal_line(terminal_line)
+        self._handle_input(text)
+
+    def _sync_pending_command_from_terminal_line(self, terminal_line: str) -> None:
+        line = terminal_line.rstrip()
+        if not line or not self._pending_command_chars:
+            return
+        prefix = "".join(self._pending_command_chars).strip()
+        if not prefix:
+            return
+        index = line.rfind(prefix)
+        if index < 0:
+            return
+        completed = line[index:].strip()
+        if completed and completed.casefold().startswith(prefix.casefold()):
+            self._pending_command_chars = list(completed)
+
+    @staticmethod
+    def _should_suggest_command(query: str) -> bool:
+        stripped = query.strip()
+        return len(stripped) >= 2 or " " in stripped
+
     def _record_local_text(self, text: str) -> None:
         if "\x1b" in text:
+            self._clear_command_suggestion()
+            return
+        if text == "\t":
             self._clear_command_suggestion()
             return
         for char in text:
@@ -262,7 +297,9 @@ class XtermWebWidget(QWidget):
             elif char == "\x7f":
                 if self._pending_command_chars:
                     self._pending_command_chars.pop()
-            elif char >= " " or char == "\t":
+            elif char == "\t":
+                self._clear_command_suggestion()
+            elif char >= " ":
                 self._pending_command_chars.append(char)
                 if len(self._pending_command_chars) > self.MAX_COMMAND_RECORD_CHARS:
                     self._pending_command_chars = self._pending_command_chars[-self.MAX_COMMAND_RECORD_CHARS :]
@@ -283,7 +320,7 @@ class XtermWebWidget(QWidget):
             self._clear_command_suggestion()
             return
         prefix = self._current_command_prefix()
-        if not prefix:
+        if not self._should_suggest_command(prefix):
             self._clear_command_suggestion()
             return
         suggestion = self._command_suggestion_provider(prefix) or ""
@@ -303,27 +340,6 @@ class XtermWebWidget(QWidget):
         self._run_terminal_js(
             f"setSuggestion({json.dumps(suggestion)}, {json.dumps(prefix)})"
         )
-
-    def _accept_command_suggestion(self) -> bool:
-        prefix = self._current_command_prefix()
-        suggestion = self._current_command_suggestion
-        if not prefix or not suggestion:
-            self._refresh_command_suggestion()
-            suggestion = self._current_command_suggestion
-        if not prefix or not suggestion:
-            return False
-        if not suggestion.casefold().startswith(prefix.casefold()):
-            return False
-        suffix = suggestion[len(prefix) :]
-        if not suffix:
-            return False
-        self._record_local_text(suffix)
-        self._clear_command_suggestion()
-        if self._local_echo:
-            self._echo_input(suffix)
-        if self._raw_sender is not None:
-            self._raw_sender(suffix)
-        return True
 
     def _write_js(self, text: str) -> None:
         self._run_js(f"window.deviceTerminal && window.deviceTerminal.write({json.dumps(text)});")

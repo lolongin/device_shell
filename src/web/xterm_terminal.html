@@ -270,7 +270,7 @@
         if (suggestion.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase())) {
           return suggestion.slice(prefix.length);
         }
-        return suggestion;
+        return '';
       }
 
       function positionSuggestion() {
@@ -380,6 +380,16 @@
         bridge.copyText(text);
       }
 
+      function currentTerminalLineText() {
+        try {
+          const buffer = term.buffer.active;
+          const line = buffer.getLine(buffer.baseY + buffer.cursorY);
+          return line ? line.translateToString(true) : '';
+        } catch (_error) {
+          return '';
+        }
+      }
+
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== 'keydown') {
           return true;
@@ -418,6 +428,14 @@
           return false;
         }
 
+        if (!ctrl && !shift && event.key === 'ArrowRight' && activeSuggestion) {
+          if (bridge) {
+            bridge.sendData(activeSuggestion);
+          }
+          event.preventDefault();
+          return false;
+        }
+
         return true;
       });
 
@@ -431,7 +449,11 @@
 
       term.onData((data) => {
         if (bridge) {
-          bridge.sendData(data);
+          if (data === '\r' || data === '\n') {
+            bridge.sendDataWithLine(data, currentTerminalLineText());
+          } else {
+            bridge.sendData(data);
+          }
         }
       });
       term.onRender(() => {

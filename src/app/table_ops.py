@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 try:
@@ -258,50 +259,128 @@ class TableOpsMixin:
             self.table_render_timer.start(0)
 
     def render_table_job_rows(self, job: dict[str, object], max_rows: int) -> None:
-        devices = job["devices"]
-        if not isinstance(devices, list):
+        rows = job["devices"]
+        if not isinstance(rows, list):
             return
         keyword = str(job["keyword"])
         kind = str(job["kind"])
         row = int(job["row"])
-        end_row = min(len(devices), row + max_rows)
+        end_row = min(len(rows), row + max_rows)
         for current_row in range(row, end_row):
-            device = devices[current_row]
+            row_data = rows[current_row]
             if kind == "owned":
+                device = row_data
+                if not isinstance(device, Device):
+                    continue
                 self.render_owned_table_row(current_row, device, keyword)
             else:
-                self.render_device_table_row(current_row, device, keyword)
+                self.render_device_table_display_row(current_row, row_data, keyword)
         job["row"] = end_row
 
-    def render_device_table_row(self, row: int, device: Device, keyword: str) -> None:
+    def build_device_table_display_rows(self, devices: list[Device]) -> list[dict[str, object]]:
+        name_counts: dict[str, int] = {}
+        for device in devices:
+            name_counts[device.name] = name_counts.get(device.name, 0) + 1
+
+        rows: list[dict[str, object]] = []
+        grouped_names: set[str] = set()
+        for device in devices:
+            if name_counts.get(device.name, 0) <= 1:
+                rows.append({"kind": "device", "device": device, "grouped": False})
+                continue
+            if device.name not in grouped_names:
+                grouped_names.add(device.name)
+                rows.append(
+                    {
+                        "kind": "group",
+                        "name": device.name,
+                        "subdomain": self.device_table_subdomain_text(device),
+                        "count": name_counts[device.name],
+                    }
+                )
+            rows.append({"kind": "device", "device": device, "grouped": True})
+        return rows
+
+    def render_device_table_display_row(self, row: int, row_data: object, keyword: str) -> None:
+        if not isinstance(row_data, dict):
+            return
+        if row_data.get("kind") == "group":
+            self.render_device_group_row(
+                row,
+                str(row_data.get("name") or ""),
+                str(row_data.get("subdomain") or ""),
+                int(row_data.get("count") or 0),
+                keyword,
+            )
+            return
+        device = row_data.get("device")
+        if isinstance(device, Device):
+            self.render_device_table_row(row, device, keyword, grouped=bool(row_data.get("grouped")))
+
+    def render_device_group_row(self, row: int, name: str, subdomain: str, count: int, keyword: str) -> None:
+        self.device_table.setRowHeight(row, 24)
+        self._set_table_item(
+            self.device_table,
+            row,
+            0,
+            self.device_table_name_text(name, subdomain),
+            "",
+            highlight=self.text_matches_keyword(name, keyword) or self.text_matches_keyword(subdomain, keyword),
+            group=True,
+            tooltip=name,
+        )
+        self._set_table_item(self.device_table, row, 1, "", "", group=True)
+        self._set_table_item(self.device_table, row, 2, f"{count} 块板", "", group=True)
+        self._set_table_item(self.device_table, row, 3, "", "", group=True)
+        self._set_table_item(self.device_table, row, 4, "", "", group=True)
+        self._set_table_item(self.device_table, row, 5, "", "", group=True)
+        self.device_table.setSpan(row, 0, 1, 2)
+
+    def render_device_table_row(self, row: int, device: Device, keyword: str, *, grouped: bool = False) -> None:
+        self.device_table.setRowHeight(row, 26 if grouped else 30)
+        board_type = self.device_table_board_type_text(device)
         hidden_keyword_match = self.device_matches_hidden_keyword(
             device,
             keyword,
-            visible_values=(device.board_id, device.name, device.domain, device.cpu, device.status),
+            visible_values=(
+                device.board_id,
+                device.name,
+                self.device_table_subdomain_text(device),
+                device.device_type,
+                board_type,
+                device.cpu,
+                device.rack,
+                device.status,
+                self.device_occupancy_duration_text(device),
+            ),
         )
         self._set_table_item(
             self.device_table,
             row,
             0,
-            device.board_id,
+            self.device_table_board_id_text(device, grouped=grouped),
             device.id,
             highlight=self.text_matches_keyword(device.board_id, keyword),
+            tooltip=device.board_id,
         )
         self._set_table_item(
             self.device_table,
             row,
             1,
-            self.temporary_device_display_name(device),
+            device.device_type if grouped else self.device_table_device_name_text(device),
             device.id,
-            highlight=hidden_keyword_match or self.text_matches_keyword(device.name, keyword),
+            highlight=hidden_keyword_match
+            or self.text_matches_keyword(device.name, keyword)
+            or self.text_matches_keyword(self.device_table_subdomain_text(device), keyword),
+            tooltip=device.name if grouped else None,
         )
         self._set_table_item(
             self.device_table,
             row,
             2,
-            device.domain,
+            board_type,
             device.id,
-            highlight=self.text_matches_keyword(device.domain, keyword),
+            highlight=self.text_matches_keyword(board_type, keyword),
         )
         self._set_table_item(
             self.device_table,
@@ -315,11 +394,138 @@ class TableOpsMixin:
             self.device_table,
             row,
             4,
-            device.status,
+            device.rack,
+            device.id,
+            highlight=self.text_matches_keyword(device.rack, keyword),
+        )
+        status_text = self.device_table_status_text(device)
+        self._set_table_item(
+            self.device_table,
+            row,
+            5,
+            status_text,
             device.id,
             color=status_color(device.status),
-            highlight=self.text_matches_keyword(device.status, keyword),
+            highlight=self.text_matches_keyword(device.status, keyword)
+            or self.text_matches_keyword(self.device_occupancy_duration_text(device), keyword),
+            tooltip=self.device_occupancy_tooltip(device),
         )
+
+    def device_table_board_id_text(self, device: Device, *, grouped: bool) -> str:
+        if grouped:
+            prefix = f"{device.id}-"
+            if device.board_id.startswith(prefix):
+                return device.board_id[len(prefix):]
+            slot_id = str(device.extra.get("slot_id") or "")
+            if slot_id and len(slot_id) <= 8:
+                return slot_id
+        return device.board_id
+
+    def device_table_board_type_text(self, device: Device) -> str:
+        return str(device.extra.get("board_type") or device.device_type)
+
+    def device_table_device_name_text(self, device: Device) -> str:
+        return self.device_table_name_text(
+            self.temporary_device_display_name(device),
+            self.device_table_subdomain_text(device),
+        )
+
+    def device_table_name_text(self, name: str, subdomain: str) -> str:
+        subdomain = subdomain.strip()
+        if not subdomain:
+            return name
+        return f"{name} · {subdomain}"
+
+    def device_table_subdomain_text(self, device: Device) -> str:
+        return str(device.extra.get("subdomain") or "").strip()
+
+    def device_table_status_text(self, device: Device) -> str:
+        duration = self.device_occupancy_duration_text(device)
+        if duration and device.status == STATUS_OCCUPIED:
+            return f"{device.status} {duration}"
+        return device.status
+
+    def device_occupancy_tooltip(self, device: Device) -> str:
+        parts = [device.status]
+        if device.owner:
+            parts.append(f"占用人: {device.owner}")
+        started_text = self.device_occupancy_started_text(device)
+        if started_text:
+            parts.append(f"开始时间: {started_text}")
+        duration = self.device_occupancy_duration_text(device)
+        if duration:
+            parts.append(f"占用时长: {duration}")
+        return "\n".join(parts)
+
+    def device_occupancy_started_text(self, device: Device) -> str:
+        value = self.device_occupancy_started_value(device)
+        if value is None:
+            return ""
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    def device_occupancy_duration_text(self, device: Device) -> str:
+        if device.status != STATUS_OCCUPIED:
+            return ""
+        started_at = self.device_occupancy_started_value(device)
+        if started_at is None:
+            return ""
+        now = datetime.now(started_at.tzinfo or timezone.utc)
+        seconds = max(0, int((now - started_at).total_seconds()))
+        days, remainder = divmod(seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, _seconds = divmod(remainder, 60)
+        if days:
+            return f"{days}天{hours}小时"
+        if hours:
+            return f"{hours}小时{minutes}分"
+        return f"{minutes}分"
+
+    def device_occupancy_started_value(self, device: Device) -> datetime | None:
+        for key in (
+            "occupied_since",
+            "occupied_at",
+            "occupancy_started_at",
+            "claimed_at",
+            "claim_time",
+            "owner_since",
+            "since",
+        ):
+            value = device.extra.get(key)
+            parsed = self.parse_device_datetime(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    @staticmethod
+    def parse_device_datetime(value: object) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, (int, float)):
+            parsed = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        else:
+            text = str(value).strip()
+            if not text:
+                return None
+            if text.isdigit():
+                parsed = datetime.fromtimestamp(float(text), tz=timezone.utc)
+            else:
+                normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+                try:
+                    parsed = datetime.fromisoformat(normalized)
+                except ValueError:
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                        try:
+                            parsed = datetime.strptime(text, fmt)
+                            break
+                        except ValueError:
+                            parsed = None
+                    if parsed is None:
+                        return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def render_owned_table_row(self, row: int, device: Device, keyword: str) -> None:
         hidden_keyword_match = self.device_matches_hidden_keyword(
@@ -358,7 +564,20 @@ class TableOpsMixin:
         signature = (
             keyword,
             tuple(
-                (device.id, device.board_id, device.name, device.domain, device.cpu, device.status)
+                (
+                    device.id,
+                    device.board_id,
+                    device.name,
+                    self.device_table_subdomain_text(device),
+                    device.device_type,
+                    self.device_table_board_type_text(device),
+                    device.cpu,
+                    device.rack,
+                    device.status,
+                    device.owner,
+                    self.device_occupancy_started_text(device),
+                    self.device_occupancy_duration_text(device),
+                )
                 for device in self.visible_devices
             ),
             tuple(self.is_temporary_device(device) for device in self.visible_devices),
@@ -369,22 +588,28 @@ class TableOpsMixin:
         self.cancel_table_render_jobs()
         generation = self._table_render_generation
         table = self.device_table
+        display_rows = self.build_device_table_display_rows(self.visible_devices)
         table.setUpdatesEnabled(False)
         table.blockSignals(True)
         try:
-            table.setRowCount(len(self.visible_devices))
+            table.clearSpans()
+            table.setRowCount(len(display_rows))
             self.device_table_rows = {}
-            for row, device in enumerate(self.visible_devices):
-                self.device_table_rows[device.id] = row
-            sync_rows = min(80, len(self.visible_devices))
+            for row, row_data in enumerate(display_rows):
+                if row_data.get("kind") != "device":
+                    continue
+                device = row_data.get("device")
+                if isinstance(device, Device):
+                    self.device_table_rows.setdefault(device.id, row)
+            sync_rows = min(80, len(display_rows))
             for row in range(sync_rows):
-                self.render_device_table_row(row, self.visible_devices[row], keyword)
+                self.render_device_table_display_row(row, display_rows[row], keyword)
         finally:
             table.blockSignals(False)
             table.setUpdatesEnabled(True)
         self.enqueue_table_render_job(
             table,
-            self.visible_devices,
+            display_rows,
             keyword,
             "device",
             generation,
@@ -439,6 +664,8 @@ class TableOpsMixin:
         device_id: str,
         color: str | None = None,
         highlight: bool = False,
+        group: bool = False,
+        tooltip: str | None = None,
     ) -> None:
         item = table.item(row, column)
         if item is None:
@@ -448,14 +675,23 @@ class TableOpsMixin:
             item.setText(text)
         if item.data(Qt.UserRole) != device_id:
             item.setData(Qt.UserRole, device_id)
-        if item.toolTip() != text:
-            item.setToolTip(text)
+        tooltip_text = text if tooltip is None else tooltip
+        if item.toolTip() != tooltip_text:
+            item.setToolTip(tooltip_text)
         item.setBackground(QBrush())
         item.setForeground(QBrush())
+        item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         font = item.font()
-        if font.bold():
+        if font.bold() or group:
             font.setBold(False)
-            item.setFont(font)
+        if group:
+            font.setBold(column in {0, 2})
+        item.setFont(font)
+        if group:
+            item.setBackground(QBrush(QColor("#101010")))
+            group_color = "#d6deeb" if column == 0 else "#808080"
+            item.setForeground(QBrush(QColor(group_color)))
+            return
         if color:
             item.setForeground(QBrush(QColor(color)))
         if highlight:
@@ -562,10 +798,11 @@ class TableOpsMixin:
     def device_row_copy_text(self, device: Device) -> str:
         return "\t".join([
             device.board_id,
-            self.temporary_device_display_name(device),
-            device.domain,
+            self.device_table_device_name_text(device),
+            device.device_type,
             device.cpu,
-            device.status,
+            device.rack,
+            self.device_table_status_text(device),
         ])
 
     def device_connection_copy_text(self, device: Device) -> str:
@@ -670,7 +907,12 @@ class TableOpsMixin:
         device_id = self._device_id_from_table(self.device_table, 0)
         if not device_id:
             return
-        self.activate_device(device_id)
+        self.selected_device_id = device_id
+        self._mark_recent_device(device_id)
+        self.sync_auth_fields_from_selected()
+        self.refresh_device_context()
+        self.refresh_workspace_context()
+        self.update_controls()
 
     def handle_owned_table_selected(self) -> None:
         device_id = self._device_id_from_table(self.owned_table, 0)

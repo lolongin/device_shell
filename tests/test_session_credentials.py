@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -13,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
-from src._sample_data import sample_devices
+from src._sample_data import STATUS_OCCUPIED, sample_devices
 from src.app_state import SessionTabState
 from src.app.main_window import DeviceDesktopApp
 from src.app.temporary_device_ops import TemporaryDeviceDialog
@@ -345,3 +346,103 @@ def test_temporary_device_dialog_password_can_toggle_visibility(app: QApplicatio
     dialog = TemporaryDeviceDialog()
 
     assert_password_visibility_toggle(dialog.password_input)
+
+
+def test_device_table_shows_board_type_cpu_and_slot_without_ip(app: QApplication, sample_device) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.devices = [sample_device]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+
+    assert window.device_table.horizontalHeaderItem(0).text() == "序号"
+    assert window.device_table.horizontalHeaderItem(1).text() == "设备"
+    assert window.device_table.horizontalHeaderItem(2).text() == "板类型"
+    assert window.device_table.horizontalHeaderItem(3).text() == "CPU"
+    assert window.device_table.horizontalHeaderItem(4).text() == "Slot"
+    assert window.device_table.horizontalHeaderItem(5).text() == "状态"
+    assert window.device_table.item(0, 1).text() == sample_device.name
+    assert window.device_table.item(0, 2).text() == sample_device.device_type
+    assert window.device_table.item(0, 3).text() == sample_device.cpu
+    assert window.device_table.item(0, 4).text() == sample_device.rack
+    assert window.device_table.item(0, 5).text() == sample_device.status
+    assert sample_device.ssh_ip not in window.device_row_copy_text(sample_device)
+    assert sample_device.telnet_ip not in window.device_row_copy_text(sample_device)
+
+
+def test_device_table_shows_occupied_status_with_duration(app: QApplication, sample_device) -> None:
+    _ = app
+    occupied = replace(
+        sample_device,
+        status=STATUS_OCCUPIED,
+        owner="li.wei",
+        extra={
+            **sample_device.extra,
+            "occupancy_started_at": (datetime.now(timezone.utc) - timedelta(hours=2, minutes=5)).isoformat(),
+        },
+    )
+    window = DeviceDesktopApp()
+    window.devices = [occupied]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+
+    status_item = window.device_table.item(0, 5)
+
+    assert status_item is not None
+    assert STATUS_OCCUPIED in status_item.text()
+    assert "小时" in status_item.text() or "分" in status_item.text()
+    assert "li.wei" in status_item.toolTip()
+    assert "占用时长" in status_item.toolTip()
+
+
+def test_device_table_groups_duplicate_device_names(app: QApplication, sample_device) -> None:
+    _ = app
+    first = replace(
+        sample_device,
+        id="TEST-001-A",
+        board_id="0001",
+        device_type="Main Board",
+        cpu="ARM-1",
+        rack="Slot-1",
+    )
+    second = replace(
+        sample_device,
+        id="TEST-001-B",
+        board_id="0002",
+        device_type="Line Board",
+        cpu="ARM-2",
+        rack="Slot-2",
+    )
+    standalone = replace(
+        sample_device,
+        id="TEST-002",
+        name="Standalone",
+        board_id="0003",
+        device_type="Single Board",
+        cpu="ARM-3",
+        rack="Slot-3",
+    )
+    window = DeviceDesktopApp()
+    window.devices = [first, second, standalone]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+
+    assert window.device_table.rowCount() == 5
+    assert window.device_table.item(0, 0).text() == sample_device.name
+    assert window.device_table.columnSpan(0, 0) == 2
+    assert window.device_table.item(0, 2).text() == "2 块板"
+    assert window.device_table.item(1, 0).text() == "0001"
+    assert window.device_table.item(1, 1).text() == "Main Board"
+    assert window.device_table.item(1, 0).toolTip() == "0001"
+    assert window.device_table.item(1, 1).toolTip() == sample_device.name
+    assert window.device_table.item(1, 2).text() == "Main Board"
+    assert window.device_table.item(2, 0).text() == "0002"
+    assert window.device_table.item(2, 2).text() == "Line Board"
+    assert window.device_table.item(3, 1).text() == "Standalone"
+    assert window.device_table.item(4, 1).text() == "模拟终端"
+    assert window.device_table_rows == {
+        first.id: 1,
+        second.id: 2,
+        standalone.id: 3,
+        "SIM-TERMINAL": 4,
+    }

@@ -419,7 +419,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             shell.setObjectName("leftSidebarShell")
             self.left_sidebar_shell = shell
             shell.setMinimumWidth(480)
-            shell.setMaximumWidth(580)
+            shell.setMaximumWidth(820)
             shell_layout = QHBoxLayout(shell)
             self.left_sidebar_layout = shell_layout
             shell_layout.setContentsMargins(0, 0, 8, 0)
@@ -433,7 +433,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self.left_sidebar_content = scroll
             scroll.setMinimumWidth(420)
-            scroll.setMaximumWidth(520)
+            scroll.setMaximumWidth(760)
 
             device_panel = QWidget()
             device_panel.setObjectName("leftRail")
@@ -549,7 +549,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             stats_layout.addLayout(stats_bottom_row)
             nav_body_layout.addWidget(stats_frame)
 
-            self.device_table = self._new_table(["序号", "设备", "领域", "CPU", "状态"])
+            self.device_table = self._new_table(["序号", "设备", "板类型", "CPU", "Slot", "状态"])
             self.device_table.setMinimumHeight(260)
             self.device_table.setMaximumHeight(340)
             nav_body_layout.addWidget(self.device_table)
@@ -1520,7 +1520,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             header.setHighlightSections(False)
             header.setSectionsClickable(False)
-            if len(headers) == 5:
+            if len(headers) == 6:
+                header.setSectionResizeMode(0, QHeaderView.Interactive)
+                header.setSectionResizeMode(1, QHeaderView.Stretch)
+                for column in range(2, len(headers)):
+                    header.setSectionResizeMode(column, QHeaderView.Interactive)
+            elif len(headers) == 5:
                 header.setSectionResizeMode(0, QHeaderView.Interactive)
                 header.setSectionResizeMode(1, QHeaderView.Stretch)
                 for column in range(2, len(headers)):
@@ -1529,11 +1534,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 header.setSectionResizeMode(0, QHeaderView.Stretch)
                 for column in range(1, len(headers)):
                     header.setSectionResizeMode(column, QHeaderView.Interactive)
-            if len(headers) == 5:
-                table.setColumnWidth(0, 56)
-                table.setColumnWidth(2, 96)
-                table.setColumnWidth(3, 78)
-                table.setColumnWidth(4, 74)
+            if len(headers) == 6:
+                table.setColumnWidth(0, 44)
+                table.setColumnWidth(2, 82)
+                table.setColumnWidth(3, 62)
+                table.setColumnWidth(4, 70)
+                table.setColumnWidth(5, 96)
+            elif len(headers) == 5:
+                table.setColumnWidth(0, 44)
+                table.setColumnWidth(2, 86)
+                table.setColumnWidth(3, 66)
+                table.setColumnWidth(4, 72)
             elif len(headers) == 4:
                 table.setColumnWidth(1, 96)
                 table.setColumnWidth(2, 78)
@@ -1748,13 +1759,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             else:
                 self.left_sidebar_content.setVisible(not collapsed)
                 self.left_sidebar_content.setMinimumWidth(0 if collapsed else 420)
-                self.left_sidebar_content.setMaximumWidth(0 if collapsed else 520)
+                self.left_sidebar_content.setMaximumWidth(0 if collapsed else 760)
                 if hasattr(self, "left_sidebar_layout"):
                     self.left_sidebar_layout.setContentsMargins(0, 0, 0 if collapsed else 8, 0)
                     self.left_sidebar_layout.setSpacing(0 if collapsed else 8)
                 if hasattr(self, "left_sidebar_shell"):
                     self.left_sidebar_shell.setMinimumWidth(46 if collapsed else 480)
-                    self.left_sidebar_shell.setMaximumWidth(46 if collapsed else 580)
+                    self.left_sidebar_shell.setMaximumWidth(46 if collapsed else 820)
                     self.left_sidebar_shell.updateGeometry()
                 splitter = getattr(self, "main_splitter", None)
                 if splitter is not None:
@@ -1809,7 +1820,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             content.setVisible(True)
             content.setMinimumWidth(0)
             shell.setMinimumWidth(46)
-            shell.setMaximumWidth(580)
+            shell.setMaximumWidth(820)
             animation = QVariantAnimation(self)
             easing = QEasingCurve.OutCubic if QEasingCurve is not None else None
             animation.setDuration(180)
@@ -1832,10 +1843,10 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             def finish() -> None:
                 content.setMinimumWidth(0 if collapsed else 420)
-                content.setMaximumWidth(0 if collapsed else 520)
+                content.setMaximumWidth(0 if collapsed else 760)
                 content.setVisible(not collapsed)
                 shell.setMinimumWidth(46 if collapsed else 480)
-                shell.setMaximumWidth(46 if collapsed else 580)
+                shell.setMaximumWidth(46 if collapsed else 820)
                 shell.updateGeometry()
                 if splitter is not None and splitter_total > 0:
                     splitter.setSizes([end_width, max(1, splitter_total - end_width)])

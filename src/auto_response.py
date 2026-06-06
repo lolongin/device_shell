@@ -28,6 +28,7 @@ class AutoResponseStep:
     response_texts: list[str] = field(default_factory=list)
     response_targets: list[str] = field(default_factory=list)
     response_delays: list[int] = field(default_factory=list)
+    response_append_enters: list[bool] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -115,6 +116,7 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
                 "response_texts": step.response_texts,
                 "response_targets": step.response_targets,
                 "response_delays": step.response_delays,
+                "response_append_enters": step.response_append_enters,
             }
             for step in rule.steps
         ]
@@ -135,7 +137,13 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
             response_text,
             append_enter=bool(value.get("append_enter", False)),
         )
-    steps = deserialize_auto_response_steps(value.get("steps"))
+    rule_append_enter = bool(value.get("append_enter", False))
+    raw_steps_value = value.get("steps")
+    steps = deserialize_auto_response_steps(raw_steps_value)
+    if rule_append_enter and isinstance(raw_steps_value, list):
+        for step, raw_step in zip(steps, raw_steps_value):
+            if isinstance(raw_step, dict) and "response_append_enters" not in raw_step:
+                step.response_append_enters = [True] * len(step.responses)
     if not pattern and steps:
         pattern = steps[0].pattern
     if not response and steps and steps[0].responses:
@@ -175,7 +183,7 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         pattern=pattern,
         response=response,
         response_text=response_text,
-        append_enter=bool(value.get("append_enter", False)),
+        append_enter=rule_append_enter,
         enabled=bool(value.get("enabled", True)),
         case_sensitive=bool(value.get("case_sensitive", False)),
         once=bool(value.get("once", True)),
@@ -234,6 +242,7 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
         raw_response_texts = item.get("response_texts")
         raw_response_targets = item.get("response_targets")
         raw_response_delays = item.get("response_delays")
+        raw_response_append_enters = item.get("response_append_enters")
         if not pattern or not isinstance(raw_responses, list):
             continue
         responses = [str(response) for response in raw_responses if str(response)]
@@ -254,12 +263,19 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
                     response_delays.append(max(0, int(response_delay)))
                 except (TypeError, ValueError):
                     response_delays.append(0)
+        response_append_enters = (
+            [bool(response_append_enter) for response_append_enter in raw_response_append_enters]
+            if isinstance(raw_response_append_enters, list)
+            else []
+        )
         if len(response_texts) < len(responses):
             response_texts.extend(responses[len(response_texts) :])
         if len(response_targets) < len(responses):
             response_targets.extend(["source"] * (len(responses) - len(response_targets)))
         if len(response_delays) < len(responses):
             response_delays.extend([0] * (len(responses) - len(response_delays)))
+        if len(response_append_enters) < len(responses):
+            response_append_enters.extend([False] * (len(responses) - len(response_append_enters)))
         if responses:
             steps.append(
                 AutoResponseStep(
@@ -268,6 +284,7 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
                     response_texts=response_texts[: len(responses)],
                     response_targets=response_targets[: len(responses)],
                     response_delays=response_delays[: len(responses)],
+                    response_append_enters=response_append_enters[: len(responses)],
                 )
             )
     return steps

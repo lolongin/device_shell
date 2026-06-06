@@ -34,3 +34,27 @@ class Device:
     serial_password: str = ""
     supports_power_off: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def slot_id(self) -> str:
+        return str(self.extra.get("slot_id") or self.rack)
+
+    @property
+    def board_role(self) -> str:
+        return str(self.extra.get("board_role") or self.device_type)
+
+    @property
+    def board_type(self) -> str:
+        return str(self.extra.get("board_type") or self.model)
+
+    @property
+    def subdomain(self) -> str:
+        return str(self.extra.get("subdomain") or self.domain)
+
+    @property
+    def hardware_platform(self) -> str:
+        return str(self.extra.get("hardware_platform") or self.cpu)
+
+    @property
+    def serial_server(self) -> str:
+        return str(self.extra.get("serial_server") or self.serial_ip)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from .data import Device
 
 
@@ -14,6 +16,7 @@ MOCK_DEVICE_TELNET_USER = "lon"
 MOCK_DEVICE_TELNET_PASSWORD = "202188"
 MOCK_LINUX_SSH_USER = "ops"
 MOCK_LINUX_SSH_PASSWORD = "ops123"
+SAMPLE_NOW = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
 
 STATUS_OCCUPIED = "已被占用"
 STATUS_IDLE = "空闲"
@@ -89,6 +92,7 @@ def sample_devices() -> list[Device]:
             version="V100R019C10",
             notes="Backhaul node for aggregation ring. SSH points to local host for testing.",
             supports_power_off=True,
+            extra={"occupancy_started_at": (SAMPLE_NOW - timedelta(hours=2, minutes=15)).isoformat()},
         ),
         Device(
             id="JQ-SH-003",
@@ -357,7 +361,68 @@ def sample_devices() -> list[Device]:
             notes="Added to expand CPU filter coverage.",
         ),
     ]
-    return _with_board_ids(devices)
+    return _expand_frame_device_samples(_with_board_ids(devices))
+
+
+def _expand_frame_device_samples(devices: list[Device]) -> list[Device]:
+    expanded: list[Device] = []
+    for device in devices:
+        if device.id == "XTN-NJ-018":
+            expanded.extend(_xtn_nj_018_boards(device))
+            continue
+        expanded.append(device)
+    return expanded
+
+
+def _xtn_nj_018_boards(device: Device) -> list[Device]:
+    board_specs = [
+        ("1", "MPU", "ARM-15", "F09-U01"),
+        ("2", "SFU", "ARM-15", "F09-U02"),
+        ("5", "LPU", "ARM-15", "F09-U05"),
+        ("8", "PIU", "ARM-15", "F09-U08"),
+    ]
+    boards: list[Device] = []
+    for slot_id, board_role, cpu, rack in board_specs:
+        boards.append(
+            Device(
+                id=device.id,
+                board_id=f"{device.id}-{slot_id}",
+                name=device.name,
+                domain=device.domain,
+                device_type=board_role,
+                cpu=cpu,
+                status=device.status,
+                owner=device.owner,
+                ssh_ip=device.ssh_ip,
+                telnet_ip=device.telnet_ip,
+                username=device.username,
+                password=device.password,
+                vendor=device.vendor,
+                model=device.model,
+                site=device.site,
+                rack=rack,
+                version=device.version,
+                notes="Frame device sample with multiple boards. SSH points to local host for testing.",
+                ssh_port=device.ssh_port,
+                telnet_port=device.telnet_port,
+                ssh_username=device.ssh_username,
+                ssh_password=device.ssh_password,
+                serial_ip="172.18.200.18",
+                serial_port=2000,
+                serial_username=device.serial_username,
+                serial_password=device.serial_password,
+                supports_power_off=device.supports_power_off,
+                extra={
+                    "slot_id": slot_id,
+                    "board_role": board_role,
+                    "board_type": "XTN960",
+                    "subdomain": "SDK",
+                    "hardware_platform": "云杉",
+                    "serial_server": "172.18.200.18",
+                },
+            )
+        )
+    return boards
 
 
 def _with_board_ids(devices: list[Device]) -> list[Device]:
@@ -438,6 +503,11 @@ def large_sample_devices(count: int) -> list[Device]:
                 serial_password=LOCAL_TEST_SSH_PASSWORD,
                 supports_power_off=owner == CURRENT_USER or index % 7 == 0,
                 board_id=f"{index:04d}",
+                extra=(
+                    {"occupancy_started_at": (SAMPLE_NOW - timedelta(minutes=15 + offset * 3)).isoformat()}
+                    if status == STATUS_OCCUPIED
+                    else {}
+                ),
             )
         )
 
