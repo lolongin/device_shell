@@ -246,6 +246,11 @@ if PYSIDE6_IMPORT_ERROR is None:
     ):
         LOG_FLUSH_INTERVAL_MS = 250
         LOG_FLUSH_IMMEDIATE_CHARS = 65536
+        DEFAULT_LOG_ROTATE_SIZE_MB = 10
+        ACTIVITY_RAIL_WIDTH = 46
+        TERMINAL_SIDEBAR_WIDTH = 360
+        TERMINAL_SIDEBAR_CONTENT_WIDTH = 300
+        TOOL_SIDEBAR_WIDTH = 520
         COMMAND_RECORD_COLLAPSED_HEIGHT = 25
         COMMAND_RECORD_DEFAULT_HEIGHT = 148
         COMMAND_RECORD_MIN_HEIGHT = 116
@@ -298,6 +303,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.remembered_quick_send_buttons = default_quick_send_buttons()
             self.state_path = self.desktop_state_path()
             self.log_directory = self.default_log_directory()
+            self.log_rotate_size_bytes = self.DEFAULT_LOG_ROTATE_SIZE_MB * 1024 * 1024
             self.transfer_protocol = "ftp"
             self.transfer_host = "0.0.0.0"
             self.transfer_port = 2121
@@ -460,18 +466,21 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.setContentsMargins(0, 0, 8, 0)
             layout.setSpacing(8)
 
-            navigation_group = QGroupBox("终端设备")
+            navigation_group = QGroupBox("终端导航")
             navigation_group.setObjectName("navShell")
             nav_layout = QVBoxLayout(navigation_group)
             nav_layout.setSpacing(8)
 
-            nav_header = QHBoxLayout()
+            nav_header_frame = QWidget()
+            self.device_navigation_header = nav_header_frame
+            nav_header = QHBoxLayout(nav_header_frame)
+            nav_header.setContentsMargins(0, 0, 0, 0)
             nav_header.setSpacing(8)
             nav_title_col = QVBoxLayout()
             nav_title_col.setSpacing(2)
-            nav_title = QLabel("设备池")
+            nav_title = QLabel("终端会话")
             nav_title.setObjectName("railTitle")
-            nav_copy = QLabel("按关键词、领域、状态和 CPU 快速定位目标设备")
+            nav_copy = QLabel("打开终端后在这里跳转会话；设备池请回到首页大屏。")
             nav_copy.setObjectName("railCopy")
             nav_copy.setWordWrap(True)
             nav_copy.setMinimumWidth(0)
@@ -494,7 +503,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             nav_header.addWidget(self.toolbar_refresh_button, 0, Qt.AlignTop)
             nav_header.addWidget(self.always_on_top_button, 0, Qt.AlignTop)
             nav_header.addWidget(self.device_navigation_toggle_button, 0, Qt.AlignTop)
-            nav_layout.addLayout(nav_header)
+            nav_layout.addWidget(nav_header_frame)
 
             self.device_navigation_body = QWidget()
             nav_body_layout = QVBoxLayout(self.device_navigation_body)
@@ -580,7 +589,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_navigation_web.setMinimumHeight(360)
             nav_body_layout.addWidget(self.device_navigation_web, 1)
             nav_layout.addWidget(self.device_navigation_body)
-            nav_layout.addWidget(self._build_device_context_panel())
+            self.device_context_panel = self._build_device_context_panel()
+            nav_layout.addWidget(self.device_context_panel)
             layout.addWidget(navigation_group)
             layout.addStretch(1)
             stack_container = QWidget()
@@ -598,7 +608,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         def _build_activity_rail(self) -> QWidget:
             rail = QFrame()
             rail.setObjectName("activityRail")
-            rail.setFixedWidth(46)
+            rail.setFixedWidth(self.ACTIVITY_RAIL_WIDTH)
             layout = QVBoxLayout(rail)
             layout.setContentsMargins(5, 8, 5, 8)
             layout.setSpacing(8)
@@ -630,8 +640,12 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             self.activity_home_button.clicked.connect(self.show_web_home)
             self.activity_terminal_button.clicked.connect(self.activate_terminal_workspace)
-            self.activity_temporary_button.clicked.connect(lambda: self.show_left_sidebar_panel("temporary"))
-            self.activity_transfer_button.clicked.connect(lambda: self.show_left_sidebar_panel("transfer"))
+            self.activity_temporary_button.clicked.connect(
+                lambda: self.toggle_tool_sidebar_panel("temporary")
+            )
+            self.activity_transfer_button.clicked.connect(
+                lambda: self.toggle_tool_sidebar_panel("transfer")
+            )
             return rail
 
         def _new_activity_button(self, icon_name: str, tooltip: str, *, checked: bool = False) -> QToolButton:
@@ -1338,6 +1352,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_log_directory_action = self.quick_log_menu.addAction("打开日志目录")
             self.quick_log_menu.addSeparator()
             self.quick_log_change_directory_action = self.quick_log_menu.addAction("更改日志位置...")
+            self.quick_log_rotate_size_action = self.quick_log_menu.addAction("设置日志分卷大小...")
             self.quick_log_button.setMenu(self.quick_log_menu)
             self.quick_log_button.setPopupMode(QToolButton.InstantPopup)
             self.quick_log_button.setToolTip("日志菜单")
@@ -1681,6 +1696,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.clear_filters_button.clicked.connect(self.clear_filters)
             if hasattr(self, "device_navigation_web"):
                 self.device_navigation_web.device_selected.connect(self.activate_device)
+                self.device_navigation_web.session_selected.connect(self.jump_to_session)
+                self.device_navigation_web.session_context_requested.connect(
+                    self.show_web_session_context_menu
+                )
+                self.device_navigation_web.home_requested.connect(self.show_web_home)
                 self.device_navigation_web.filters_changed.connect(self.apply_web_device_filters)
                 self.device_navigation_web.refresh_requested.connect(self.refresh_snapshot)
                 self.device_navigation_web.clear_requested.connect(self.clear_filters)
@@ -1689,11 +1709,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 )
             if hasattr(self, "web_shell"):
                 self.web_shell.device_selected.connect(self.activate_device)
+                self.web_shell.session_selected.connect(self.jump_to_session)
                 self.web_shell.filters_changed.connect(self.apply_web_device_filters)
                 self.web_shell.action_requested.connect(self.handle_web_shell_action)
                 self.web_shell.refresh_requested.connect(self.refresh_snapshot)
                 self.web_shell.clear_requested.connect(self.clear_filters)
                 self.web_shell.device_context_requested.connect(self.show_web_device_context_menu)
+                self.web_shell.session_context_requested.connect(self.show_web_session_context_menu)
 
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
             self.device_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1712,6 +1734,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_log_open_action.triggered.connect(self.open_current_session_log)
             self.quick_log_directory_action.triggered.connect(self.open_log_directory)
             self.quick_log_change_directory_action.triggered.connect(self.change_log_directory)
+            self.quick_log_rotate_size_action.triggered.connect(self.change_log_rotate_size)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
             self.always_on_top_button.toggled.connect(self.toggle_always_on_top)
             self.session_jump_combo.activated.connect(self.handle_session_jump_activated)
@@ -1889,10 +1912,19 @@ if PYSIDE6_IMPORT_ERROR is None:
         def activate_terminal_workspace(self) -> None:
             if self.session_tab_widget.count() <= 0:
                 return
-            already_in_terminal = self.center_stage_mode == "sessions"
+            self.left_sidebar_active_panel = "devices"
+            self.left_sidebar_collapsed = False
             self.show_terminal_workspace()
-            if already_in_terminal and self.left_sidebar_collapsed:
-                self.show_left_sidebar_panel("devices")
+
+        def toggle_tool_sidebar_panel(self, panel: str) -> None:
+            if panel not in {"temporary", "transfer"}:
+                return
+            if self.left_sidebar_active_panel == panel and not self.left_sidebar_collapsed:
+                self.left_sidebar_collapsed = True
+                self.apply_left_sidebar_state()
+                self.schedule_desktop_state_save()
+                return
+            self.show_left_sidebar_panel(panel)
 
         def show_left_sidebar_panel(self, panel: str) -> None:
             if panel not in {"devices", "temporary", "transfer"}:
@@ -1913,6 +1945,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             showing_device_panel = getattr(self, "left_sidebar_active_panel", "devices") == "devices"
             collapsed = self.left_sidebar_collapsed or (on_home and showing_device_panel)
             compact = bool(getattr(self, "left_sidebar_compact", False)) and not collapsed
+            if hasattr(self, "device_navigation_header"):
+                self.device_navigation_header.setVisible(not compact)
+            if hasattr(self, "device_context_panel"):
+                self.device_context_panel.setVisible(not compact)
             if hasattr(self, "device_navigation_toggle_button"):
                 self.device_navigation_toggle_button.setText("隐藏左侧")
                 self.device_navigation_toggle_button.setToolTip("收起终端设备导航，扩大终端区域")
@@ -1922,44 +1958,79 @@ if PYSIDE6_IMPORT_ERROR is None:
             ):
                 self.animate_left_sidebar_state(collapsed)
             else:
+                if self.left_sidebar_animation is not None:
+                    self.left_sidebar_animation.stop()
+                    self.left_sidebar_animation = None
                 self.left_sidebar_content.setVisible(not collapsed)
-                content_minimum = 300 if compact else 420
-                content_maximum = 380 if compact else 760
+                content_minimum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 420
+                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 760
                 self.left_sidebar_content.setMinimumWidth(0 if collapsed else content_minimum)
                 self.left_sidebar_content.setMaximumWidth(0 if collapsed else content_maximum)
                 if hasattr(self, "left_sidebar_layout"):
                     self.left_sidebar_layout.setContentsMargins(0, 0, 0 if collapsed else 8, 0)
                     self.left_sidebar_layout.setSpacing(0 if collapsed else 8)
                 if hasattr(self, "left_sidebar_shell"):
-                    shell_minimum = 360 if compact else 480
-                    shell_maximum = 440 if compact else 820
-                    self.left_sidebar_shell.setMinimumWidth(46 if collapsed else shell_minimum)
-                    self.left_sidebar_shell.setMaximumWidth(46 if collapsed else shell_maximum)
+                    shell_minimum = self.TERMINAL_SIDEBAR_WIDTH if compact else 480
+                    shell_maximum = self.TERMINAL_SIDEBAR_WIDTH if compact else 820
+                    self.left_sidebar_shell.setMinimumWidth(
+                        self.ACTIVITY_RAIL_WIDTH if collapsed else shell_minimum
+                    )
+                    self.left_sidebar_shell.setMaximumWidth(
+                        self.ACTIVITY_RAIL_WIDTH if collapsed else shell_maximum
+                    )
                     self.left_sidebar_shell.updateGeometry()
                 splitter = getattr(self, "main_splitter", None)
                 if splitter is not None:
                     sizes = splitter.sizes()
                     total = sum(sizes) if len(sizes) >= 2 else 0
-                    left_width = 46 if collapsed else (380 if compact else 520)
+                    left_width = (
+                        self.ACTIVITY_RAIL_WIDTH
+                        if collapsed
+                        else (
+                            self.TERMINAL_SIDEBAR_WIDTH
+                            if compact
+                            else self.TOOL_SIDEBAR_WIDTH
+                        )
+                    )
                     if total > 0:
                         splitter.setSizes([left_width, max(1, total - left_width)])
             if hasattr(self, "left_sidebar_stack"):
                 panel_index = {"devices": 0, "temporary": 1, "transfer": 2}.get(self.left_sidebar_active_panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
-            if hasattr(self, "activity_temporary_button"):
-                temporary_active = not collapsed and self.left_sidebar_active_panel == "temporary"
-                self.activity_temporary_button.setChecked(temporary_active)
-                self.activity_temporary_button.setToolTip("临时连接")
-                self.activity_temporary_button.setIcon(
-                    self._activity_icon("connector", "#f8fafc" if temporary_active else "#718096")
-                )
-            if hasattr(self, "activity_transfer_button"):
-                transfer_active = not collapsed and self.left_sidebar_active_panel == "transfer"
-                self.activity_transfer_button.setChecked(transfer_active)
-                self.activity_transfer_button.setToolTip("文件传输")
-                self.activity_transfer_button.setIcon(
-                    self._activity_icon("transfer", "#f8fafc" if transfer_active else "#718096")
-                )
+            self.sync_activity_rail_state()
+
+        def sync_activity_rail_state(self) -> None:
+            if not hasattr(self, "activity_home_button"):
+                return
+            show_home = getattr(self, "center_stage_mode", "home") == "home"
+            has_sessions = hasattr(self, "session_tab_widget") and self.session_tab_widget.count() > 0
+            panel = getattr(self, "left_sidebar_active_panel", "devices")
+            drawer_open = not self.left_sidebar_collapsed and panel in {"temporary", "transfer"}
+            states = (
+                (self.activity_home_button, "home", "首页大屏", show_home and not drawer_open),
+                (
+                    self.activity_terminal_button,
+                    "terminal",
+                    "终端会话" if has_sessions else "暂无终端会话",
+                    has_sessions and not show_home and not drawer_open,
+                ),
+                (
+                    self.activity_temporary_button,
+                    "connector",
+                    "临时连接",
+                    drawer_open and panel == "temporary",
+                ),
+                (
+                    self.activity_transfer_button,
+                    "transfer",
+                    "文件传输",
+                    drawer_open and panel == "transfer",
+                ),
+            )
+            for button, icon_name, tooltip, active in states:
+                button.setChecked(active)
+                button.setToolTip(tooltip)
+                button.setIcon(self._activity_icon(icon_name, "#f8fafc" if active else "#718096"))
 
         def animate_left_sidebar_state(self, collapsed: bool) -> None:
             if not hasattr(self, "left_sidebar_shell"):
@@ -1976,12 +2047,25 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter = getattr(self, "main_splitter", None)
             splitter_sizes = splitter.sizes() if splitter is not None else []
             splitter_total = sum(splitter_sizes) if len(splitter_sizes) >= 2 else 0
-            start_width = splitter_sizes[0] if len(splitter_sizes) >= 2 else max(46, shell.width())
-            end_width = 46 if collapsed else 520
+            start_width = (
+                splitter_sizes[0]
+                if len(splitter_sizes) >= 2
+                else max(self.ACTIVITY_RAIL_WIDTH, shell.width())
+            )
+            compact = bool(getattr(self, "left_sidebar_compact", False)) and not collapsed
+            end_width = (
+                self.ACTIVITY_RAIL_WIDTH
+                if collapsed
+                else (
+                    self.TERMINAL_SIDEBAR_WIDTH
+                    if compact
+                    else self.TOOL_SIDEBAR_WIDTH
+                )
+            )
 
             content.setVisible(True)
             content.setMinimumWidth(0)
-            shell.setMinimumWidth(46)
+            shell.setMinimumWidth(self.ACTIVITY_RAIL_WIDTH)
             shell.setMaximumWidth(820)
             animation = QVariantAnimation(self)
             easing = QEasingCurve.OutCubic if QEasingCurve is not None else None
@@ -1992,8 +2076,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 animation.setEasingCurve(easing)
 
             def apply_width(value: Any) -> None:
-                width = max(46, int(value))
-                content_width = max(0, width - 54)
+                width = max(self.ACTIVITY_RAIL_WIDTH, int(value))
+                content_width = max(0, width - self.ACTIVITY_RAIL_WIDTH - 8)
                 content.setMaximumWidth(content_width)
                 shell.setMinimumWidth(width)
                 shell.setMaximumWidth(width)
@@ -2004,11 +2088,19 @@ if PYSIDE6_IMPORT_ERROR is None:
             animation.valueChanged.connect(apply_width)
 
             def finish() -> None:
-                content.setMinimumWidth(0 if collapsed else 420)
-                content.setMaximumWidth(0 if collapsed else 760)
+                content_minimum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 420
+                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 760
+                content.setMinimumWidth(0 if collapsed else content_minimum)
+                content.setMaximumWidth(0 if collapsed else content_maximum)
                 content.setVisible(not collapsed)
-                shell.setMinimumWidth(46 if collapsed else 480)
-                shell.setMaximumWidth(46 if collapsed else 820)
+                shell_minimum = self.TERMINAL_SIDEBAR_WIDTH if compact else 480
+                shell_maximum = self.TERMINAL_SIDEBAR_WIDTH if compact else 820
+                shell.setMinimumWidth(
+                    self.ACTIVITY_RAIL_WIDTH if collapsed else shell_minimum
+                )
+                shell.setMaximumWidth(
+                    self.ACTIVITY_RAIL_WIDTH if collapsed else shell_maximum
+                )
                 shell.updateGeometry()
                 if splitter is not None and splitter_total > 0:
                     splitter.setSizes([end_width, max(1, splitter_total - end_width)])

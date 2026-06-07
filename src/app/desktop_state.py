@@ -12,11 +12,12 @@ from pathlib import Path
 try:
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QDesktopServices
-    from PySide6.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
 except ModuleNotFoundError:
     QUrl = None
     QDesktopServices = None
     QFileDialog = None
+    QInputDialog = None
 
 from ..app_state import SessionTabState
 from ..auto_response import (
@@ -33,7 +34,7 @@ from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 9
+DESKTOP_STATE_VERSION = 10
 
 
 class DesktopStateMixin:
@@ -155,6 +156,11 @@ class DesktopStateMixin:
         loaded_log_directory = str(payload.get("log_directory") or "").strip()
         if loaded_log_directory:
             self.log_directory = Path(loaded_log_directory).expanduser()
+        try:
+            rotate_size_mb = int(payload.get("log_rotate_size_mb", self.DEFAULT_LOG_ROTATE_SIZE_MB))
+        except (TypeError, ValueError):
+            rotate_size_mb = self.DEFAULT_LOG_ROTATE_SIZE_MB
+        self.log_rotate_size_bytes = min(max(rotate_size_mb, 1), 1024) * 1024 * 1024
         temporary_devices: list[Device] = []
         raw_temporary_devices = payload.get("temporary_devices", [])
         if isinstance(raw_temporary_devices, list):
@@ -224,6 +230,7 @@ class DesktopStateMixin:
                     "writable": self.transfer_writable,
                 },
                 "log_directory": str(self.log_directory),
+                "log_rotate_size_mb": max(1, self.log_rotate_size_bytes // (1024 * 1024)),
                 "temporary_devices": [
                     serialize_temporary_device(device)
                     for device in self.temporary_devices
@@ -255,7 +262,38 @@ class DesktopStateMixin:
             else ("telnet" if kind == "device" else ("simulated" if kind == "simulated" else "ssh"))
         )
         filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
-        return self.unique_log_path(self.log_directory.expanduser() / filename)
+        return self.unique_log_path(self.device_log_directory(device) / filename)
+
+    def device_log_directory(self, device: Device, root: Path | None = None) -> Path:
+        device_label = "_".join(part for part in (device.id, device.name) if part)
+        directory_name = self.safe_log_component(device_label, "device")
+        return (root or self.log_directory).expanduser() / directory_name
+
+    def session_device_log_directory(
+        self,
+        state: SessionTabState,
+        root: Path | None = None,
+    ) -> Path:
+        device = self.get_device_by_id(state.device_id) if hasattr(self, "get_device_by_id") else None
+        if device is not None:
+            return self.device_log_directory(device, root)
+        directory_name = self.safe_log_component(state.device_id, "device")
+        return (root or self.log_directory).expanduser() / directory_name
+
+    def session_log_path_for_state(self, state: SessionTabState) -> Path:
+        device = self.get_device_by_id(state.device_id) if hasattr(self, "get_device_by_id") else None
+        if device is not None:
+            return self.session_log_path(device, state.title, state.kind)
+        timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        device_name = self.safe_log_component(state.device_id, "device")
+        session_name = self.safe_log_component(state.title, "session")
+        kind_name = (
+            "serial"
+            if state.kind == "serial"
+            else ("telnet" if state.kind == "device" else ("simulated" if state.kind == "simulated" else "ssh"))
+        )
+        filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
+        return self.unique_log_path(self.session_device_log_directory(state) / filename)
 
     def unique_log_path(self, path: Path) -> Path:
         if not path.exists():
@@ -313,22 +351,53 @@ class DesktopStateMixin:
         if not state.log_pending_records:
             return
         try:
+            records = list(state.log_pending_records)
+            payload, next_line_start = self.render_session_log_records(
+                records,
+                state.log_at_line_start,
+            )
+            current_size = state.log_path.stat().st_size if state.log_path.exists() else 0
+            if (
+                current_size > 0
+                and current_size + len(payload.encode("utf-8")) > self.log_rotate_size_bytes
+            ):
+                previous_path = state.log_path
+                state.log_path = self.session_log_path_for_state(state)
+                rotation_record = (
+                    "SYS",
+                    f"# Log rotated automatically; previous log: {previous_path}\n",
+                    True,
+                )
+                payload, next_line_start = self.render_session_log_records(
+                    [rotation_record, *records],
+                    True,
+                )
             state.log_path.parent.mkdir(parents=True, exist_ok=True)
             with state.log_path.open("a", encoding="utf-8", newline="") as log_file:
-                for channel, sanitized, separate_record in state.log_pending_records:
-                    if separate_record and not state.log_at_line_start:
-                        log_file.write("\n")
-                        state.log_at_line_start = True
-                    for segment in sanitized.splitlines(keepends=True):
-                        if channel != "SYS" and state.log_at_line_start and not segment.strip():
-                            continue
-                        if state.log_at_line_start:
-                            log_file.write(f"[{self.log_timestamp()}] ")
-                        log_file.write(segment)
-                        state.log_at_line_start = segment.endswith("\n")
+                log_file.write(payload)
+            state.log_at_line_start = next_line_start
             state.log_pending_records.clear()
         except OSError as exc:
             self.set_status_message(f"Log write failed: {exc}")
+
+    def render_session_log_records(
+        self,
+        records: list[tuple[str, str, bool]],
+        at_line_start: bool,
+    ) -> tuple[str, bool]:
+        output: list[str] = []
+        for channel, sanitized, separate_record in records:
+            if separate_record and not at_line_start:
+                output.append("\n")
+                at_line_start = True
+            for segment in sanitized.splitlines(keepends=True):
+                if channel != "SYS" and at_line_start and not segment.strip():
+                    continue
+                if at_line_start:
+                    output.append(f"[{self.log_timestamp()}] ")
+                output.append(segment)
+                at_line_start = segment.endswith("\n")
+        return "".join(output), at_line_start
 
     def finish_session_log_record(self, state: SessionTabState) -> None:
         self.flush_session_log_state(state)
@@ -377,16 +446,7 @@ class DesktopStateMixin:
     def create_session_log(self, state: SessionTabState) -> Path:
         old_path = state.log_path
         self.finish_session_log_record(state)
-        device = self.get_device_by_id(state.device_id) if hasattr(self, "get_device_by_id") else None
-        if device is not None:
-            new_path = self.session_log_path(device, state.title, state.kind)
-        else:
-            timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-            device_name = self.safe_log_component(state.device_id, "device")
-            session_name = self.safe_log_component(state.title, "session")
-            kind_name = "serial" if state.kind == "serial" else ("telnet" if state.kind == "device" else "ssh")
-            filename = f"{timestamp}_{device_name}_{kind_name}_{session_name}.log"
-            new_path = self.unique_log_path(self.log_directory.expanduser() / filename)
+        new_path = self.session_log_path_for_state(state)
         state.log_path = new_path
         state.log_at_line_start = True
         self.write_session_log_line(state, "SYS", f"New log created; previous log: {old_path}")
@@ -435,11 +495,28 @@ class DesktopStateMixin:
         suffix = f"，已迁移 {moved_count} 个当前会话日志" if moved_count else ""
         self.set_status_message(f"日志位置已更改: {new_directory}{suffix}")
 
+    def change_log_rotate_size(self) -> None:
+        current_mb = max(1, self.log_rotate_size_bytes // (1024 * 1024))
+        selected_mb, accepted = QInputDialog.getInt(
+            self,
+            "设置日志分卷大小",
+            "单个日志达到该大小后自动新建分卷（MB）：",
+            current_mb,
+            1,
+            1024,
+            1,
+        )
+        if not accepted:
+            return
+        self.log_rotate_size_bytes = selected_mb * 1024 * 1024
+        self.schedule_desktop_state_save()
+        self.set_status_message(f"日志分卷大小已设置为 {selected_mb} MB")
+
     def move_active_session_logs(self, new_directory: Path) -> int:
         moved_count = 0
         for state in self.session_tabs_by_id.values():
             old_path = state.log_path
-            target_path = new_directory / old_path.name
+            target_path = self.session_device_log_directory(state, new_directory) / old_path.name
             try:
                 same_path = old_path.resolve() == target_path.resolve()
             except OSError:

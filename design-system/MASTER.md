@@ -1,14 +1,14 @@
 # Device TUI Design System
 
 This file is the source of truth for the desktop workspace visual language.
-The app is a PySide6 desktop shell with Web-rendered home, device navigation,
+The app is a PySide6 desktop shell with Web-rendered home, terminal navigation,
 auto-response editor, and xterm terminal surfaces.
 
 ## Product Direction
 
 - Make the UI feel like a polished Web operations dashboard inside the desktop app.
 - Keep the home screen as the full device pool overview.
-- Keep terminal sessions as the operator workspace, with the left device pool shown only as a compact session navigation surface.
+- Keep terminal sessions as the operator workspace, with the left rail shown as a compact terminal session navigation surface.
 - Preserve right-click operations by routing all native menus through the workspace menu factory and all Web device rows through QtWebChannel bridge requests.
 
 ## Theme Tokens
@@ -129,7 +129,10 @@ When adding a new custom property, update this list and the theme tests together
 - Web pages must consume shared `button`, `input`, `select`, and focus-visible control styling from `workspace-theme.css` instead of redefining base controls page by page.
 - Web form surfaces should consume shared utilities from `workspace-theme.css`, including `workspace-field`, `workspace-panel`, `workspace-button-row`, and `workspace-step-actions`.
 - Web pages should avoid inline `style=` layout overrides; add shared utility classes instead.
+- `web_shell.html` is the device-pool home. It owns device search, filters, detail, and connection launch actions.
+- `device_navigation.html` is terminal navigation only. It must not duplicate the home device table or filter bar.
 - Native style overrides live in `src/styles.py`; the final OLED cascade must remain after legacy overrides.
+- Python-rendered helper HTML and WebEngine container backgrounds should read shared values from `src/theme_tokens.py` instead of repeating raw literals in feature modules.
 - Terminal renderers must use the same background, text, cursor, and selection palette as the Web theme.
 - xterm ANSI theme colors must be read from `workspace-theme.css` terminal custom properties instead of page-local hex literals.
 - Status indicators use shared classes or helpers: `idle`, `occupied`, `pipeline`, `other`.
@@ -147,9 +150,12 @@ When adding a new custom property, update this list and the theme tests together
 - Device rows in Web views should be marked as contextable and forward context menu requests to Python.
 - Web device rows must support keyboard operation: `Enter` or `Space` selects the row, and `ContextMenu` or `Shift+F10` opens the same device context menu as right-click.
 - Selected Web device rows must expose `aria-selected` alongside the visual selected state.
+- Web terminal session rows, whether on the home screen or left terminal navigation, must preserve session context operations by forwarding right-click, `ContextMenu`, and `Shift+F10` to the native workspace session menu.
 - Web editor surfaces should expose page-local context menus for row or card editing actions when the operation no longer lives in native Qt widgets, with `ContextMenu` and `Shift+F10` keyboard equivalents.
 - Native right-click menus must be created through `new_workspace_menu()`.
 - The xterm WebView must forward its internal context menu event to the outer terminal widget so the terminal menu is preserved.
+- The left terminal navigation should provide a visible Home button so operators can return from terminals to the device-pool home.
+- The activity rail uses exclusive emphasis: Home restores the full dashboard and closes tool drawers; Terminal restores session navigation; Temporary Connection and File Transfer toggle their own drawers.
 - Prefer reduced-motion support for Web transitions.
 
 ## Anti-Patterns
@@ -158,4 +164,5 @@ When adding a new custom property, update this list and the theme tests together
 - Do not revive the old `#080808`, `#ededed`, or `#5b6ef5` Linear/Vercel palette as final UI output.
 - Do not add raw `QMenu(...)` calls outside the menu factory.
 - Do not show the left device pool on the home screen; the home screen already is the device pool.
+- Do not make the left terminal navigation a second device-pool page with search filters and a full device table.
 - Do not keep unreachable legacy UI templates after a visible surface has migrated to the workspace design system.

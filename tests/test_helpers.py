@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from src._sample_data import STATUS_IDLE, STATUS_PIPELINE
 from src.data import Device
-from src.helpers import build_search_text, html_badge, html_chip, html_status_text, mask_password, status_color
+from src.helpers import (
+    build_search_text,
+    html_badge,
+    html_chip,
+    html_device_summary,
+    html_status_text,
+    mask_password,
+    status_color,
+)
 
 
 class TestBuildSearchText:
@@ -111,3 +119,35 @@ class TestHtmlStatusText:
         assert "&lt;ok&gt;" in text
         assert "#22&#x27;bad" in text
         assert "x&lt;y" in text
+
+
+class TestHtmlDeviceSummary:
+    def test_device_summary_uses_workspace_tokens_and_helpers(self) -> None:
+        summary = html_device_summary(
+            "Mock Device",
+            "D-001",
+            "测试",
+            "空闲",
+            "#22c55e",
+            "未占用",
+            owner_muted=True,
+            detail_html="<div>detail</div>",
+            class_name="device-summary",
+        )
+
+        assert "device-summary" in summary
+        assert "#f8fafc" in summary
+        assert "#a7b4c7" in summary
+        assert "#22c55e" in summary
+        assert "device-summary-status" in summary
+        assert "<div>detail</div>" in summary
+
+    def test_device_summary_escapes_values(self) -> None:
+        summary = html_device_summary("<name>", "<id>", "<domain>", "<status>", "#22'bad", "<owner>")
+
+        assert "&lt;name&gt;" in summary
+        assert "&lt;id&gt;" in summary
+        assert "&lt;domain&gt;" in summary
+        assert "&lt;status&gt;" in summary
+        assert "&lt;owner&gt;" in summary
+        assert "#22&#x27;bad" in summary

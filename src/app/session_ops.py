@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from PySide6.QtCore import QObject, QEvent, QMimeData, Qt, QTimer, QUrl, Signal, Slot
+    from PySide6.QtCore import QObject, QEvent, QMimeData, QPoint, Qt, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QAction, QColor, QDrag, QFont, QIcon, QKeySequence, QPixmap, QTextBlockFormat
     from PySide6.QtWidgets import (
         QApplication,
@@ -41,6 +41,7 @@ except ModuleNotFoundError:
     QObject = None
     QEvent = None
     QMimeData = None
+    QPoint = None
     Qt = None
     QTimer = None
     QUrl = None
@@ -1115,6 +1116,22 @@ class SessionOpsMixin:
             return
         self._handle_device_quick_action(chosen, actions, device)
 
+    def show_web_session_context_menu(self, tab_id: str, global_x: int, global_y: int) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None or QPoint is None:
+            return
+        device = self.get_device_by_id(state.device_id)
+        if device is None:
+            return
+        self.jump_to_session(tab_id)
+        menu = self.new_workspace_menu(self, self.temporary_device_display_name(device), "session-device")
+        actions = self._add_device_quick_actions(menu)
+        self.update_device_quick_actions_for_device(actions, device)
+        chosen = menu.exec(QPoint(global_x, global_y))
+        if chosen is None:
+            return
+        self._handle_device_quick_action(chosen, actions, device)
+
     def refresh_quick_auto_response_menu(self) -> None:
         menu = getattr(self, "quick_auto_response_menu", None)
         if menu is None:
@@ -1977,21 +1994,14 @@ class SessionOpsMixin:
         else:
             self.center_stage_splitter.setSizes([0, 1])
         if hasattr(self, "activity_home_button"):
-            self.activity_home_button.setChecked(show_home)
             self.activity_home_button.setToolTip("首页大屏")
-            self.activity_home_button.setIcon(
-                self._activity_icon("home", "#f8fafc" if show_home else "#718096")
-            )
         if hasattr(self, "activity_terminal_button"):
-            terminal_active = has_sessions and not show_home
             self.activity_terminal_button.setEnabled(has_sessions)
-            self.activity_terminal_button.setChecked(terminal_active)
             self.activity_terminal_button.setToolTip(
                 "终端会话" if has_sessions else "暂无终端会话"
             )
-            self.activity_terminal_button.setIcon(
-                self._activity_icon("terminal", "#f8fafc" if terminal_active else "#718096")
-            )
+        if hasattr(self, "sync_activity_rail_state"):
+            self.sync_activity_rail_state()
         for widget_name in ("session_quick_action_bar", "command_record_frame"):
             widget = getattr(self, widget_name, None)
             if widget is not None:
@@ -2015,16 +2025,24 @@ class SessionOpsMixin:
 
     def show_web_home(self) -> None:
         self.center_stage_mode = "home"
-        if getattr(self, "left_sidebar_active_panel", "devices") == "devices":
-            self.left_sidebar_collapsed = True
+        self.left_sidebar_active_panel = "devices"
+        self.left_sidebar_collapsed = True
+        if hasattr(self, "left_sidebar_stack"):
+            self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
+        self.apply_left_sidebar_state()
         self.refresh_workspace_context()
 
     def show_terminal_workspace(self) -> None:
         if self.session_tab_widget.count() <= 0:
             return
         self.center_stage_mode = "sessions"
+        self.left_sidebar_active_panel = "devices"
+        self.left_sidebar_collapsed = False
+        if hasattr(self, "left_sidebar_stack"):
+            self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
+        self.apply_left_sidebar_state()
         self.refresh_workspace_context()
         self.focus_current_terminal()
 

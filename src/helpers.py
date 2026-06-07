@@ -7,36 +7,51 @@ import html
 from .data import Device
 from ._sample_data import STATUS_OTHER
 from .styles import STATUS_COLORS
+from .theme_tokens import (
+    WORKSPACE_INPUT,
+    WORKSPACE_LINE,
+    WORKSPACE_MUTED,
+    WORKSPACE_NEUTRAL_LINE,
+    WORKSPACE_NEUTRAL_SOFT,
+    WORKSPACE_SOFT,
+    WORKSPACE_SUCCESS_LINE,
+    WORKSPACE_SUCCESS_SOFT,
+    WORKSPACE_SUCCESS_TEXT,
+    WORKSPACE_TEXT,
+    WORKSPACE_WARNING_LINE,
+    WORKSPACE_WARNING_SOFT,
+    WORKSPACE_WARN_TEXT,
+)
 
 
 HTML_BADGE_VARIANTS = {
     "warning": {
-        "background": "rgba(251, 191, 36, 0.13)",
-        "border": "rgba(251, 191, 36, 0.42)",
-        "color": "#f8e7a1",
+        "background": WORKSPACE_WARNING_SOFT,
+        "border": WORKSPACE_WARNING_LINE,
+        "color": WORKSPACE_WARN_TEXT,
     },
     "success": {
-        "background": "rgba(34, 197, 94, 0.14)",
-        "border": "rgba(34, 197, 94, 0.42)",
-        "color": "#d8fff0",
+        "background": WORKSPACE_SUCCESS_SOFT,
+        "border": WORKSPACE_SUCCESS_LINE,
+        "color": WORKSPACE_SUCCESS_TEXT,
     },
     "neutral": {
-        "background": "rgba(113, 128, 150, 0.14)",
-        "border": "rgba(113, 128, 150, 0.36)",
-        "color": "#a7b4c7",
+        "background": WORKSPACE_NEUTRAL_SOFT,
+        "border": WORKSPACE_NEUTRAL_LINE,
+        "color": WORKSPACE_MUTED,
     },
 }
 
 HTML_CHIP_VARIANTS = {
     "filter": {
-        "background": "#08101d",
-        "border": "#243244",
-        "color": "#a7b4c7",
+        "background": WORKSPACE_INPUT,
+        "border": WORKSPACE_LINE,
+        "color": WORKSPACE_MUTED,
     },
     "neutral": {
-        "background": "rgba(113, 128, 150, 0.14)",
-        "border": "rgba(113, 128, 150, 0.36)",
-        "color": "#a7b4c7",
+        "background": WORKSPACE_NEUTRAL_SOFT,
+        "border": WORKSPACE_NEUTRAL_LINE,
+        "color": WORKSPACE_MUTED,
     },
 }
 
@@ -114,4 +129,34 @@ def html_status_text(text: str, color: str, *, weight: int = 800, class_name: st
     return (
         f"<span{class_attr} style='color:{html.escape(color, quote=True)};"
         f"font-weight:{weight}'>{html.escape(text)}</span>"
+    )
+
+
+def html_device_summary(
+    title: str,
+    device_id: str,
+    domain: str,
+    status: str,
+    status_color_value: str,
+    owner: str,
+    *,
+    owner_muted: bool = False,
+    detail_html: str = "",
+    class_name: str = "",
+) -> str:
+    """Render the selected-device summary card for Qt rich-text labels."""
+    class_attr = f" class='{html.escape(class_name, quote=True)}'" if class_name else ""
+    owner_color = WORKSPACE_SOFT if owner_muted else WORKSPACE_MUTED
+    return (
+        f"<div{class_attr} style='font-size:13px;font-weight:800;color:{WORKSPACE_TEXT}'>"
+        f"{html.escape(title)}</div>"
+        f"<div style='margin-top:3px;color:{WORKSPACE_MUTED};font-size:11px'>"
+        f"{html_status_text(device_id, WORKSPACE_MUTED, weight=700, class_name='device-summary-id')}"
+        f" &nbsp;|&nbsp; {html.escape(domain)}"
+        " &nbsp;|&nbsp; "
+        f"{html_status_text(status, status_color_value, weight=700, class_name='device-summary-status')}"
+        " &nbsp;|&nbsp; "
+        f"{html_status_text(owner, owner_color, weight=600, class_name='device-summary-owner')}"
+        "</div>"
+        f"{detail_html}"
     )

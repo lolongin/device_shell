@@ -159,7 +159,9 @@
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
     .sessions { display: grid; gap: 8px; }
-    .session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--input); border-radius: 9px; padding: 8px 9px; }
+    .session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--input); border-radius: 9px; padding: 8px 9px; cursor: pointer; }
+    .session:hover,
+    .session.active { border-color: var(--success-line); background: var(--success-soft); }
     .session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
     .session-sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
     .session-status { font-weight: 800; color: var(--muted); }
@@ -443,6 +445,23 @@
       panel.appendChild(kv);
     }
 
+    function sessionContextPoint(item) {
+      const rect = item.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + Math.min(rect.width - 8, 32)),
+        y: Math.round(rect.top + rect.height / 2)
+      };
+    }
+
+    function requestSessionContext(item, session, event) {
+      if (!bridge) return;
+      if (event) event.preventDefault();
+      const point = event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : sessionContextPoint(item);
+      bridge.requestSessionContextMenu(session.tabId, point.x, point.y);
+    }
+
     function renderSessions(sessions) {
       const list = $("sessionList");
       list.innerHTML = "";
@@ -455,7 +474,11 @@
       }
       sessions.forEach((session) => {
         const item = document.createElement("div");
-        item.className = "session";
+        item.className = `session ${session.active ? "active" : ""}`.trim();
+        item.tabIndex = 0;
+        item.setAttribute("role", "button");
+        item.setAttribute("aria-label", session.title || session.tabId || "");
+        item.setAttribute("aria-current", session.active ? "true" : "false");
         const left = document.createElement("div");
         const title = document.createElement("div");
         title.className = "session-title";
@@ -470,6 +493,16 @@
         status.textContent = session.statusLabel || session.status;
         item.appendChild(left);
         item.appendChild(status);
+        item.addEventListener("click", () => bridge && bridge.selectSession(session.tabId));
+        item.addEventListener("contextmenu", (event) => requestSessionContext(item, session, event));
+        item.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (bridge) bridge.selectSession(session.tabId);
+          } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            requestSessionContext(item, session, event);
+          }
+        });
         list.appendChild(item);
       });
     }

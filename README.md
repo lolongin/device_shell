@@ -109,6 +109,20 @@ The bundled HTML first tries to load xterm assets from `src/web/assets/`:
 If those files are not present, it falls back to the jsDelivr CDN. For offline
 deployments, copy the matching xterm.js build artifacts into `src/web/assets/`.
 
+## Session Logs
+
+Session logs are grouped under the configured log root by device ID and name:
+
+```text
+logs/
+  MOCK-LAB-000_Mock-Huawei-Lab/
+    20260607-120000_Mock-Huawei-Lab_telnet_Telnet-1.log
+```
+
+Each log rolls over automatically at 10 MB by default. Use the terminal
+toolbar's `日志 > 设置日志分卷大小...` action to choose a value from
+1 MB to 1024 MB. The log root and rollover size are saved in desktop state.
+
 ## Project Layout
 
 - `src/desktop_app.py`: PySide6 desktop GUI

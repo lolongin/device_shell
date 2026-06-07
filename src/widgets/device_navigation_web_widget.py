@@ -10,9 +10,17 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+try:
+    from ..theme_tokens import qwebengine_background_stylesheet
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from theme_tokens import qwebengine_background_stylesheet
+
 
 class _DeviceNavigationBridge(QObject):
     device_selected = Signal(str)
+    session_selected = Signal(str)
+    session_context_requested = Signal(str, int, int)
+    home_requested = Signal()
     filters_changed = Signal(str)
     refresh_requested = Signal()
     clear_requested = Signal()
@@ -21,6 +29,18 @@ class _DeviceNavigationBridge(QObject):
     @Slot(str)
     def selectDevice(self, device_id: str) -> None:
         self.device_selected.emit(device_id)
+
+    @Slot(str)
+    def selectSession(self, tab_id: str) -> None:
+        self.session_selected.emit(tab_id)
+
+    @Slot(str, int, int)
+    def requestSessionContextMenu(self, tab_id: str, x: int, y: int) -> None:
+        self.session_context_requested.emit(tab_id, x, y)
+
+    @Slot()
+    def requestHome(self) -> None:
+        self.home_requested.emit()
 
     @Slot(str)
     def updateFilters(self, payload: str) -> None:
@@ -40,9 +60,12 @@ class _DeviceNavigationBridge(QObject):
 
 
 class DeviceNavigationWebWidget(QWidget):
-    """Compact Web UI for device filtering and list navigation."""
+    """Compact Web UI for terminal session navigation."""
 
     device_selected = Signal(str)
+    session_selected = Signal(str)
+    session_context_requested = Signal(str, int, int)
+    home_requested = Signal()
     filters_changed = Signal(dict)
     refresh_requested = Signal()
     clear_requested = Signal()
@@ -60,11 +83,14 @@ class DeviceNavigationWebWidget(QWidget):
 
         self.view = QWebEngineView(self)
         self.view.setObjectName("deviceNavigationWebView")
-        self.view.setStyleSheet("QWebEngineView#deviceNavigationWebView { background: #020617; border: 0; }")
+        self.view.setStyleSheet(qwebengine_background_stylesheet("deviceNavigationWebView"))
         layout.addWidget(self.view)
 
         self.bridge = _DeviceNavigationBridge(self)
         self.bridge.device_selected.connect(self.device_selected)
+        self.bridge.session_selected.connect(self.session_selected)
+        self.bridge.session_context_requested.connect(self._handle_session_context_requested)
+        self.bridge.home_requested.connect(self.home_requested)
         self.bridge.filters_changed.connect(self._handle_filters_changed)
         self.bridge.refresh_requested.connect(self.refresh_requested)
         self.bridge.clear_requested.connect(self.clear_requested)
@@ -104,3 +130,7 @@ class DeviceNavigationWebWidget(QWidget):
     def _handle_device_context_requested(self, device_id: str, x: int, y: int) -> None:
         global_pos = self.view.mapToGlobal(QPoint(x, y))
         self.device_context_requested.emit(device_id, global_pos.x(), global_pos.y())
+
+    def _handle_session_context_requested(self, tab_id: str, x: int, y: int) -> None:
+        global_pos = self.view.mapToGlobal(QPoint(x, y))
+        self.session_context_requested.emit(tab_id, global_pos.x(), global_pos.y())

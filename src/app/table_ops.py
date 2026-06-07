@@ -1,7 +1,6 @@
 """Table operations mixin for DeviceDesktopApp."""
 from __future__ import annotations
 
-import html
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -25,7 +24,7 @@ except ModuleNotFoundError:
 from .._sample_data import STATUS_IDLE, STATUS_OCCUPIED, STATUS_OTHER, STATUS_PIPELINE
 from ..app_state import RepositorySnapshot
 from ..data import Device
-from ..helpers import html_chip, html_status_text, status_color
+from ..helpers import html_chip, html_device_summary, html_status_text, status_color
 from ..styles import STATUS_COLORS
 
 ALL_DOMAINS = "全部领域"
@@ -693,7 +692,63 @@ class TableOpsMixin:
     def refresh_device_navigation_web(self) -> None:
         web_nav = getattr(self, "device_navigation_web", None)
         if web_nav is not None and hasattr(web_nav, "set_payload"):
-            web_nav.set_payload(self.device_navigation_payload())
+            web_nav.set_payload(self.session_navigation_payload())
+
+    def session_navigation_payload(self) -> dict[str, object]:
+        current_tab_id = self.current_session_key() if hasattr(self, "current_session_key") else ""
+        current_device = self.get_selected_device()
+        sessions: list[dict[str, object]] = []
+        connected = 0
+        connecting = 0
+        disconnected = 0
+        if hasattr(self, "ordered_session_states"):
+            for state in self.ordered_session_states():
+                session_device = self.get_device_by_id(state.device_id)
+                status = str(state.status_text or "")
+                normalized_status = status.strip().lower()
+                if normalized_status == "connected":
+                    connected += 1
+                elif normalized_status == "connecting":
+                    connecting += 1
+                else:
+                    disconnected += 1
+                sessions.append(
+                    {
+                        "tabId": state.tab_id,
+                        "title": self.session_display_title(state, self.session_kind_label(state.kind)),
+                        "kind": self.session_kind_label(state.kind),
+                        "deviceName": self.temporary_device_display_name(session_device)
+                        if session_device is not None
+                        else state.device_id,
+                        "deviceId": state.device_id,
+                        "host": f"{state.host}:{state.port}",
+                        "status": status,
+                        "statusLabel": self.session_status_label(status),
+                        "active": state.tab_id == current_tab_id,
+                    }
+                )
+        selected_device = None
+        if current_device is not None:
+            selected_device = {
+                "id": current_device.id,
+                "name": self.temporary_device_display_name(current_device),
+                "boardType": self.device_table_board_type_text(current_device),
+                "cpu": current_device.cpu,
+                "slot": current_device.rack,
+                "statusText": self.device_table_status_text(current_device),
+                "statusKind": self.device_status_kind(current_device),
+            }
+        return {
+            "summary": f"{len(sessions)} 个终端会话",
+            "stats": {
+                "total": len(sessions),
+                "connected": connected,
+                "connecting": connecting,
+                "disconnected": disconnected,
+            },
+            "sessions": sessions,
+            "selectedDevice": selected_device,
+        }
 
     def web_shell_payload(self) -> dict[str, object]:
         device = self.get_selected_device()
@@ -718,6 +773,7 @@ class TableOpsMixin:
                 "canSerial": self.can_view_serial_connection(device),
             }
         sessions: list[dict[str, object]] = []
+        current_tab_id = self.current_session_key() if hasattr(self, "current_session_key") else ""
         if hasattr(self, "ordered_session_states"):
             for state in self.ordered_session_states():
                 session_device = self.get_device_by_id(state.device_id)
@@ -731,6 +787,7 @@ class TableOpsMixin:
                         else state.device_id,
                         "status": state.status_text,
                         "statusLabel": self.session_status_label(state.status_text),
+                        "active": state.tab_id == current_tab_id,
                     }
                 )
         return {
@@ -1321,7 +1378,6 @@ class TableOpsMixin:
 
         self.device_ssh_ip_value.setText(device.ssh_ip)
         self.device_telnet_ip_value.setText(device.telnet_ip)
-        serial_visible = self.can_view_serial_connection(device)
         self.device_serial_ip_value.setText(
             self.device_serial_connection_text(device) if self.should_show_serial_connection_text(device) else ""
         )
@@ -1333,27 +1389,16 @@ class TableOpsMixin:
             self.serial_username_input.setText(serial_username)
             self.serial_password_input.setText(serial_password)
         owner_text = device.owner or "未占用"
-        owner_color = HTML_MUTED if device.owner else HTML_SOFT
-        telnet_text = f"{device.telnet_ip}:{device.telnet_port}"
-        ssh_text = f"{device.ssh_ip}:{device.ssh_port}"
-        serial_text = self.device_serial_connection_text(device)
-        serial_color = HTML_MUTED if serial_visible else HTML_SOFT
-        if self.is_temporary_device(device):
-            serial_text = "-"
-            serial_color = HTML_SOFT
         self.device_summary_card.setText(
-            (
-                f"<div style='font-size:13px;font-weight:800;color:{HTML_TEXT}'>"
-                f"{html.escape(self.temporary_device_display_name(device))}</div>"
-                f"<div style='margin-top:3px;color:{HTML_MUTED};font-size:11px'>"
-                f"<span style='color:{HTML_MUTED};font-weight:700'>{html.escape(device.id)}</span>"
-                f" &nbsp;|&nbsp; {html.escape(device.domain)}"
-                f" &nbsp;|&nbsp; "
-                f"<span style='color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span>"
-                f" &nbsp;|&nbsp; "
-                f"<span style='color:{owner_color};font-weight:600'>{html.escape(owner_text)}</span>"
-                f"</div>"
-                f"{self.temporary_device_detail_badge(device)}"
+            html_device_summary(
+                self.temporary_device_display_name(device),
+                device.id,
+                device.domain,
+                device.status,
+                status_color(device.status),
+                owner_text,
+                owner_muted=not bool(device.owner),
+                detail_html=self.temporary_device_detail_badge(device),
             )
         )
         return
