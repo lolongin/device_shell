@@ -10,6 +10,7 @@ try:
         QDialog,
         QDialogButtonBox,
         QFormLayout,
+        QFrame,
         QHBoxLayout,
         QLabel,
         QLineEdit,
@@ -23,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - only used when launching the G
     QDialog = None
     QDialogButtonBox = None
     QFormLayout = None
+    QFrame = None
     QHBoxLayout = None
     QLabel = None
     QLineEdit = None
@@ -32,7 +34,7 @@ except ModuleNotFoundError:  # pragma: no cover - only used when launching the G
     QVBoxLayout = None
 
 from ..data import Device
-from ..helpers import build_search_text
+from ..helpers import build_search_text, html_badge
 from ..temporary_devices import (
     is_temporary_device,
     make_temporary_device,
@@ -48,18 +50,24 @@ if QDialog is not None:
 
         def __init__(self, parent: Any = None, device: Device | None = None) -> None:
             super().__init__(parent)
+            self.setObjectName("workspaceDialog")
             self.setWindowTitle("编辑临时连接" if device is not None else "新增临时连接")
             self.setMinimumWidth(420)
 
             layout = QVBoxLayout(self)
+            layout.setContentsMargins(16, 16, 16, 14)
+            layout.setSpacing(12)
             hint = QLabel("临时连接只保存在本机，不会写入资产库或设备表。")
             hint.setObjectName("sectionCopy")
             layout.addWidget(hint)
 
-            form = QFormLayout()
+            form_card = QFrame()
+            form_card.setObjectName("dialogFormCard")
+            form = QFormLayout(form_card)
+            form.setContentsMargins(12, 12, 12, 12)
             form.setHorizontalSpacing(10)
             form.setVerticalSpacing(8)
-            layout.addLayout(form)
+            layout.addWidget(form_card)
 
             self.name_input = QLineEdit()
             self.name_input.setPlaceholderText("例如 Temp-10.1.2.3")
@@ -99,6 +107,7 @@ if QDialog is not None:
             form.addRow("备注", self.notes_input)
 
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.setObjectName("workspaceDialogButtons")
             buttons.accepted.connect(self.accept)
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
@@ -155,7 +164,7 @@ class TemporaryDeviceOpsMixin:
             self.save_temporary_device_from_form()
             return
         anchor = getattr(self, "temporary_save_button", self)
-        menu = QMenu(anchor)
+        menu = self.new_workspace_menu(anchor, "临时连接", "temporary-list")
         add_action = menu.addAction("新增临时连接...")
         menu.addSeparator()
         open_actions: dict[Any, Device] = {}
@@ -163,6 +172,8 @@ class TemporaryDeviceOpsMixin:
         delete_actions: dict[Any, Device] = {}
         for device in self.temporary_devices:
             device_menu = menu.addMenu(self.temporary_device_display_name(device))
+            device_menu.setObjectName("workspaceContextMenu")
+            device_menu.setProperty("menuKind", "temporary-list-device")
             open_action = device_menu.addAction("打开")
             edit_action = device_menu.addAction("编辑...")
             delete_action = device_menu.addAction("删除")
@@ -411,7 +422,7 @@ class TemporaryDeviceOpsMixin:
         self.show_warning("临时连接缺少可用的 Telnet/SSH/串口地址。")
 
     def show_temporary_device_context_menu(self, device: Device, widget: Any, pos: Any) -> None:
-        menu = QMenu(widget)
+        menu = self.new_workspace_menu(widget, self.temporary_device_display_name(device), "temporary-device")
         copy_connection_action = menu.addAction("复制连接信息")
         menu.addSeparator()
         open_device_action = menu.addAction("打开设备管理口")
@@ -475,10 +486,11 @@ class TemporaryDeviceOpsMixin:
     def temporary_device_detail_badge(self, device: Device) -> str:
         if not self.is_temporary_device(device):
             return ""
-        return (
-            "<div style='margin-top:8px;color:#f5a623;font-weight:700'>"
-            "临时连接 · 仅保存在本机，不会同步到资产库或设备表"
-            "</div>"
+        return html_badge(
+            "临时连接",
+            "仅保存在本机，不会同步到资产库或设备表",
+            variant="warning",
+            class_name="temporary-detail-badge",
         )
 
     def refresh_device_tab_title(self, device: Device) -> None:

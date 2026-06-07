@@ -371,7 +371,7 @@ class CommandRecordOpsMixin:
     def show_command_group_context_menu(self, index: int, button: QToolButton, pos: Any) -> None:
         if index < 0 or index >= len(self.command_record_groups):
             return
-        menu = QMenu(button)
+        menu = self.new_workspace_menu(button, "命令分组", "command-group")
         rename_action = menu.addAction("重命名")
         chosen = menu.exec(button.mapToGlobal(pos))
         if chosen == rename_action:

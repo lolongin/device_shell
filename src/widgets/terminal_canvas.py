@@ -47,10 +47,10 @@ class TerminalCanvasWidget(QWidget):
     PADDING_BOTTOM = 14
     SCROLLBAR_WIDTH = 14
 
-    DEFAULT_FG = QColor("#d6deeb")
-    DEFAULT_BG = QColor("#06090d")
-    CURSOR_BG = QColor("#d6deeb")
-    CURSOR_FG = QColor("#06090d")
+    DEFAULT_FG = QColor("#f8fafc")
+    DEFAULT_BG = QColor("#020617")
+    CURSOR_BG = QColor("#22c55e")
+    CURSOR_FG = QColor("#020617")
     SELECTION_BG = QColor("#334155")
     SELECTION_FG = QColor("#f8fafc")
     WORD_RE = re.compile(r"[A-Za-z0-9_./:@%+=,\-]+")
@@ -64,7 +64,7 @@ class TerminalCanvasWidget(QWidget):
         "blue": QColor("#7dd3fc"),
         "magenta": QColor("#c4b5fd"),
         "cyan": QColor("#67e8f9"),
-        "white": QColor("#d6deeb"),
+        "white": QColor("#f8fafc"),
         "brightblack": QColor("#94a3b8"),
         "brightred": QColor("#fca5a5"),
         "brightgreen": QColor("#99f6e4"),
@@ -360,9 +360,6 @@ class TerminalCanvasWidget(QWidget):
         if modifiers & Qt.ControlModifier:
             if key == Qt.Key_C and self.has_selection():
                 self.copy()
-                return
-            if key == Qt.Key_V:
-                self._paste_clipboard()
                 return
             control_text = self._control_sequence_for_key(key)
             if control_text is not None:

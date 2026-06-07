@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QVBoxLayout, QWidget
@@ -17,6 +17,7 @@ class _WebShellBridge(QObject):
     action_requested = Signal(str)
     refresh_requested = Signal()
     clear_requested = Signal()
+    device_context_requested = Signal(str, int, int)
 
     @Slot(str)
     def selectDevice(self, device_id: str) -> None:
@@ -38,6 +39,10 @@ class _WebShellBridge(QObject):
     def clearFilters(self) -> None:
         self.clear_requested.emit()
 
+    @Slot(str, int, int)
+    def requestDeviceContextMenu(self, device_id: str, x: int, y: int) -> None:
+        self.device_context_requested.emit(device_id, x, y)
+
 
 class WebShellWidget(QWidget):
     """Main web shell for the desktop UI migration."""
@@ -47,6 +52,7 @@ class WebShellWidget(QWidget):
     action_requested = Signal(str)
     refresh_requested = Signal()
     clear_requested = Signal()
+    device_context_requested = Signal(str, int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -60,7 +66,7 @@ class WebShellWidget(QWidget):
 
         self.view = QWebEngineView(self)
         self.view.setObjectName("webShellView")
-        self.view.setStyleSheet("QWebEngineView#webShellView { background: #07090c; border: 0; }")
+        self.view.setStyleSheet("QWebEngineView#webShellView { background: #020617; border: 0; }")
         layout.addWidget(self.view)
 
         self.bridge = _WebShellBridge(self)
@@ -69,6 +75,7 @@ class WebShellWidget(QWidget):
         self.bridge.action_requested.connect(self.action_requested)
         self.bridge.refresh_requested.connect(self.refresh_requested)
         self.bridge.clear_requested.connect(self.clear_requested)
+        self.bridge.device_context_requested.connect(self._handle_device_context_requested)
 
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("webShellBridge", self.bridge)
@@ -99,3 +106,7 @@ class WebShellWidget(QWidget):
             return
         if isinstance(data, dict):
             self.filters_changed.emit(data)
+
+    def _handle_device_context_requested(self, device_id: str, x: int, y: int) -> None:
+        global_pos = self.view.mapToGlobal(QPoint(x, y))
+        self.device_context_requested.emit(device_id, global_pos.x(), global_pos.y())

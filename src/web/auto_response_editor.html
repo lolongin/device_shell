@@ -4,45 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <link rel="stylesheet" href="assets/workspace-theme.css" />
   <title>Auto Response Editor</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #07090c;
-      --panel: #0d1117;
-      --panel-2: #111720;
-      --line: #242b36;
-      --line-strong: #334155;
-      --text: #edf4ff;
-      --muted: #9aa8bc;
-      --soft: #6f7c91;
-      --accent: #34d399;
-      --accent-2: #60a5fa;
-      --danger: #f87171;
-      --focus: rgba(96, 165, 250, 0.35);
-    }
-
-    * { box-sizing: border-box; }
-
-    html,
-    body {
-      width: 100%;
-      min-height: 100%;
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-      font-size: 13px;
-    }
-
-    body { overflow: hidden; }
-
-    button,
-    input,
-    select {
-      font: inherit;
-    }
-
     .shell {
       height: 100vh;
       display: grid;
@@ -56,39 +20,7 @@
       gap: 10px;
       padding: 16px 18px 12px;
       border-bottom: 1px solid var(--line);
-      background: #090c10;
-    }
-
-    .field {
-      display: grid;
-      gap: 6px;
-      min-width: 0;
-    }
-
-    label,
-    .caption {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.2;
-    }
-
-    input,
-    select {
-      width: 100%;
-      min-width: 0;
-      height: 34px;
-      color: var(--text);
-      background: #090d13;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      outline: none;
-      padding: 0 10px;
-    }
-
-    input:focus,
-    select:focus {
-      border-color: var(--accent-2);
-      box-shadow: 0 0 0 3px var(--focus);
+      background: var(--panel);
     }
 
     .main {
@@ -108,7 +40,7 @@
     .step {
       border: 1px solid var(--line);
       background: var(--panel);
-      border-radius: 8px;
+      border-radius: 10px;
       margin-bottom: 10px;
       overflow: hidden;
     }
@@ -154,8 +86,8 @@
       gap: 6px;
       color: var(--text);
       border: 1px solid var(--line);
-      background: #090d13;
-      border-radius: 6px;
+      background: var(--input);
+      border-radius: 8px;
       padding: 0 9px;
       white-space: nowrap;
     }
@@ -169,8 +101,8 @@
 
     .action.first-action .action-delay-field input {
       color: var(--soft);
-      border-color: #1c2430;
-      background: #080b10;
+      border-color: var(--line);
+      background: var(--input-quiet);
     }
 
     .side {
@@ -178,13 +110,6 @@
       display: grid;
       align-content: start;
       gap: 10px;
-    }
-
-    .panel {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 8px;
-      padding: 12px;
     }
 
     .panel-title {
@@ -216,40 +141,6 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
-    }
-
-    .btn-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      padding-top: 2px;
-    }
-
-    button {
-      height: 32px;
-      padding: 0 12px;
-      color: var(--text);
-      background: #0b1017;
-      border: 1px solid var(--line-strong);
-      border-radius: 6px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    button:hover {
-      border-color: var(--accent-2);
-      background: #111827;
-    }
-
-    button.primary {
-      border-color: rgba(52, 211, 153, 0.65);
-      color: #d8fff0;
-      background: rgba(16, 185, 129, 0.12);
-    }
-
-    button.danger {
-      color: #ffd7d7;
-      border-color: rgba(248, 113, 113, 0.45);
     }
 
     .muted {
@@ -300,7 +191,7 @@
       height: 11px;
       border-radius: 50%;
       background: var(--accent);
-      box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.14);
+      box-shadow: 0 0 0 3px var(--success-soft);
     }
 
     .flow-title {
@@ -316,7 +207,7 @@
     .flow-wait {
       color: var(--muted);
       border: 1px solid var(--line);
-      background: #090d13;
+      background: var(--input);
       border-radius: 6px;
       padding: 7px 8px;
       overflow: hidden;
@@ -325,7 +216,7 @@
     }
 
     .flow-delay {
-      color: #f8e7a1;
+      color: var(--warn-text);
       font-size: 12px;
       white-space: nowrap;
     }
@@ -340,8 +231,8 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 6px;
       align-items: center;
-      border: 1px solid #1d2633;
-      background: #0a0f16;
+      border: 1px solid var(--line);
+      background: var(--input);
       border-radius: 6px;
       padding: 6px 7px;
     }
@@ -375,9 +266,9 @@
     }
 
     .flow-chip.enter {
-      color: #d8fff0;
-      border-color: rgba(52, 211, 153, 0.45);
-      background: rgba(52, 211, 153, 0.08);
+      color: var(--success-text);
+      border-color: var(--success-line);
+      background: var(--success-soft);
     }
 
     .empty-flow {
@@ -401,7 +292,7 @@
       display: none;
       place-items: center;
       padding: 28px;
-      background: rgba(0, 0, 0, 0.58);
+      background: var(--overlay);
       z-index: 20;
     }
 
@@ -415,9 +306,9 @@
       display: grid;
       grid-template-rows: auto 1fr;
       border: 1px solid var(--line-strong);
-      background: #090d13;
-      border-radius: 8px;
-      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+      background: var(--panel);
+      border-radius: 12px;
+      box-shadow: 0 18px 60px var(--shadow-strong);
       overflow: hidden;
     }
 
@@ -467,21 +358,21 @@
     }
   </style>
 </head>
-<body>
+<body class="workspace-page">
   <div class="shell">
     <header class="topbar">
-      <div class="field">
+      <div class="workspace-field">
         <label for="ruleName">规则名称</label>
         <input id="ruleName" autocomplete="off" />
       </div>
-      <div class="field">
+      <div class="workspace-field">
         <label for="matchType">匹配方式</label>
         <select id="matchType">
           <option value="contains">包含</option>
           <option value="regex">正则</option>
         </select>
       </div>
-      <div class="field">
+      <div class="workspace-field">
         <label for="maxTriggers">最大触发次数</label>
         <input id="maxTriggers" type="number" min="0" step="1" />
       </div>
@@ -489,7 +380,7 @@
     <main class="main">
       <section class="steps" id="steps"></section>
       <aside class="side">
-        <div class="panel">
+        <div class="workspace-panel">
           <div class="panel-title">执行选项</div>
           <div class="checks">
             <label class="check"><input id="appendEnter" type="checkbox" />新动作默认追加 Enter</label>
@@ -499,21 +390,21 @@
           </div>
           <div class="hint">绿色按钮表示规则当前启用；次数用完后会由主界面自动置灰。</div>
         </div>
-        <div class="panel">
+        <div class="workspace-panel">
           <div class="panel-title">节流</div>
           <div class="num-grid">
-            <div class="field">
+            <div class="workspace-field">
               <label for="delayMs">新步骤间隔(ms)</label>
               <input id="delayMs" type="number" min="0" step="1" />
             </div>
-            <div class="field">
+            <div class="workspace-field">
               <label>&nbsp;</label>
               <button class="primary" id="addStep">添加步骤</button>
             </div>
           </div>
           <div class="hint">每个动作也可以设置独立等待时间，用于两个命令之间的延时。</div>
         </div>
-        <div class="panel preview-entry">
+        <div class="workspace-panel preview-entry">
           <div class="panel-title">流程预览</div>
           <div class="preview-summary" id="flowSummary">未生成流程</div>
           <button id="openFlowPreview">查看流程</button>
@@ -533,39 +424,40 @@
       </div>
     </section>
   </div>
+  <div class="workspace-context-menu" id="editorContextMenu" role="menu" aria-hidden="true"></div>
 
   <template id="stepTemplate">
-    <article class="step">
+    <article class="step workspace-contextable" tabindex="0" role="group" aria-label="自动响应步骤">
       <div class="step-head">
         <div class="step-index"></div>
-        <div class="field">
+        <div class="workspace-field">
           <label>如果终端出现</label>
           <input class="pattern" autocomplete="off" placeholder="例如 Password: / Ctrl+B / BOOT menu" />
         </div>
-        <div class="field step-delay">
+        <div class="workspace-field step-delay">
           <label>发送前等待(ms)</label>
           <input class="step-delay-input" type="number" min="0" step="1" />
         </div>
         <button class="danger remove-step">删除步骤</button>
       </div>
       <div class="actions"></div>
-      <div class="btn-row" style="padding: 0 12px 12px 70px;">
+      <div class="workspace-button-row workspace-step-actions">
         <button class="add-action">再发送一条</button>
       </div>
     </article>
   </template>
 
   <template id="actionTemplate">
-    <div class="action">
-      <div class="field">
+    <div class="action workspace-contextable" tabindex="0" role="group" aria-label="发送动作">
+      <div class="workspace-field">
         <label>发送到</label>
         <select class="target"></select>
       </div>
-      <div class="field">
+      <div class="workspace-field">
         <label>发送内容</label>
         <input class="text" autocomplete="off" placeholder="例如 admin / display version / Ctrl+B" />
       </div>
-      <div class="field action-delay-field">
+      <div class="workspace-field action-delay-field">
         <label>等待(ms)</label>
         <input class="delay" type="number" min="0" step="1" />
       </div>
@@ -757,6 +649,25 @@
       if (select.value !== (selected || "current")) select.value = "current";
     }
 
+    function actionPayload(actionEl, index) {
+      const stepEl = actionEl.closest(".step");
+      return {
+        target: actionEl.querySelector(".target").value,
+        text: actionEl.querySelector(".text").value,
+        delay: index === 0 && stepEl
+          ? Number.parseInt(stepEl.querySelector(".step-delay-input").value || "0", 10) || 0
+          : Number.parseInt(actionEl.querySelector(".delay").value || "0", 10) || 0,
+        appendEnter: actionEl.querySelector(".append-enter").checked
+      };
+    }
+
+    function stepPayload(stepEl) {
+      return {
+        pattern: stepEl.querySelector(".pattern").value,
+        responses: Array.from(stepEl.querySelectorAll(".action")).map(actionPayload)
+      };
+    }
+
     function refreshActionDelayFields(stepEl) {
       stepEl.querySelectorAll(".action").forEach((actionEl, index) => {
         const delayInput = actionEl.querySelector(".delay");
@@ -764,6 +675,31 @@
         delayInput.disabled = index === 0;
         delayInput.title = index === 0 ? "第一条发送的等待时间在步骤标题里设置" : "";
       });
+    }
+
+    function removeActionElement(actionEl) {
+      const stepEl = actionEl.closest(".step");
+      const actions = stepEl.querySelector(".actions");
+      if (actions.querySelectorAll(".action").length <= 1) {
+        actionEl.querySelector(".text").value = "";
+        actionEl.querySelector(".delay").value = 0;
+        actionEl.querySelector(".append-enter").checked = !!state.appendEnter;
+      } else {
+        actionEl.remove();
+      }
+      refreshActionDelayFields(stepEl);
+      sync();
+    }
+
+    function removeStepElement(stepEl) {
+      if (document.querySelectorAll(".step").length <= 1) {
+        stepEl.querySelector(".pattern").value = "";
+        stepEl.querySelector(".actions").innerHTML = "";
+        addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
+      } else {
+        stepEl.remove();
+      }
+      sync();
     }
 
     function addAction(stepEl, action) {
@@ -778,18 +714,8 @@
         actionEl.querySelector(".delay").disabled = true;
         actionEl.querySelector(".delay").title = "第一条发送的等待时间在步骤标题里设置";
       }
-      actionEl.querySelector(".remove-action").addEventListener("click", () => {
-        const actions = stepEl.querySelector(".actions");
-        if (actions.querySelectorAll(".action").length <= 1) {
-          actionEl.querySelector(".text").value = "";
-          actionEl.querySelector(".delay").value = 0;
-          actionEl.querySelector(".append-enter").checked = !!state.appendEnter;
-        } else {
-          actionEl.remove();
-        }
-        refreshActionDelayFields(stepEl);
-        sync();
-      });
+      actionEl.querySelector(".remove-action").addEventListener("click", () => removeActionElement(actionEl));
+      actionEl.addEventListener("keydown", handleEditorContextMenuKey);
       actionEl.querySelectorAll("input,select").forEach((node) => node.addEventListener("input", sync));
       actionEl.querySelectorAll("select").forEach((node) => node.addEventListener("change", sync));
       stepEl.querySelector(".actions").appendChild(fragment);
@@ -806,16 +732,8 @@
       stepEl.querySelector(".step-delay-input").value = firstActionDelay;
       stepEl.querySelector(".pattern").addEventListener("input", sync);
       stepEl.querySelector(".step-delay-input").addEventListener("input", sync);
-      stepEl.querySelector(".remove-step").addEventListener("click", () => {
-        if (document.querySelectorAll(".step").length <= 1) {
-          stepEl.querySelector(".pattern").value = "";
-          stepEl.querySelector(".actions").innerHTML = "";
-          addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
-        } else {
-          stepEl.remove();
-        }
-        sync();
-      });
+      stepEl.addEventListener("keydown", handleEditorContextMenuKey);
+      stepEl.querySelector(".remove-step").addEventListener("click", () => removeStepElement(stepEl));
       stepEl.querySelector(".add-action").addEventListener("click", () => {
         addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
         sync();
@@ -825,6 +743,87 @@
       });
       stepsEl.appendChild(fragment);
       renderStepNumbers();
+    }
+
+    function closeEditorContextMenu() {
+      const menu = $("editorContextMenu");
+      menu.classList.remove("open");
+      menu.setAttribute("aria-hidden", "true");
+      menu.innerHTML = "";
+    }
+
+    function addContextMenuButton(menu, label, handler, isDanger) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "menuitem");
+      button.textContent = label;
+      if (isDanger) button.className = "danger";
+      button.addEventListener("click", () => {
+        closeEditorContextMenu();
+        handler();
+      });
+      menu.appendChild(button);
+    }
+
+    function addContextMenuSeparator(menu) {
+      const separator = document.createElement("div");
+      separator.className = "workspace-context-menu-separator";
+      menu.appendChild(separator);
+    }
+
+    function contextMenuPoint(event, anchor) {
+      if (typeof event.clientX === "number" && typeof event.clientY === "number" && event.clientX > 0) {
+        return { x: event.clientX, y: event.clientY };
+      }
+      const rect = anchor.getBoundingClientRect();
+      return { x: rect.left + 18, y: rect.top + 18 };
+    }
+
+    function showEditorContextMenu(event) {
+      const stepEl = event.target.closest(".step");
+      if (!stepEl) {
+        closeEditorContextMenu();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const actionEl = event.target.closest(".action");
+      const menu = $("editorContextMenu");
+      menu.innerHTML = "";
+      if (actionEl) {
+        addContextMenuButton(menu, "复制动作", () => {
+          const actions = Array.from(stepEl.querySelectorAll(".action"));
+          addAction(stepEl, actionPayload(actionEl, actions.indexOf(actionEl)));
+          sync();
+        });
+        addContextMenuButton(menu, "删除动作", () => removeActionElement(actionEl), true);
+        addContextMenuSeparator(menu);
+      }
+      addContextMenuButton(menu, "新增动作", () => {
+        addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
+        sync();
+      });
+      addContextMenuButton(menu, "复制步骤", () => {
+        addStep(stepPayload(stepEl));
+        sync();
+      });
+      addContextMenuButton(menu, "删除步骤", () => removeStepElement(stepEl), true);
+
+      const width = 180;
+      const height = Math.min(220, 42 * menu.querySelectorAll("button").length + 20);
+      const point = contextMenuPoint(event, actionEl || stepEl);
+      menu.style.left = `${Math.min(point.x, window.innerWidth - width - 8)}px`;
+      menu.style.top = `${Math.min(point.y, window.innerHeight - height - 8)}px`;
+      menu.classList.add("open");
+      menu.setAttribute("aria-hidden", "false");
+      const firstButton = menu.querySelector("button");
+      if (firstButton) firstButton.focus();
+    }
+
+    function handleEditorContextMenuKey(event) {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        showEditorContextMenu(event);
+      }
     }
 
     function renderStepNumbers() {
@@ -857,7 +856,10 @@
       $("flowModal").addEventListener("click", (event) => {
         if (event.target === $("flowModal")) closeFlowPreview();
       });
+      stepsEl.addEventListener("contextmenu", showEditorContextMenu);
+      document.addEventListener("click", closeEditorContextMenu);
       document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeEditorContextMenu();
         if (event.key === "Escape") closeFlowPreview();
       });
       $("addStep").addEventListener("click", () => {

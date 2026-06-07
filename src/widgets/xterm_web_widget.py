@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -88,7 +88,7 @@ class XtermWebWidget(QWidget):
         self.setObjectName("terminalLog")
         self.setStyleSheet(
             "QWidget#terminalLog, QWidget#terminalPlaceholder, "
-            "QWebEngineView#terminalWebView { background: #06090d; border: 0; }"
+            "QWebEngineView#terminalWebView { background: #020617; border: 0; }"
         )
 
         self._placeholder = QWidget(self)
@@ -117,7 +117,11 @@ class XtermWebWidget(QWidget):
         self._engine_started = True
         self._view = QWebEngineView(self)
         self._view.setObjectName("terminalWebView")
-        self._view.page().setBackgroundColor(QColor("#06090d"))
+        self._view.page().setBackgroundColor(QColor("#020617"))
+        self._view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(
+            lambda pos: self.customContextMenuRequested.emit(self._view.mapTo(self, pos))
+        )
         self._stack.insertWidget(0, self._view)
 
         self._bridge = _XtermBridge(self)
@@ -378,7 +382,7 @@ class XtermWebWidget(QWidget):
 def prewarm_xterm_webengine(parent: QObject | None = None) -> QWebEnginePage:
     """Warm up Qt WebEngine and xterm assets without creating a visible view."""
     page = QWebEnginePage(parent)
-    page.setBackgroundColor(QColor("#06090d"))
+    page.setBackgroundColor(QColor("#020617"))
     html_path = Path(__file__).resolve().parents[1] / "web" / "xterm_prewarm.html"
 
     def finish(_ok: bool = True) -> None:

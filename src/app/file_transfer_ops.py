@@ -16,6 +16,7 @@ try:
         QHBoxLayout,
         QLabel,
         QLineEdit,
+        QMenu,
         QPushButton,
         QCheckBox,
         QComboBox,
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
     QHBoxLayout = None
     QLabel = None
     QLineEdit = None
+    QMenu = None
     QPushButton = None
     QCheckBox = None
     QComboBox = None
@@ -41,7 +43,10 @@ except ModuleNotFoundError:
     QVBoxLayout = None
     QWidget = None
 
+from .._sample_data import STATUS_IDLE, STATUS_OTHER
 from ..file_transfer_service import TransferServiceConfig, TransferServiceController
+from ..helpers import html_status_text
+from ..styles import STATUS_COLORS
 from ..widgets.password_field import configure_password_visibility
 
 
@@ -75,11 +80,11 @@ class FileTransferOpsMixin:
         group_layout.addLayout(header)
 
         form_frame = QFrame()
-        form_frame.setObjectName("navFilterBar")
+        form_frame.setObjectName("transferConfigCard")
         form_layout = QFormLayout(form_frame)
-        form_layout.setContentsMargins(8, 8, 8, 8)
-        form_layout.setVerticalSpacing(6)
-        form_layout.setHorizontalSpacing(6)
+        form_layout.setContentsMargins(10, 10, 10, 10)
+        form_layout.setVerticalSpacing(7)
+        form_layout.setHorizontalSpacing(8)
         form_layout.setLabelAlignment(Qt.AlignRight)
 
         self.transfer_protocol_combo = QComboBox()
@@ -130,23 +135,42 @@ class FileTransferOpsMixin:
         action_row.addWidget(self.transfer_stop_button)
         group_layout.addLayout(action_row)
 
+        self.transfer_status_card = QFrame()
+        self.transfer_status_card.setObjectName("transferStatusCard")
+        self.transfer_status_card.setProperty("state", "stopped")
+        status_card_layout = QVBoxLayout(self.transfer_status_card)
+        status_card_layout.setContentsMargins(10, 9, 10, 9)
+        status_card_layout.setSpacing(6)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
         self.transfer_status_label = QLabel("未启动")
         self.transfer_status_label.setObjectName("activeFilterText")
+        self.transfer_status_label.setProperty("surface", "transferStatus")
         self.transfer_status_label.setTextFormat(Qt.RichText)
         self.transfer_status_label.setWordWrap(True)
-        group_layout.addWidget(self.transfer_status_label)
+        self.transfer_endpoint_label = QLabel("")
+        self.transfer_endpoint_label.setObjectName("transferEndpointText")
+        self.transfer_endpoint_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        status_row.addWidget(self.transfer_status_label, 0)
+        status_row.addWidget(self.transfer_endpoint_label, 1)
+        status_card_layout.addLayout(status_row)
 
         self.transfer_hint_label = QLabel("")
-        self.transfer_hint_label.setObjectName("sectionCopy")
+        self.transfer_hint_label.setObjectName("transferHintText")
         self.transfer_hint_label.setTextFormat(Qt.RichText)
         self.transfer_hint_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.transfer_hint_label.setWordWrap(True)
-        group_layout.addWidget(self.transfer_hint_label)
+        status_card_layout.addWidget(self.transfer_hint_label)
+        group_layout.addWidget(self.transfer_status_card)
 
         self.transfer_log_output = QPlainTextEdit()
+        self.transfer_log_output.setObjectName("transferLogOutput")
         self.transfer_log_output.setReadOnly(True)
         self.transfer_log_output.setMaximumBlockCount(300)
         self.transfer_log_output.setMinimumHeight(160)
+        self.transfer_log_output.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.transfer_log_output.customContextMenuRequested.connect(self.show_transfer_log_context_menu)
         group_layout.addWidget(self.transfer_log_output, 1)
 
         layout.addWidget(group)
@@ -246,6 +270,38 @@ class FileTransferOpsMixin:
         if hasattr(self, "transfer_log_output"):
             self.transfer_log_output.appendPlainText(message)
 
+    def show_transfer_log_context_menu(self, pos: Any) -> None:
+        if QMenu is None or not hasattr(self, "transfer_log_output"):
+            return
+        editor = self.transfer_log_output
+        menu = self.new_workspace_menu(editor, "文件传输日志", "transfer-log")
+        copy_selection_action = menu.addAction("复制选中文本")
+        copy_all_action = menu.addAction("复制全部日志")
+        menu.addSeparator()
+        open_root_action = menu.addAction("打开共享目录")
+        clear_action = menu.addAction("清空日志")
+        copy_selection_action.setEnabled(editor.textCursor().hasSelection())
+        copy_all_action.setEnabled(bool(editor.toPlainText()))
+        clear_action.setEnabled(bool(editor.toPlainText()))
+
+        chosen = menu.exec(editor.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen == copy_selection_action:
+            editor.copy()
+            self.set_status_message("已复制选中文本")
+            return
+        if chosen == copy_all_action:
+            self.copy_text_to_clipboard(editor.toPlainText(), "已复制文件传输日志")
+            return
+        if chosen == open_root_action:
+            root = Path(self.transfer_root_input.text().strip() or str(self.transfer_root_directory)).expanduser()
+            self.open_local_path(root, "共享目录", is_directory=True)
+            return
+        if chosen == clear_action:
+            editor.clear()
+            self.set_status_message("文件传输日志已清空")
+
     def refresh_transfer_panel_state(self) -> None:
         running = bool(self.transfer_service and self.transfer_service.is_running)
         if hasattr(self, "transfer_start_button"):
@@ -269,11 +325,16 @@ class FileTransferOpsMixin:
         port = self.transfer_port_input.text().strip() if hasattr(self, "transfer_port_input") else str(self.transfer_port)
         root = self.transfer_root_input.text().strip() if hasattr(self, "transfer_root_input") else str(self.transfer_root_directory)
         status = "运行中" if running else "未启动"
-        color = "#3cc98e" if running else "#808080"
+        color = STATUS_COLORS[STATUS_IDLE] if running else STATUS_COLORS[STATUS_OTHER]
+        if hasattr(self, "transfer_status_card"):
+            self.transfer_status_card.setProperty("state", "running" if running else "stopped")
+            self.transfer_status_card.style().unpolish(self.transfer_status_card)
+            self.transfer_status_card.style().polish(self.transfer_status_card)
         self.transfer_status_label.setText(
-            f"<span style='color:{color};font-weight:700'>{status}</span>"
-            f" &nbsp; {html.escape(protocol)} {html.escape(host)}:{html.escape(port)}"
+            html_status_text(status, color, class_name="transfer-status-text")
         )
+        if hasattr(self, "transfer_endpoint_label"):
+            self.transfer_endpoint_label.setText(f"{protocol} {host}:{port}")
         username = (
             self.transfer_username_input.text().strip()
             if hasattr(self, "transfer_username_input")

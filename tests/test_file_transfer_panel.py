@@ -9,6 +9,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from src.app.main_window import DeviceDesktopApp
@@ -44,6 +45,29 @@ def test_file_transfer_default_port_tracks_protocol(app: QApplication) -> None:
     window.update_transfer_default_port("FTP")
 
     assert window.transfer_port_input.text() == "2121"
+
+
+def test_file_transfer_panel_uses_workspace_surfaces(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    assert window.transfer_protocol_combo.parent().objectName() == "transferConfigCard"
+    assert window.transfer_status_card.objectName() == "transferStatusCard"
+    assert window.transfer_status_card.property("state") == "stopped"
+    assert window.transfer_status_label.property("surface") == "transferStatus"
+    assert "transfer-status-text" in window.transfer_status_label.text()
+    assert window.transfer_endpoint_label.objectName() == "transferEndpointText"
+    assert window.transfer_endpoint_label.text()
+    assert window.transfer_hint_label.objectName() == "transferHintText"
+    assert window.transfer_hint_label.parent().objectName() == "transferStatusCard"
+    assert window.transfer_log_output.objectName() == "transferLogOutput"
+    assert window.transfer_log_output.contextMenuPolicy() == Qt.CustomContextMenu
+
+    source = (Path(__file__).resolve().parents[1] / "src" / "app" / "file_transfer_ops.py").read_text(
+        encoding="utf-8"
+    )
+    assert "html_status_text(" in source
+    assert "<span style='color:{color};font-weight:800'>" not in source
 
 
 def test_file_transfer_config_round_trips_desktop_state(

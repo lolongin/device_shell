@@ -7,11 +7,25 @@ terminal sessions.
 
 - Device list with keyword, domain, status, CPU, and "my occupancy" filters
 - Device detail panel with Telnet, SSH, serial, asset, and owner information
+- Web-rendered home dashboard, compact terminal device navigation, and shared OLED workspace theme
 - Embedded xterm.js terminal sessions through PySide6 WebEngine
 - Embedded Telnet, Linux SSH, and serial Telnet sessions
 - Multi-session device tabs, split terminal panes, reconnect, disconnect, and logs
 - Command note panel with persisted command tabs
 - Optional API-backed repository for integration with an external website/backend
+
+## Design System
+
+The workspace uses a Web-style OLED design system shared by Qt style sheets,
+embedded Web pages, xterm.js, canvas terminal rendering, and generated HTML
+snippets. The source of truth is `design-system/MASTER.md`.
+
+Key invariants:
+
+- Home is the full device pool dashboard; the left device pool stays hidden on home.
+- Terminal mode shows the left device pool only as compact session navigation.
+- Web pages link `src/web/assets/workspace-theme.css` instead of redefining local root tokens.
+- Native context menus go through the workspace menu factory so right-click actions stay consistent.
 
 ## Install
 

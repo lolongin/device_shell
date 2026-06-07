@@ -10,11 +10,11 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QDialogButtonBox, QLineEdit, QWidget
 
 from src._sample_data import sample_devices
 from src.app.main_window import DeviceDesktopApp
-from src.app.session_ops import AutoResponseRuleDialog, AutoResponseRuleWebDialog
+from src.app.session_ops import AutoResponseRuleDialog, AutoResponseRuleWebDialog, QuickSendButtonDialog
 from src.app_state import SessionTabState
 from src.auto_response import (
     AutoResponseRule,
@@ -120,6 +120,9 @@ def test_auto_response_rule_dialog_builds_steps_with_buttons(app: QApplication) 
     _ = app
     dialog = AutoResponseRuleDialog()
 
+    assert dialog.objectName() == "workspaceDialog"
+    assert dialog.findChild(QDialogButtonBox, "workspaceDialogButtons") is not None
+
     dialog.add_send_row("display version")
     second_delay_input = dialog.condition_blocks[0]["response_rows"][1]["delay_input"]
     assert isinstance(second_delay_input, QLineEdit)
@@ -132,6 +135,25 @@ def test_auto_response_rule_dialog_builds_steps_with_buttons(app: QApplication) 
     assert values["step_delays"] == [0, 1200, 0]
     assert values["case_sensitive"] is True
     assert not hasattr(dialog, "steps_input")
+
+
+def test_quick_send_button_dialog_uses_workspace_surfaces(app: QApplication) -> None:
+    _ = app
+    dialog = QuickSendButtonDialog()
+
+    assert dialog.objectName() == "workspaceDialog"
+    assert dialog.findChild(QDialogButtonBox, "workspaceDialogButtons") is not None
+
+
+def test_auto_response_web_dialog_uses_workspace_button_surface(app: QApplication) -> None:
+    _ = app
+    try:
+        dialog = AutoResponseRuleWebDialog()
+    except RuntimeError:
+        pytest.skip("QWebEngineView is not available")
+
+    assert dialog.objectName() == "workspaceDialog"
+    assert dialog.findChild(QDialogButtonBox, "workspaceDialogButtons") is not None
 
 
 def test_auto_response_rule_dialog_preserves_case_sensitive_setting(app: QApplication) -> None:

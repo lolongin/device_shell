@@ -4,59 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <link rel="stylesheet" href="assets/workspace-theme.css" />
   <title>Device Navigation</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #07090c;
-      --panel: #0d1117;
-      --panel-2: #101620;
-      --line: #242b36;
-      --line-strong: #334155;
-      --text: #edf4ff;
-      --muted: #9aa8bc;
-      --soft: #6f7c91;
-      --accent: #34d399;
-      --blue: #60a5fa;
-      --warn: #fbbf24;
-      --selected: #464a7c;
-    }
-
-    * { box-sizing: border-box; }
-
-    html,
-    body {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      overflow: hidden;
-      background: var(--bg);
-      color: var(--text);
-      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-      font-size: 12px;
-    }
-
-    button,
-    input,
-    select {
-      font: inherit;
-    }
-
     .shell {
       height: 100vh;
       display: grid;
       grid-template-rows: auto auto auto 1fr;
       gap: 8px;
-      padding: 0;
       background: var(--bg);
     }
 
     .toolbar,
     .filters,
-    .stats {
+    .stats,
+    .table {
       border: 1px solid var(--line);
       background: var(--panel);
-      border-radius: 8px;
+      border-radius: 10px;
     }
 
     .toolbar {
@@ -79,47 +44,6 @@
       padding: 8px;
     }
 
-    input,
-    select {
-      min-width: 0;
-      width: 100%;
-      height: 32px;
-      color: var(--text);
-      background: #090d13;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      outline: none;
-      padding: 0 9px;
-    }
-
-    input:focus,
-    select:focus {
-      border-color: var(--blue);
-      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.22);
-    }
-
-    button {
-      height: 32px;
-      color: var(--text);
-      background: #0b1017;
-      border: 1px solid var(--line-strong);
-      border-radius: 6px;
-      padding: 0 11px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    button:hover {
-      border-color: var(--blue);
-      background: #111827;
-    }
-
-    button.active {
-      border-color: rgba(52, 211, 153, 0.65);
-      color: #d8fff0;
-      background: rgba(16, 185, 129, 0.14);
-    }
-
     .count-line {
       display: flex;
       flex-wrap: wrap;
@@ -130,7 +54,7 @@
 
     .count-line b {
       color: var(--text);
-      font-weight: 700;
+      font-weight: 800;
     }
 
     .idle { color: var(--accent); }
@@ -149,26 +73,22 @@
 
     .table {
       min-height: 0;
-      border: 1px solid var(--line);
-      background: #05080c;
-      border-radius: 8px;
       overflow: hidden;
       display: grid;
-      grid-template-rows: 26px 1fr;
+      grid-template-rows: 28px 1fr;
+      background: var(--bg);
     }
 
     .thead,
     .row {
       display: grid;
-      grid-template-columns: 48px minmax(104px, 1.45fr) minmax(76px, 1fr) 58px 70px 90px;
+      grid-template-columns: 50px minmax(104px, 1.45fr) minmax(76px, 1fr) 58px 70px 90px;
       align-items: center;
     }
 
     .thead {
-      color: var(--muted);
-      background: #080c11;
-      border-bottom: 1px solid var(--line);
       padding-right: 10px;
+      font-weight: 700;
     }
 
     .cell {
@@ -185,26 +105,12 @@
     }
 
     .row {
-      min-height: 28px;
-      color: var(--text);
-      border-bottom: 1px solid rgba(36, 43, 54, 0.55);
+      min-height: 30px;
       cursor: pointer;
     }
 
-    .row:hover {
-      background: #101620;
-    }
-
-    .row.selected {
-      background: var(--selected);
-    }
-
     .row.group {
-      min-height: 24px;
-      color: #d6deeb;
-      background: #0b0f14;
-      font-weight: 700;
-      cursor: default;
+      min-height: 26px;
     }
 
     .row.group .muted {
@@ -212,40 +118,21 @@
       font-weight: 400;
     }
 
-    .status {
-      font-weight: 700;
-    }
-
-    .empty {
-      color: var(--soft);
-      padding: 18px 10px;
-      line-height: 1.5;
-    }
-
-    @media (max-width: 560px) {
-      .filters {
-        grid-template-columns: 1fr 1fr;
-      }
-
-      .thead,
-      .row {
-        grid-template-columns: 42px minmax(104px, 1.3fr) 72px 54px 64px 78px;
-      }
-    }
+    .empty { padding: 18px 10px; line-height: 1.5; }
   </style>
 </head>
-<body>
+<body class="workspace-compact-page">
   <main class="shell">
     <section class="toolbar">
-      <input id="search" autocomplete="off" placeholder="搜索名称、ID、IP、型号" />
-      <button id="refresh">刷新</button>
-      <button id="clear">清空</button>
+      <input id="search" autocomplete="off" placeholder="搜索名称、ID、板卡、型号" />
+      <button id="refresh" type="button">刷新</button>
+      <button id="clear" type="button">清空</button>
     </section>
     <section class="filters">
       <select id="domain"></select>
       <select id="status"></select>
       <input id="cpu" autocomplete="off" placeholder="CPU" />
-      <button id="mine">我的</button>
+      <button id="mine" type="button">我的</button>
     </section>
     <section class="stats">
       <div class="count-line" id="counts"></div>
@@ -266,10 +153,8 @@
 
   <script>
     let bridge = null;
-    let payload = null;
     let applying = false;
     let filterTimer = null;
-
     const $ = (id) => document.getElementById(id);
 
     function debounceFilters() {
@@ -291,21 +176,62 @@
 
     function setOptions(select, values, current) {
       select.innerHTML = "";
-      values.forEach((value) => {
+      (values || []).forEach((value) => {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = value;
         select.appendChild(option);
       });
-      select.value = current;
-      if (select.value !== current && values.length) select.value = values[0];
+      select.value = current || "";
+      if (select.value !== (current || "") && values && values.length) select.value = values[0];
     }
 
-    function statusClass(status) {
-      if (status.includes("空闲")) return "idle";
-      if (status.includes("占用") && !status.includes("流水线")) return "occupied";
-      if (status.includes("流水线")) return "pipeline";
+    function statusClass(status, kind) {
+      if (kind) return kind;
+      const value = String(status || "");
+      if (value.includes("空闲")) return "idle";
+      if (value.includes("占用") && !value.includes("流水线")) return "occupied";
+      if (value.includes("流水线")) return "pipeline";
       return "other";
+    }
+
+    function appendCell(row, text, title, extraClass) {
+      const cell = document.createElement("div");
+      cell.className = `cell ${extraClass || ""}`.trim();
+      cell.textContent = text || "";
+      cell.title = title || text || "";
+      row.appendChild(cell);
+    }
+
+    function rowContextPoint(row) {
+      const rect = row.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + Math.min(rect.width - 8, 32)),
+        y: Math.round(rect.top + rect.height / 2)
+      };
+    }
+
+    function requestDeviceRowContext(row, item, event) {
+      if (!bridge) return;
+      if (event) event.preventDefault();
+      const point = event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : rowContextPoint(row);
+      bridge.requestDeviceContextMenu(item.id, point.x, point.y);
+    }
+
+    function wireDeviceRowKeyboard(row, item) {
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", item.name || item.id || "");
+      row.setAttribute("aria-selected", item.selected ? "true" : "false");
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          if (bridge) bridge.selectDevice(item.id);
+        } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          requestDeviceRowContext(row, item, event);
+        }
+      });
     }
 
     function renderCounts(data) {
@@ -317,14 +243,6 @@
         `其他 <b class="other">${data.stats.other}</b>`
       ].join("");
       $("summary").textContent = data.summary || "当前显示全部设备";
-    }
-
-    function appendCell(row, text, title, extraClass) {
-      const cell = document.createElement("div");
-      cell.className = `cell ${extraClass || ""}`.trim();
-      cell.textContent = text || "";
-      cell.title = title || text || "";
-      row.appendChild(cell);
     }
 
     function renderRows(data) {
@@ -339,7 +257,7 @@
       }
       data.rows.forEach((item) => {
         const row = document.createElement("div");
-        row.className = item.kind === "group" ? "row group" : "row";
+        row.className = item.kind === "group" ? "row group" : "row contextable";
         if (item.selected) row.classList.add("selected");
         if (item.kind === "group") {
           appendCell(row, item.name, item.name);
@@ -352,18 +270,21 @@
           return;
         }
         row.addEventListener("click", () => bridge && bridge.selectDevice(item.id));
+        row.addEventListener("contextmenu", (event) => requestDeviceRowContext(row, item, event));
+        row.tabIndex = 0;
+        wireDeviceRowKeyboard(row, item);
         appendCell(row, item.boardId, item.boardId);
         appendCell(row, item.name, item.name);
         appendCell(row, item.boardType, item.boardType);
         appendCell(row, item.cpu, item.cpu);
         appendCell(row, item.slot, item.slot);
-        appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText)}`);
+        appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText, item.statusKind)}`);
         container.appendChild(row);
       });
     }
 
     window.setDeviceNavigationPayload = function setDeviceNavigationPayload(nextPayload) {
-      payload = nextPayload || {};
+      const payload = nextPayload || {};
       applying = true;
       setOptions($("domain"), payload.domains || [], payload.filters.domain || "");
       setOptions($("status"), payload.statuses || [], payload.filters.status || "");

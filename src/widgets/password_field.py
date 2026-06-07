@@ -17,6 +17,9 @@ except ModuleNotFoundError:  # pragma: no cover - GUI helper is inert without Py
     QPixmap = None
     QLineEdit = None
 
+ICON_ACTIVE = "#f8fafc"
+ICON_MUTED = "#718096"
+
 
 def password_visibility_icon(visible: bool) -> Any:
     """Build a compact eye icon for password visibility actions."""
@@ -27,7 +30,7 @@ def password_visibility_icon(visible: bool) -> Any:
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing, True)
-    pen = QPen(QColor("#d0d0d0" if visible else "#808080"), 1.5)
+    pen = QPen(QColor(ICON_ACTIVE if visible else ICON_MUTED), 1.5)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     painter.setPen(pen)

@@ -35,7 +35,7 @@ class TerminalSyntaxHighlighter(QSyntaxHighlighter):
         "blue": "#7dd3fc",
         "magenta": "#c4b5fd",
         "cyan": "#67e8f9",
-        "white": "#d6deeb",
+        "white": "#f8fafc",
         "brightblack": "#94a3b8",
         "brightred": "#fca5a5",
         "brightgreen": "#99f6e4",
@@ -147,7 +147,7 @@ class TerminalSyntaxHighlighter(QSyntaxHighlighter):
         self._path_format = self._format("#a7f3d0")
         self._muted_number_format = self._format("#c4b5fd")
         self._directory_format = self._format("#7dd3fc")
-        self._file_format = self._format("#d6deeb")
+        self._file_format = self._format("#f8fafc")
         self._executable_format = self._format("#5eead4")
         self._symlink_format = self._format("#c4b5fd")
         self._archive_format = self._format("#fbbf24")

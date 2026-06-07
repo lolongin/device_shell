@@ -123,6 +123,7 @@ if QDialog is not None:
         ) -> None:
             super().__init__(parent)
             self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
+            self.setObjectName("workspaceDialog")
             self.setMinimumWidth(820)
             self.resize(860, 620)
 
@@ -200,6 +201,7 @@ if QDialog is not None:
             layout.addRow("最大触发次数", self.max_triggers_input)
 
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.setObjectName("workspaceDialogButtons")
             buttons.accepted.connect(self.accept)
             buttons.rejected.connect(self.reject)
             layout.addRow(buttons)
@@ -579,6 +581,7 @@ if QDialog is not None:
                 raise RuntimeError("QWebEngineView is not available")
             super().__init__(parent)
             self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
+            self.setObjectName("workspaceDialog")
             self.setMinimumSize(960, 680)
             self.resize(1040, 740)
 
@@ -597,6 +600,7 @@ if QDialog is not None:
             layout.addWidget(self.web_view, 1)
 
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.setObjectName("workspaceDialogButtons")
             buttons.setContentsMargins(16, 10, 16, 12)
             buttons.accepted.connect(self.accept)
             buttons.rejected.connect(self.reject)
@@ -759,6 +763,7 @@ if QDialog is not None:
         ) -> None:
             super().__init__(parent)
             self.setWindowTitle("编辑快捷发送按钮" if button is not None else "新增快捷发送按钮")
+            self.setObjectName("workspaceDialog")
             self.setMinimumWidth(420)
 
             layout = QFormLayout(self)
@@ -778,6 +783,7 @@ if QDialog is not None:
             layout.addRow("", self.append_enter_input)
 
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.setObjectName("workspaceDialogButtons")
             buttons.accepted.connect(self.accept)
             buttons.rejected.connect(self.reject)
             layout.addRow(buttons)
@@ -1063,7 +1069,7 @@ class SessionOpsMixin:
         if device is None:
             return
 
-        menu = QMenu(terminal)
+        menu = self.new_workspace_menu(terminal, self.session_display_title(state, self.session_kind_label(state.kind)), "terminal")
         copy_selection_action = None
         if terminal.textCursor().hasSelection():
             copy_selection_action = menu.addAction("复制选中文本")
@@ -1101,7 +1107,7 @@ class SessionOpsMixin:
         device = self.get_device_by_id(state.device_id)
         if device is None:
             return
-        menu = QMenu(widget)
+        menu = self.new_workspace_menu(widget, self.temporary_device_display_name(device), "session-device")
         actions = self._add_device_quick_actions(menu)
         self.update_device_quick_actions_for_device(actions, device)
         chosen = menu.exec(widget.mapToGlobal(pos))
@@ -1413,7 +1419,7 @@ class SessionOpsMixin:
     ) -> None:
         if quick_button not in self.remembered_quick_send_buttons:
             return
-        menu = QMenu(button)
+        menu = self.new_workspace_menu(button, button.text() or "快捷发送", "quick-send")
         edit_action = menu.addAction("编辑按钮...")
         reset_action = menu.addAction("清零点击次数")
         delete_action = menu.addAction("删除按钮")
@@ -1498,7 +1504,7 @@ class SessionOpsMixin:
     def show_auto_response_rule_button_menu(self, rule: AutoResponseRule, button: QToolButton, pos: Any) -> None:
         if rule not in self.remembered_auto_response_rules:
             return
-        menu = QMenu(button)
+        menu = self.new_workspace_menu(button, button.text() or "自动响应", "auto-response")
         edit_action = menu.addAction("编辑规则...")
         delete_action = menu.addAction("删除规则")
         chosen = menu.exec(button.mapToGlobal(pos))
@@ -1833,6 +1839,8 @@ class SessionOpsMixin:
         combo.blockSignals(True)
         combo.clear()
         states = self.ordered_session_states()
+        if hasattr(self, "session_count_label"):
+            self.session_count_label.setText(f"{len(states)} 会话")
         if not states:
             combo.addItem("无打开会话", "")
             combo.setCurrentIndex(0)
@@ -1922,6 +1930,7 @@ class SessionOpsMixin:
         device = self.get_device_by_id(state.device_id)
         if device is not None:
             self.activate_device(device.id)
+        self.show_terminal_workspace()
         self.focus_current_terminal()
         self.refresh_session_jump_combo()
         self.set_status_message(f"已跳转到会话: {self.session_jump_text(state)}")
@@ -1952,30 +1961,72 @@ class SessionOpsMixin:
             self.focus_current_terminal()
 
     def update_center_stage_state(self) -> None:
-        if not hasattr(self, "center_stage_stack"):
+        if not hasattr(self, "center_stage_splitter"):
             return
         has_sessions = self.session_tab_widget.count() > 0
-        self.center_stage_stack.setCurrentIndex(1 if has_sessions else 0)
+        if not has_sessions:
+            self.center_stage_mode = "home"
+        show_home = getattr(self, "center_stage_mode", "home") == "home"
+        current_mode = "home" if show_home else "sessions"
+        mode_changed = getattr(self, "_last_center_stage_mode", None) != current_mode
+        self._last_center_stage_mode = current_mode
+        self.web_shell.setVisible(show_home)
+        self.session_tab_widget.setVisible(has_sessions and not show_home)
+        if show_home:
+            self.center_stage_splitter.setSizes([1, 0])
+        else:
+            self.center_stage_splitter.setSizes([0, 1])
+        if hasattr(self, "activity_home_button"):
+            self.activity_home_button.setChecked(show_home)
+            self.activity_home_button.setToolTip("首页大屏")
+            self.activity_home_button.setIcon(
+                self._activity_icon("home", "#f8fafc" if show_home else "#718096")
+            )
+        if hasattr(self, "activity_terminal_button"):
+            terminal_active = has_sessions and not show_home
+            self.activity_terminal_button.setEnabled(has_sessions)
+            self.activity_terminal_button.setChecked(terminal_active)
+            self.activity_terminal_button.setToolTip(
+                "终端会话" if has_sessions else "暂无终端会话"
+            )
+            self.activity_terminal_button.setIcon(
+                self._activity_icon("terminal", "#f8fafc" if terminal_active else "#718096")
+            )
         for widget_name in ("session_quick_action_bar", "command_record_frame"):
             widget = getattr(self, widget_name, None)
             if widget is not None:
-                widget.setVisible(has_sessions)
-        can_auto_collapse_left = os.environ.get("QT_QPA_PLATFORM", "").lower() != "offscreen"
-        if (
-            can_auto_collapse_left
-            and not has_sessions
-            and getattr(self, "left_sidebar_active_panel", "devices") == "devices"
-        ):
-            if not getattr(self, "_web_shell_auto_collapsed_left", False):
-                self._web_shell_restore_left_sidebar_collapsed = getattr(self, "left_sidebar_collapsed", False)
-            self._web_shell_auto_collapsed_left = True
+                widget.setVisible(has_sessions and not show_home)
+        compact_left = has_sessions and not show_home
+        compact_changed = getattr(self, "left_sidebar_compact", False) != compact_left
+        self.left_sidebar_compact = compact_left
+        if getattr(self, "left_sidebar_active_panel", "devices") != "devices":
+            return
+        if show_home and not self.left_sidebar_collapsed:
             self.left_sidebar_collapsed = True
             self.apply_left_sidebar_state()
-            return
-        if has_sessions and getattr(self, "_web_shell_auto_collapsed_left", False):
-            self.left_sidebar_collapsed = bool(getattr(self, "_web_shell_restore_left_sidebar_collapsed", False))
-            self._web_shell_auto_collapsed_left = False
+        elif not show_home and has_sessions and self.left_sidebar_collapsed:
+            self.left_sidebar_collapsed = False
             self.apply_left_sidebar_state()
+        elif mode_changed:
+            self.left_sidebar_collapsed = show_home
+            self.apply_left_sidebar_state()
+        elif compact_changed:
+            self.apply_left_sidebar_state()
+
+    def show_web_home(self) -> None:
+        self.center_stage_mode = "home"
+        if getattr(self, "left_sidebar_active_panel", "devices") == "devices":
+            self.left_sidebar_collapsed = True
+        self.update_center_stage_state()
+        self.refresh_workspace_context()
+
+    def show_terminal_workspace(self) -> None:
+        if self.session_tab_widget.count() <= 0:
+            return
+        self.center_stage_mode = "sessions"
+        self.update_center_stage_state()
+        self.refresh_workspace_context()
+        self.focus_current_terminal()
 
     def current_session_key(self) -> str | None:
         state = self.current_session_state()
@@ -2253,6 +2304,7 @@ class SessionOpsMixin:
             self.show_warning("目标地址不能为空。")
             return None
 
+        self.center_stage_mode = "sessions"
         device_tab = self.ensure_device_tab(device)
         title = self.next_session_title(device_tab, kind)
         tab_id = self.next_session_tab_id(device.id, kind)

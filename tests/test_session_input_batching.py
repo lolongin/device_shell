@@ -24,6 +24,8 @@ class _SessionHarness(SessionOpsMixin):
             session=self.session,
             pending_input_text="",
             input_flush_scheduled=False,
+            suppress_auto_response_until_input=True,
+            user_input_seen=False,
         )
         self.session_tabs_by_id = {"tab": self.state}
         self.logged: list[str] = []
@@ -44,6 +46,9 @@ class _SessionHarness(SessionOpsMixin):
 
     def handle_background_error(self, exc: Exception) -> None:
         raise exc
+
+    def refresh_auto_response_rule_buttons(self) -> None:
+        pass
 
 
 def test_session_input_is_batched_until_next_ui_tick(monkeypatch: object) -> None:

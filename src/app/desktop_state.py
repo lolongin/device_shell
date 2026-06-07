@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 try:
@@ -42,6 +44,10 @@ class DesktopStateMixin:
         configured = os.getenv("DEVICE_TUI_DESKTOP_STATE_PATH", "").strip()
         if configured:
             return Path(configured).expanduser()
+        pytest_test = os.getenv("PYTEST_CURRENT_TEST", "").strip()
+        if pytest_test:
+            digest = hashlib.sha1(pytest_test.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            return Path(tempfile.gettempdir()) / "device_tui_pytest" / digest / "desktop_state.json"
         appdata = os.getenv("APPDATA", "").strip()
         if appdata:
             return Path(appdata) / "device_tui" / "desktop_state.json"

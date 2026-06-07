@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 try:
-    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtCore import QEvent, QPoint, Qt
     from PySide6.QtGui import QBrush, QColor
     from PySide6.QtWidgets import QApplication, QMenu, QTableWidget, QTableWidgetItem, QWidget
 except ModuleNotFoundError:
     QEvent = None
+    QPoint = None
     Qt = None
     QBrush = None
     QColor = None
@@ -24,10 +25,19 @@ except ModuleNotFoundError:
 from .._sample_data import STATUS_IDLE, STATUS_OCCUPIED, STATUS_OTHER, STATUS_PIPELINE
 from ..app_state import RepositorySnapshot
 from ..data import Device
-from ..helpers import status_color
+from ..helpers import html_chip, html_status_text, status_color
+from ..styles import STATUS_COLORS
 
 ALL_DOMAINS = "全部领域"
 ALL_STATUS = "全部状态"
+
+
+HTML_TEXT = "#f8fafc"
+HTML_MUTED = "#a7b4c7"
+HTML_SOFT = "#718096"
+HTML_PANEL = "#08101d"
+HTML_LINE = "#243244"
+HTML_SELECTED = "#24324a"
 
 
 class TableOpsMixin:
@@ -153,19 +163,17 @@ class TableOpsMixin:
         self.stats_label.setText(
             " ".join(
                 [
-                    self.stat_chip_html("设备", total, "#ededed"),
-                    self.stat_chip_html("空闲", idle, "#3cc98e"),
-                    self.stat_chip_html("占用", occupied, "#f5a623"),
-                    self.stat_chip_html("流水线", pipeline, "#5b6ef5"),
-                    self.stat_chip_html("其他", other, "#808080"),
+                    self.stat_chip_html("设备", total, HTML_TEXT),
+                    self.stat_chip_html("空闲", idle, STATUS_COLORS[STATUS_IDLE]),
+                    self.stat_chip_html("占用", occupied, STATUS_COLORS[STATUS_OCCUPIED]),
+                    self.stat_chip_html("流水线", pipeline, STATUS_COLORS[STATUS_PIPELINE]),
+                    self.stat_chip_html("其他", other, STATUS_COLORS[STATUS_OTHER]),
                 ]
             )
         )
 
     def stat_chip_html(self, label: str, value: int, color: str) -> str:
-        return (
-            f"<span style='color:{color};font-weight:800'>{html.escape(label)} {value}</span>"
-        )
+        return html_status_text(f"{label} {value}", color, class_name="stat-chip-text")
 
     def refresh_my_occupancy_filter_button(self) -> None:
         if not hasattr(self, "my_occupancy_filter_button"):
@@ -345,6 +353,7 @@ class TableOpsMixin:
                     "boardType": self.device_table_board_type_text(device),
                     "cpu": device.cpu,
                     "slot": device.rack,
+                    "statusKind": self.device_status_kind(device),
                     "statusText": self.device_table_status_text(device),
                     "statusTooltip": self.device_occupancy_tooltip(device),
                     "selected": device.id == self.selected_device_id,
@@ -500,6 +509,15 @@ class TableOpsMixin:
         if duration and device.status == STATUS_OCCUPIED:
             return f"{device.status} {duration}"
         return device.status
+
+    def device_status_kind(self, device: Device) -> str:
+        if device.status == STATUS_IDLE:
+            return "idle"
+        if device.status == STATUS_OCCUPIED:
+            return "occupied"
+        if device.status == STATUS_PIPELINE:
+            return "pipeline"
+        return "other"
 
     def device_occupancy_tooltip(self, device: Device) -> str:
         parts = [device.status]
@@ -690,6 +708,7 @@ class TableOpsMixin:
                 "cpu": device.cpu,
                 "slot": device.rack,
                 "statusText": self.device_table_status_text(device),
+                "statusKind": self.device_status_kind(device),
                 "owner": device.owner or "未占用",
                 "telnet": f"{device.telnet_ip}:{device.telnet_port}" if device.telnet_ip else "",
                 "ssh": f"{device.ssh_ip}:{device.ssh_port}" if device.ssh_ip else "",
@@ -810,15 +829,15 @@ class TableOpsMixin:
             font.setBold(column in {0, 2})
         item.setFont(font)
         if group:
-            item.setBackground(QBrush(QColor("#101010")))
-            group_color = "#d6deeb" if column == 0 else "#808080"
+            item.setBackground(QBrush(QColor(HTML_PANEL)))
+            group_color = HTML_TEXT if column == 0 else HTML_SOFT
             item.setForeground(QBrush(QColor(group_color)))
             return
         if color:
             item.setForeground(QBrush(QColor(color)))
         if highlight:
-            item.setBackground(QBrush(QColor("#1c1c1c")))
-            item.setForeground(QBrush(QColor("#ededed")))
+            item.setBackground(QBrush(QColor(HTML_SELECTED)))
+            item.setForeground(QBrush(QColor(HTML_TEXT)))
             font = item.font()
             font.setBold(True)
             item.setFont(font)
@@ -1118,10 +1137,7 @@ class TableOpsMixin:
         return " / ".join(active_filters) if active_filters else "当前显示全部设备"
 
     def filter_chip_html(self, label: str, value: str) -> str:
-        return (
-            f"<span style='color:#c0c0c0;font-weight:600;background:#181818;"
-            f"padding:2px 6px;border-radius:4px'>{html.escape(label)}: {html.escape(value)}</span>"
-        )
+        return html_chip(label, value, class_name="filter-chip")
 
     def show_device_table_context_menu(self, pos: Any) -> None:
         table = self.sender()
@@ -1142,7 +1158,7 @@ class TableOpsMixin:
         if device is None:
             return
 
-        menu = QMenu(table)
+        menu = self.new_workspace_menu(table, self.temporary_device_display_name(device), "device")
         copy_ssh_ip_action = menu.addAction("复制 SSH IP")
         copy_telnet_ip_action = menu.addAction("复制 Telnet IP")
         copy_serial_ip_action = menu.addAction("复制串口 IP")
@@ -1202,10 +1218,23 @@ class TableOpsMixin:
         device = self.get_device_by_id(device_id)
         if device is None:
             return
-        menu = QMenu(widget)
+        menu = self.new_workspace_menu(widget, self.temporary_device_display_name(device), "device")
         actions = self._add_device_quick_actions(menu)
         self.update_device_quick_actions_for_device(actions, device)
         chosen = menu.exec(widget.mapToGlobal(pos))
+        if chosen is None:
+            return
+        self._handle_device_quick_action(chosen, actions, device)
+
+    def show_web_device_context_menu(self, device_id: str, global_x: int, global_y: int) -> None:
+        device = self.get_device_by_id(device_id)
+        if device is None or QMenu is None or QPoint is None:
+            return
+        self.activate_device(device_id)
+        menu = self.new_workspace_menu(self, self.temporary_device_display_name(device), "device")
+        actions = self._add_device_quick_actions(menu)
+        self.update_device_quick_actions_for_device(actions, device)
+        chosen = menu.exec(QPoint(global_x, global_y))
         if chosen is None:
             return
         self._handle_device_quick_action(chosen, actions, device)
@@ -1304,49 +1333,27 @@ class TableOpsMixin:
             self.serial_username_input.setText(serial_username)
             self.serial_password_input.setText(serial_password)
         owner_text = device.owner or "未占用"
-        owner_color = "#c0c0c0" if device.owner else "#808080"
+        owner_color = HTML_MUTED if device.owner else HTML_SOFT
         telnet_text = f"{device.telnet_ip}:{device.telnet_port}"
         ssh_text = f"{device.ssh_ip}:{device.ssh_port}"
         serial_text = self.device_serial_connection_text(device)
-        serial_color = "#c0c0c0" if serial_visible else "#707070"
+        serial_color = HTML_MUTED if serial_visible else HTML_SOFT
         if self.is_temporary_device(device):
             serial_text = "-"
-            serial_color = "#707070"
+            serial_color = HTML_SOFT
         self.device_summary_card.setText(
             (
-                f"<div style='font-size:13px;font-weight:700;color:#ededed'>"
+                f"<div style='font-size:13px;font-weight:800;color:{HTML_TEXT}'>"
                 f"{html.escape(self.temporary_device_display_name(device))}</div>"
-                f"<div style='margin-top:3px;color:#808080;font-size:11px'>"
-                f"<span style='color:#c0c0c0;font-weight:600'>{html.escape(device.id)}</span>"
+                f"<div style='margin-top:3px;color:{HTML_MUTED};font-size:11px'>"
+                f"<span style='color:{HTML_MUTED};font-weight:700'>{html.escape(device.id)}</span>"
                 f" &nbsp;|&nbsp; {html.escape(device.domain)}"
                 f" &nbsp;|&nbsp; "
                 f"<span style='color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span>"
                 f" &nbsp;|&nbsp; "
                 f"<span style='color:{owner_color};font-weight:600'>{html.escape(owner_text)}</span>"
                 f"</div>"
+                f"{self.temporary_device_detail_badge(device)}"
             )
         )
         return
-        self.device_summary_card.setText(
-            (
-                f"<div style='font-size:15px;font-weight:600;color:#ededed'>"
-                f"{html.escape(self.temporary_device_display_name(device))}</div>"
-                f"<div style='margin-top:4px;color:#808080;font-size:11px'>"
-                f"<span style='color:#c0c0c0;font-weight:600'>{html.escape(device.id)}</span>"
-                f" &nbsp;·&nbsp; {html.escape(device.domain)}"
-                f"</div>"
-                f"{self.temporary_device_detail_badge(device)}"
-                f"<div style='margin-top:10px;color:#c0c0c0;line-height:1.8'>"
-                f"<span style='color:#808080'>状态</span>&nbsp;&nbsp;"
-                f"<span style='color:{status_color(device.status)};font-weight:700'>{html.escape(device.status)}</span><br>"
-                f"<span style='color:#808080'>占用</span>&nbsp;&nbsp;"
-                f"<span style='color:{owner_color};font-weight:600'>{html.escape(owner_text)}</span><br>"
-                f"<span style='color:#808080'>Telnet</span>&nbsp;&nbsp;"
-                f"<span style='font-weight:600'>{html.escape(telnet_text)}</span><br>"
-                f"<span style='color:#808080'>串口</span>&nbsp;&nbsp;"
-                f"<span style='color:{serial_color};font-weight:600'>{html.escape(serial_text)}</span><br>"
-                f"<span style='color:#808080'>SSH</span>&nbsp;&nbsp;"
-                f"<span style='font-weight:600'>{html.escape(ssh_text)}</span>"
-                f"</div>"
-            )
-        )
