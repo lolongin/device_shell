@@ -8,7 +8,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QPoint, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 try:
     from ..theme_tokens import qwebengine_background_stylesheet
@@ -18,21 +18,42 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 
 class _DeviceNavigationBridge(QObject):
     device_selected = Signal(str)
+    device_connect_requested = Signal(str, str)
     session_selected = Signal(str)
+    session_close_requested = Signal(str)
+    session_close_others_requested = Signal(str)
+    session_close_all_requested = Signal()
     session_context_requested = Signal(str, int, int)
     home_requested = Signal()
     filters_changed = Signal(str)
     refresh_requested = Signal()
     clear_requested = Signal()
     device_context_requested = Signal(str, int, int)
+    navigation_state_changed = Signal(str)
 
     @Slot(str)
     def selectDevice(self, device_id: str) -> None:
         self.device_selected.emit(device_id)
 
+    @Slot(str, str)
+    def requestDeviceConnect(self, device_id: str, kind: str) -> None:
+        self.device_connect_requested.emit(device_id, kind)
+
     @Slot(str)
     def selectSession(self, tab_id: str) -> None:
         self.session_selected.emit(tab_id)
+
+    @Slot(str)
+    def closeSession(self, tab_id: str) -> None:
+        self.session_close_requested.emit(tab_id)
+
+    @Slot(str)
+    def closeOtherSessions(self, tab_id: str) -> None:
+        self.session_close_others_requested.emit(tab_id)
+
+    @Slot()
+    def closeAllSessions(self) -> None:
+        self.session_close_all_requested.emit()
 
     @Slot(str, int, int)
     def requestSessionContextMenu(self, tab_id: str, x: int, y: int) -> None:
@@ -58,22 +79,33 @@ class _DeviceNavigationBridge(QObject):
     def requestDeviceContextMenu(self, device_id: str, x: int, y: int) -> None:
         self.device_context_requested.emit(device_id, x, y)
 
+    @Slot(str)
+    def updateNavigationState(self, payload: str) -> None:
+        self.navigation_state_changed.emit(payload)
+
 
 class DeviceNavigationWebWidget(QWidget):
     """Compact Web UI for terminal session navigation."""
 
     device_selected = Signal(str)
+    device_connect_requested = Signal(str, str)
     session_selected = Signal(str)
+    session_close_requested = Signal(str)
+    session_close_others_requested = Signal(str)
+    session_close_all_requested = Signal()
     session_context_requested = Signal(str, int, int)
     home_requested = Signal()
     filters_changed = Signal(dict)
     refresh_requested = Signal()
     clear_requested = Signal()
     device_context_requested = Signal(str, int, int)
+    navigation_state_changed = Signal(dict)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("deviceNavigationWebWidget")
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self._loaded = False
         self._pending_payload: dict[str, Any] | None = None
 
@@ -83,18 +115,25 @@ class DeviceNavigationWebWidget(QWidget):
 
         self.view = QWebEngineView(self)
         self.view.setObjectName("deviceNavigationWebView")
+        self.view.setMinimumWidth(0)
+        self.view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.view.setStyleSheet(qwebengine_background_stylesheet("deviceNavigationWebView"))
         layout.addWidget(self.view)
 
         self.bridge = _DeviceNavigationBridge(self)
         self.bridge.device_selected.connect(self.device_selected)
+        self.bridge.device_connect_requested.connect(self.device_connect_requested)
         self.bridge.session_selected.connect(self.session_selected)
+        self.bridge.session_close_requested.connect(self.session_close_requested)
+        self.bridge.session_close_others_requested.connect(self.session_close_others_requested)
+        self.bridge.session_close_all_requested.connect(self.session_close_all_requested)
         self.bridge.session_context_requested.connect(self._handle_session_context_requested)
         self.bridge.home_requested.connect(self.home_requested)
         self.bridge.filters_changed.connect(self._handle_filters_changed)
         self.bridge.refresh_requested.connect(self.refresh_requested)
         self.bridge.clear_requested.connect(self.clear_requested)
         self.bridge.device_context_requested.connect(self._handle_device_context_requested)
+        self.bridge.navigation_state_changed.connect(self._handle_navigation_state_changed)
 
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("deviceNavigationBridge", self.bridge)
@@ -126,6 +165,14 @@ class DeviceNavigationWebWidget(QWidget):
             return
         if isinstance(data, dict):
             self.filters_changed.emit(data)
+
+    def _handle_navigation_state_changed(self, payload: str) -> None:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return
+        if isinstance(data, dict):
+            self.navigation_state_changed.emit(data)
 
     def _handle_device_context_requested(self, device_id: str, x: int, y: int) -> None:
         global_pos = self.view.mapToGlobal(QPoint(x, y))

@@ -76,6 +76,7 @@ def build_search_text(device: Device) -> str:
         device.vendor,
         device.model,
         device.site,
+        device.slot_id,
         device.rack,
         device.version,
         device.notes,

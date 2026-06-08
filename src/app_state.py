@@ -74,3 +74,4 @@ class SessionTabState:
     connecting: bool = False
     status_text: str = "Disconnected"
     reconnect_hint_visible: bool = False
+    suppress_next_connection_error: bool = False

@@ -120,3 +120,108 @@ class CommandRecordResizeHandle(QFrame):
         if hasattr(event, "globalPosition"):
             return int(event.globalPosition().toPoint().y())
         return int(event.globalY())
+
+
+class HorizontalResizeHandle(QFrame):
+    """Draggable horizontal resize handle."""
+
+    def __init__(
+        self,
+        resize_handler: Callable[[int], None],
+        parent: QWidget,
+        width_provider: Callable[[], int] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._resize_handler = resize_handler
+        self._width_provider = width_provider
+        self._drag_start_x = 0
+        self._drag_start_width = 0
+        self.setObjectName("horizontalResizeHandle")
+        self.setFixedWidth(6)
+        self.setCursor(Qt.SizeHorCursor)
+
+    def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_start_x = self._event_global_x(event)
+            parent = self.parentWidget()
+            if self._width_provider is not None:
+                self._drag_start_width = self._width_provider()
+            else:
+                self._drag_start_width = parent.width() if parent is not None else 0
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
+        if not (event.buttons() & Qt.LeftButton):
+            return super().mouseMoveEvent(event)
+        delta = self._event_global_x(event) - self._drag_start_x
+        self._resize_handler(self._drag_start_width + delta)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    @staticmethod
+    def _event_global_x(event: Any) -> int:
+        if hasattr(event, "globalPosition"):
+            return int(event.globalPosition().toPoint().x())
+        return int(event.globalX())
+
+
+class VerticalResizeHandle(QFrame):
+    """Draggable vertical resize handle."""
+
+    def __init__(
+        self,
+        resize_handler: Callable[[int], None],
+        parent: QWidget,
+        height_provider: Callable[[], int] | None = None,
+        *,
+        grow_down: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        self._resize_handler = resize_handler
+        self._height_provider = height_provider
+        self._grow_down = grow_down
+        self._drag_start_y = 0
+        self._drag_start_height = 0
+        self.setObjectName("verticalResizeHandle")
+        self.setFixedHeight(6)
+        self.setCursor(Qt.SizeVerCursor)
+
+    def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_start_y = self._event_global_y(event)
+            parent = self.parentWidget()
+            if self._height_provider is not None:
+                self._drag_start_height = self._height_provider()
+            else:
+                self._drag_start_height = parent.height() if parent is not None else 0
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
+        if not (event.buttons() & Qt.LeftButton):
+            return super().mouseMoveEvent(event)
+        delta = self._event_global_y(event) - self._drag_start_y
+        if not self._grow_down:
+            delta = -delta
+        self._resize_handler(self._drag_start_height + delta)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    @staticmethod
+    def _event_global_y(event: Any) -> int:
+        if hasattr(event, "globalPosition"):
+            return int(event.globalPosition().toPoint().y())
+        return int(event.globalY())

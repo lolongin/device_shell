@@ -2116,6 +2116,29 @@ QFrame#sessionQuickBar {
     border: 1px solid #243244;
     border-radius: 12px;
 }
+QFrame#sessionQuickRestoreBar {
+    background: #0f172a;
+    border: 1px solid #243244;
+    border-radius: 10px;
+}
+QFrame#sessionJumpResizeHandle {
+    background: #172236;
+    border: 1px solid #243244;
+    border-radius: 3px;
+}
+QFrame#sessionJumpResizeHandle:hover {
+    background: #1e3a5f;
+    border-color: #60a5fa;
+}
+QFrame#terminalNavigationResizeHandle {
+    background: #172236;
+    border: 1px solid #243244;
+    border-radius: 3px;
+}
+QFrame#terminalNavigationResizeHandle:hover {
+    background: #1e3a5f;
+    border-color: #60a5fa;
+}
 QLabel#terminalOpsLabel {
     background: transparent;
     color: #22c55e;
@@ -2143,6 +2166,19 @@ QFrame#sessionQuickBar QComboBox#sessionJumpCombo {
 }
 QFrame#sessionQuickBar QComboBox#sessionJumpCombo:focus {
     border-color: #60a5fa;
+}
+QToolButton#sessionQuickRestoreButton {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 8px;
+    color: #d8e4f5;
+    font-weight: 700;
+    padding: 4px 10px;
+}
+QToolButton#sessionQuickRestoreButton:hover {
+    background: #163326;
+    border-color: #22c55e;
+    color: #d8fff0;
 }
 QFrame#commandRecordDock {
     background: #020617;

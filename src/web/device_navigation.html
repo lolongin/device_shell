@@ -7,51 +7,223 @@
   <link rel="stylesheet" href="assets/workspace-theme.css" />
   <title>Terminal Navigation</title>
   <style>
-    .shell {
-      width: 100%;
-      max-width: 100%;
-      height: 100vh;
-      min-height: 0;
-      display: grid;
-      grid-template-rows: auto auto 1fr auto;
-      gap: 8px;
-      background:
-        radial-gradient(circle at 0 0, var(--home-glow-accent), transparent 34%),
-        var(--bg);
+    * {
+      box-sizing: border-box;
     }
 
-    .hero,
-    .sessions,
-    .current {
-      min-width: 0;
-      max-width: 100%;
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 10px;
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
       overflow: hidden;
     }
 
-    .hero {
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 12px/1.45 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .shell {
+      width: 100%;
+      height: 100vh;
+      min-width: 0;
+      min-height: 0;
       display: grid;
-      gap: 8px;
-      padding: 10px;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      gap: 6px;
+      padding: 0;
+      background: var(--bg);
+    }
+
+    .topbar,
+    .tabs,
+    .panel,
+    .footer {
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+    }
+
+    .topbar {
+      display: grid;
+      gap: 2px;
+      padding: 6px 9px;
     }
 
     .eyebrow {
       color: var(--accent);
       font: 800 10px/1.2 "Cascadia Mono", Consolas, monospace;
-      letter-spacing: 0.12em;
+      letter-spacing: 0;
       text-transform: uppercase;
     }
 
+    .title-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     .title {
-      font-size: 16px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 15px;
       font-weight: 800;
     }
 
-    .copy {
+    .summary {
+      margin-left: auto;
+      color: var(--soft);
+      white-space: nowrap;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px;
+      padding: 4px;
+      background: var(--panel-2);
+    }
+
+    .tab {
+      min-width: 0;
+      height: 28px;
+      border-radius: 6px;
       color: var(--muted);
-      line-height: 1.45;
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .tab.active {
+      color: var(--text);
+      border-color: var(--status-pipeline-line);
+      background: var(--input);
+      font-weight: 800;
+    }
+
+    .panel {
+      min-height: 0;
+      overflow: hidden;
+      display: none;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .panel.active {
+      display: grid;
+    }
+
+    .panel-head {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+      padding: 6px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    .panel-title-row,
+    .row-main,
+    .session-main,
+    .row-actions,
+    .device-actions,
+    .search-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .panel-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 800;
+    }
+
+    .head-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .ghost {
+      min-width: 0;
+      height: 26px;
+      padding: 0 8px;
+      border-radius: 6px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      background: var(--input);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .ghost:hover,
+    .ghost:focus-visible {
+      color: var(--text);
+      border-color: var(--status-pipeline-line);
+      box-shadow: none;
+    }
+
+    .ghost.danger:hover,
+    .ghost.danger:focus-visible {
+      color: var(--danger);
+      border-color: var(--danger-line);
+      background: var(--danger-soft);
+    }
+
+    .ghost:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .search-input {
+      min-width: 0;
+      width: 100%;
+      height: 28px;
+      padding: 0 9px;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: var(--input);
+      outline: none;
+    }
+
+    .search-input:focus {
+      border-color: var(--status-pipeline-line);
+    }
+
+    .list {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 5px;
+      padding: 6px;
+    }
+
+    .session,
+    .device {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--input);
+      cursor: pointer;
     }
 
     .counts {
@@ -60,272 +232,316 @@
       gap: 6px;
     }
 
-    .metric {
-      min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 9px;
-      background: var(--input);
-      padding: 7px 8px;
-    }
-
-    .metric b {
-      display: block;
-      color: var(--text);
-      font-size: 16px;
-      line-height: 1;
-    }
-
-    .metric span {
-      display: block;
-      margin-top: 4px;
-      color: var(--soft);
-      white-space: nowrap;
-    }
-
-    .sessions {
-      min-height: 0;
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-
-    .head {
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 9px 10px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel-2);
-    }
-
-    .head-title {
-      font-weight: 800;
-    }
-
-    .session-list {
-      min-height: 0;
-      overflow: auto;
-      padding: 8px;
-      display: grid;
-      align-content: start;
-      gap: 7px;
-    }
-
-    .session {
-      min-width: 0;
-      max-width: 100%;
-      min-height: 62px;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 8px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: var(--input);
-      padding: 8px 9px;
-      cursor: pointer;
+    .metric:last-child {
+      grid-column: auto;
     }
 
     .session:hover,
-    .session.active {
+    .session.active,
+    .device:hover,
+    .device.selected {
       border-color: var(--success-line);
       background: var(--success-soft);
     }
 
-    .session-title,
-    .session-sub {
+    .name-stack {
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+    }
+
+    .name,
+    .sub {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .session-title {
+    .name {
       font-weight: 800;
     }
 
-    .session-sub {
-      margin-top: 4px;
+    .sub {
       color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
     }
 
-    .status-pill {
-      justify-self: end;
-      min-width: 58px;
+    .pill-row {
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .session-meta {
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .pill {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 4px 8px;
-      text-align: center;
-      font-weight: 800;
-      color: var(--soft);
+      padding: 2px 6px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.02);
     }
 
-    .status-pill.connected {
+    .status {
+      font-weight: 800;
+    }
+
+    .status.connected,
+    .status.idle {
       color: var(--accent);
       border-color: var(--status-idle-line);
       background: var(--status-idle-soft);
     }
 
-    .status-pill.connecting {
+    .status.connecting,
+    .status.pipeline {
       color: var(--blue);
       border-color: var(--status-pipeline-line);
       background: var(--status-pipeline-soft);
     }
 
-    .status-pill.disconnected {
+    .status.disconnected,
+    .status.occupied {
       color: var(--danger);
       border-color: var(--danger-line);
       background: var(--danger-soft);
     }
 
-    .current {
-      display: grid;
-      gap: 7px;
-      padding: 10px;
+    .row-actions,
+    .device-actions {
+      justify-content: stretch;
     }
 
-    .device-name {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-weight: 800;
+    .row-actions .ghost,
+    .device-actions .ghost {
+      flex: 1 1 0;
+      padding: 0 6px;
     }
 
-    .device-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 6px;
+      line-height: 1;
     }
 
-    .chip {
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .session-close {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 6px;
+      line-height: 1;
       color: var(--muted);
       border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 3px 7px;
+      background: var(--input);
+      cursor: pointer;
     }
 
-    .actions {
-      min-width: 0;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 7px;
+    .session-close:hover,
+    .session-close:focus-visible {
+      color: var(--danger);
+      border-color: var(--danger-line);
+      background: var(--danger-soft);
+      box-shadow: none;
     }
 
-    .actions button {
+    .details {
+      display: none;
       min-width: 0;
-      width: 100%;
-      padding-inline: 8px;
+      color: var(--muted);
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+      border-top: 1px dashed var(--line);
+      padding-top: 6px;
+    }
+
+    .device.expanded .details {
+      display: block;
     }
 
     .empty {
       padding: 14px 10px;
+      color: var(--muted);
       line-height: 1.55;
       overflow-wrap: anywhere;
     }
 
-    @media (max-width: 320px) {
-      .shell {
-        gap: 7px;
+    .footer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 5px;
+      align-items: center;
+      padding: 5px 6px;
+      background: var(--panel-2);
+    }
+
+    .footer-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+
+    .actions button {
+      min-width: 0;
+    }
+
+    @media (max-width: 340px) {
+      .head-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+        margin-left: 0;
       }
 
-      .hero,
-      .current {
-        padding: 9px;
+      .panel-title-row {
+        flex-wrap: wrap;
       }
 
-      .metric {
-        padding-inline: 6px;
-      }
-
-      .metric span {
-        white-space: normal;
-      }
-
-      .session {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 6px;
-      }
-
-      .status-pill {
-        justify-self: start;
-        min-width: 0;
-        padding-inline: 7px;
-      }
-
-      .device-meta {
+      .row-actions,
+      .device-actions {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+    }
 
-      .chip,
-      .device-meta .status {
-        min-width: 0;
-        max-width: 100%;
+    @media (max-width: 420px) {
+      .counts {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .metric:last-child {
+        grid-column: 1 / -1;
       }
     }
   </style>
 </head>
 <body class="workspace-compact-page">
   <main class="shell">
-    <section class="hero">
-      <div>
-        <div class="eyebrow">Terminal Workspace</div>
+    <section class="topbar">
+      <div class="eyebrow">Terminal Workspace</div>
+      <div class="title-row">
         <div class="title">终端导航</div>
-        <div class="copy" id="summary">已打开终端会话会显示在这里。</div>
-      </div>
-      <div class="counts">
-        <div class="metric"><b id="connected">0</b><span>已连接</span></div>
-        <div class="metric"><b id="connecting">0</b><span>连接中</span></div>
-        <div class="metric"><b id="disconnected">0</b><span>未连接</span></div>
+        <div class="summary" id="summary">0 会话</div>
       </div>
     </section>
 
-    <section class="sessions">
-      <div class="head">
-        <div>
-          <div class="head-title">会话列表</div>
-          <div class="copy">点击会话可跳转到对应终端。</div>
+    <nav class="tabs" aria-label="终端导航页签">
+      <button class="tab" id="tabSessions" type="button" data-tab="sessions">会话</button>
+      <button class="tab" id="tabDevices" type="button" data-tab="devices">设备</button>
+    </nav>
+
+    <section class="panel" id="sessionsPanel" aria-label="会话列表">
+      <div class="panel-head">
+        <div class="panel-title-row">
+          <div class="panel-title">会话列表</div>
+          <div class="head-actions">
+            <button class="ghost danger" id="closeCurrent" type="button">关当前</button>
+            <button class="ghost danger" id="closeOthers" type="button">关其他</button>
+            <button class="ghost danger" id="closeAll" type="button">全关闭</button>
+          </div>
         </div>
       </div>
-      <div class="session-list" id="sessions"></div>
+      <div class="list" id="sessions"></div>
     </section>
 
-    <section class="current" id="currentDevice"></section>
+    <section class="panel" id="devicesPanel" aria-label="设备列表">
+      <div class="panel-head">
+        <div class="search-row">
+          <input class="search-input" id="deviceSearch" type="search" autocomplete="off"
+            placeholder="搜索设备名、ID、IP" />
+        </div>
+        <div class="panel-title-row">
+          <div class="panel-title" id="deviceModeTitle">常用设备</div>
+          <div class="head-actions">
+            <button class="ghost" id="clearSearch" type="button">清空</button>
+          </div>
+        </div>
+      </div>
+      <div class="list" id="devices"></div>
+    </section>
 
-    <div class="actions">
-      <button id="home" type="button">首页大屏</button>
-      <button id="refresh" type="button">刷新</button>
-    </div>
+    <footer class="footer">
+      <div class="footer-text" id="footerText">设备搜索仅影响此导航栏</div>
+      <div class="actions">
+        <button class="ghost" id="home" type="button">首页</button>
+        <button class="ghost" id="refresh" type="button">刷新</button>
+      </div>
+    </footer>
   </main>
 
   <script>
     let bridge = null;
+    let payload = {
+      sessions: [],
+      devices: [],
+      defaultDeviceIds: [],
+      navigationState: {}
+    };
+    let activeTab = "devices";
+    let deviceQuery = "";
+    let expandedDeviceId = "";
+    const MAX_SEARCH_RESULTS = 80;
     const $ = (id) => document.getElementById(id);
 
-    function sessionStatusClass(status) {
-      const normalized = String(status || "").toLowerCase();
-      if (normalized === "connected") return "connected";
-      if (normalized === "connecting") return "connecting";
-      if (normalized === "disconnected") return "disconnected";
+    function normalize(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function statusClass(status) {
+      const value = normalize(status);
+      if (value === "connected" || value.includes("已连接") || value.includes("空闲")) return "connected idle";
+      if (value === "connecting" || value.includes("连接中") || value.includes("流水线")) return "connecting pipeline";
+      if (value === "disconnected" || value.includes("未连接") || value.includes("占用")) return "disconnected occupied";
       return "";
     }
 
-    function addChip(container, text, extraClass) {
-      if (!text) return;
-      const chip = document.createElement("span");
-      chip.className = `${extraClass || "chip"}`.trim();
-      chip.textContent = text;
-      chip.title = text;
-      container.appendChild(chip);
+    function activeSession() {
+      return (payload.sessions || []).find((session) => session.active) || (payload.sessions || [])[0] || null;
     }
 
-    function sessionContextPoint(item) {
+    function emitNavigationState() {
+      if (!bridge) return;
+      bridge.updateNavigationState(JSON.stringify({
+        activeTab,
+        deviceQuery,
+        expandedDeviceId
+      }));
+    }
+
+    function setActiveTab(tab, emit = true) {
+      activeTab = tab === "sessions" ? "sessions" : "devices";
+      $("tabSessions").classList.toggle("active", activeTab === "sessions");
+      $("tabDevices").classList.toggle("active", activeTab === "devices");
+      $("sessionsPanel").classList.toggle("active", activeTab === "sessions");
+      $("devicesPanel").classList.toggle("active", activeTab === "devices");
+      if (emit) emitNavigationState();
+    }
+
+    function addPill(container, text, className = "") {
+      if (!text) return;
+      const pill = document.createElement("span");
+      pill.className = `pill ${className}`.trim();
+      pill.textContent = text;
+      pill.title = text;
+      container.appendChild(pill);
+    }
+
+    function sessionPoint(item) {
       const rect = item.getBoundingClientRect();
       return {
         x: Math.round(rect.left + Math.min(rect.width - 8, 32)),
@@ -338,44 +554,81 @@
       if (event) event.preventDefault();
       const point = event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
         ? { x: event.clientX, y: event.clientY }
-        : sessionContextPoint(item);
+        : sessionPoint(item);
       bridge.requestSessionContextMenu(session.tabId, point.x, point.y);
     }
 
-    function renderSessions(sessions) {
+    function requestDeviceContext(item, device, event) {
+      if (!bridge) return;
+      if (event) event.preventDefault();
+      const rect = item.getBoundingClientRect();
+      const x = event && Number.isFinite(event.clientX)
+        ? event.clientX
+        : Math.round(rect.left + Math.min(rect.width - 8, 32));
+      const y = event && Number.isFinite(event.clientY)
+        ? event.clientY
+        : Math.round(rect.top + rect.height / 2);
+      bridge.requestDeviceContextMenu(device.id, x, y);
+    }
+
+    function renderSessions() {
+      const sessions = payload.sessions || [];
       const list = $("sessions");
       list.innerHTML = "";
+      const current = activeSession();
+      $("closeCurrent").disabled = !current;
+      $("closeOthers").disabled = !current || sessions.length <= 1;
+      $("closeAll").disabled = sessions.length === 0;
       if (!sessions.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = "当前没有打开的终端会话。请先在首页选择设备并连接 Telnet、SSH 或串口。";
+        empty.textContent = "当前没有打开的终端会话。";
         list.appendChild(empty);
         return;
       }
       sessions.forEach((session) => {
-        const item = document.createElement("div");
+        const item = document.createElement("article");
         item.className = `session ${session.active ? "active" : ""}`.trim();
         item.tabIndex = 0;
         item.setAttribute("role", "button");
-        item.setAttribute("aria-label", session.title || session.tabId || "");
         item.setAttribute("aria-current", session.active ? "true" : "false");
+        item.title = `${session.deviceName || session.deviceId || ""}\n${session.host || ""}`;
 
+        const main = document.createElement("div");
+        main.className = "session-main";
         const text = document.createElement("div");
+        text.className = "name-stack";
         const title = document.createElement("div");
-        title.className = "session-title";
-        title.textContent = session.title || "";
+        title.className = "name";
+        title.textContent = session.title || session.tabId || "";
         const sub = document.createElement("div");
-        sub.className = "session-sub";
-        sub.textContent = `${session.deviceName || session.deviceId || "-"} / ${session.kind || "-"} / ${session.host || "-"}`;
+        sub.className = "sub";
+        sub.textContent = session.deviceName || session.deviceId || "-";
         text.appendChild(title);
         text.appendChild(sub);
 
-        const status = document.createElement("div");
-        status.className = `status-pill ${sessionStatusClass(session.status)}`.trim();
-        status.textContent = session.statusLabel || session.status || "-";
+        const close = document.createElement("button");
+        close.className = "session-close";
+        close.type = "button";
+        close.textContent = "×";
+        close.title = "关闭会话";
+        close.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (bridge) bridge.closeSession(session.tabId);
+        });
 
-        item.appendChild(text);
-        item.appendChild(status);
+        main.appendChild(text);
+        main.appendChild(close);
+
+        const meta = document.createElement("div");
+        meta.className = "session-meta";
+        addPill(meta, session.kind || "-");
+        addPill(meta, session.host || "-");
+        addPill(meta, session.statusLabel || session.status || "-", `status ${statusClass(session.status)}`);
+
+        item.appendChild(main);
+        item.appendChild(meta);
         item.addEventListener("click", () => bridge && bridge.selectSession(session.tabId));
         item.addEventListener("contextmenu", (event) => requestSessionContext(item, session, event));
         item.addEventListener("keydown", (event) => {
@@ -390,42 +643,206 @@
       });
     }
 
-    function renderCurrentDevice(device) {
-      const panel = $("currentDevice");
-      panel.innerHTML = "";
-      if (!device) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "当前没有选中设备。回到首页大屏选择设备后，再打开终端。";
-        panel.appendChild(empty);
-        return;
-      }
-      const title = document.createElement("div");
-      title.className = "device-name";
-      title.textContent = device.name || "";
-      panel.appendChild(title);
-      const meta = document.createElement("div");
-      meta.className = "device-meta";
-      addChip(meta, device.id);
-      addChip(meta, device.boardType);
-      addChip(meta, device.cpu);
-      addChip(meta, device.slot);
-      addChip(meta, device.statusText, `status ${device.statusKind || "other"}`);
-      panel.appendChild(meta);
+    function defaultDeviceRows() {
+      const devices = payload.devices || [];
+      const byId = new Map(devices.map((device) => [device.id, device]));
+      const rows = [];
+      (payload.defaultDeviceIds || []).forEach((id) => {
+        const device = byId.get(id);
+        if (device && !rows.includes(device)) rows.push(device);
+      });
+      return rows;
     }
 
-    window.setDeviceNavigationPayload = function setDeviceNavigationPayload(payload) {
-      const data = payload || {};
-      const stats = data.stats || {};
-      $("summary").textContent = data.summary || "0 个终端会话";
-      $("connected").textContent = stats.connected || 0;
-      $("connecting").textContent = stats.connecting || 0;
-      $("disconnected").textContent = stats.disconnected || 0;
-      renderSessions(data.sessions || []);
-      renderCurrentDevice(data.selectedDevice || null);
+    function searchedDeviceRows() {
+      const query = normalize(deviceQuery);
+      if (!query) return defaultDeviceRows();
+      const terms = query.split(/\s+/).filter(Boolean);
+      return (payload.devices || [])
+        .filter((device) => {
+          const haystack = normalize([
+            device.searchText,
+            device.name,
+            device.id,
+            device.shortIdentity,
+            device.boardId,
+            device.boardType,
+            device.cpu,
+            device.slot,
+            device.telnet,
+            device.ssh,
+            device.serial
+          ].join(" "));
+          return terms.every((term) => haystack.includes(term));
+        })
+        .slice(0, MAX_SEARCH_RESULTS);
+    }
+
+    function connectDevice(deviceId, kind, event) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (bridge) bridge.requestDeviceConnect(deviceId, kind);
+    }
+
+    function toggleDeviceDetails(deviceId, event) {
+      event.preventDefault();
+      event.stopPropagation();
+      expandedDeviceId = expandedDeviceId === deviceId ? "" : deviceId;
+      emitNavigationState();
+      renderDevices();
+    }
+
+    function renderDevices(rows) {
+      rows = rows || searchedDeviceRows();
+      const list = $("devices");
+      list.innerHTML = "";
+      const query = normalize(deviceQuery);
+      $("deviceModeTitle").textContent = query
+        ? `搜索结果 ${rows.length}/${payload.deviceTotal || (payload.devices || []).length}`
+        : "常用 / 相关设备";
+      $("clearSearch").disabled = !query;
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = query
+          ? "没有匹配的设备。可以试试设备名、短 ID 或 IP。"
+          : "暂无常用设备。打开或选择设备后会出现在这里。";
+        list.appendChild(empty);
+        return;
+      }
+      rows.forEach((device) => {
+        const item = document.createElement("article");
+        item.className = `device ${device.selected ? "selected" : ""} ${expandedDeviceId === device.id ? "expanded" : ""}`.trim();
+        item.tabIndex = 0;
+        item.setAttribute("role", "button");
+        item.setAttribute("aria-selected", device.selected ? "true" : "false");
+        item.title = device.detail || device.name || "";
+
+        const main = document.createElement("div");
+        main.className = "row-main";
+        const text = document.createElement("div");
+        text.className = "name-stack";
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = device.name || device.id || "";
+        const sub = document.createElement("div");
+        sub.className = "sub";
+        sub.textContent = device.shortIdentity || device.id || "-";
+        text.appendChild(name);
+        text.appendChild(sub);
+
+        const detailsButton = document.createElement("button");
+        detailsButton.className = "ghost icon-btn";
+        detailsButton.type = "button";
+        detailsButton.textContent = expandedDeviceId === device.id ? "−" : "+";
+        detailsButton.title = expandedDeviceId === device.id ? "收起详情" : "展开详情";
+        detailsButton.addEventListener("click", (event) => toggleDeviceDetails(device.id, event));
+        main.appendChild(text);
+        main.appendChild(detailsButton);
+
+        const meta = document.createElement("div");
+        meta.className = "pill-row";
+        addPill(meta, device.statusText || "-", `status ${device.statusKind || ""} ${statusClass(device.statusText)}`);
+        addPill(meta, device.telnet || device.ssh || device.serial || "-");
+
+        const actions = document.createElement("div");
+        actions.className = "device-actions";
+        [
+          ["telnet", "Telnet", !!device.telnet],
+          ["ssh", "SSH", !!device.ssh],
+          ["serial", "串口", !!device.canSerial]
+        ].forEach(([kind, label, enabled]) => {
+          const button = document.createElement("button");
+          button.className = "ghost";
+          button.type = "button";
+          button.textContent = label;
+          button.disabled = !enabled;
+          button.title = enabled ? `${label} ${device.name}` : `${label} 不可用`;
+          button.addEventListener("click", (event) => connectDevice(device.id, kind, event));
+          actions.appendChild(button);
+        });
+
+        const details = document.createElement("div");
+        details.className = "details";
+        details.textContent = device.detail || "没有更多详情。";
+
+        item.appendChild(main);
+        item.appendChild(meta);
+        item.appendChild(actions);
+        item.appendChild(details);
+        item.addEventListener("click", () => bridge && bridge.selectDevice(device.id));
+        item.addEventListener("contextmenu", (event) => requestDeviceContext(item, device, event));
+        item.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (bridge) bridge.selectDevice(device.id);
+          } else if (event.key === "ArrowRight") {
+            expandedDeviceId = device.id;
+            emitNavigationState();
+            renderDevices();
+          } else if (event.key === "ArrowLeft") {
+            expandedDeviceId = "";
+            emitNavigationState();
+            renderDevices();
+          } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            requestDeviceContext(item, device, event);
+          }
+        });
+        list.appendChild(item);
+      });
+    }
+
+    function renderFooter() {
+      const sessions = payload.sessions || [];
+      const devices = payload.devices || [];
+      const current = activeSession();
+      $("summary").textContent = `${sessions.length} 会话`;
+      $("footerText").textContent = current
+        ? `${current.deviceName || current.deviceId || "当前设备"} · ${current.title || ""}`
+        : `${devices.length} 台设备可搜索`;
+    }
+
+    function renderAll() {
+      renderFooter();
+      renderSessions();
+      renderDevices();
+      setActiveTab(activeTab, false);
+    }
+
+    window.setDeviceNavigationPayload = function setDeviceNavigationPayload(nextPayload) {
+      payload = nextPayload || {};
+      const state = payload.navigationState || {};
+      activeTab = state.activeTab === "sessions" ? "sessions" : "devices";
+      deviceQuery = String(state.deviceQuery || "");
+      expandedDeviceId = String(state.expandedDeviceId || "");
+      $("deviceSearch").value = deviceQuery;
+      renderAll();
     };
 
     function wire() {
+      $("tabSessions").addEventListener("click", () => setActiveTab("sessions"));
+      $("tabDevices").addEventListener("click", () => setActiveTab("devices"));
+      $("deviceSearch").addEventListener("input", (event) => {
+        deviceQuery = event.target.value || "";
+        emitNavigationState();
+        renderDevices();
+        renderFooter();
+      });
+      $("clearSearch").addEventListener("click", () => {
+        deviceQuery = "";
+        $("deviceSearch").value = "";
+        emitNavigationState();
+        renderDevices();
+      });
+      $("closeCurrent").addEventListener("click", () => {
+        const current = activeSession();
+        if (current && bridge) bridge.closeSession(current.tabId);
+      });
+      $("closeOthers").addEventListener("click", () => {
+        const current = activeSession();
+        if (current && bridge) bridge.closeOtherSessions(current.tabId);
+      });
+      $("closeAll").addEventListener("click", () => bridge && bridge.closeAllSessions());
       $("home").addEventListener("click", () => bridge && bridge.requestHome());
       $("refresh").addEventListener("click", () => bridge && bridge.requestRefresh());
     }
@@ -433,6 +850,7 @@
     new QWebChannel(qt.webChannelTransport, (channel) => {
       bridge = channel.objects.deviceNavigationBridge;
       wire();
+      renderAll();
     });
   </script>
 </body>

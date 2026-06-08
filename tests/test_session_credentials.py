@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialogButtonBox, QFrame, QLabel, QLineEdit, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QFrame, QLabel, QLineEdit, QPushButton, QSizePolicy, QWidget
 
 from src._sample_data import STATUS_IDLE, STATUS_OCCUPIED, STATUS_OTHER, STATUS_PIPELINE, sample_devices
 from src.app_state import SessionTabState
@@ -271,6 +272,8 @@ def test_device_navigation_button_collapses_terminal_sidebar(app: QApplication) 
     window = DeviceDesktopApp()
     window.session_tab_widget.addTab(QWidget(), "Session")
     window.show_terminal_workspace()
+    window.show()
+    QApplication.processEvents()
 
     assert not window.left_sidebar_collapsed
     assert not window.left_sidebar_content.isHidden()
@@ -397,8 +400,8 @@ def test_terminal_sidebar_stops_stale_width_animation(app: QApplication) -> None
     QApplication.processEvents()
 
     assert window.left_sidebar_animation is None
-    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_WIDTH
-    assert window.left_sidebar_shell.maximumWidth() == window.TERMINAL_SIDEBAR_WIDTH
+    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_MIN_WIDTH
+    assert window.left_sidebar_shell.maximumWidth() == window.TERMINAL_SIDEBAR_MAX_WIDTH
 
 
 def test_terminal_workspace_keeps_native_control_surfaces(
@@ -413,6 +416,10 @@ def test_terminal_workspace_keeps_native_control_surfaces(
     assert window.terminal_ops_label.objectName() == "terminalOpsLabel"
     assert window.terminal_ops_label.text() == "TERMINAL OPS"
     assert window.session_count_label.objectName() == "terminalSessionCountPill"
+    assert window.terminal_ops_label.isHidden()
+    assert window.session_jump_combo.isHidden()
+    assert window.session_jump_resize_handle.isHidden()
+    assert window.session_count_label.isHidden()
     assert window.quick_reconnect_button.objectName() == "quickActionIconButton"
     assert window.quick_auto_response_button.objectName() == "autoResponseMenuButton"
     assert window.command_record_frame.objectName() == "commandRecordDock"
@@ -423,6 +430,16 @@ def test_terminal_workspace_keeps_native_control_surfaces(
     assert window.quick_auto_response_menu.property("menuKind") == "auto-response-menu"
     assert window.quick_log_menu.objectName() == "workspaceContextMenu"
     assert window.quick_log_menu.property("menuKind") == "log-menu"
+    assert window.quick_close_button.objectName() == "quickDangerIconButton"
+    assert window.quick_close_menu.objectName() == "workspaceContextMenu"
+    assert window.quick_close_menu.property("menuKind") == "close-session-menu"
+    assert window.quick_close_current_action.text() == "关闭当前会话"
+    assert window.quick_close_other_action.text() == "关闭其他会话"
+    assert window.quick_close_all_action.text() == "关闭全部会话"
+    assert window.session_jump_resize_handle.objectName() == "sessionJumpResizeHandle"
+    assert window.session_quick_bar_toggle_button.objectName() == "quickActionIconButton"
+    assert window.session_quick_restore_bar.objectName() == "sessionQuickRestoreBar"
+    assert window.session_quick_restore_button.objectName() == "sessionQuickRestoreButton"
 
     state = SessionTabState(
         tab_id="test:device:1",
@@ -445,11 +462,43 @@ def test_terminal_workspace_keeps_native_control_surfaces(
     assert window.session_count_label.text() == "1 会话"
 
 
+def test_session_quick_bar_can_resize_and_hide(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.session_tab_widget.addTab(QWidget(), "Session")
+    window.show_terminal_workspace()
+    window.show()
+    QApplication.processEvents()
+
+    assert window.session_quick_action_bar.isVisible()
+    assert not window.session_quick_restore_bar.isVisible()
+
+    window.resize_session_jump_combo(470)
+    assert window.session_jump_combo.width() == 470
+    window.resize_session_jump_combo(40)
+    assert window.session_jump_combo.width() == 180
+    window.resize_session_jump_combo(900)
+    assert window.session_jump_combo.width() == 520
+
+    window.set_session_quick_bar_collapsed(True)
+    assert not window.session_quick_action_bar.isVisible()
+    assert window.session_quick_restore_bar.isVisible()
+
+    window.session_quick_restore_button.click()
+    assert window.session_quick_action_bar.isVisible()
+    assert not window.session_quick_restore_bar.isVisible()
+
+    window.close()
+
+
 def test_terminal_workspace_uses_workspace_style_overrides() -> None:
     assert "/* Terminal workspace shell */" in APP_STYLE
     assert "QTabWidget#sessionTabs::pane" in APP_STYLE
     assert "QTabWidget#deviceSessionTabs QTabBar::tab:selected" in APP_STYLE
     assert "QFrame#sessionQuickBar" in APP_STYLE
+    assert "QFrame#sessionQuickRestoreBar" in APP_STYLE
+    assert "QFrame#sessionJumpResizeHandle" in APP_STYLE
+    assert "QToolButton#sessionQuickRestoreButton" in APP_STYLE
     assert "QLabel#terminalOpsLabel" in APP_STYLE
     assert "QLabel#terminalSessionCountPill" in APP_STYLE
     assert "QFrame#commandRecordDock" in APP_STYLE
@@ -593,6 +642,104 @@ def test_always_on_top_round_trips_desktop_state(
     assert second.always_on_top_button.isChecked()
     if os.name != "nt":
         assert bool(second.windowFlags() & Qt.WindowStaysOnTopHint)
+
+
+def test_terminal_navigation_height_round_trips_desktop_state(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _ = app
+    state_path = tmp_path / "desktop_state.json"
+    monkeypatch.setenv("DEVICE_TUI_DESKTOP_STATE_PATH", str(state_path))
+    first = DeviceDesktopApp()
+
+    first.resize_terminal_navigation_web(720)
+    first.save_desktop_state()
+    second = DeviceDesktopApp()
+
+    assert first.device_navigation_web.minimumHeight() == 720
+    assert first.device_navigation_web.maximumHeight() == 720
+    assert second.terminal_navigation_web_height == 720
+    assert second.device_navigation_web.minimumHeight() == 720
+    assert second.device_navigation_web.maximumHeight() == 720
+
+
+def test_terminal_sessions_round_trip_and_restore_without_credentials_in_state(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _ = app
+    state_path = tmp_path / "desktop_state.json"
+    monkeypatch.setenv("DEVICE_TUI_DESKTOP_STATE_PATH", str(state_path))
+    first = DeviceDesktopApp()
+    device = sample_devices()[0]
+    first.devices = [device]
+    first.rebuild_device_indexes()
+    opened: list[str] = []
+    monkeypatch.setattr(first, "connect_session_tab", lambda tab_id: opened.append(tab_id))
+
+    username, password = first.session_ssh_credentials(device)
+    state = first.ensure_session_tab(
+        kind="linux",
+        device=device,
+        host=device.ssh_ip.strip(),
+        port=device.ssh_port,
+        username=username,
+        password=password,
+        credential_candidates=first.linux_ssh_credential_candidates(device, username, password),
+        title="SSH #4",
+    )
+    assert state is not None
+    first.save_desktop_state()
+
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    remembered = payload["terminal_sessions"]
+    assert opened == [state.tab_id]
+    assert remembered == [{
+        "device_id": device.id,
+        "kind": "linux",
+        "title": "SSH #4",
+        "host": device.ssh_ip.strip(),
+        "port": device.ssh_port,
+        "active": True,
+    }]
+    assert "username" not in remembered[0]
+    assert "password" not in remembered[0]
+
+    second = DeviceDesktopApp()
+    second.devices = [device]
+    second.rebuild_device_indexes()
+    restored: list[str] = []
+    monkeypatch.setattr(second, "connect_session_tab", lambda tab_id: restored.append(tab_id))
+
+    second.restore_remembered_terminal_sessions_once()
+
+    restored_states = second.ordered_session_states()
+    assert len(restored_states) == 1
+    restored_state = restored_states[0]
+    assert restored == [restored_state.tab_id]
+    assert restored_state.kind == "linux"
+    assert restored_state.title == "SSH #4"
+    assert restored_state.host == device.ssh_ip.strip()
+    assert restored_state.port == device.ssh_port
+    assert restored_state.username == username
+    assert restored_state.password == password
+    assert restored_state.suppress_next_connection_error
+    assert second.terminal_sessions_restored
+
+    next_state = second.ensure_session_tab(
+        kind="linux",
+        device=device,
+        host=device.ssh_ip.strip(),
+        port=device.ssh_port,
+        username=username,
+        password=password,
+        credential_candidates=second.linux_ssh_credential_candidates(device, username, password),
+    )
+    assert next_state is not None
+    assert next_state.title == "SSH #5"
 
 
 def test_always_on_top_keeps_visible_window_visible(app: QApplication) -> None:
@@ -806,8 +953,9 @@ def test_temporary_panel_uses_workspace_cards(app: QApplication) -> None:
 
 def test_device_table_shows_board_type_cpu_and_slot_without_ip(app: QApplication, sample_device) -> None:
     _ = app
+    device = replace(sample_device, extra={**sample_device.extra, "slot_id": "SLOT-9"})
     window = DeviceDesktopApp()
-    window.devices = [sample_device]
+    window.devices = [device]
     window.rebuild_device_indexes()
     window.apply_filters()
 
@@ -817,13 +965,15 @@ def test_device_table_shows_board_type_cpu_and_slot_without_ip(app: QApplication
     assert window.device_table.horizontalHeaderItem(3).text() == "CPU"
     assert window.device_table.horizontalHeaderItem(4).text() == "Slot"
     assert window.device_table.horizontalHeaderItem(5).text() == "状态"
-    assert window.device_table.item(0, 1).text() == sample_device.name
-    assert window.device_table.item(0, 2).text() == sample_device.device_type
-    assert window.device_table.item(0, 3).text() == sample_device.cpu
-    assert window.device_table.item(0, 4).text() == sample_device.rack
-    assert window.device_table.item(0, 5).text() == sample_device.status
-    assert sample_device.ssh_ip not in window.device_row_copy_text(sample_device)
-    assert sample_device.telnet_ip not in window.device_row_copy_text(sample_device)
+    assert window.device_table.item(0, 1).text() == device.name
+    assert window.device_table.item(0, 2).text() == device.device_type
+    assert window.device_table.item(0, 3).text() == device.cpu
+    assert window.device_table.item(0, 4).text() == "SLOT-9"
+    assert window.device_table.item(0, 5).text() == device.status
+    assert "SLOT-9" in window.device_row_copy_text(device)
+    assert device.rack not in window.device_row_copy_text(device)
+    assert device.ssh_ip not in window.device_row_copy_text(device)
+    assert device.telnet_ip not in window.device_row_copy_text(device)
 
 
 def test_device_table_shows_occupied_status_with_duration(app: QApplication, sample_device) -> None:
@@ -859,6 +1009,7 @@ def test_device_navigation_payload_includes_web_rows(app: QApplication, sample_d
         owner="li.wei",
         extra={
             **sample_device.extra,
+            "slot_id": "SLOT-10",
             "occupancy_started_at": (datetime.now(timezone.utc) - timedelta(minutes=40)).isoformat(),
         },
     )
@@ -875,7 +1026,7 @@ def test_device_navigation_payload_includes_web_rows(app: QApplication, sample_d
     assert rows[0]["kind"] == "device"
     assert rows[0]["id"] == occupied.id
     assert rows[0]["boardType"] == occupied.device_type
-    assert rows[0]["slot"] == occupied.rack
+    assert rows[0]["slot"] == "SLOT-10"
     assert STATUS_OCCUPIED in rows[0]["statusText"]
     assert rows[0]["selected"] is True
 
@@ -886,14 +1037,15 @@ def test_session_navigation_payload_is_terminal_focused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _ = app
+    device = replace(sample_device, extra={**sample_device.extra, "slot_id": "SLOT-11"})
     window = DeviceDesktopApp()
-    window.devices = [sample_device]
+    window.devices = [device]
     window.rebuild_device_indexes()
     window.apply_filters()
     state = SessionTabState(
         tab_id="nav:device:1",
         kind="device",
-        device_id=sample_device.id,
+        device_id=device.id,
         title="Telnet #1",
         host="127.0.0.1",
         port=23,
@@ -912,28 +1064,34 @@ def test_session_navigation_payload_is_terminal_focused(
 
     assert payload["stats"]["total"] == 1
     assert payload["stats"]["connected"] == 1
-    assert "rows" not in payload
+    assert payload["rows"]
+    assert payload["rows"][0]["id"] == device.id
+    assert payload["rows"][0]["slot"] == "SLOT-11"
+    assert payload["rows"][0]["telnet"] == f"{device.telnet_ip}:{device.telnet_port}"
     assert "filters" not in payload
     assert payload["sessions"][0]["tabId"] == state.tab_id
     assert payload["sessions"][0]["active"] is True
-    assert payload["selectedDevice"]["id"] == sample_device.id
+    assert payload["selectedDevice"]["id"] == device.id
+    assert payload["selectedDevice"]["slot"] == "SLOT-11"
 
 
 def test_web_shell_payload_includes_selected_device(app: QApplication, sample_device) -> None:
     _ = app
+    device = replace(sample_device, extra={**sample_device.extra, "slot_id": "SLOT-12"})
     window = DeviceDesktopApp()
-    window.devices = [sample_device]
+    window.devices = [device]
     window.rebuild_device_indexes()
     window.apply_filters()
 
     payload = window.web_shell_payload()
     selected = payload["selectedDevice"]
 
-    assert selected["id"] == sample_device.id
-    assert selected["name"] == sample_device.name
-    assert selected["boardType"] == sample_device.device_type
-    assert selected["statusKind"] == window.device_status_kind(sample_device)
-    assert selected["telnet"] == f"{sample_device.telnet_ip}:{sample_device.telnet_port}"
+    assert selected["id"] == device.id
+    assert selected["name"] == device.name
+    assert selected["boardType"] == device.device_type
+    assert selected["slot"] == "SLOT-12"
+    assert selected["statusKind"] == window.device_status_kind(device)
+    assert selected["telnet"] == f"{device.telnet_ip}:{device.telnet_port}"
     assert payload["stats"]["total"] == 2
     assert payload["sessions"] == []
 
@@ -945,6 +1103,8 @@ def test_web_home_preserves_device_context_and_terminal_nav_actions(app: QApplic
     shell_session_requests: list[str] = []
     shell_session_context_requests: list[tuple[str, int, int]] = []
     session_requests: list[str] = []
+    session_close_requests: list[str] = []
+    device_connect_requests: list[tuple[str, str]] = []
     session_context_requests: list[tuple[str, int, int]] = []
     home_requests: list[bool] = []
     window.web_shell.device_context_requested.connect(
@@ -955,6 +1115,11 @@ def test_web_home_preserves_device_context_and_terminal_nav_actions(app: QApplic
         lambda tab_id, x, y: shell_session_context_requests.append((tab_id, x, y))
     )
     window.device_navigation_web.session_selected.connect(session_requests.append)
+    window.device_navigation_web.session_close_requested.connect(session_close_requests.append)
+    window.device_navigation_web.device_connect_requested.disconnect(window.open_navigation_device_session)
+    window.device_navigation_web.device_connect_requested.connect(
+        lambda device_id, kind: device_connect_requests.append((device_id, kind))
+    )
     window.device_navigation_web.session_context_requested.connect(
         lambda tab_id, x, y: session_context_requests.append((tab_id, x, y))
     )
@@ -964,6 +1129,8 @@ def test_web_home_preserves_device_context_and_terminal_nav_actions(app: QApplic
     window.web_shell.bridge.selectSession("SHELL-TAB-001")
     window.web_shell.bridge.requestSessionContextMenu("SHELL-TAB-001", 3, 4)
     window.device_navigation_web.bridge.selectSession("TAB-001")
+    window.device_navigation_web.bridge.closeSession("TAB-001")
+    window.device_navigation_web.bridge.requestDeviceConnect("WEB-001", "ssh")
     window.device_navigation_web.bridge.requestSessionContextMenu("TAB-001", 7, 9)
     window.device_navigation_web.bridge.requestHome()
 
@@ -971,8 +1138,64 @@ def test_web_home_preserves_device_context_and_terminal_nav_actions(app: QApplic
     assert shell_session_requests == ["SHELL-TAB-001"]
     assert shell_session_context_requests and shell_session_context_requests[0][0] == "SHELL-TAB-001"
     assert session_requests == ["TAB-001"]
+    assert session_close_requests == ["TAB-001"]
+    assert device_connect_requests == [("WEB-001", "ssh")]
     assert session_context_requests and session_context_requests[0][0] == "TAB-001"
     assert home_requests == [True]
+    window.close()
+
+
+def test_terminal_navigation_device_connect_actions_select_device(
+    app: QApplication,
+    sample_device,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.devices = [sample_device]
+    window.rebuild_device_indexes()
+    opened: list[str] = []
+    monkeypatch.setattr(window, "open_selected_device_session", lambda: opened.append("telnet"))
+    monkeypatch.setattr(window, "open_selected_linux_session", lambda: opened.append("ssh"))
+    monkeypatch.setattr(window, "open_selected_serial_session", lambda: opened.append("serial"))
+
+    window.open_navigation_device_session(sample_device.id, "telnet")
+    window.open_navigation_device_session(sample_device.id, "ssh")
+    window.open_navigation_device_session(sample_device.id, "serial")
+
+    assert window.selected_device_id == sample_device.id
+    assert opened == ["telnet", "ssh", "serial"]
+
+
+def test_terminal_navigation_web_can_shrink_to_compact_sidebar(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    assert window.device_navigation_web.minimumWidth() == 0
+    assert window.device_navigation_web.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+    assert window.device_navigation_web.view.minimumWidth() == 0
+    assert window.device_navigation_web.view.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+
+
+def test_terminal_sidebar_stack_does_not_clip_compact_navigation(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.resize(1366, 768)
+    window.session_tab_widget.addTab(QWidget(), "Session")
+
+    window.show_terminal_workspace()
+    window.show()
+    QApplication.processEvents()
+
+    viewport_width = window.left_sidebar_content.viewport().width()
+
+    assert window.left_sidebar_compact
+    assert window.left_sidebar_content.widget().sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+    assert window.left_sidebar_content.widget().width() <= viewport_width
+    assert window.device_sidebar_panel.width() <= viewport_width
+    assert window.device_navigation_web.width() <= viewport_width
+
+    window.close()
 
 
 def test_web_pages_share_workspace_theme() -> None:
@@ -1152,17 +1375,29 @@ def test_web_pages_share_workspace_theme() -> None:
     assert "bridge.selectSession(session.tabId)" in web_shell_page
     assert "bridge.requestSessionContextMenu(session.tabId, point.x, point.y)" in web_shell_page
     assert "Terminal Workspace" in navigation_page
+    assert 'id="devices"' in navigation_page
+    assert "function renderDevices(rows)" in navigation_page
+    assert "bridge.requestDeviceConnect(deviceId, kind)" in navigation_page
+    assert 'actions.className = "device-actions"' in navigation_page
     assert 'item.setAttribute("role", "button")' in navigation_page
     assert 'item.setAttribute("aria-current", session.active ? "true" : "false")' in navigation_page
     assert "bridge.selectSession(session.tabId)" in navigation_page
+    assert "bridge.closeSession(session.tabId)" in navigation_page
     assert "bridge.requestSessionContextMenu(session.tabId, point.x, point.y)" in navigation_page
+    assert 'main.className = "session-main"' in navigation_page
+    assert 'meta.className = "session-meta"' in navigation_page
+    assert 'close.className = "session-close"' in navigation_page
+    assert 'event.stopPropagation()' in navigation_page
     assert 'item.addEventListener("contextmenu", (event) => requestSessionContext(item, session, event))' in navigation_page
     assert 'event.key === "ContextMenu"' in navigation_page
     assert 'event.shiftKey && event.key === "F10"' in navigation_page
     assert "bridge.requestHome()" in navigation_page
-    assert "@media (max-width: 320px)" in navigation_page
+    assert "@media (max-width: 420px)" in navigation_page
+    assert ".counts {\n        grid-template-columns: repeat(2, minmax(0, 1fr));" in navigation_page
+    assert ".metric:last-child {\n        grid-column: 1 / -1;" in navigation_page
+    assert "text-overflow: ellipsis;" in navigation_page
     assert ".actions button" in navigation_page
-    assert "grid-template-columns: minmax(0, 1fr);" in navigation_page
+    assert "grid-template-columns: minmax(0, 1fr) auto;" in navigation_page
     for page_name in ("web_shell.html", "device_navigation.html"):
         page = (web_root / page_name).read_text(encoding="utf-8")
         assert "#d6deeb" not in page
@@ -1338,9 +1573,12 @@ def test_left_device_pool_hides_on_home_and_returns_for_sessions(
 
     assert not window.left_sidebar_collapsed
     assert window.left_sidebar_compact
-    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_WIDTH
-    assert window.left_sidebar_shell.maximumWidth() == window.TERMINAL_SIDEBAR_WIDTH
-    assert window.left_sidebar_content.maximumWidth() == window.TERMINAL_SIDEBAR_CONTENT_WIDTH
+    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_MIN_WIDTH
+    assert window.left_sidebar_shell.maximumWidth() == window.TERMINAL_SIDEBAR_MAX_WIDTH
+    assert window.left_sidebar_content.minimumWidth() == window.TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH
+    assert window.left_sidebar_content.maximumWidth() == window.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH
+    window.handle_main_splitter_moved(500, 1)
+    assert window.terminal_sidebar_width == 500
     assert window.device_navigation_header.isHidden()
     assert window.device_context_panel.isHidden()
 

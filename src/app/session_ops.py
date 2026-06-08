@@ -1109,10 +1109,23 @@ class SessionOpsMixin:
         if device is None:
             return
         menu = self.new_workspace_menu(widget, self.temporary_device_display_name(device), "session-device")
+        close_action = menu.addAction("关闭此会话")
+        close_other_action = menu.addAction("关闭其他会话")
+        close_all_action = menu.addAction("关闭全部会话")
+        menu.addSeparator()
         actions = self._add_device_quick_actions(menu)
         self.update_device_quick_actions_for_device(actions, device)
         chosen = menu.exec(widget.mapToGlobal(pos))
         if chosen is None:
+            return
+        if chosen == close_action:
+            self.close_session_tab(tab_id)
+            return
+        if chosen == close_other_action:
+            self.close_other_session_tabs(tab_id)
+            return
+        if chosen == close_all_action:
+            self.close_all_session_tabs()
             return
         self._handle_device_quick_action(chosen, actions, device)
 
@@ -1125,10 +1138,23 @@ class SessionOpsMixin:
             return
         self.jump_to_session(tab_id)
         menu = self.new_workspace_menu(self, self.temporary_device_display_name(device), "session-device")
+        close_action = menu.addAction("关闭此会话")
+        close_other_action = menu.addAction("关闭其他会话")
+        close_all_action = menu.addAction("关闭全部会话")
+        menu.addSeparator()
         actions = self._add_device_quick_actions(menu)
         self.update_device_quick_actions_for_device(actions, device)
         chosen = menu.exec(QPoint(global_x, global_y))
         if chosen is None:
+            return
+        if chosen == close_action:
+            self.close_session_tab(tab_id)
+            return
+        if chosen == close_other_action:
+            self.close_other_session_tabs(tab_id)
+            return
+        if chosen == close_all_action:
+            self.close_all_session_tabs()
             return
         self._handle_device_quick_action(chosen, actions, device)
 
@@ -1845,6 +1871,8 @@ class SessionOpsMixin:
     def refresh_workspace_context(self) -> None:
         self.refresh_session_jump_combo()
         self.refresh_auto_response_rule_buttons()
+        if hasattr(self, "refresh_device_navigation_web"):
+            self.refresh_device_navigation_web()
         if hasattr(self, "refresh_web_shell"):
             self.refresh_web_shell()
 
@@ -1887,6 +1915,22 @@ class SessionOpsMixin:
                     if state is not None:
                         states.append(state)
         return states
+
+    def serialize_terminal_sessions(self) -> list[dict[str, object]]:
+        current_tab_id = self.current_session_key()
+        remembered: list[dict[str, object]] = []
+        for state in self.ordered_session_states():
+            remembered.append({
+                "device_id": state.device_id,
+                "kind": state.kind,
+                "title": state.title,
+                "host": state.host,
+                "port": state.port,
+                "active": state.tab_id == current_tab_id,
+            })
+            if len(remembered) >= 20:
+                break
+        return remembered
 
     def session_jump_text(self, state: SessionTabState) -> str:
         device = self.get_device_by_id(state.device_id)
@@ -2002,10 +2046,12 @@ class SessionOpsMixin:
             )
         if hasattr(self, "sync_activity_rail_state"):
             self.sync_activity_rail_state()
-        for widget_name in ("session_quick_action_bar", "command_record_frame"):
+        for widget_name in ("command_record_frame",):
             widget = getattr(self, widget_name, None)
             if widget is not None:
                 widget.setVisible(has_sessions and not show_home)
+        if hasattr(self, "apply_session_quick_bar_state"):
+            self.apply_session_quick_bar_state()
         compact_left = has_sessions and not show_home
         compact_changed = getattr(self, "left_sidebar_compact", False) != compact_left
         self.left_sidebar_compact = compact_left
@@ -2014,9 +2060,13 @@ class SessionOpsMixin:
         if show_home and not self.left_sidebar_collapsed:
             self.left_sidebar_collapsed = True
             self.apply_left_sidebar_state()
-        elif not show_home and has_sessions and self.left_sidebar_collapsed:
-            self.left_sidebar_collapsed = False
-            self.apply_left_sidebar_state()
+        elif not show_home and has_sessions:
+            remembered_collapsed = bool(getattr(self, "terminal_sidebar_collapsed", False))
+            if self.left_sidebar_collapsed != remembered_collapsed:
+                self.left_sidebar_collapsed = remembered_collapsed
+                self.apply_left_sidebar_state()
+            elif mode_changed or compact_changed:
+                self.apply_left_sidebar_state()
         elif mode_changed:
             self.left_sidebar_collapsed = show_home
             self.apply_left_sidebar_state()
@@ -2036,9 +2086,14 @@ class SessionOpsMixin:
     def show_terminal_workspace(self) -> None:
         if self.session_tab_widget.count() <= 0:
             return
+        was_in_terminal = getattr(self, "center_stage_mode", "home") != "home"
         self.center_stage_mode = "sessions"
         self.left_sidebar_active_panel = "devices"
-        self.left_sidebar_collapsed = False
+        if was_in_terminal and self.left_sidebar_collapsed:
+            self.terminal_sidebar_collapsed = False
+            self.left_sidebar_collapsed = False
+        else:
+            self.left_sidebar_collapsed = bool(getattr(self, "terminal_sidebar_collapsed", False))
         if hasattr(self, "left_sidebar_stack"):
             self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
@@ -2306,6 +2361,110 @@ class SessionOpsMixin:
             notes="本机终端，用于验证自动响应规则。",
         )
 
+    # ---- Remembered terminal sessions ----
+
+    def restore_remembered_terminal_sessions_once(self) -> None:
+        if getattr(self, "terminal_sessions_restored", False):
+            return
+        self.terminal_sessions_restored = True
+        remembered = list(getattr(self, "remembered_terminal_sessions", []))
+        if not remembered:
+            return
+
+        active_tab_id = ""
+        restored_count = 0
+        for item in remembered:
+            state = self.restore_remembered_terminal_session(item)
+            if state is None:
+                continue
+            restored_count += 1
+            if bool(item.get("active", False)):
+                active_tab_id = state.tab_id
+        if active_tab_id:
+            self.jump_to_session(active_tab_id)
+        elif restored_count:
+            self.show_terminal_workspace()
+        if restored_count:
+            self.set_status_message(f"已自动重连 {restored_count} 个上次终端会话")
+            self.schedule_desktop_state_save()
+
+    def restore_remembered_terminal_session(self, item: dict[str, object]) -> SessionTabState | None:
+        kind = str(item.get("kind") or "").strip()
+        device_id = str(item.get("device_id") or "").strip()
+        if kind not in {"device", "linux", "serial", "simulated"} or not device_id:
+            return None
+
+        device = self.simulated_device() if kind == "simulated" else self.get_device_by_id(device_id)
+        if device is None:
+            return None
+        if kind == "serial" and not self.can_view_serial_connection(device):
+            return None
+
+        host = str(item.get("host") or "").strip()
+        try:
+            port = int(item.get("port", 0))
+        except (TypeError, ValueError):
+            port = 0
+        host, port = self.remembered_session_endpoint(device, kind, host, port)
+        if not host:
+            return None
+
+        for existing in self.ordered_session_states():
+            if (
+                existing.device_id == device.id
+                and existing.kind == kind
+                and existing.host == host
+                and existing.port == port
+            ):
+                return existing
+
+        username, password = self.remembered_session_credentials(device, kind)
+        if kind != "simulated" and (not username or not password):
+            return None
+        credential_candidates = (
+            self.linux_ssh_credential_candidates(device, username, password)
+            if kind == "linux"
+            else None
+        )
+        title = str(item.get("title") or "").strip() or None
+        return self.ensure_session_tab(
+            kind=kind,
+            device=device,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            credential_candidates=credential_candidates,
+            title=title,
+            suppress_initial_error=True,
+        )
+
+    def remembered_session_endpoint(
+        self,
+        device: Device,
+        kind: str,
+        saved_host: str,
+        saved_port: int,
+    ) -> tuple[str, int]:
+        if saved_host:
+            return saved_host, saved_port
+        if kind == "simulated":
+            return "localhost", 0
+        if kind == "device":
+            return device.telnet_ip.strip(), device.telnet_port
+        if kind == "serial":
+            return device.serial_ip.strip(), device.serial_port
+        return device.ssh_ip.strip(), device.ssh_port
+
+    def remembered_session_credentials(self, device: Device, kind: str) -> tuple[str, str]:
+        if kind == "simulated":
+            return "sim", ""
+        if kind == "device":
+            return self.session_telnet_credentials(device)
+        if kind == "serial":
+            return self.session_serial_credentials(device)
+        return self.session_ssh_credentials(device)
+
     # ---- Session tab management ----
 
     def ensure_session_tab(
@@ -2317,6 +2476,8 @@ class SessionOpsMixin:
         username: str,
         password: str,
         credential_candidates: list[tuple[str, str]] | None = None,
+        title: str | None = None,
+        suppress_initial_error: bool = False,
     ) -> SessionTabState | None:
         if not host:
             self.show_warning("目标地址不能为空。")
@@ -2324,7 +2485,10 @@ class SessionOpsMixin:
 
         self.center_stage_mode = "sessions"
         device_tab = self.ensure_device_tab(device)
-        title = self.next_session_title(device_tab, kind)
+        if title:
+            self.advance_session_title_counter(device_tab, kind, title)
+        else:
+            title = self.next_session_title(device_tab, kind)
         tab_id = self.next_session_tab_id(device.id, kind)
         state = self._create_session_tab(
             tab_id=tab_id,
@@ -2337,6 +2501,7 @@ class SessionOpsMixin:
             password=password,
             credential_candidates=credential_candidates,
         )
+        state.suppress_next_connection_error = suppress_initial_error
         self.session_tabs_by_id[tab_id] = state
         target_tabs = self.active_session_tabs_for_device(device_tab)
         index = target_tabs.addTab(state.page, title)
@@ -2350,6 +2515,7 @@ class SessionOpsMixin:
         self.update_controls()
         self.focus_current_terminal()
         self.connect_session_tab(tab_id)
+        self.schedule_desktop_state_save()
         return state
 
     def ensure_device_tab(self, device: Device) -> DeviceTabState:
@@ -2448,6 +2614,20 @@ class SessionOpsMixin:
         number = device_tab.next_ssh_index
         device_tab.next_ssh_index += 1
         return f"SSH #{number}"
+
+    def advance_session_title_counter(self, device_tab: DeviceTabState, kind: str, title: str) -> None:
+        match = re.search(r"#\s*(\d+)", title)
+        if match is None:
+            return
+        next_index = int(match.group(1)) + 1
+        if kind == "simulated":
+            device_tab.next_session_index = max(device_tab.next_session_index, next_index)
+        elif kind == "device":
+            device_tab.next_telnet_index = max(device_tab.next_telnet_index, next_index)
+        elif kind == "serial":
+            device_tab.next_serial_index = max(device_tab.next_serial_index, next_index)
+        else:
+            device_tab.next_ssh_index = max(device_tab.next_ssh_index, next_index)
 
     def next_session_tab_id(self, device_id: str, kind: str) -> str:
         tab_id = f"{device_id}:{kind}:{self.next_session_sequence}"
@@ -2748,6 +2928,53 @@ class SessionOpsMixin:
             if index >= 0:
                 self.close_child_session_tab_at_index(device_tab.device_id, index, tabs)
 
+    def close_session_tab(self, tab_id: str) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            self.refresh_workspace_context()
+            return
+        device_tab = self.device_tabs_by_id.get(state.device_id)
+        if device_tab is None:
+            return
+        tabs = self.find_session_tab_widget(device_tab, state.page)
+        if tabs is None:
+            return
+        index = tabs.indexOf(state.page)
+        if index >= 0:
+            self.close_child_session_tab_at_index(device_tab.device_id, index, tabs)
+
+    def close_other_session_tabs(self, keep_tab_id: str) -> None:
+        states = [state for state in self.ordered_session_states() if state.tab_id != keep_tab_id]
+        if not states:
+            self.set_status_message("没有其他可关闭的终端会话。")
+            return
+        for state in states:
+            self.close_session_tab(state.tab_id)
+        self.set_status_message(f"正在关闭 {len(states)} 个其他终端会话。")
+
+    def close_all_session_tabs(self) -> None:
+        states = self.ordered_session_states()
+        if not states:
+            self.set_status_message("当前没有可关闭的终端会话。")
+            return
+        for device_tab in list(self.device_tabs_by_id.values()):
+            self.close_device_tab_state(device_tab)
+        self.set_status_message(f"正在关闭 {len(states)} 个终端会话。")
+
+    def close_current_session(self) -> None:
+        state = self.current_session_state()
+        if state is None:
+            self.set_status_message("当前没有可关闭的终端会话。")
+            return
+        self.close_session_tab(state.tab_id)
+
+    def close_other_current_session_tabs(self) -> None:
+        state = self.current_session_state()
+        if state is None:
+            self.set_status_message("当前没有可保留的终端会话。")
+            return
+        self.close_other_session_tabs(state.tab_id)
+
     def connect_session_tab(self, tab_id: str) -> None:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
@@ -2820,6 +3047,7 @@ class SessionOpsMixin:
                         current_state.username,
                         current_state.password,
                     )
+            current_state.suppress_next_connection_error = False
             current_state.connecting = False
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Connected")
@@ -2830,6 +3058,8 @@ class SessionOpsMixin:
             current_state = self.session_tabs_by_id.get(tab_id)
             if current_state is None:
                 return
+            suppress_error_dialog = current_state.suppress_next_connection_error
+            current_state.suppress_next_connection_error = False
             current_state.connecting = False
             self.set_session_status(tab_id, "Disconnected")
             self.write_session_log_line(current_state, "SYS", f"Connection failed: {exc}")
@@ -2840,7 +3070,8 @@ class SessionOpsMixin:
                     self.set_status_message(f"连接超时: {current_state.title}")
                     self.update_controls()
                     return
-                self.show_error(str(exc))
+                if not suppress_error_dialog:
+                    self.show_error(str(exc))
                 self.set_status_message(f"连接失败: {exc}")
                 self.update_controls()
                 return
@@ -3324,6 +3555,7 @@ class SessionOpsMixin:
             self.refresh_workspace_context()
             self._refresh_tab_header_styles()
             self.update_controls()
+            self.schedule_desktop_state_save()
 
         self.run_coro(disconnect(), on_success=finalize_close, on_error=lambda _exc: finalize_close())
 
@@ -3371,6 +3603,7 @@ class SessionOpsMixin:
             self.refresh_workspace_context()
             self._refresh_tab_header_styles()
             self.update_controls()
+            self.schedule_desktop_state_save()
 
         if not child_states:
             finalize_close()

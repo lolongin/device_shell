@@ -73,6 +73,8 @@ class TableOpsMixin:
             self.rebuild_device_indexes()
             self.refresh_domain_options()
             self.apply_filters()
+            if hasattr(self, "restore_remembered_terminal_sessions_once"):
+                self.restore_remembered_terminal_sessions_once()
             self.set_status_message(f"已加载 {len(self.devices)} 台设备")
             self.schedule_next_refresh()
 
@@ -351,11 +353,17 @@ class TableOpsMixin:
                     "name": device.device_type if grouped else self.device_table_device_name_text(device),
                     "boardType": self.device_table_board_type_text(device),
                     "cpu": device.cpu,
-                    "slot": device.rack,
+                    "slot": device.slot_id,
                     "statusKind": self.device_status_kind(device),
                     "statusText": self.device_table_status_text(device),
                     "statusTooltip": self.device_occupancy_tooltip(device),
                     "selected": device.id == self.selected_device_id,
+                    "telnet": f"{device.telnet_ip}:{device.telnet_port}" if device.telnet_ip else "",
+                    "ssh": f"{device.ssh_ip}:{device.ssh_port}" if device.ssh_ip else "",
+                    "serial": self.device_serial_connection_text(device)
+                    if self.should_show_serial_connection_text(device)
+                    else "",
+                    "canSerial": self.can_view_serial_connection(device),
                 }
             )
         return {
@@ -413,7 +421,7 @@ class TableOpsMixin:
                 device.device_type,
                 board_type,
                 device.cpu,
-                device.rack,
+                device.slot_id,
                 device.status,
                 self.device_occupancy_duration_text(device),
             ),
@@ -458,9 +466,9 @@ class TableOpsMixin:
             self.device_table,
             row,
             4,
-            device.rack,
+            device.slot_id,
             device.id,
-            highlight=self.text_matches_keyword(device.rack, keyword),
+            highlight=self.text_matches_keyword(device.slot_id, keyword),
         )
         status_text = self.device_table_status_text(device)
         self._set_table_item(
@@ -645,7 +653,7 @@ class TableOpsMixin:
                     device.device_type,
                     self.device_table_board_type_text(device),
                     device.cpu,
-                    device.rack,
+                    device.slot_id,
                     device.status,
                     device.owner,
                     self.device_occupancy_started_text(device),
@@ -694,9 +702,105 @@ class TableOpsMixin:
         if web_nav is not None and hasattr(web_nav, "set_payload"):
             web_nav.set_payload(self.session_navigation_payload())
 
+    def terminal_navigation_default_device_ids(self, limit: int = 10) -> list[str]:
+        ids: list[str] = []
+
+        def add(device_id: str) -> None:
+            if device_id and device_id not in ids:
+                ids.append(device_id)
+
+        add(getattr(self, "selected_device_id", ""))
+        if hasattr(self, "ordered_session_states"):
+            for state in self.ordered_session_states():
+                add(state.device_id)
+        for device_id in getattr(self, "recent_device_ids", []):
+            add(device_id)
+        for device in getattr(self, "owned_visible_devices", []):
+            add(device.id)
+        for device in getattr(self, "visible_devices", []):
+            if device.status == STATUS_IDLE:
+                add(device.id)
+            if len(ids) >= limit:
+                break
+        if len(ids) < limit:
+            for device in self.navigation_devices():
+                add(device.id)
+                if len(ids) >= limit:
+                    break
+        return ids[:limit]
+
+    def terminal_navigation_device_rows(self) -> list[dict[str, object]]:
+        return [self.terminal_navigation_device_row(device) for device in self.navigation_devices()]
+
+    def terminal_navigation_device_row(self, device: Device) -> dict[str, object]:
+        helper = self.device_short_identity(device)
+        detail_parts = [
+            ("ID", device.id),
+            ("板卡", self.device_table_board_type_text(device)),
+            ("CPU", device.cpu),
+            ("Slot", device.slot_id),
+            ("领域", device.domain),
+            ("Telnet", f"{device.telnet_ip}:{device.telnet_port}" if device.telnet_ip else ""),
+            ("SSH", f"{device.ssh_ip}:{device.ssh_port}" if device.ssh_ip else ""),
+            (
+                "串口",
+                self.device_serial_connection_text(device)
+                if self.should_show_serial_connection_text(device)
+                else "",
+            ),
+        ]
+        detail = "\n".join(f"{label}: {value}" for label, value in detail_parts if value)
+        return {
+            "id": device.id,
+            "name": self.temporary_device_display_name(device),
+            "shortIdentity": helper,
+            "boardId": device.board_id,
+            "boardType": self.device_table_board_type_text(device),
+            "cpu": device.cpu,
+            "slot": device.slot_id,
+            "domain": device.domain,
+            "statusKind": self.device_status_kind(device),
+            "statusText": self.device_table_status_text(device),
+            "statusTooltip": self.device_occupancy_tooltip(device),
+            "selected": device.id == self.selected_device_id,
+            "telnet": f"{device.telnet_ip}:{device.telnet_port}" if device.telnet_ip else "",
+            "ssh": f"{device.ssh_ip}:{device.ssh_port}" if device.ssh_ip else "",
+            "serial": self.device_serial_connection_text(device)
+            if self.should_show_serial_connection_text(device)
+            else "",
+            "canSerial": self.can_view_serial_connection(device),
+            "searchText": self.device_search_text(device),
+            "detail": detail,
+        }
+
+    @staticmethod
+    def compact_endpoint(value: str) -> str:
+        text = value.strip()
+        if not text:
+            return ""
+        host = text.split(":", 1)[0]
+        parts = host.split(".")
+        if len(parts) == 4 and all(part.isdigit() for part in parts):
+            return ".".join(parts[-2:])
+        return host
+
+    def device_short_identity(self, device: Device) -> str:
+        for value in (
+            device.ssh_ip,
+            device.telnet_ip,
+            device.serial_ip if self.can_view_serial_connection(device) else "",
+            device.board_id,
+            device.id,
+        ):
+            text = self.compact_endpoint(str(value))
+            if text:
+                return text
+        return "-"
+
     def session_navigation_payload(self) -> dict[str, object]:
         current_tab_id = self.current_session_key() if hasattr(self, "current_session_key") else ""
         current_device = self.get_selected_device()
+        navigation_payload = self.device_navigation_payload()
         sessions: list[dict[str, object]] = []
         connected = 0
         connecting = 0
@@ -734,11 +838,22 @@ class TableOpsMixin:
                 "name": self.temporary_device_display_name(current_device),
                 "boardType": self.device_table_board_type_text(current_device),
                 "cpu": current_device.cpu,
-                "slot": current_device.rack,
+                "slot": current_device.slot_id,
                 "statusText": self.device_table_status_text(current_device),
                 "statusKind": self.device_status_kind(current_device),
+                "telnet": f"{current_device.telnet_ip}:{current_device.telnet_port}" if current_device.telnet_ip else "",
+                "ssh": f"{current_device.ssh_ip}:{current_device.ssh_port}" if current_device.ssh_ip else "",
+                "serial": self.device_serial_connection_text(current_device)
+                if self.should_show_serial_connection_text(current_device)
+                else "",
+                "canSerial": self.can_view_serial_connection(current_device),
             }
         return {
+            "navigationState": {
+                "activeTab": getattr(self, "terminal_navigation_active_tab", "devices"),
+                "deviceQuery": getattr(self, "terminal_navigation_device_query", ""),
+                "expandedDeviceId": getattr(self, "terminal_navigation_expanded_device_id", ""),
+            },
             "summary": f"{len(sessions)} 个终端会话",
             "stats": {
                 "total": len(sessions),
@@ -748,6 +863,10 @@ class TableOpsMixin:
             },
             "sessions": sessions,
             "selectedDevice": selected_device,
+            "rows": navigation_payload.get("rows", []),
+            "devices": self.terminal_navigation_device_rows(),
+            "defaultDeviceIds": self.terminal_navigation_default_device_ids(),
+            "deviceTotal": len(self.navigation_devices()),
         }
 
     def web_shell_payload(self) -> dict[str, object]:
@@ -761,7 +880,7 @@ class TableOpsMixin:
                 "domain": device.domain,
                 "boardType": self.device_table_board_type_text(device),
                 "cpu": device.cpu,
-                "slot": device.rack,
+                "slot": device.slot_id,
                 "statusText": self.device_table_status_text(device),
                 "statusKind": self.device_status_kind(device),
                 "owner": device.owner or "未占用",
@@ -999,7 +1118,7 @@ class TableOpsMixin:
             self.device_table_device_name_text(device),
             device.device_type,
             device.cpu,
-            device.rack,
+            device.slot_id,
             self.device_table_status_text(device),
         ])
 

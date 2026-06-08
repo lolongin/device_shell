@@ -173,7 +173,12 @@ try:
     from ..widgets.device_navigation_web_widget import DeviceNavigationWebWidget
     from ..widgets.web_shell_widget import WebShellWidget
     from ..widgets.search_input import SelectAllLineEdit
-    from ..widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
+    from ..widgets.command_record import (
+        CommandRecordInput,
+        CommandRecordResizeHandle,
+        HorizontalResizeHandle,
+        VerticalResizeHandle,
+    )
     from ..widgets.password_field import configure_password_visibility
     from ..widgets.terminal_widget import (
         ANSI_ESCAPE_RE,
@@ -207,7 +212,12 @@ except ImportError:
     from widgets.device_navigation_web_widget import DeviceNavigationWebWidget
     from widgets.web_shell_widget import WebShellWidget
     from widgets.search_input import SelectAllLineEdit
-    from widgets.command_record import CommandRecordInput, CommandRecordResizeHandle
+    from widgets.command_record import (
+        CommandRecordInput,
+        CommandRecordResizeHandle,
+        HorizontalResizeHandle,
+        VerticalResizeHandle,
+    )
     from widgets.password_field import configure_password_visibility
     from widgets.terminal_widget import (
         ANSI_ESCAPE_RE,
@@ -250,6 +260,13 @@ if PYSIDE6_IMPORT_ERROR is None:
         ACTIVITY_RAIL_WIDTH = 46
         TERMINAL_SIDEBAR_WIDTH = 360
         TERMINAL_SIDEBAR_CONTENT_WIDTH = 300
+        TERMINAL_SIDEBAR_MIN_WIDTH = 300
+        TERMINAL_SIDEBAR_MAX_WIDTH = 620
+        TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH = 230
+        TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH = 560
+        TERMINAL_NAVIGATION_WEB_DEFAULT_HEIGHT = 500
+        TERMINAL_NAVIGATION_WEB_MIN_HEIGHT = 320
+        TERMINAL_NAVIGATION_WEB_MAX_HEIGHT = 900
         TOOL_SIDEBAR_WIDTH = 520
         COMMAND_RECORD_COLLAPSED_HEIGHT = 25
         COMMAND_RECORD_DEFAULT_HEIGHT = 148
@@ -289,18 +306,28 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_enter_sends = False
             self.command_find_replace_visible = False
             self.command_record_height = self.COMMAND_RECORD_DEFAULT_HEIGHT
+            self.session_quick_bar_collapsed = False
+            self.session_jump_combo_width = 280
             self.command_history: list[CommandHistoryItem] = []
             self.command_suggestion_buttons: list[QToolButton] = []
             self.current_command_suggestions: list[str] = []
             self.connection_params_collapsed = False
             self.device_navigation_collapsed = False
+            self.terminal_navigation_active_tab = "devices"
+            self.terminal_navigation_device_query = ""
+            self.terminal_navigation_expanded_device_id = ""
+            self.terminal_navigation_web_height = self.TERMINAL_NAVIGATION_WEB_DEFAULT_HEIGHT
+            self.terminal_sidebar_collapsed = False
             self.left_sidebar_collapsed = False
             self.left_sidebar_compact = False
+            self.terminal_sidebar_width = self.TERMINAL_SIDEBAR_WIDTH
             self.center_stage_mode = "home"
             self._last_center_stage_mode: str | None = None
             self.always_on_top = False
             self.remembered_auto_response_rules = []
             self.remembered_quick_send_buttons = default_quick_send_buttons()
+            self.remembered_terminal_sessions: list[dict[str, object]] = []
+            self.terminal_sessions_restored = False
             self.state_path = self.desktop_state_path()
             self.log_directory = self.default_log_directory()
             self.log_rotate_size_bytes = self.DEFAULT_LOG_ROTATE_SIZE_MB * 1024 * 1024
@@ -410,6 +437,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter.setSizes([520, 1080])
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
+            splitter.splitterMoved.connect(self.handle_main_splitter_moved)
             self.apply_left_sidebar_state()
 
             self.setCentralWidget(root)
@@ -586,8 +614,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.device_table.setVisible(False)
             nav_body_layout.addWidget(self.device_table)
             self.device_navigation_web = DeviceNavigationWebWidget(self)
-            self.device_navigation_web.setMinimumHeight(360)
+            self.apply_terminal_navigation_web_height()
             nav_body_layout.addWidget(self.device_navigation_web, 1)
+            self.device_navigation_resize_handle = VerticalResizeHandle(
+                self.resize_terminal_navigation_web,
+                self.device_navigation_body,
+                height_provider=lambda: self.device_navigation_web.height(),
+                grow_down=True,
+            )
+            self.device_navigation_resize_handle.setObjectName("terminalNavigationResizeHandle")
+            self.device_navigation_resize_handle.setToolTip("上下拖动调整终端导航区域高度")
+            nav_body_layout.addWidget(self.device_navigation_resize_handle)
             nav_layout.addWidget(self.device_navigation_body)
             self.device_context_panel = self._build_device_context_panel()
             nav_layout.addWidget(self.device_context_panel)
@@ -595,6 +632,10 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addStretch(1)
             stack_container = QWidget()
             stack_container.setObjectName("leftRail")
+            stack_container.setMinimumWidth(0)
+            if QSizePolicy is not None:
+                stack_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            self.left_sidebar_stack_container = stack_container
             self.left_sidebar_stack = QStackedLayout(stack_container)
             self.left_sidebar_stack.setContentsMargins(0, 0, 0, 0)
             self.left_sidebar_stack.addWidget(device_panel)
@@ -1235,6 +1276,14 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawLine(5, 5, 15, 15)
                 painter.drawLine(7, 13, 13, 7)
                 painter.drawLine(6, 15, 14, 15)
+            elif kind == "close":
+                painter.drawLine(6, 6, 14, 14)
+                painter.drawLine(14, 6, 6, 14)
+                painter.drawRoundedRect(4, 4, 12, 12, 2, 2)
+            elif kind == "collapse":
+                painter.drawLine(5, 7, 15, 7)
+                painter.drawLine(5, 13, 15, 13)
+                painter.drawLine(7, 10, 13, 10)
             painter.end()
             return QIcon(pixmap)
 
@@ -1294,19 +1343,26 @@ if PYSIDE6_IMPORT_ERROR is None:
             terminal_ops_label = QLabel("TERMINAL OPS")
             self.terminal_ops_label = terminal_ops_label
             terminal_ops_label.setObjectName("terminalOpsLabel")
-            quick_action_row.addWidget(terminal_ops_label)
+            terminal_ops_label.setVisible(False)
             self.session_jump_combo = QComboBox()
             self.session_jump_combo.setObjectName("sessionJumpCombo")
-            self.session_jump_combo.setMinimumWidth(240)
-            self.session_jump_combo.setMaximumWidth(360)
+            self.session_jump_combo.setMinimumWidth(180)
+            self.session_jump_combo.setMaximumWidth(520)
+            self.session_jump_combo.setFixedWidth(self.session_jump_combo_width)
             self.session_jump_combo.setToolTip("快速跳转到已打开的终端会话")
-            quick_action_row.addWidget(self.session_jump_combo)
+            self.session_jump_combo.setVisible(False)
+            self.session_jump_resize_handle = HorizontalResizeHandle(
+                self.resize_session_jump_combo,
+                quick_action_bar,
+                width_provider=lambda: self.session_jump_combo.width(),
+            )
+            self.session_jump_resize_handle.setObjectName("sessionJumpResizeHandle")
+            self.session_jump_resize_handle.setVisible(False)
             self.session_count_label = QLabel("0 会话")
             self.session_count_label.setObjectName("terminalSessionCountPill")
             self.session_count_label.setMinimumWidth(58)
             self.session_count_label.setAlignment(Qt.AlignCenter)
-            quick_action_row.addWidget(self.session_count_label)
-            quick_action_row.addStretch(1)
+            self.session_count_label.setVisible(False)
             self.auto_response_rule_bar = QFrame()
             self.auto_response_rule_bar.setObjectName("autoResponseRuleBar")
             self.auto_response_rule_bar.setMinimumHeight(30)
@@ -1363,15 +1419,55 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "断开当前会话",
                 danger=True,
             )
+            self.quick_close_button = QToolButton()
+            self._configure_quick_action_button(
+                self.quick_close_button,
+                "close",
+                "关闭终端会话",
+                danger=True,
+            )
+            self.quick_close_menu = self.new_workspace_menu(
+                self.quick_close_button,
+                kind="close-session-menu",
+            )
+            self.quick_close_current_action = self.quick_close_menu.addAction("关闭当前会话")
+            self.quick_close_other_action = self.quick_close_menu.addAction("关闭其他会话")
+            self.quick_close_all_action = self.quick_close_menu.addAction("关闭全部会话")
+            self.quick_close_button.setMenu(self.quick_close_menu)
+            self.quick_close_button.setPopupMode(QToolButton.InstantPopup)
+            self.session_quick_bar_toggle_button = QToolButton()
+            self._configure_quick_action_button(
+                self.session_quick_bar_toggle_button,
+                "collapse",
+                "隐藏会话工具栏",
+            )
             quick_action_row.addWidget(self.quick_reconnect_button)
             quick_action_row.addWidget(self.quick_auto_response_button)
             quick_action_row.addWidget(self.quick_log_button)
             quick_action_row.addSpacing(6)
             quick_action_row.addWidget(self.quick_disconnect_button)
+            quick_action_row.addWidget(self.quick_close_button)
+            quick_action_row.addWidget(self.session_quick_bar_toggle_button)
+            quick_action_row.addStretch(1)
             quick_action_layout.addLayout(quick_action_row)
             quick_action_layout.addWidget(self.auto_response_rule_bar)
             layout.addWidget(quick_action_bar)
+            restore_bar = QFrame()
+            self.session_quick_restore_bar = restore_bar
+            restore_bar.setObjectName("sessionQuickRestoreBar")
+            restore_layout = QHBoxLayout(restore_bar)
+            restore_layout.setContentsMargins(8, 3, 8, 3)
+            restore_layout.setSpacing(6)
+            self.session_quick_restore_button = QToolButton()
+            self.session_quick_restore_button.setObjectName("sessionQuickRestoreButton")
+            self.session_quick_restore_button.setText("会话工具")
+            self.session_quick_restore_button.setToolTip("显示会话工具栏")
+            self.session_quick_restore_button.setCursor(Qt.PointingHandCursor)
+            restore_layout.addWidget(self.session_quick_restore_button)
+            restore_layout.addStretch(1)
+            layout.addWidget(restore_bar)
             layout.addWidget(self._build_command_record_panel())
+            self.apply_session_quick_bar_state()
             self.refresh_workspace_context()
             self.update_center_stage_state()
             return panel
@@ -1696,7 +1792,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.clear_filters_button.clicked.connect(self.clear_filters)
             if hasattr(self, "device_navigation_web"):
                 self.device_navigation_web.device_selected.connect(self.activate_device)
+                self.device_navigation_web.device_connect_requested.connect(self.open_navigation_device_session)
                 self.device_navigation_web.session_selected.connect(self.jump_to_session)
+                self.device_navigation_web.session_close_requested.connect(self.close_session_tab)
+                self.device_navigation_web.session_close_others_requested.connect(self.close_other_session_tabs)
+                self.device_navigation_web.session_close_all_requested.connect(self.close_all_session_tabs)
                 self.device_navigation_web.session_context_requested.connect(
                     self.show_web_session_context_menu
                 )
@@ -1706,6 +1806,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.device_navigation_web.clear_requested.connect(self.clear_filters)
                 self.device_navigation_web.device_context_requested.connect(
                     self.show_web_device_context_menu
+                )
+                self.device_navigation_web.navigation_state_changed.connect(
+                    self.apply_terminal_navigation_state
                 )
             if hasattr(self, "web_shell"):
                 self.web_shell.device_selected.connect(self.activate_device)
@@ -1736,6 +1839,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_log_change_directory_action.triggered.connect(self.change_log_directory)
             self.quick_log_rotate_size_action.triggered.connect(self.change_log_rotate_size)
             self.quick_disconnect_button.clicked.connect(self.disconnect_current_session)
+            self.quick_close_current_action.triggered.connect(self.close_current_session)
+            self.quick_close_other_action.triggered.connect(self.close_other_current_session_tabs)
+            self.quick_close_all_action.triggered.connect(self.close_all_session_tabs)
+            self.session_quick_bar_toggle_button.clicked.connect(self.toggle_session_quick_bar)
+            self.session_quick_restore_button.clicked.connect(
+                lambda _checked=False: self.set_session_quick_bar_collapsed(False)
+            )
             self.always_on_top_button.toggled.connect(self.toggle_always_on_top)
             self.session_jump_combo.activated.connect(self.handle_session_jump_activated)
             self.command_send_button.clicked.connect(self.submit_current_command_record)
@@ -1806,6 +1916,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.cpu_input.blockSignals(False)
                 self.my_occupancy_filter_button.blockSignals(False)
             self.apply_filters()
+
+        def apply_terminal_navigation_state(self, state: dict[str, object]) -> None:
+            tab = str(state.get("activeTab") or "").strip().lower()
+            if tab in {"sessions", "devices"}:
+                self.terminal_navigation_active_tab = tab
+            query = str(state.get("deviceQuery") or "")
+            if len(query) <= 120:
+                self.terminal_navigation_device_query = query
+            expanded_device_id = str(state.get("expandedDeviceId") or "")
+            self.terminal_navigation_expanded_device_id = expanded_device_id
+            self.schedule_desktop_state_save()
 
         def handle_web_shell_action(self, action: str) -> None:
             if action == "sessions":
@@ -1898,12 +2019,40 @@ if PYSIDE6_IMPORT_ERROR is None:
 
         def toggle_left_sidebar(self) -> None:
             self.left_sidebar_collapsed = not self.left_sidebar_collapsed
+            if (
+                getattr(self, "left_sidebar_active_panel", "devices") == "devices"
+                and getattr(self, "center_stage_mode", "home") != "home"
+            ):
+                self.terminal_sidebar_collapsed = self.left_sidebar_collapsed
             self.apply_left_sidebar_state()
             self.schedule_desktop_state_save()
+
+        def handle_main_splitter_moved(self, pos: int, index: int) -> None:
+            del index
+            if getattr(self, "left_sidebar_collapsed", False):
+                return
+            if not getattr(self, "left_sidebar_compact", False):
+                return
+            width = max(self.TERMINAL_SIDEBAR_MIN_WIDTH, min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(pos)))
+            if width == getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH):
+                return
+            self.terminal_sidebar_width = width
+            self.schedule_desktop_state_save()
+
+        def open_navigation_device_session(self, device_id: str, kind: str) -> None:
+            self.activate_device(device_id)
+            normalized = kind.strip().lower()
+            if normalized == "ssh":
+                self.open_selected_linux_session()
+            elif normalized == "serial":
+                self.open_selected_serial_session()
+            else:
+                self.open_selected_device_session()
 
         def toggle_device_sidebar_panel(self) -> None:
             if not self.left_sidebar_collapsed and self.left_sidebar_active_panel == "devices":
                 self.left_sidebar_collapsed = True
+                self.terminal_sidebar_collapsed = True
                 self.apply_left_sidebar_state()
                 self.schedule_desktop_state_save()
                 return
@@ -1913,6 +2062,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             if self.session_tab_widget.count() <= 0:
                 return
             self.left_sidebar_active_panel = "devices"
+            self.terminal_sidebar_collapsed = False
             self.left_sidebar_collapsed = False
             self.show_terminal_workspace()
 
@@ -1935,6 +2085,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             if self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = False
+            if panel == "devices":
+                self.terminal_sidebar_collapsed = False
             self.apply_left_sidebar_state()
             self.schedule_desktop_state_save()
 
@@ -1945,6 +2097,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             showing_device_panel = getattr(self, "left_sidebar_active_panel", "devices") == "devices"
             collapsed = self.left_sidebar_collapsed or (on_home and showing_device_panel)
             compact = bool(getattr(self, "left_sidebar_compact", False)) and not collapsed
+            compact_width = max(
+                self.TERMINAL_SIDEBAR_MIN_WIDTH,
+                min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH))),
+            )
+            self.terminal_sidebar_width = compact_width
             if hasattr(self, "device_navigation_header"):
                 self.device_navigation_header.setVisible(not compact)
             if hasattr(self, "device_context_panel"):
@@ -1962,16 +2119,16 @@ if PYSIDE6_IMPORT_ERROR is None:
                     self.left_sidebar_animation.stop()
                     self.left_sidebar_animation = None
                 self.left_sidebar_content.setVisible(not collapsed)
-                content_minimum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 420
-                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 760
+                content_minimum = self.TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH if compact else 420
+                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH if compact else 760
                 self.left_sidebar_content.setMinimumWidth(0 if collapsed else content_minimum)
                 self.left_sidebar_content.setMaximumWidth(0 if collapsed else content_maximum)
                 if hasattr(self, "left_sidebar_layout"):
                     self.left_sidebar_layout.setContentsMargins(0, 0, 0 if collapsed else 8, 0)
                     self.left_sidebar_layout.setSpacing(0 if collapsed else 8)
                 if hasattr(self, "left_sidebar_shell"):
-                    shell_minimum = self.TERMINAL_SIDEBAR_WIDTH if compact else 480
-                    shell_maximum = self.TERMINAL_SIDEBAR_WIDTH if compact else 820
+                    shell_minimum = self.TERMINAL_SIDEBAR_MIN_WIDTH if compact else 480
+                    shell_maximum = self.TERMINAL_SIDEBAR_MAX_WIDTH if compact else 820
                     self.left_sidebar_shell.setMinimumWidth(
                         self.ACTIVITY_RAIL_WIDTH if collapsed else shell_minimum
                     )
@@ -1986,11 +2143,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     left_width = (
                         self.ACTIVITY_RAIL_WIDTH
                         if collapsed
-                        else (
-                            self.TERMINAL_SIDEBAR_WIDTH
-                            if compact
-                            else self.TOOL_SIDEBAR_WIDTH
-                        )
+                        else (compact_width if compact else self.TOOL_SIDEBAR_WIDTH)
                     )
                     if total > 0:
                         splitter.setSizes([left_width, max(1, total - left_width)])
@@ -2053,11 +2206,15 @@ if PYSIDE6_IMPORT_ERROR is None:
                 else max(self.ACTIVITY_RAIL_WIDTH, shell.width())
             )
             compact = bool(getattr(self, "left_sidebar_compact", False)) and not collapsed
+            compact_width = max(
+                self.TERMINAL_SIDEBAR_MIN_WIDTH,
+                min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH))),
+            )
             end_width = (
                 self.ACTIVITY_RAIL_WIDTH
                 if collapsed
                 else (
-                    self.TERMINAL_SIDEBAR_WIDTH
+                    compact_width
                     if compact
                     else self.TOOL_SIDEBAR_WIDTH
                 )
@@ -2088,13 +2245,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             animation.valueChanged.connect(apply_width)
 
             def finish() -> None:
-                content_minimum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 420
-                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_WIDTH if compact else 760
+                content_minimum = self.TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH if compact else 420
+                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH if compact else 760
                 content.setMinimumWidth(0 if collapsed else content_minimum)
                 content.setMaximumWidth(0 if collapsed else content_maximum)
                 content.setVisible(not collapsed)
-                shell_minimum = self.TERMINAL_SIDEBAR_WIDTH if compact else 480
-                shell_maximum = self.TERMINAL_SIDEBAR_WIDTH if compact else 820
+                shell_minimum = self.TERMINAL_SIDEBAR_MIN_WIDTH if compact else 480
+                shell_maximum = self.TERMINAL_SIDEBAR_MAX_WIDTH if compact else 820
                 shell.setMinimumWidth(
                     self.ACTIVITY_RAIL_WIDTH if collapsed else shell_minimum
                 )
@@ -2110,6 +2267,62 @@ if PYSIDE6_IMPORT_ERROR is None:
             animation.finished.connect(finish)
             self.left_sidebar_animation = animation
             animation.start()
+
+        def resize_session_jump_combo(self, width: int) -> None:
+            if not hasattr(self, "session_jump_combo"):
+                return
+            target = max(180, min(520, int(width)))
+            self.session_jump_combo_width = target
+            self.session_jump_combo.setFixedWidth(target)
+            self.session_jump_combo.updateGeometry()
+
+        def clamp_terminal_navigation_web_height(self, height: int) -> int:
+            return max(
+                self.TERMINAL_NAVIGATION_WEB_MIN_HEIGHT,
+                min(self.TERMINAL_NAVIGATION_WEB_MAX_HEIGHT, int(height)),
+            )
+
+        def resize_terminal_navigation_web(self, height: int) -> None:
+            self.terminal_navigation_web_height = self.clamp_terminal_navigation_web_height(height)
+            self.apply_terminal_navigation_web_height()
+            self.schedule_desktop_state_save()
+
+        def apply_terminal_navigation_web_height(self) -> None:
+            web_nav = getattr(self, "device_navigation_web", None)
+            if web_nav is None:
+                return
+            height = self.clamp_terminal_navigation_web_height(
+                getattr(
+                    self,
+                    "terminal_navigation_web_height",
+                    self.TERMINAL_NAVIGATION_WEB_DEFAULT_HEIGHT,
+                )
+            )
+            self.terminal_navigation_web_height = height
+            web_nav.setMinimumHeight(height)
+            web_nav.setMaximumHeight(height)
+            web_nav.updateGeometry()
+
+        def toggle_session_quick_bar(self) -> None:
+            self.session_quick_bar_collapsed = not self.session_quick_bar_collapsed
+            self.apply_session_quick_bar_state()
+
+        def set_session_quick_bar_collapsed(self, collapsed: bool) -> None:
+            self.session_quick_bar_collapsed = collapsed
+            self.apply_session_quick_bar_state()
+
+        def apply_session_quick_bar_state(self) -> None:
+            if not hasattr(self, "session_quick_action_bar"):
+                return
+            has_sessions = hasattr(self, "session_tab_widget") and self.session_tab_widget.count() > 0
+            show_home = getattr(self, "center_stage_mode", "home") == "home"
+            should_show = has_sessions and not show_home
+            collapsed = bool(getattr(self, "session_quick_bar_collapsed", False))
+            self.session_quick_action_bar.setVisible(should_show and not collapsed)
+            if hasattr(self, "session_quick_restore_bar"):
+                self.session_quick_restore_bar.setVisible(should_show and collapsed)
+            if hasattr(self, "session_quick_bar_toggle_button"):
+                self.session_quick_bar_toggle_button.setToolTip("隐藏会话工具栏")
 
         def apply_connection_params_state(self) -> None:
             if not hasattr(self, "connection_params_body"):
@@ -2234,6 +2447,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.quick_disconnect_button.setEnabled(
                 state is not None and (state.session.is_connected or state.connecting)
             )
+            session_count = len(self.ordered_session_states()) if hasattr(self, "ordered_session_states") else 0
+            self.quick_close_button.setEnabled(session_count > 0)
+            self.quick_close_current_action.setEnabled(state is not None)
+            self.quick_close_other_action.setEnabled(state is not None and session_count > 1)
+            self.quick_close_all_action.setEnabled(session_count > 0)
             self.update_center_stage_state()
 
         def refresh_current_operation_label(

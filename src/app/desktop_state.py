@@ -34,7 +34,7 @@ from ..data import Device
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 10
+DESKTOP_STATE_VERSION = 13
 
 
 class DesktopStateMixin:
@@ -114,6 +114,39 @@ class DesktopStateMixin:
         if state_version < 5:
             self.connection_params_collapsed = False
         self.device_navigation_collapsed = bool(payload.get("device_navigation_collapsed", False))
+        terminal_navigation = payload.get("terminal_navigation", {})
+        if isinstance(terminal_navigation, dict):
+            active_tab = str(terminal_navigation.get("active_tab") or "").strip().lower()
+            if active_tab in {"sessions", "devices"}:
+                self.terminal_navigation_active_tab = active_tab
+            query = str(terminal_navigation.get("device_query") or "")
+            if len(query) <= 120:
+                self.terminal_navigation_device_query = query
+            self.terminal_navigation_expanded_device_id = str(
+                terminal_navigation.get("expanded_device_id") or ""
+            )
+            try:
+                loaded_navigation_height = int(
+                    terminal_navigation.get("web_height", self.terminal_navigation_web_height)
+                )
+            except (TypeError, ValueError):
+                loaded_navigation_height = self.terminal_navigation_web_height
+            self.terminal_navigation_web_height = self.clamp_terminal_navigation_web_height(
+                loaded_navigation_height
+            )
+            self.terminal_sidebar_collapsed = bool(
+                terminal_navigation.get("sidebar_collapsed", self.terminal_sidebar_collapsed)
+            )
+            try:
+                loaded_width = int(
+                    terminal_navigation.get("sidebar_width", self.terminal_sidebar_width)
+                )
+            except (TypeError, ValueError):
+                loaded_width = self.terminal_sidebar_width
+            self.terminal_sidebar_width = max(
+                self.TERMINAL_SIDEBAR_MIN_WIDTH,
+                min(self.TERMINAL_SIDEBAR_MAX_WIDTH, loaded_width),
+            )
         self.left_sidebar_collapsed = bool(payload.get("left_sidebar_collapsed", False))
         self.always_on_top = bool(payload.get("always_on_top", False))
         remembered_rules = []
@@ -187,6 +220,33 @@ class DesktopStateMixin:
                 if protocol_overrides:
                     credential_overrides[device_key] = protocol_overrides
         self.local_credential_overrides = credential_overrides
+        remembered_terminal_sessions: list[dict[str, object]] = []
+        raw_terminal_sessions = payload.get("terminal_sessions", [])
+        if isinstance(raw_terminal_sessions, list):
+            for item in raw_terminal_sessions:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("kind") or "").strip()
+                if kind not in {"device", "linux", "serial", "simulated"}:
+                    continue
+                device_id = str(item.get("device_id") or "").strip()
+                if not device_id:
+                    continue
+                try:
+                    port = int(item.get("port", 0))
+                except (TypeError, ValueError):
+                    port = 0
+                remembered_terminal_sessions.append({
+                    "device_id": device_id,
+                    "kind": kind,
+                    "title": str(item.get("title") or "").strip(),
+                    "host": str(item.get("host") or "").strip(),
+                    "port": max(0, port),
+                    "active": bool(item.get("active", False)),
+                })
+                if len(remembered_terminal_sessions) >= 20:
+                    break
+        self.remembered_terminal_sessions = remembered_terminal_sessions
         if hasattr(self, "rebuild_device_indexes"):
             self.rebuild_device_indexes()
 
@@ -210,6 +270,14 @@ class DesktopStateMixin:
                 "command_record_height": self.command_record_height,
                 "connection_params_collapsed": self.connection_params_collapsed,
                 "device_navigation_collapsed": self.device_navigation_collapsed,
+                "terminal_navigation": {
+                    "active_tab": self.terminal_navigation_active_tab,
+                    "device_query": self.terminal_navigation_device_query,
+                    "expanded_device_id": self.terminal_navigation_expanded_device_id,
+                    "web_height": self.terminal_navigation_web_height,
+                    "sidebar_collapsed": self.terminal_sidebar_collapsed,
+                    "sidebar_width": self.terminal_sidebar_width,
+                },
                 "left_sidebar_collapsed": self.left_sidebar_collapsed,
                 "always_on_top": self.always_on_top,
                 "auto_response_rules": [
@@ -236,6 +304,9 @@ class DesktopStateMixin:
                     for device in self.temporary_devices
                 ],
                 "local_credential_overrides": self.local_credential_overrides,
+                "terminal_sessions": self.serialize_terminal_sessions()
+                if hasattr(self, "serialize_terminal_sessions")
+                else [],
             }
             serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             if serialized == self._last_desktop_state_payload:
