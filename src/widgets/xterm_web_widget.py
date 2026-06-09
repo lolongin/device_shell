@@ -16,8 +16,10 @@ from PySide6.QtWidgets import QApplication, QStackedLayout, QWidget
 
 try:
     from ..theme_tokens import WORKSPACE_BG
+    from ..command_suggestions import infer_completed_command_from_terminal_line
 except ImportError:  # pragma: no cover - direct script execution fallback
     from theme_tokens import WORKSPACE_BG
+    from command_suggestions import infer_completed_command_from_terminal_line
 
 
 class _XtermTextCursor:
@@ -274,17 +276,13 @@ class XtermWebWidget(QWidget):
         self._handle_input(text)
 
     def _sync_pending_command_from_terminal_line(self, terminal_line: str) -> None:
-        line = terminal_line.rstrip()
-        if not line or not self._pending_command_chars:
+        if not terminal_line or not self._pending_command_chars:
             return
         prefix = "".join(self._pending_command_chars).strip()
         if not prefix:
             return
-        index = line.rfind(prefix)
-        if index < 0:
-            return
-        completed = line[index:].strip()
-        if completed and completed.casefold().startswith(prefix.casefold()):
+        completed = infer_completed_command_from_terminal_line(prefix, terminal_line)
+        if completed:
             self._pending_command_chars = list(completed)
 
     @staticmethod

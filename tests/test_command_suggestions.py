@@ -3,10 +3,12 @@ from __future__ import annotations
 from src.command_suggestions import (
     CommandHistoryItem,
     deserialize_command_history_item,
+    infer_completed_command_from_terminal_line,
     record_command_history,
     serialize_command_history_item,
     suggest_commands,
 )
+from src.widgets.terminal_canvas import TerminalCanvasWidget
 from src.widgets.xterm_web_widget import XtermWebWidget
 
 
@@ -99,6 +101,21 @@ def test_command_history_round_trip() -> None:
     assert loaded == item
 
 
+def test_infer_completed_command_from_terminal_line_supports_token_completion() -> None:
+    assert (
+        infer_completed_command_from_terminal_line("dis", "<RTN-1>display interface brief")
+        == "display interface brief"
+    )
+    assert (
+        infer_completed_command_from_terminal_line("dis int", "[~RTN-1]display interface brief")
+        == "display interface brief"
+    )
+    assert (
+        infer_completed_command_from_terminal_line("cd d", r"lon@HOST C:\Users\74527>cd d:\\")
+        == r"cd d:\\"
+    )
+
+
 def test_xterm_command_suggestion_does_not_intercept_tab() -> None:
     terminal = XtermWebWidget.__new__(XtermWebWidget)
     sent: list[str] = []
@@ -137,4 +154,41 @@ def test_xterm_records_tab_completed_command_from_terminal_line() -> None:
 
     assert sent == ["\r"]
     assert recorded == [r"cd d:\\"]
+    assert terminal._pending_command_chars == []
+
+
+def test_xterm_records_tab_completed_command_when_prefix_is_replaced() -> None:
+    terminal = XtermWebWidget.__new__(XtermWebWidget)
+    recorded: list[str] = []
+    sent: list[str] = []
+    terminal._raw_sender = sent.append
+    terminal._command_recorder = recorded.append
+    terminal._command_suggestion_provider = None
+    terminal._enter_reconnect_handler = None
+    terminal._pending_command_chars = list("dis int")
+    terminal._current_command_suggestion = ""
+    terminal._local_echo = False
+    terminal._ready = False
+    terminal._view = None
+
+    terminal._handle_input_with_terminal_line("\r", "<RTN-1>display interface brief")
+
+    assert sent == ["\r"]
+    assert recorded == ["display interface brief"]
+    assert terminal._pending_command_chars == []
+
+
+def test_canvas_records_tab_completed_command_from_current_line() -> None:
+    terminal = TerminalCanvasWidget.__new__(TerminalCanvasWidget)
+    recorded: list[str] = []
+    terminal._pending_command_chars = list("dis")
+    terminal._command_recorder = recorded.append
+    terminal._screen = None
+    terminal._plain_fast_mode = False
+    terminal._fallback_lines = ["<RTN-1>display version"]
+
+    terminal._sync_pending_command_from_current_line()
+    terminal._commit_pending_command()
+
+    assert recorded == ["display version"]
     assert terminal._pending_command_chars == []

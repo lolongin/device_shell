@@ -15,6 +15,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - dependency is declared for the app
     pyte = None
 
+try:
+    from ..command_suggestions import infer_completed_command_from_terminal_line
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from command_suggestions import infer_completed_command_from_terminal_line
+
 
 class _TerminalTextCursor:
     def __init__(self, owner: "TerminalCanvasWidget") -> None:
@@ -380,6 +385,7 @@ class TerminalCanvasWidget(QWidget):
             self._scroll_to_live_input()
             if self._enter_reconnect_handler is not None and self._enter_reconnect_handler():
                 return
+            self._sync_pending_command_from_current_line()
             self._commit_pending_command()
             self._forward_text("\r")
             return
@@ -1155,6 +1161,17 @@ class TerminalCanvasWidget(QWidget):
                     self._pending_command_chars.pop()
             elif char >= " ":
                 self._pending_command_chars.append(char)
+
+    def _sync_pending_command_from_current_line(self) -> None:
+        if not self._pending_command_chars:
+            return
+        prefix = "".join(self._pending_command_chars).strip()
+        if not prefix:
+            return
+        line = self._visible_line_text(self._cursor_absolute_line_index())
+        completed = infer_completed_command_from_terminal_line(prefix, line)
+        if completed:
+            self._pending_command_chars = list(completed)
 
     def _commit_pending_command(self) -> None:
         command = "".join(self._pending_command_chars).strip()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import time
 from typing import Any
 
@@ -29,6 +30,59 @@ class CommandHistoryItem:
 
 def normalize_command_text(command: str) -> str:
     return " ".join(command.strip().split())
+
+
+def infer_completed_command_from_terminal_line(prefix: str, terminal_line: str) -> str:
+    """Infer a tab-completed command from the current terminal line."""
+    typed = prefix.strip()
+    line = terminal_line.rstrip()
+    if not typed or not line:
+        return ""
+
+    candidates = _terminal_line_command_candidates(line, typed)
+    for candidate in candidates:
+        if _candidate_matches_typed_prefix(candidate, typed):
+            return candidate.strip()
+    return ""
+
+
+def _terminal_line_command_candidates(line: str, typed: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        candidate = value.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    for delimiter in (">", "#", "$", "]"):
+        index = line.rfind(delimiter)
+        if index >= 0:
+            add(line[index + 1 :])
+
+    typed_index = line.casefold().rfind(typed.casefold())
+    if typed_index >= 0:
+        add(line[typed_index:])
+
+    add(line)
+    for match in re.finditer(r"(?<!\S)\S", line):
+        add(line[match.start() :])
+    return candidates
+
+
+def _candidate_matches_typed_prefix(candidate: str, typed: str) -> bool:
+    candidate_folded = candidate.casefold()
+    typed_folded = typed.casefold()
+    if candidate_folded.startswith(typed_folded):
+        return True
+
+    candidate_parts = candidate_folded.split()
+    typed_parts = typed_folded.split()
+    if not candidate_parts or len(candidate_parts) < len(typed_parts):
+        return False
+    return all(
+        candidate_part.startswith(typed_part)
+        for candidate_part, typed_part in zip(candidate_parts, typed_parts)
+    )
 
 
 def record_command_history(

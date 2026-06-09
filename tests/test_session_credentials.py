@@ -1031,6 +1031,50 @@ def test_device_navigation_payload_includes_web_rows(app: QApplication, sample_d
     assert rows[0]["selected"] is True
 
 
+def test_web_mine_count_uses_all_my_occupied_devices(
+    app: QApplication,
+    sample_device,
+) -> None:
+    _ = app
+    my_device = replace(
+        sample_device,
+        id="MINE-001",
+        name="Mine-Visible",
+        board_id="0001",
+        owner="li.wei",
+        status=STATUS_OCCUPIED,
+    )
+    hidden_my_device = replace(
+        sample_device,
+        id="MINE-002",
+        name="Mine-Hidden-By-Search",
+        board_id="0002",
+        owner="li.wei",
+        status=STATUS_OCCUPIED,
+    )
+    other_device = replace(
+        sample_device,
+        id="OTHER-001",
+        name="Other-Visible",
+        board_id="0003",
+        owner="other.user",
+        status=STATUS_OCCUPIED,
+    )
+    window = DeviceDesktopApp()
+    window.current_user = "li.wei"
+    window.devices = [my_device, hidden_my_device, other_device]
+    window.rebuild_device_indexes()
+    window.search_input.setText("Visible")
+    window.apply_filters()
+
+    navigation_payload = window.device_navigation_payload()
+    web_payload = window.web_shell_payload()
+
+    assert navigation_payload["stats"]["total"] == 2
+    assert navigation_payload["stats"]["mine"] == 2
+    assert web_payload["stats"]["mine"] == 2
+
+
 def test_session_navigation_payload_is_terminal_focused(
     app: QApplication,
     sample_device,
@@ -1365,6 +1409,15 @@ def test_web_pages_share_workspace_theme() -> None:
     assert ".chip.good" not in web_shell_page
     assert ".chip.warn" not in web_shell_page
     assert ".chip.blue" not in web_shell_page
+    assert "const FILTER_DEBOUNCE_MS = 140" in web_shell_page
+    assert "function setFiltering(active)" in web_shell_page
+    assert 'rows.setAttribute("aria-busy", filtering ? "true" : "false")' in web_shell_page
+    assert "function replaceChildrenPreservingScroll(container, fragment)" in web_shell_page
+    assert "document.createDocumentFragment()" in web_shell_page
+    assert "fragment.appendChild(buildDeviceRow(item, index))" in web_shell_page
+    assert "row.classList.add(\"entering\")" in web_shell_page
+    assert "setInputValue($(\"search\")" in web_shell_page
+    assert "setTimeout(sendFilters, 80)" not in web_shell_page
     assert "row contextable" in web_shell_page
     assert 'row.setAttribute("role", "button")' in web_shell_page
     assert 'row.setAttribute("aria-selected", item.selected ? "true" : "false")' in web_shell_page

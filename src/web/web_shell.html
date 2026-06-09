@@ -101,6 +101,7 @@
       color: var(--muted);
       line-height: 1.35;
       justify-content: flex-end;
+      transition: opacity 140ms ease, transform 140ms ease;
     }
 
     .stats b { color: var(--text); font-weight: 800; }
@@ -129,16 +130,37 @@
       font-weight: 700;
     }
 
-    .tbody { min-height: 0; overflow: auto; }
+    .tbody {
+      position: relative;
+      min-height: 0;
+      overflow: auto;
+      transition: opacity 140ms ease;
+      scrollbar-gutter: stable;
+    }
+    .tbody.filtering {
+      opacity: 0.68;
+    }
     .cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 9px; }
 
     .row {
       min-height: 32px;
       cursor: pointer;
+      transition:
+        background-color 140ms ease,
+        border-color 140ms ease,
+        opacity 140ms ease,
+        transform 140ms ease;
+    }
+
+    .row.entering,
+    .device-panel-frame.entering,
+    .session.entering {
+      animation: content-enter 150ms ease both;
     }
 
     .row.group { min-height: 28px; }
     .row.group .muted { color: var(--soft); font-weight: 400; }
+    .device-panel-frame { will-change: opacity, transform; }
     .device-name { font-size: 17px; font-weight: 800; line-height: 1.3; }
     .meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
     .chip {
@@ -159,7 +181,7 @@
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
     .sessions { display: grid; gap: 8px; }
-    .session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--input); border-radius: 9px; padding: 8px 9px; cursor: pointer; }
+    .session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--input); border-radius: 9px; padding: 8px 9px; cursor: pointer; transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease, transform 140ms ease; }
     .session:hover,
     .session.active { border-color: var(--success-line); background: var(--success-soft); }
     .session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
@@ -169,6 +191,11 @@
     .session-status.connecting { color: var(--blue); }
     .session-status.disconnected { color: var(--danger); }
     .empty { line-height: 1.6; padding: 14px 10px; }
+
+    @keyframes content-enter {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
     @media (max-width: 1100px) {
       .content { grid-template-columns: 1fr; overflow: auto; }
@@ -252,12 +279,16 @@
     let state = null;
     let applying = false;
     let filterTimer = null;
+    let filtering = false;
+    const FILTER_DEBOUNCE_MS = 140;
+    const ENTER_ANIMATION_LIMIT = 80;
     const $ = (id) => document.getElementById(id);
 
     function debounceFilters() {
       if (applying || !bridge) return;
+      setFiltering(true);
       window.clearTimeout(filterTimer);
-      filterTimer = window.setTimeout(sendFilters, 80);
+      filterTimer = window.setTimeout(sendFilters, FILTER_DEBOUNCE_MS);
     }
 
     function sendFilters() {
@@ -271,16 +302,157 @@
       }));
     }
 
+    function setFiltering(active) {
+      filtering = !!active;
+      const rows = $("deviceRows");
+      if (rows) {
+        rows.classList.toggle("filtering", filtering);
+        rows.setAttribute("aria-busy", filtering ? "true" : "false");
+      }
+    }
+
+    function setInputValue(input, value) {
+      const next = value || "";
+      if (input.value === next) return;
+      const focused = document.activeElement === input;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      input.value = next;
+      if (focused && start !== null && end !== null) {
+        const position = Math.min(next.length, start);
+        input.setSelectionRange(position, Math.min(next.length, end));
+      }
+    }
+
     function setOptions(select, values, current) {
-      select.innerHTML = "";
-      (values || []).forEach((value) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
-        select.appendChild(option);
-      });
+      const nextValues = values || [];
+      const signature = nextValues.join("\u0001");
+      if (select.dataset.signature !== signature) {
+        const fragment = document.createDocumentFragment();
+        nextValues.forEach((value) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          fragment.appendChild(option);
+        });
+        select.replaceChildren(fragment);
+        select.dataset.signature = signature;
+      }
       select.value = current || "";
-      if (select.value !== (current || "") && values && values.length) select.value = values[0];
+      if (select.value !== (current || "") && nextValues.length) select.value = nextValues[0];
+    }
+
+    function createEmpty(text) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = text;
+      return empty;
+    }
+
+    function replaceChildrenPreservingScroll(container, fragment) {
+      const previousScrollTop = container.scrollTop;
+      container.replaceChildren(fragment);
+      container.scrollTop = Math.min(previousScrollTop, container.scrollHeight);
+    }
+
+    function buildDeviceRow(item, index) {
+      const row = document.createElement("div");
+      row.className = item.kind === "group" ? "row group" : "row contextable";
+      if (index < ENTER_ANIMATION_LIMIT) row.classList.add("entering");
+      if (item.selected) row.classList.add("selected");
+      if (item.kind === "group") {
+        appendCell(row, item.name, item.name);
+        appendCell(row, item.subdomain || "", item.subdomain || "", "muted");
+        appendCell(row, `${item.count} 鍧楁澘`, `${item.count} 鍧楁澘`, "muted");
+        appendCell(row, "", "");
+        appendCell(row, "", "");
+        appendCell(row, "", "");
+        return row;
+      }
+      row.addEventListener("click", () => bridge && bridge.selectDevice(item.id));
+      row.addEventListener("contextmenu", (event) => requestDeviceRowContext(row, item, event));
+      row.tabIndex = 0;
+      wireDeviceRowKeyboard(row, item);
+      appendCell(row, item.boardId, item.boardId);
+      appendCell(row, item.name, item.name);
+      appendCell(row, item.boardType, item.boardType);
+      appendCell(row, item.cpu, item.cpu);
+      appendCell(row, item.slot, item.slot);
+      appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText, item.statusKind)}`);
+      return row;
+    }
+
+    function buildSessionItem(session, index) {
+      const item = document.createElement("div");
+      item.className = `session ${session.active ? "active" : ""}`.trim();
+      if (index < 20) item.classList.add("entering");
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+      item.setAttribute("aria-label", session.title || session.tabId || "");
+      item.setAttribute("aria-current", session.active ? "true" : "false");
+      const left = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "session-title";
+      title.textContent = session.title;
+      const sub = document.createElement("div");
+      sub.className = "session-sub";
+      sub.textContent = `${session.deviceName} / ${session.kind}`;
+      left.appendChild(title);
+      left.appendChild(sub);
+      const status = document.createElement("div");
+      status.className = `session-status ${sessionStatusClass(session.status)}`;
+      status.textContent = session.statusLabel || session.status;
+      item.appendChild(left);
+      item.appendChild(status);
+      item.addEventListener("click", () => bridge && bridge.selectSession(session.tabId));
+      item.addEventListener("contextmenu", (event) => requestSessionContext(item, session, event));
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          if (bridge) bridge.selectSession(session.tabId);
+        } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          requestSessionContext(item, session, event);
+        }
+      });
+      return item;
+    }
+
+    function buildDevicePanel(device) {
+      const frame = document.createElement("div");
+      frame.className = "device-panel-frame entering";
+      const name = document.createElement("div");
+      name.className = "device-name";
+      name.textContent = device.name;
+      frame.appendChild(name);
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      appendMetaChip(meta, device.id);
+      appendMetaChip(meta, device.domain);
+      appendMetaChip(meta, device.statusText, `status ${statusClass(device.statusText, device.statusKind)}`);
+      appendMetaChip(meta, device.owner);
+      frame.appendChild(meta);
+      const kv = document.createElement("div");
+      kv.className = "kv";
+      [
+        ["板类型", device.boardType],
+        ["CPU", device.cpu],
+        ["Slot", device.slot],
+        ["Telnet", device.telnet],
+        ["SSH", device.ssh],
+        ["串口", device.serial || "占用后可见"]
+      ].forEach(([key, value]) => {
+        const keyEl = document.createElement("div");
+        keyEl.className = "key";
+        keyEl.textContent = key;
+        const valueEl = document.createElement("div");
+        valueEl.className = "value";
+        valueEl.textContent = value || "-";
+        valueEl.title = value || "-";
+        kv.appendChild(keyEl);
+        kv.appendChild(valueEl);
+      });
+      frame.appendChild(kv);
+      return frame;
     }
 
     function statusClass(text, kind) {
@@ -360,6 +532,15 @@
 
     function renderDeviceRows(rows) {
       const container = $("deviceRows");
+      const fragment = document.createDocumentFragment();
+      if (!rows || !rows.length) {
+        fragment.appendChild(createEmpty("没有符合条件的设备。"));
+        replaceChildrenPreservingScroll(container, fragment);
+        return;
+      }
+      rows.forEach((item, index) => fragment.appendChild(buildDeviceRow(item, index)));
+      replaceChildrenPreservingScroll(container, fragment);
+      return;
       container.innerHTML = "";
       if (!rows || !rows.length) {
         const empty = document.createElement("div");
@@ -398,6 +579,20 @@
 
     function renderDevice(device) {
       const panel = $("devicePanel");
+      const fragment = document.createDocumentFragment();
+      if (!device) {
+        fragment.appendChild(createEmpty("当前没有选中设备。"));
+        panel.replaceChildren(fragment);
+        document.querySelectorAll("[data-action]").forEach((button) => button.disabled = true);
+        return;
+      }
+      document.querySelectorAll("[data-action]").forEach((button) => {
+        const action = button.getAttribute("data-action");
+        button.disabled = action === "serial" && !device.canSerial;
+      });
+      fragment.appendChild(buildDevicePanel(device));
+      panel.replaceChildren(fragment);
+      return;
       panel.innerHTML = "";
       if (!device) {
         const empty = document.createElement("div");
@@ -464,6 +659,15 @@
 
     function renderSessions(sessions) {
       const list = $("sessionList");
+      const fragment = document.createDocumentFragment();
+      if (!sessions.length) {
+        fragment.appendChild(createEmpty("当前没有打开终端会话。"));
+        list.replaceChildren(fragment);
+        return;
+      }
+      sessions.forEach((session, index) => fragment.appendChild(buildSessionItem(session, index)));
+      list.replaceChildren(fragment);
+      return;
       list.innerHTML = "";
       if (!sessions.length) {
         const empty = document.createElement("div");
@@ -510,10 +714,12 @@
     window.setWebShellPayload = function setWebShellPayload(payload) {
       state = payload || {};
       applying = true;
+      window.clearTimeout(filterTimer);
+      setFiltering(false);
       setOptions($("domain"), state.domains || [], state.filters && state.filters.domain || "");
       setOptions($("status"), state.statuses || [], state.filters && state.filters.status || "");
-      $("search").value = state.filters && state.filters.search || "";
-      $("cpu").value = state.filters && state.filters.cpu || "";
+      setInputValue($("search"), state.filters && state.filters.search || "");
+      setInputValue($("cpu"), state.filters && state.filters.cpu || "");
       $("mine").classList.toggle("active", !!(state.filters && state.filters.mine));
       $("mine").textContent = `我的 ${state.stats && state.stats.mine || 0}`;
       $("clear").disabled = !state.hasFilters;
