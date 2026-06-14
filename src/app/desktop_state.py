@@ -30,7 +30,7 @@ from ..command_suggestions import (
     deserialize_command_history_item,
     serialize_command_history_item,
 )
-from ..data import Device
+from ..data import Device, SavedServer
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
@@ -144,8 +144,7 @@ class DesktopStateMixin:
             except (TypeError, ValueError):
                 loaded_width = self.terminal_sidebar_width
             self.terminal_sidebar_width = max(
-                self.TERMINAL_SIDEBAR_MIN_WIDTH,
-                min(self.TERMINAL_SIDEBAR_MAX_WIDTH, loaded_width),
+                self.TERMINAL_SIDEBAR_MIN_WIDTH, loaded_width
             )
         self.left_sidebar_collapsed = bool(payload.get("left_sidebar_collapsed", False))
         self.always_on_top = bool(payload.get("always_on_top", False))
@@ -202,6 +201,27 @@ class DesktopStateMixin:
                 if device is not None:
                     temporary_devices.append(device)
         self.temporary_devices = temporary_devices
+
+        saved_servers: list[SavedServer] = []
+        raw_servers = payload.get("saved_servers", [])
+        if isinstance(raw_servers, list):
+            for item in raw_servers:
+                if not isinstance(item, dict):
+                    continue
+                server_id = str(item.get("id") or "").strip()
+                if not server_id:
+                    continue
+                saved_servers.append(SavedServer(
+                    id=server_id,
+                    name=str(item.get("name") or "").strip() or server_id,
+                    host=str(item.get("host") or "").strip(),
+                    port=int(item.get("port", 22) or 22),
+                    username=str(item.get("username") or "").strip(),
+                    password=str(item.get("password") or ""),
+                    group=str(item.get("group") or "").strip(),
+                    notes=str(item.get("notes") or "").strip(),
+                ))
+        self.saved_servers = saved_servers
         credential_overrides: dict[str, dict[str, dict[str, str]]] = {}
         raw_credential_overrides = payload.get("local_credential_overrides", {})
         if isinstance(raw_credential_overrides, dict):
@@ -302,6 +322,19 @@ class DesktopStateMixin:
                 "temporary_devices": [
                     serialize_temporary_device(device)
                     for device in self.temporary_devices
+                ],
+                "saved_servers": [
+                    {
+                        "id": server.id,
+                        "name": server.name,
+                        "host": server.host,
+                        "port": server.port,
+                        "username": server.username,
+                        "password": server.password,
+                        "group": server.group,
+                        "notes": server.notes,
+                    }
+                    for server in self.saved_servers
                 ],
                 "local_credential_overrides": self.local_credential_overrides,
                 "terminal_sessions": self.serialize_terminal_sessions()

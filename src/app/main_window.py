@@ -155,7 +155,7 @@ try:
     )
     from ..auto_response import default_quick_send_buttons
     from ..command_suggestions import CommandHistoryItem
-    from ..data import Device
+    from ..data import Device, SavedServer
     from ..styles import APP_STYLE
     from ..helpers import build_search_text, mask_password, status_color
     from ..app_state import RepositorySnapshot, DeviceTabState, SessionTabState
@@ -194,7 +194,7 @@ except ImportError:
     )
     from auto_response import default_quick_send_buttons
     from command_suggestions import CommandHistoryItem
-    from data import Device
+    from data import Device, SavedServer
     from styles import APP_STYLE
     from helpers import build_search_text, mask_password, status_color
     from app_state import RepositorySnapshot, DeviceTabState, SessionTabState
@@ -232,6 +232,7 @@ from .desktop_state import DesktopStateMixin
 from .file_transfer_ops import FileTransferOpsMixin
 from .table_ops import TableOpsMixin
 from .temporary_device_ops import TemporaryDeviceOpsMixin
+from .server_ops import ServerOpsMixin
 
 try:
     from ..widgets.xterm_web_widget import prewarm_xterm_webengine
@@ -251,6 +252,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         DesktopStateMixin,
         FileTransferOpsMixin,
         TemporaryDeviceOpsMixin,
+        ServerOpsMixin,
         TableOpsMixin,
         QMainWindow,
     ):
@@ -295,6 +297,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.loading_snapshot = False
             self.my_occupancy_filter_enabled = False
             self.temporary_devices: list[Device] = []
+            self.saved_servers: list[SavedServer] = []
             self.local_credential_overrides: dict[str, dict[str, dict[str, str]]] = {}
             self.editing_temporary_device_id = ""
             self.recent_device_ids: list[str] = []
@@ -472,7 +475,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             shell.setObjectName("leftSidebarShell")
             self.left_sidebar_shell = shell
             shell.setMinimumWidth(480)
-            shell.setMaximumWidth(820)
             shell_layout = QHBoxLayout(shell)
             self.left_sidebar_layout = shell_layout
             shell_layout.setContentsMargins(0, 0, 8, 0)
@@ -642,6 +644,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.left_sidebar_stack.setContentsMargins(0, 0, 0, 0)
             self.left_sidebar_stack.addWidget(device_panel)
             self.left_sidebar_stack.addWidget(self._build_temporary_panel())
+            self.left_sidebar_stack.addWidget(self._build_server_panel())
             self.left_sidebar_stack.addWidget(self._build_transfer_panel())
             scroll.setWidget(stack_container)
             shell_layout.addWidget(scroll, 1)
@@ -665,6 +668,10 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "connector",
                 "临时连接",
             )
+            self.activity_server_button = self._new_activity_button(
+                "server",
+                "我的服务器",
+            )
             self.activity_transfer_button = self._new_activity_button(
                 "transfer",
                 "文件传输",
@@ -673,12 +680,16 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addWidget(self.activity_home_button)
             layout.addSpacing(4)
             layout.addWidget(self.activity_temporary_button)
+            layout.addWidget(self.activity_server_button)
             layout.addWidget(self.activity_transfer_button)
             layout.addStretch(1)
 
             self.activity_home_button.clicked.connect(self.show_web_home)
             self.activity_temporary_button.clicked.connect(
                 lambda: self.toggle_tool_sidebar_panel("temporary")
+            )
+            self.activity_server_button.clicked.connect(
+                lambda: self.toggle_tool_sidebar_panel("server")
             )
             self.activity_transfer_button.clicked.connect(
                 lambda: self.toggle_tool_sidebar_panel("transfer")
@@ -741,6 +752,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawLine(10, 8, 15, 8)
                 painter.drawLine(10, 12, 15, 12)
                 painter.drawLine(10, 16, 13, 16)
+            elif kind == "server":
+                painter.drawRoundedRect(4, 3, 16, 6, 2, 2)
+                painter.drawRoundedRect(4, 9, 16, 6, 2, 2)
+                painter.drawRoundedRect(4, 15, 16, 6, 2, 2)
+                painter.drawLine(7, 6, 9, 6)
+                painter.drawLine(7, 12, 9, 12)
+                painter.drawLine(7, 18, 9, 18)
             elif kind == "connector":
                 painter.drawRoundedRect(4, 6, 9, 8, 2, 2)
                 painter.drawRoundedRect(11, 10, 9, 8, 2, 2)
@@ -1734,10 +1752,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             header.setHighlightSections(False)
             header.setSectionsClickable(False)
             if len(headers) == 6:
-                header.setSectionResizeMode(0, QHeaderView.Interactive)
-                header.setSectionResizeMode(1, QHeaderView.Stretch)
-                for column in range(2, len(headers)):
-                    header.setSectionResizeMode(column, QHeaderView.Interactive)
+                header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(1, QHeaderView.Interactive)
+                header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+                header.setStretchLastSection(False)
+                header.setMinimumSectionSize(20)
+                table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                table.set_stretch_column(1)
+                table.setColumnWidth(1, 200)
             elif len(headers) == 5:
                 header.setSectionResizeMode(0, QHeaderView.Interactive)
                 header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1746,14 +1771,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             else:
                 header.setSectionResizeMode(0, QHeaderView.Stretch)
                 for column in range(1, len(headers)):
-                    header.setSectionResizeMode(column, QHeaderView.Interactive)
-            if len(headers) == 6:
-                table.setColumnWidth(0, 44)
-                table.setColumnWidth(2, 82)
-                table.setColumnWidth(3, 62)
-                table.setColumnWidth(4, 70)
-                table.setColumnWidth(5, 96)
-            elif len(headers) == 5:
+                    header.setSectionResizeMode(column, QHeaderView.Stretch)
+            if len(headers) == 5:
                 table.setColumnWidth(0, 44)
                 table.setColumnWidth(2, 86)
                 table.setColumnWidth(3, 66)
@@ -1762,9 +1781,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 table.setColumnWidth(1, 96)
                 table.setColumnWidth(2, 78)
                 table.setColumnWidth(3, 74)
-            elif len(headers) == 3:
-                table.setColumnWidth(1, 96)
-                table.setColumnWidth(2, 74)
             return table
 
         def _new_stat_chip(self) -> QLabel:
@@ -2034,9 +2050,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             del index
             if getattr(self, "left_sidebar_collapsed", False):
                 return
-            if not getattr(self, "left_sidebar_compact", False):
-                return
-            width = max(self.TERMINAL_SIDEBAR_MIN_WIDTH, min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(pos)))
+            width = max(self.TERMINAL_SIDEBAR_MIN_WIDTH, int(pos))
             if width == getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH):
                 return
             self.terminal_sidebar_width = width
@@ -2070,7 +2084,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_terminal_workspace()
 
         def toggle_tool_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"temporary", "transfer"}:
+            if panel not in {"temporary", "server", "transfer"}:
                 return
             if self.left_sidebar_active_panel == panel and not self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = True
@@ -2080,11 +2094,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_left_sidebar_panel(panel)
 
         def show_left_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"devices", "temporary", "transfer"}:
+            if panel not in {"devices", "temporary", "server", "transfer"}:
                 panel = "devices"
             self.left_sidebar_active_panel = panel
             if hasattr(self, "left_sidebar_stack"):
-                panel_index = {"devices": 0, "temporary": 1, "transfer": 2}.get(panel, 0)
+                panel_index = {"devices": 0, "temporary": 1, "server": 2, "transfer": 3}.get(panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             if self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = False
@@ -2111,7 +2125,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             compact_width = max(
                 self.TERMINAL_SIDEBAR_MIN_WIDTH,
-                min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH))),
+                int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH)),
             )
             self.terminal_sidebar_width = compact_width
             if hasattr(self, "device_navigation_header"):
@@ -2146,7 +2160,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     self.left_sidebar_animation = None
                 self.left_sidebar_content.setVisible(not collapsed)
                 content_minimum = self.TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH if compact else 420
-                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH if compact else 760
+                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH if compact else 4096
                 self.left_sidebar_content.setMinimumWidth(0 if collapsed else content_minimum)
                 self.left_sidebar_content.setMaximumWidth(0 if collapsed else content_maximum)
                 if hasattr(self, "left_sidebar_layout"):
@@ -2154,7 +2168,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     self.left_sidebar_layout.setSpacing(0 if collapsed else 8)
                 if hasattr(self, "left_sidebar_shell"):
                     shell_minimum = self.TERMINAL_SIDEBAR_MIN_WIDTH if compact else 480
-                    shell_maximum = self.TERMINAL_SIDEBAR_MAX_WIDTH if compact else 820
+                    shell_maximum = self.TERMINAL_SIDEBAR_MAX_WIDTH if compact else 4096
                     self.left_sidebar_shell.setMinimumWidth(
                         self.ACTIVITY_RAIL_WIDTH if collapsed else shell_minimum
                     )
@@ -2169,12 +2183,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                     left_width = (
                         self.ACTIVITY_RAIL_WIDTH
                         if collapsed
-                        else (compact_width if compact else self.TOOL_SIDEBAR_WIDTH)
+                        else int(getattr(self, "terminal_sidebar_width", self.TOOL_SIDEBAR_WIDTH))
                     )
                     if total > 0:
                         splitter.setSizes([left_width, max(1, total - left_width)])
             if hasattr(self, "left_sidebar_stack"):
-                panel_index = {"devices": 0, "temporary": 1, "transfer": 2}.get(self.left_sidebar_active_panel, 0)
+                panel_index = {"devices": 0, "temporary": 1, "server": 2, "transfer": 3}.get(self.left_sidebar_active_panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             self.sync_activity_rail_state()
 
@@ -2184,7 +2198,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             show_home = getattr(self, "center_stage_mode", "home") == "home"
             has_sessions = hasattr(self, "session_tab_widget") and self.session_tab_widget.count() > 0
             panel = getattr(self, "left_sidebar_active_panel", "devices")
-            drawer_open = not self.left_sidebar_collapsed and panel in {"temporary", "transfer"}
+            drawer_open = not self.left_sidebar_collapsed and panel in {"temporary", "server", "transfer"}
             states = (
                 (self.activity_home_button, "home", "首页大屏", show_home and not drawer_open),
                 (
@@ -2192,6 +2206,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "connector",
                     "临时连接",
                     drawer_open and panel == "temporary",
+                ),
+                (
+                    self.activity_server_button,
+                    "server",
+                    "我的服务器",
+                    drawer_open and panel == "server",
                 ),
                 (
                     self.activity_transfer_button,
@@ -2239,22 +2259,18 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             compact_width = max(
                 self.TERMINAL_SIDEBAR_MIN_WIDTH,
-                min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH))),
+                int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH)),
             )
             end_width = (
                 self.ACTIVITY_RAIL_WIDTH
                 if collapsed
-                else (
-                    self.TOOL_SIDEBAR_WIDTH
-                    if expanded
-                    else (compact_width if compact else self.TOOL_SIDEBAR_WIDTH)
-                )
+                else compact_width
             )
 
             content.setVisible(True)
             content.setMinimumWidth(0)
             shell.setMinimumWidth(self.ACTIVITY_RAIL_WIDTH)
-            shell.setMaximumWidth(820)
+            shell.setMaximumWidth(4096)
             animation = QVariantAnimation(self)
             easing = QEasingCurve.OutCubic if QEasingCurve is not None else None
             animation.setDuration(180)
@@ -2277,12 +2293,12 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             def finish() -> None:
                 content_minimum = self.TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH if compact else 420
-                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH if compact else 760
+                content_maximum = self.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH if compact else 4096
                 content.setMinimumWidth(0 if collapsed else content_minimum)
                 content.setMaximumWidth(0 if collapsed else content_maximum)
                 content.setVisible(not collapsed)
                 shell_minimum = self.TERMINAL_SIDEBAR_MIN_WIDTH if compact else 480
-                shell_maximum = self.TERMINAL_SIDEBAR_MAX_WIDTH if compact else 820
+                shell_maximum = self.TERMINAL_SIDEBAR_MAX_WIDTH if compact else 4096
                 shell.setMinimumWidth(
                     self.ACTIVITY_RAIL_WIDTH if collapsed else shell_minimum
                 )

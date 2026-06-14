@@ -58,3 +58,17 @@ class Device:
     @property
     def serial_server(self) -> str:
         return str(self.extra.get("serial_server") or self.serial_ip)
+
+
+@dataclass(slots=True)
+class SavedServer:
+    """A persisted SSH server managed outside the device table."""
+
+    id: str
+    name: str
+    host: str
+    port: int = 22
+    username: str = ""
+    password: str = ""
+    group: str = ""
+    notes: str = ""

@@ -199,6 +199,143 @@
       font-weight: 700;
     }
 
+    .action-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .action-tool-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--input);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      padding: 4px 8px;
+      min-width: 30px;
+      min-height: 28px;
+      cursor: pointer;
+      line-height: 1;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      user-select: none;
+    }
+
+    .action-tool-btn:hover {
+      background: var(--panel-2);
+      border-color: var(--blue);
+      color: var(--text);
+    }
+
+    .action-tool-btn:active {
+      background: var(--panel);
+      border-color: var(--accent);
+    }
+
+    .action-tool-btn.remove-action:hover {
+      background: #2d1215;
+      border-color: #f87171;
+      color: #fecaca;
+    }
+
+    .action-tool-btn.remove-action:active {
+      background: #3d181c;
+      border-color: #ef4444;
+      color: #fca5a5;
+    }
+
+    .action-tool-btn:disabled {
+      opacity: 0.3;
+      pointer-events: none;
+    }
+
+    .action-tool-btn svg {
+      display: block;
+      flex-shrink: 0;
+    }
+
+    .insert-popup {
+      position: fixed;
+      background: var(--panel);
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      padding: 6px;
+      z-index: 100;
+      display: none;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+      min-width: 140px;
+    }
+
+    .insert-popup.open {
+      display: grid;
+      gap: 2px;
+    }
+
+    .insert-popup button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      color: var(--text);
+      padding: 7px 12px;
+      text-align: left;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.12s, border-color 0.12s;
+    }
+
+    .insert-popup button:hover {
+      background: var(--panel-2);
+      border-color: var(--accent);
+      color: var(--success-text);
+    }
+
+    .insert-popup button::before {
+      content: "";
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      opacity: 0.7;
+    }
+
+    .insert-popup button[data-kind="send"]::before {
+      background: var(--muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2 2l12 6-12 6 3-6-3-6z'/%3E%3C/svg%3E") center/contain no-repeat;
+    }
+
+    .insert-popup button[data-kind="wait"]::before {
+      background: var(--muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='black' stroke-width='2'/%3E%3Cpolyline points='8,4 8,8 11,10' fill='none' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") center/contain no-repeat;
+    }
+
+    .insert-popup button[data-kind="condition"]::before {
+      background: var(--muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 2h8a2 2 0 012 2v8a2 2 0 01-4 0V6H6v6a2 2 0 01-4 0V4a2 2 0 012-2z'/%3E%3C/svg%3E") center/contain no-repeat;
+    }
+
+    .insert-popup button[data-kind="loop"]::before {
+      background: var(--muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M12 2a4 4 0 00-4 4v4a2 2 0 01-4 0V6.83l1.59 1.59L7 7 4 4 1 7l1.41 1.41L4 6.83V10a4 4 0 004 4 4 4 0 004-4V6a2 2 0 014 0v3.17l-1.59-1.59L13 9l3 3 3-3-1.41-1.41L16 9.17V6a4 4 0 00-4-4z'/%3E%3C/svg%3E") center/contain no-repeat;
+    }
+
+    .insert-popup button[data-kind="exit"]::before {
+      background: var(--muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2' width='12' height='12' rx='2'/%3E%3Cpath d='M5 5l6 6M11 5l-6 6' stroke='black' stroke-width='2'/%3E%3C/svg%3E") center/contain no-repeat;
+    }
+
+    .insert-popup button:hover::before {
+      background: var(--accent);
+      opacity: 1;
+    }
+
     .action-body {
       display: grid;
       gap: 10px;
@@ -389,8 +526,23 @@
     <article class="action-card" data-kind="">
       <div class="action-head">
         <span class="action-title"></span>
-        <button type="button" class="danger remove-step" hidden>删除步骤</button>
-        <button type="button" class="danger remove-step remove-action">删除</button>
+        <div class="action-toolbar">
+          <button type="button" class="action-tool-btn move-up" title="上移">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 3L4 8h3v5h2V8h3L8 3z" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="action-tool-btn move-down" title="下移">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 13l4-5H9V3H7v5H4l4 5z" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="action-tool-btn insert-before" title="在上方插入动作">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" class="action-tool-btn copy-action" title="复制动作">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="4.5" y="4.5" width="9" height="9" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 11.5V3a.5.5 0 01.5-.5h7.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" class="action-tool-btn remove-action" title="删除此动作">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 5h10M6.5 7.5v4M9.5 7.5v4M4 5l1 9h6l1-9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
       </div>
       <div class="action-body"></div>
     </article>
@@ -399,12 +551,132 @@
   <div class="step workspace-contextable" tabindex="0" role="group" hidden></div>
   <div class="action workspace-contextable" tabindex="0" role="group" hidden></div>
   <div class="workspace-context-menu" id="editorContextMenu" role="menu" aria-hidden="true"></div>
+  <div class="insert-popup" id="insertPopup"></div>
 
   <script>
     let bridge = null;
     let state = null;
     const $ = (id) => document.getElementById(id);
     const stepsEl = $("actionsRoot");
+    let contextMenuTarget = null;
+    let insertPopupTarget = null;
+
+    function findActionCard(element) {
+      let current = element;
+      while (current) {
+        if (current.classList && current.classList.contains("action-card")) return current;
+        current = current.parentElement;
+      }
+      return null;
+    }
+
+    function siblingContainer(card) {
+      return card.parentElement;
+    }
+
+    function siblingIndex(card) {
+      return Array.from(siblingContainer(card).children).filter(function(node) {
+        return node.classList && node.classList.contains("action-card");
+      }).indexOf(card);
+    }
+
+    function insertActionBefore(card, kind) {
+      var action = defaultAction(kind);
+      var temp = document.createElement("div");
+      renderAction(action, temp);
+      var newNode = temp.firstElementChild;
+      card.parentElement.insertBefore(newNode, card);
+      sync();
+    }
+
+    function insertActionAfter(card, kind) {
+      var action = defaultAction(kind);
+      var temp = document.createElement("div");
+      renderAction(action, temp);
+      var newNode = temp.firstElementChild;
+      if (card.nextSibling) {
+        card.parentElement.insertBefore(newNode, card.nextSibling);
+      } else {
+        card.parentElement.appendChild(newNode);
+      }
+      sync();
+    }
+
+    function moveActionUp(card) {
+      var cards = Array.from(siblingContainer(card).children).filter(function(node) {
+        return node.classList && node.classList.contains("action-card");
+      });
+      var idx = cards.indexOf(card);
+      if (idx <= 0) return;
+      card.parentElement.insertBefore(card, cards[idx - 1]);
+      sync();
+    }
+
+    function moveActionDown(card) {
+      var cards = Array.from(siblingContainer(card).children).filter(function(node) {
+        return node.classList && node.classList.contains("action-card");
+      });
+      var idx = cards.indexOf(card);
+      if (idx < 0 || idx >= cards.length - 1) return;
+      var target = cards[idx + 1];
+      if (target.nextSibling) {
+        card.parentElement.insertBefore(card, target.nextSibling);
+      } else {
+        card.parentElement.appendChild(card);
+      }
+      sync();
+    }
+
+    function copyActionBelow(card) {
+      var action = deepCloneAction(card._action);
+      var temp = document.createElement("div");
+      renderAction(action, temp);
+      var newNode = temp.firstElementChild;
+      if (card.nextSibling) {
+        card.parentElement.insertBefore(newNode, card.nextSibling);
+      } else {
+        card.parentElement.appendChild(newNode);
+      }
+      sync();
+    }
+
+    function showInsertPopup(card, button) {
+      hideInsertPopup();
+      insertPopupTarget = card;
+      var popup = $("insertPopup");
+      var kinds = [
+        { kind: "send", label: "发送内容" },
+        { kind: "wait", label: "等待" },
+        { kind: "condition", label: "判断" },
+        { kind: "loop", label: "循环" },
+        { kind: "exit", label: "退出" }
+      ];
+      popup.innerHTML = "";
+      kinds.forEach(function(item) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.kind = item.kind;
+        btn.textContent = item.label;
+        btn.addEventListener("click", function() {
+          insertActionBefore(card, item.kind);
+          hideInsertPopup();
+        });
+        popup.appendChild(btn);
+      });
+      var rect = button.getBoundingClientRect();
+      popup.style.left = rect.left + "px";
+      popup.style.top = (rect.bottom + 4) + "px";
+      popup.classList.add("open");
+    }
+
+    function hideInsertPopup() {
+      insertPopupTarget = null;
+      $("insertPopup").classList.remove("open");
+    }
+
+    function deepCloneAction(action) {
+      return JSON.parse(JSON.stringify(action));
+    }
 
     function intValue(value, fallback = 0) {
       const parsed = Number.parseInt(value, 10);
@@ -523,7 +795,14 @@
       card.classList.toggle("exit", action.kind === "exit");
       card.classList.toggle("condition", action.kind === "condition");
       title.textContent = { send: "发送内容", wait: "等待", loop: "循环", exit: "退出", condition: "判断" }[action.kind];
-      fragment.querySelector(".remove-action").addEventListener("click", () => {
+      card.querySelector(".move-up").addEventListener("click", function() { moveActionUp(card); });
+      card.querySelector(".move-down").addEventListener("click", function() { moveActionDown(card); });
+      card.querySelector(".insert-before").addEventListener("click", function(event) {
+        event.stopPropagation();
+        showInsertPopup(card, card.querySelector(".insert-before"));
+      });
+      card.querySelector(".copy-action").addEventListener("click", function() { copyActionBelow(card); });
+      card.querySelector(".remove-action").addEventListener("click", function() {
         card.remove();
         sync();
       });
@@ -826,18 +1105,54 @@
 
     function showEditorContextMenu(event) {
       event.preventDefault();
-      const menu = $("editorContextMenu");
-      const point = contextMenuPoint(event, event.target);
-      menu.innerHTML = [
-        "<button type=\"button\">复制动作</button>",
-        "<button type=\"button\" class=\"danger\">删除动作</button>",
-        "<div class=\"workspace-context-menu-separator\"></div>",
-        "<button type=\"button\">复制步骤</button>"
-      ].join("");
-      menu.style.left = `${point.x}px`;
-      menu.style.top = `${point.y}px`;
+      var target = findActionCard(event.target);
+      contextMenuTarget = target;
+      var menu = $("editorContextMenu");
+      var point = contextMenuPoint(event, event.target);
+
+      menu.innerHTML = "";
+      function addItem(label, handler, isDanger) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = label;
+        if (isDanger) btn.className = "danger";
+        btn.addEventListener("click", function() {
+          handler();
+          hideContextMenu();
+        });
+        menu.appendChild(btn);
+      }
+
+      if (target) {
+        addItem("在前方插入", function() {
+          showInsertPopup(target, target.querySelector(".action-head") || target);
+        });
+        addItem("复制动作", function() { copyActionBelow(target); });
+        var sep = document.createElement("div");
+        sep.className = "workspace-context-menu-separator";
+        menu.appendChild(sep);
+        addItem("删除动作", function() {
+          target.remove();
+          sync();
+        }, true);
+      } else {
+        addItem("在最下方添加发送", function() {
+          renderAction(defaultAction("send"), stepsEl);
+          sync();
+        });
+      }
+
+      menu.style.left = point.x + "px";
+      menu.style.top = point.y + "px";
       menu.classList.add("open");
       menu.setAttribute("aria-hidden", "false");
+    }
+
+    function hideContextMenu() {
+      contextMenuTarget = null;
+      var menu = $("editorContextMenu");
+      menu.classList.remove("open");
+      menu.setAttribute("aria-hidden", "true");
     }
 
     function handleEditorContextMenuKey(event) {
@@ -845,6 +1160,21 @@
         showEditorContextMenu(event);
       }
     }
+
+    document.addEventListener("click", function(event) {
+      var menu = $("editorContextMenu");
+      var popup = $("insertPopup");
+      if (!menu.contains(event.target) && menu.classList.contains("open")) {
+        hideContextMenu();
+      }
+      if (!popup.contains(event.target) && popup.classList.contains("open")) {
+        // check if click was on an insert-before button (which toggles the popup)
+        var clickedInsertBtn = event.target.closest(".insert-before");
+        if (!clickedInsertBtn) {
+          hideInsertPopup();
+        }
+      }
+    });
 
     stepsEl.addEventListener("contextmenu", showEditorContextMenu);
 

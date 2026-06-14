@@ -1930,6 +1930,71 @@ QFrame#temporaryFormCard {
     border: 1px solid #243244;
     border-radius: 12px;
 }
+QFrame#serverCard {
+    background: #08101d;
+    border: 1px solid #1e293b;
+    border-left: 3px solid #22c55e;
+    border-radius: 8px;
+    margin-left: 16px;
+}
+QFrame#serverCard:hover {
+    background: #0f172a;
+    border-color: #334155;
+}
+QLabel#serverCardName {
+    background: transparent;
+    color: #f8fafc;
+    font-weight: 800;
+    font-size: 13px;
+}
+QLabel#serverCardMeta {
+    background: transparent;
+    color: #a7b4c7;
+    font-size: 11px;
+}
+QLabel#serverCardPill {
+    background: #102019;
+    border: 1px solid #22c55e;
+    border-radius: 999px;
+    color: #d8fff0;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+}
+QFrame#serverGroupHeader {
+    background: #0f172a;
+    border: 1px solid #243244;
+    border-left: 3px solid #60a5fa;
+    border-radius: 8px;
+    min-height: 32px;
+    max-height: 32px;
+}
+QFrame#serverGroupHeader:hover {
+    background: #111c2f;
+    border-color: #334155;
+    border-left-color: #60a5fa;
+}
+QLabel#serverGroupTitle {
+    background: transparent;
+    color: #d8e4f5;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QLabel#serverGroupArrow {
+    background: transparent;
+    color: #718096;
+    font-size: 10px;
+    min-width: 14px;
+}
+QFrame#serverCard QPushButton#compactGhostButton {
+    background: #08101d;
+    border-color: #243244;
+}
+QFrame#serverCard QPushButton#compactGhostButton:hover {
+    background: #172236;
+    border-color: #334155;
+}
 QFrame#temporaryProtocolCard {
     background: #08101d;
     border: 1px solid #243244;
@@ -2047,6 +2112,7 @@ QTabWidget#sessionTabs::pane {
     border: 1px solid #1e293b;
     border-radius: 12px;
     top: -1px;
+    padding: 0px;
 }
 QTabWidget#sessionTabs::tab-bar {
     left: 8px;
@@ -2577,9 +2643,15 @@ QPushButton#compactGhostButton:hover {
     color: #f8fafc;
 }
 QSplitter::handle {
-    background: #020617;
+    background: #0f172a;
+    border: none;
 }
-QSplitter::handle:hover {
+QSplitter::handle:horizontal {
+    width: 11px;
+    margin: 6px 0;
+    border-radius: 0;
+}
+QSplitter::handle:horizontal:hover {
     background: #243244;
 }
 QMenu {
