@@ -202,6 +202,15 @@ class DesktopStateMixin:
                     temporary_devices.append(device)
         self.temporary_devices = temporary_devices
 
+        saved_server_groups: list[str] = []
+        raw_server_groups = payload.get("saved_server_groups", [])
+        if isinstance(raw_server_groups, list):
+            for item in raw_server_groups:
+                group_name = str(item or "").strip()
+                if group_name and group_name != "未分组" and group_name not in saved_server_groups:
+                    saved_server_groups.append(group_name)
+        self.saved_server_groups = saved_server_groups
+
         saved_servers: list[SavedServer] = []
         raw_servers = payload.get("saved_servers", [])
         if isinstance(raw_servers, list):
@@ -323,6 +332,7 @@ class DesktopStateMixin:
                     serialize_temporary_device(device)
                     for device in self.temporary_devices
                 ],
+                "saved_server_groups": list(getattr(self, "saved_server_groups", [])),
                 "saved_servers": [
                     {
                         "id": server.id,

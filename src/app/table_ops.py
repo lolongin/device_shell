@@ -1040,7 +1040,14 @@ class TableOpsMixin:
         return not any(self.text_matches_keyword(value, keyword) for value in visible_values)
 
     def get_device_by_id(self, device_id: str) -> Device | None:
-        return self.device_by_id.get(device_id)
+        device = self.device_by_id.get(device_id)
+        if device is not None:
+            return device
+        if hasattr(self, "saved_server_by_id") and hasattr(self, "_server_to_ephemeral_device"):
+            server = self.saved_server_by_id(device_id)
+            if server is not None:
+                return self._server_to_ephemeral_device(server)
+        return None
 
     def ensure_valid_selection(self) -> None:
         visible_ids = {device.id for device in self.visible_devices}

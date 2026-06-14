@@ -16,9 +16,12 @@ try:
         QFrame,
         QGroupBox,
         QHBoxLayout,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QMenu,
+        QMessageBox,
+        QPlainTextEdit,
         QPushButton,
         QScrollArea,
         QSizePolicy,
@@ -37,9 +40,12 @@ except ModuleNotFoundError:
     QFrame = None
     QGroupBox = None
     QHBoxLayout = None
+    QInputDialog = None
     QLabel = None
     QLineEdit = None
     QMenu = None
+    QMessageBox = None
+    QPlainTextEdit = None
     QPushButton = None
     QScrollArea = None
     QSizePolicy = None
@@ -76,6 +82,11 @@ class ServerOpsMixin:
 
         group = QGroupBox("我的服务器")
         group.setObjectName("navShell")
+        group.setContextMenuPolicy(Qt.CustomContextMenu) if Qt is not None else None
+        if hasattr(group, "customContextMenuRequested"):
+            group.customContextMenuRequested.connect(
+                lambda pos, widget=group: self._show_server_panel_context_menu(widget, pos)
+            )
         group_layout = QVBoxLayout(group)
         group_layout.setSpacing(8)
 
@@ -117,6 +128,11 @@ class ServerOpsMixin:
 
         self.server_list_container = QWidget()
         self.server_list_container.setObjectName("leftRail")
+        self.server_list_container.setContextMenuPolicy(Qt.CustomContextMenu) if Qt is not None else None
+        if hasattr(self.server_list_container, "customContextMenuRequested"):
+            self.server_list_container.customContextMenuRequested.connect(
+                lambda pos, widget=self.server_list_container: self._show_server_panel_context_menu(widget, pos)
+            )
         self.server_list_layout = QVBoxLayout(self.server_list_container)
         self.server_list_layout.setContentsMargins(0, 0, 0, 0)
         self.server_list_layout.setSpacing(6)
@@ -146,14 +162,21 @@ class ServerOpsMixin:
         servers = getattr(self, "saved_servers", [])
         filtered = [s for s in servers if not query or query in s.name.lower() or query in s.host.lower() or query in s.group.lower()]
 
-        self.server_empty_label.setVisible(not filtered)
-        if not filtered:
-            return
-
         groups: dict[str, list[SavedServer]] = {}
+        if not query:
+            for group_name in self._server_group_names():
+                groups.setdefault(group_name, [])
         for s in filtered:
             g = s.group or "未分组"
             groups.setdefault(g, []).append(s)
+
+        self.server_empty_label.setVisible(not groups)
+        if not groups:
+            if query and (servers or self._server_group_names()):
+                self.server_empty_label.setText("没有匹配的服务器。清空搜索条件后可查看全部。")
+            else:
+                self.server_empty_label.setText('还没有保存的服务器或分组。右键新建分组，或点击「添加」新增。')
+            return
 
         expanded = dict(getattr(self, "_server_group_expanded", {}))
         for g_name in groups:
@@ -168,10 +191,11 @@ class ServerOpsMixin:
             group_header = self._server_group_header(g_name, len(members), is_expanded)
             group_header.setProperty("serverGroupName", g_name)
             group_header.mousePressEvent = lambda event, name=g_name: self._toggle_server_group(name)
+            group_header.keyPressEvent = lambda event, name=g_name: self._handle_server_group_key_press(event, name)
             group_header.setContextMenuPolicy(Qt.CustomContextMenu) if Qt is not None else None
             if hasattr(group_header, "customContextMenuRequested"):
                 group_header.customContextMenuRequested.connect(
-                    lambda pos, name=g_name: self._show_server_group_context_menu(name, group_header, pos)
+                    lambda pos, name=g_name, widget=group_header: self._show_server_group_context_menu(name, widget, pos)
                 )
             self.server_list_layout.addWidget(group_header)
 
@@ -184,6 +208,7 @@ class ServerOpsMixin:
         frame = QFrame()
         frame.setObjectName("serverGroupHeader")
         frame.setCursor(Qt.PointingHandCursor) if Qt is not None else None
+        frame.setFocusPolicy(Qt.StrongFocus) if Qt is not None else None
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(6)
@@ -195,10 +220,25 @@ class ServerOpsMixin:
         layout.addWidget(label, 1)
         return frame
 
+    def _handle_server_group_key_press(self, event: Any, group_name: str) -> None:
+        if Qt is not None and hasattr(event, "key") and event.key() in (
+            Qt.Key_Return,
+            Qt.Key_Enter,
+            Qt.Key_Space,
+        ):
+            self._toggle_server_group(group_name)
+            return
+        if hasattr(event, "ignore"):
+            event.ignore()
+
     def _server_card(self, server: SavedServer) -> QFrame:
         card = QFrame()
         card.setObjectName("serverCard")
-        card.setToolTip("点击连接 SSH，右键更多操作")
+        card.setToolTip("点击卡片连接 SSH，右键更多操作")
+        card.setCursor(Qt.PointingHandCursor) if Qt is not None else None
+        card.setFocusPolicy(Qt.StrongFocus) if Qt is not None else None
+        card.mousePressEvent = lambda event, s=server: self._handle_server_card_press(event, s)
+        card.keyPressEvent = lambda event, s=server: self._handle_server_card_key_press(event, s)
         card.setContextMenuPolicy(Qt.CustomContextMenu) if Qt is not None else None
         if QFrame is not None and hasattr(card, "customContextMenuRequested"):
             card.customContextMenuRequested.connect(
@@ -214,14 +254,9 @@ class ServerOpsMixin:
         name_label.setObjectName("serverCardName")
         top_row.addWidget(name_label, 1)
 
-        group_pill = QLabel(server.group or "")
-        group_pill.setObjectName("serverCardPill")
-        if server.group:
-            top_row.addWidget(group_pill)
-
         connect_btn = QPushButton("连接")
-        connect_btn.setObjectName("compactGhostButton")
-        connect_btn.setFixedWidth(52)
+        connect_btn.setObjectName("primaryButton")
+        connect_btn.setFixedWidth(58)
         connect_btn.clicked.connect(lambda _checked=False, s=server: self._open_server_session(s))
         top_row.addWidget(connect_btn)
 
@@ -247,15 +282,101 @@ class ServerOpsMixin:
 
         return card
 
+    def _normalized_server_group_name(self, name: str) -> str:
+        group_name = name.strip()
+        return "" if group_name == "未分组" else group_name
+
+    def _server_group_names(self) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for group_name in getattr(self, "saved_server_groups", []):
+            normalized = self._normalized_server_group_name(str(group_name))
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                names.append(normalized)
+        for server in getattr(self, "saved_servers", []):
+            normalized = self._normalized_server_group_name(server.group)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                names.append(normalized)
+        return sorted(names)
+
+    def _remember_server_group(self, group_name: str) -> str:
+        normalized = self._normalized_server_group_name(group_name)
+        if not normalized:
+            return ""
+        groups = list(getattr(self, "saved_server_groups", []))
+        if normalized not in groups:
+            groups.append(normalized)
+            self.saved_server_groups = sorted(groups)
+        return normalized
+
+    def _show_server_panel_context_menu(self, widget: QWidget, pos: Any) -> None:
+        if QMenu is None:
+            return
+        menu = QMenu(widget)
+        menu.setObjectName("workspaceContextMenu")
+        add_group_action = menu.addAction("新建分组...")
+        add_server_action = menu.addAction("新增服务器...")
+        chosen = menu.exec(widget.mapToGlobal(pos))
+        if chosen == add_group_action:
+            self._create_server_group()
+        elif chosen == add_server_action:
+            self._show_server_dialog()
+
+    def _create_server_group(self, initial_name: str = "") -> str:
+        if QInputDialog is None:
+            return ""
+        name, accepted = QInputDialog.getText(
+            self,
+            "新建分组",
+            "分组名称：",
+            text=initial_name,
+        )
+        if not accepted:
+            return ""
+        group_name = self._normalized_server_group_name(name)
+        if not group_name:
+            self.set_status_message("分组名称不能为空")
+            return ""
+        if group_name in self._server_group_names():
+            self.set_status_message(f"分组「{group_name}」已存在")
+            return group_name
+        self._remember_server_group(group_name)
+        expanded = dict(getattr(self, "_server_group_expanded", {}))
+        expanded[group_name] = True
+        self._server_group_expanded = expanded
+        self._refresh_server_panel()
+        self.schedule_desktop_state_save()
+        self.set_status_message(f"已创建分组 {group_name}")
+        return group_name
+
+    def _handle_server_card_press(self, event: Any, server: SavedServer) -> None:
+        if Qt is not None and hasattr(event, "button") and event.button() == Qt.LeftButton:
+            self._open_server_session(server)
+            return
+        if hasattr(event, "ignore"):
+            event.ignore()
+
+    def _handle_server_card_key_press(self, event: Any, server: SavedServer) -> None:
+        if Qt is not None and hasattr(event, "key") and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._open_server_session(server)
+            return
+        if hasattr(event, "ignore"):
+            event.ignore()
+
     def _show_server_group_context_menu(self, group_name: str, widget: QWidget, pos: Any) -> None:
         if QMenu is None:
             return
         menu = QMenu(widget)
         menu.setObjectName("workspaceContextMenu")
         add_action = menu.addAction(f"在「{group_name}」中新增服务器")
+        create_group_action = menu.addAction("新建分组...")
         chosen = menu.exec(widget.mapToGlobal(pos))
         if chosen == add_action:
             self._show_server_dialog(prefill_group=group_name)
+        elif chosen == create_group_action:
+            self._create_server_group()
 
     def _show_server_context_menu(self, server: SavedServer, widget: QWidget, pos: Any) -> None:
         if QMenu is None or QWidget is None:
@@ -265,6 +386,19 @@ class ServerOpsMixin:
         connect_action = menu.addAction("连接 SSH")
         edit_action = menu.addAction("编辑...")
         copy_action = menu.addAction("复制连接信息")
+        move_menu = menu.addMenu("移动到分组")
+        move_actions: dict[Any, str] = {}
+        ungrouped_action = move_menu.addAction("未分组")
+        move_actions[ungrouped_action] = ""
+        group_names = self._server_group_names()
+        if group_names:
+            move_menu.addSeparator()
+        for group_name in group_names:
+            action = move_menu.addAction(group_name)
+            action.setEnabled(group_name != server.group)
+            move_actions[action] = group_name
+        move_menu.addSeparator()
+        create_group_action = move_menu.addAction("新建分组...")
         menu.addSeparator()
         delete_action = menu.addAction("删除")
         delete_action.setProperty("danger", True)
@@ -277,8 +411,37 @@ class ServerOpsMixin:
             self._show_edit_server_dialog(server)
         elif chosen == copy_action:
             self._copy_server_connection(server)
+        elif chosen in move_actions:
+            self._move_server_to_group(server, move_actions[chosen])
+        elif chosen == create_group_action:
+            group_name = self._create_server_group()
+            if group_name:
+                self._move_server_to_group(server, group_name)
         elif chosen == delete_action:
             self._delete_server(server)
+
+    def _move_server_to_group(self, server: SavedServer, group_name: str) -> None:
+        normalized_group = self._remember_server_group(group_name)
+        servers = list(getattr(self, "saved_servers", []))
+        updated = SavedServer(
+            id=server.id,
+            name=server.name,
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            password=server.password,
+            group=normalized_group,
+            notes=server.notes,
+        )
+        for index, candidate in enumerate(servers):
+            if candidate.id == server.id:
+                servers[index] = updated
+                break
+        self.saved_servers = servers
+        self._refresh_server_panel()
+        self.schedule_desktop_state_save()
+        target = normalized_group or "未分组"
+        self.set_status_message(f"已将 {server.name} 移动到 {target}")
 
     def _copy_server_connection(self, server: SavedServer) -> None:
         from PySide6.QtWidgets import QApplication
@@ -287,17 +450,37 @@ class ServerOpsMixin:
         if hasattr(self, "set_status_message"):
             self.set_status_message(f"已复制 {server.name} 的连接信息")
 
+    def saved_server_by_id(self, server_id: str) -> SavedServer | None:
+        for server in getattr(self, "saved_servers", []):
+            if server.id == server_id:
+                return server
+        return None
+
+    def is_saved_server_device(self, device: Device | None) -> bool:
+        if device is None:
+            return False
+        return device.domain == "server" or self.saved_server_by_id(device.id) is not None
+
     def _show_add_server_dialog(self) -> None:
         self._show_server_dialog()
 
     def _show_edit_server_dialog(self, server: SavedServer | None = None) -> None:
         self._show_server_dialog(server)
 
+    def _find_duplicate_server(self, host: str, port: int, *, ignore_id: str = "") -> SavedServer | None:
+        normalized_host = host.strip().lower()
+        for candidate in getattr(self, "saved_servers", []):
+            if ignore_id and candidate.id == ignore_id:
+                continue
+            if candidate.host.strip().lower() == normalized_host and candidate.port == port:
+                return candidate
+        return None
+
     def _show_server_dialog(self, server: SavedServer | None = None, *, prefill_group: str = "") -> None:
         if QDialog is None:
             return
         is_edit = server is not None
-        dialog = QDialog(self if hasattr(self, "widget") else None)
+        dialog = QDialog(self)
         dialog.setObjectName("workspaceDialog")
         dialog.setWindowTitle("编辑服务器" if is_edit else "添加服务器")
         dialog.setMinimumWidth(400)
@@ -331,6 +514,8 @@ class ServerOpsMixin:
         user_input.setPlaceholderText("SSH 用户名")
         if is_edit:
             user_input.setText(server.username)
+        else:
+            user_input.setText("root")
         form.addRow("用户名", user_input)
 
         pass_input = QLineEdit()
@@ -340,7 +525,16 @@ class ServerOpsMixin:
             pass_input.setText(server.password)
         form.addRow("密码", pass_input)
 
-        existing_groups = sorted({s.group for s in getattr(self, "saved_servers", []) if s.group})
+        save_password_checkbox = QCheckBox("保存密码到本机配置")
+        save_password_checkbox.setToolTip("未勾选时仅保存账号，连接时手动输入密码。")
+        save_password_checkbox.setChecked(bool(server.password) if is_edit else False)
+        form.addRow("", save_password_checkbox)
+        password_hint = QLabel("密码会写入本机桌面状态文件；不勾选则连接时手动输入。")
+        password_hint.setObjectName("sectionCopy")
+        password_hint.setWordWrap(True)
+        form.addRow("", password_hint)
+
+        existing_groups = self._server_group_names()
         group_combo = QComboBox()
         group_combo.setEditable(True)
         group_combo.addItem("")
@@ -352,16 +546,72 @@ class ServerOpsMixin:
         group_combo.lineEdit().setPlaceholderText("新建或选择分组")
         form.addRow("分组", group_combo)
 
-        notes_input = QLineEdit()
+        notes_input = QPlainTextEdit()
         notes_input.setPlaceholderText("备注（可选）")
+        notes_input.setMaximumHeight(68)
         if is_edit and server.notes:
-            notes_input.setText(server.notes)
+            notes_input.setPlainText(server.notes)
         form.addRow("备注", notes_input)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
         buttons.setObjectName("workspaceDialogButtons")
-        buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
+        connect_after_save = {"value": False}
+        primary_button = buttons.addButton("保存" if is_edit else "保存并连接", QDialogButtonBox.AcceptRole)
+        primary_button.setObjectName("primaryButton")
+        save_only_button = None
+        if not is_edit:
+            save_only_button = buttons.addButton("仅保存", QDialogButtonBox.ActionRole)
+            save_only_button.setObjectName("compactGhostButton")
+
+        def update_password_save_state() -> None:
+            has_password = bool(pass_input.text())
+            save_password_checkbox.setEnabled(has_password)
+            if not has_password:
+                save_password_checkbox.setChecked(False)
+
+        def update_accept_enabled() -> None:
+            enabled = bool(name_input.text().strip()) and bool(host_input.text().strip())
+            primary_button.setEnabled(enabled)
+            if save_only_button is not None:
+                save_only_button.setEnabled(enabled)
+
+        def submit_dialog(*, connect: bool) -> None:
+            new_name = name_input.text().strip()
+            new_host = host_input.text().strip()
+            if not new_name or not new_host:
+                self.set_status_message("名称和主机不能为空")
+                (name_input if not new_name else host_input).setFocus()
+                return
+
+            duplicate = self._find_duplicate_server(
+                new_host,
+                port_input.value(),
+                ignore_id=server.id if is_edit else "",
+            )
+            if duplicate is not None and QMessageBox is not None:
+                confirm = QMessageBox.question(
+                    dialog,
+                    "服务器已存在",
+                    f"已存在相同地址的服务器「{duplicate.name}」。仍要继续保存吗？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if confirm != QMessageBox.Yes:
+                    host_input.setFocus()
+                    return
+
+            connect_after_save["value"] = connect
+            dialog.accept()
+
+        primary_button.clicked.connect(lambda: submit_dialog(connect=not is_edit))
+        if save_only_button is not None:
+            save_only_button.clicked.connect(lambda: submit_dialog(connect=False))
+        name_input.textChanged.connect(update_accept_enabled)
+        host_input.textChanged.connect(update_accept_enabled)
+        pass_input.textChanged.connect(update_password_save_state)
+        update_password_save_state()
+        update_accept_enabled()
 
         main_layout = QVBoxLayout(dialog)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -374,10 +624,6 @@ class ServerOpsMixin:
 
         new_name = name_input.text().strip()
         new_host = host_input.text().strip()
-        if not new_name or not new_host:
-            self.set_status_message("名称和主机不能为空")
-            return
-
         new_id = server.id if is_edit else _generate_server_id()
         updated = SavedServer(
             id=new_id,
@@ -385,9 +631,9 @@ class ServerOpsMixin:
             host=new_host,
             port=port_input.value(),
             username=user_input.text().strip(),
-            password=pass_input.text(),
+            password=pass_input.text() if save_password_checkbox.isChecked() else "",
             group=group_combo.currentText().strip(),
-            notes=notes_input.text().strip(),
+            notes=notes_input.toPlainText().strip(),
         )
 
         servers = list(getattr(self, "saved_servers", []))
@@ -399,9 +645,13 @@ class ServerOpsMixin:
         else:
             servers.append(updated)
         self.saved_servers = servers
+        if updated.group:
+            self._remember_server_group(updated.group)
         self._refresh_server_panel()
         self.schedule_desktop_state_save()
         self.set_status_message(f"已{'更新' if is_edit else '添加'}服务器 {new_name}")
+        if connect_after_save["value"]:
+            self._open_server_session(updated)
 
     def _delete_server(self, server: SavedServer) -> None:
         from PySide6.QtWidgets import QMessageBox

@@ -37,6 +37,7 @@
       min-height: 0;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
     }
 
     .workspace-panel {
@@ -48,6 +49,7 @@
       min-height: 0;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
     }
 
     .section-title {
@@ -121,29 +123,65 @@
     }
 
     .builder {
+      height: 100%;
       min-height: 0;
       display: grid;
-      grid-template-columns: 190px minmax(0, 1fr);
+      grid-template-columns: 220px minmax(0, 1fr);
       gap: 12px;
       margin-top: 12px;
+      overflow: hidden;
     }
 
     .toolbox {
       display: grid;
       gap: 8px;
       align-content: start;
+      border-right: 1px solid var(--line);
+      padding-right: 12px;
+    }
+
+    .toolbox-heading,
+    .flow-heading {
+      min-height: 24px;
+      display: flex;
+      align-items: center;
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .toolbox-heading {
+      color: var(--success-text);
     }
 
     .tool-button {
+      position: relative;
+      display: block;
+      width: 100%;
       height: auto;
       min-height: 58px;
       text-align: left;
       white-space: normal;
+      overflow: visible;
       border: 1px solid var(--line);
       background: var(--input);
       border-radius: 8px;
       padding: 9px 10px;
       color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .tool-button:hover {
+      border-color: var(--accent);
+      background: var(--success-soft);
+    }
+
+    .tool-button-label {
+      display: block;
+      white-space: nowrap;
+      overflow: visible;
+      text-overflow: clip;
     }
 
     .tool-button small {
@@ -155,8 +193,19 @@
 
     .flow {
       min-height: 0;
-      overflow: auto;
-      padding-right: 4px;
+      overflow-x: hidden;
+      overflow-y: scroll;
+      padding: 0 4px 28px 0;
+      scrollbar-gutter: stable;
+    }
+
+    .flow-panel {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+      overflow: hidden;
     }
 
     .action-card {
@@ -165,6 +214,10 @@
       border-radius: 10px;
       margin-bottom: 10px;
       overflow: hidden;
+    }
+
+    .action-card:last-child {
+      margin-bottom: 24px;
     }
 
     .action-card.loop {
@@ -388,7 +441,7 @@
 
     .preview-list {
       display: grid;
-      gap: 8px;
+      gap: 6px;
     }
 
     .preview-line {
@@ -404,6 +457,104 @@
       color: var(--accent);
     }
 
+    .preview-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .preview-title-row span {
+      margin-left: auto;
+    }
+
+    .preview-popout-button {
+      height: 26px;
+      padding: 0 10px;
+      border-radius: 7px;
+      font-size: 12px;
+    }
+
+    .flow-preview {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .flow-node {
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: var(--input);
+      border-radius: 8px;
+      padding: 8px 9px;
+      color: var(--text);
+      line-height: 1.35;
+    }
+
+    .flow-node-title {
+      display: block;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .flow-node-meta {
+      display: block;
+      margin-top: 3px;
+      color: var(--soft);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .flow-node.start {
+      border-color: var(--success-line);
+      background: var(--success-soft);
+    }
+
+    .flow-node.warn .flow-node-title {
+      color: var(--warn-text);
+    }
+
+    .flow-node.send .flow-node-title,
+    .flow-node.condition .flow-node-title {
+      color: var(--success-text);
+    }
+
+    .flow-node.loop .flow-node-title {
+      color: var(--warn-text);
+    }
+
+    .flow-node.exit .flow-node-title {
+      color: var(--danger-text);
+    }
+
+    .flow-connector {
+      display: flex;
+      justify-content: center;
+      color: var(--soft);
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .flow-children {
+      display: grid;
+      gap: 4px;
+      margin: 5px 0 0 8px;
+      padding-left: 10px;
+      border-left: 2px solid var(--line-strong);
+    }
+
+    .flow-preview.compact .flow-node {
+      padding: 7px 8px;
+    }
+
+    .flow-preview.compact .flow-node-meta {
+      display: none;
+    }
+
+    .flow-preview.compact .flow-children {
+      display: none;
+    }
+
     @media (max-width: 900px) {
       .topbar,
       .main,
@@ -417,7 +568,8 @@
         overflow: auto;
       }
       .flow {
-        overflow: visible;
+        overflow-x: hidden;
+        overflow-y: auto;
       }
     }
   </style>
@@ -492,13 +644,17 @@
           </div>
           <div class="builder">
             <div class="toolbox">
-              <button class="tool-button" type="button" data-add="send">发送内容<small>发送命令、文本或 Ctrl+B</small></button>
-              <button class="tool-button" type="button" data-add="wait">等待<small>延迟一段时间再继续</small></button>
-              <button class="tool-button" type="button" data-add="condition">判断<small>看到内容后执行里面的动作</small></button>
-              <button class="tool-button" type="button" data-add="loop">循环<small>重复执行里面的动作</small></button>
-              <button class="tool-button" type="button" data-add="exit">退出<small>看到内容后退出循环或规则</small></button>
+              <div class="toolbox-heading">添加动作</div>
+              <button class="tool-button" type="button" data-add="send"><span class="tool-button-label">添加发送内容</span><small>发送命令、文本或 Ctrl+B</small></button>
+              <button class="tool-button" type="button" data-add="wait"><span class="tool-button-label">添加等待</span><small>延迟一段时间再继续</small></button>
+              <button class="tool-button" type="button" data-add="condition"><span class="tool-button-label">添加判断</span><small>看到内容后执行里面的动作</small></button>
+              <button class="tool-button" type="button" data-add="loop"><span class="tool-button-label">添加循环</span><small>重复执行里面的动作</small></button>
+              <button class="tool-button" type="button" data-add="exit"><span class="tool-button-label">添加退出</span><small>看到内容后退出循环或规则</small></button>
             </div>
-            <div class="flow" id="actionsRoot"></div>
+            <div class="flow-panel">
+              <div class="flow-heading">动作流程</div>
+              <div class="flow" id="actionsRoot"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -515,7 +671,12 @@
           <p class="hint">高级次数、延时、匹配方式仍保留，但默认放在旁边，不打扰主流程。</p>
         </div>
         <div class="workspace-panel">
-          <div class="section-title">3. 确认预览</div>
+          <div class="section-title">
+            <div class="preview-title-row">
+              3. 确认预览
+              <button class="preview-popout-button" type="button" id="openPreviewScreen">展开</button>
+            </div>
+          </div>
           <div class="preview-list" id="preview"></div>
         </div>
       </aside>
@@ -716,7 +877,7 @@
       const firstResponse = Array.isArray(firstStep.responses) ? firstStep.responses[0] : null;
       const fallbackAction = {
         kind: "send",
-        text: (firstResponse && firstResponse.text) || (payload && payload.responseText) || "Ctrl+B",
+        text: (firstResponse && firstResponse.text) || (payload && payload.responseText) || "",
         target: (firstResponse && firstResponse.target) || "current",
         delayMs: (firstResponse && firstResponse.delay) || 0,
         appendEnter: !!(firstResponse && firstResponse.appendEnter)
@@ -727,7 +888,7 @@
       return {
         name: String((payload && payload.name) || ""),
         triggerType: ["match", "manual"].includes(payload && payload.triggerType) ? payload.triggerType : "match",
-        triggerPattern: String((payload && (payload.triggerPattern || payload.pattern)) || firstStep.pattern || "Ctrl+B"),
+        triggerPattern: String((payload && (payload.triggerPattern || payload.pattern)) || firstStep.pattern || ""),
         matchType: ["contains", "regex"].includes(payload && payload.matchType) ? payload.matchType : "contains",
         appendEnter: !!(payload && payload.appendEnter),
         caseSensitive: payload && payload.caseSensitive === false ? false : true,
@@ -1006,55 +1167,120 @@
       $("manualFields").classList.toggle("hidden", triggerType !== "manual");
     }
 
-    function describeAction(action, depth = 0) {
-      const pad = depth ? "　".repeat(depth) : "";
-      if (action.kind === "send") return `${pad}发送 <b>${escapeHtml(action.text || "未填写")}</b>${action.appendEnter ? "，并按 Enter" : ""}`;
-      if (action.kind === "wait") return `${pad}等待 <b>${action.delayMs || 0} ms</b>`;
-      if (action.kind === "exit") return `${pad}如果看到 <b>${escapeHtml(action.exitPattern || "未填写")}</b>，${action.exitScope === "rule" ? "停止整个规则" : "退出当前循环"}`;
-      if (action.kind === "condition") {
-        return [
-          `${pad}如果看到 <b>${escapeHtml(action.conditionPattern || "未填写")}</b>，执行下面动作`,
-          ...(action.actions || []).map((child) => describeAction(child, depth + 1))
-        ];
-      }
-      const loopLabel = action.repeatCount === 0 ? "一直循环" : `循环 <b>${action.repeatCount || 1} 次</b>`;
-      return [
-        `${pad}${loopLabel}，每轮间隔 <b>${action.intervalMs || 0} ms</b>`,
-        ...(action.actions || []).map((child) => describeAction(child, depth + 1))
-      ];
+    function targetLabel(value) {
+      const target = (state.targets || []).find((item) => item.value === value);
+      return target ? target.label : "当前选中终端";
     }
 
-    function escapeHtml(value) {
-      return String(value).replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-      }[char]));
+    function createFlowNode(kind, title, meta = "") {
+      const node = document.createElement("div");
+      node.className = `flow-node ${kind}`;
+      const titleEl = document.createElement("span");
+      titleEl.className = "flow-node-title";
+      titleEl.textContent = title;
+      node.appendChild(titleEl);
+      if (meta) {
+        const metaEl = document.createElement("span");
+        metaEl.className = "flow-node-meta";
+        metaEl.textContent = meta;
+        node.appendChild(metaEl);
+      }
+      return node;
+    }
+
+    function appendConnector(container) {
+      const connector = document.createElement("div");
+      connector.className = "flow-connector";
+      connector.textContent = "↓";
+      container.appendChild(connector);
+    }
+
+    function actionFlowSummary(action) {
+      if (action.kind === "send") {
+        const waits = action.delayMs ? `，发送前等待 ${action.delayMs} ms` : "";
+        const enter = action.appendEnter ? "，追加 Enter" : "";
+        return {
+          kind: "send",
+          title: `发送 ${action.text || "未填写"}`,
+          meta: `发送到 ${targetLabel(action.target)}${waits}${enter}`,
+        };
+      }
+      if (action.kind === "wait") {
+        return { kind: "wait", title: `等待 ${action.delayMs || 0} ms`, meta: "延迟一段时间再继续" };
+      }
+      if (action.kind === "exit") {
+        const scope = action.exitScope === "rule" ? "停止整个规则" : "退出当前循环";
+        return { kind: "exit", title: `退出：${action.exitPattern || "未填写"}`, meta: scope };
+      }
+      if (action.kind === "condition") {
+        return {
+          kind: "condition",
+          title: `判断：${action.conditionPattern || "未填写"}`,
+          meta: `命中后执行 ${(action.actions || []).length} 个动作`,
+        };
+      }
+      const loopTitle = action.repeatCount === 0 ? "一直循环" : `循环 ${action.repeatCount || 1} 次`;
+      return {
+        kind: "loop",
+        title: loopTitle,
+        meta: `每轮间隔 ${action.intervalMs || 0} ms，包含 ${(action.actions || []).length} 个动作`,
+      };
+    }
+
+    function appendActionFlow(container, action, compact = false) {
+      const summary = actionFlowSummary(action);
+      const node = createFlowNode(summary.kind, summary.title, summary.meta);
+      container.appendChild(node);
+      const children = action.actions || [];
+      if (!compact && children.length && ["condition", "loop"].includes(action.kind)) {
+        const childContainer = document.createElement("div");
+        childContainer.className = "flow-children";
+        children.forEach((child, index) => {
+          if (index > 0) appendConnector(childContainer);
+          appendActionFlow(childContainer, child, compact);
+        });
+        node.appendChild(childContainer);
+      }
+    }
+
+    function renderFlowPreview(container, compact = false) {
+      container.innerHTML = "";
+      const flow = document.createElement("div");
+      flow.className = compact ? "flow-preview compact" : "flow-preview";
+      const triggerType = document.querySelector(".trigger-card.selected")?.dataset.trigger || state.triggerType;
+      if (triggerType === "manual") {
+        flow.appendChild(createFlowNode("start", `开始：点击按钮 ${$("manualButtonName").value || "未命名按钮"}`));
+      } else {
+        flow.appendChild(createFlowNode("start", `开始：终端输出包含 ${$("triggerPattern").value || "未填写"}`));
+      }
+
+      const actions = collectActions($("actionsRoot"));
+      if (!actions.length) {
+        appendConnector(flow);
+        flow.appendChild(createFlowNode("warn", "尚未添加动作", "从左侧添加发送、等待、判断或循环"));
+      }
+      actions.forEach((action) => {
+        appendConnector(flow);
+        appendActionFlow(flow, action, compact);
+      });
+      if ($("once").checked) {
+        appendConnector(flow);
+        flow.appendChild(createFlowNode("wait", "执行后停用本规则", "避免重复触发"));
+      }
+      appendConnector(flow);
+      flow.appendChild(createFlowNode("end", "结束"));
+      container.appendChild(flow);
     }
 
     function renderPreview() {
-      const preview = $("preview");
-      preview.innerHTML = "";
-      const lines = [];
-      if (state.triggerType === "manual") {
-        lines.push(`点击按钮 <b>${escapeHtml($("manualButtonName").value || "未命名按钮")}</b> 后开始`);
-      } else {
-        lines.push(`如果终端输出包含 <b>${escapeHtml($("triggerPattern").value || "未填写")}</b>，开始执行`);
+      renderFlowPreview($("preview"), true);
+    }
+
+    function openPreviewScreen() {
+      const payload = JSON.stringify(collect());
+      if (bridge && bridge.requestPreviewScreen) {
+        bridge.requestPreviewScreen(payload);
       }
-      collectActions($("actionsRoot")).forEach((action) => {
-        const descriptions = describeAction(action);
-        if (Array.isArray(descriptions)) lines.push(...descriptions);
-        else lines.push(descriptions);
-      });
-      if ($("once").checked) lines.push("执行结束后停用本规则，避免重复触发");
-      lines.forEach((line) => {
-        const item = document.createElement("div");
-        item.className = "preview-line";
-        item.innerHTML = line;
-        preview.appendChild(item);
-      });
     }
 
     function render(payload) {
@@ -1092,6 +1318,7 @@
           sync();
         });
       });
+      $("openPreviewScreen").onclick = openPreviewScreen;
       sync();
     }
 

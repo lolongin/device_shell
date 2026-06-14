@@ -298,6 +298,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.my_occupancy_filter_enabled = False
             self.temporary_devices: list[Device] = []
             self.saved_servers: list[SavedServer] = []
+            self.saved_server_groups: list[str] = []
             self.local_credential_overrides: dict[str, dict[str, dict[str, str]]] = {}
             self.editing_temporary_device_id = ""
             self.recent_device_ids: list[str] = []
@@ -2479,11 +2480,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             selected = device is not None
             state = self.current_session_state()
             simulated_selected = self.is_simulated_device(device)
-            self.connection_telnet_button.setEnabled(selected)
+            saved_server_selected = self.is_saved_server_device(device)
+            self.connection_telnet_button.setEnabled(selected and not saved_server_selected)
             self.connection_telnet_button.setText("连接 Telnet")
             self.connection_ssh_button.setEnabled(selected and not simulated_selected)
             self.connection_serial_button.setEnabled(
-                selected and not simulated_selected and not self.is_temporary_device(device)
+                selected
+                and not simulated_selected
+                and not saved_server_selected
+                and not self.is_temporary_device(device)
             )
             self.quick_reconnect_button.setEnabled(state is not None and not state.connecting)
             self.quick_auto_response_button.setEnabled(True)

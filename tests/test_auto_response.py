@@ -14,7 +14,12 @@ from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QDialogButtonBox
 
 from src._sample_data import sample_devices
 from src.app.main_window import DeviceDesktopApp
-from src.app.session_ops import AutoResponseRuleDialog, AutoResponseRuleWebDialog, QuickSendButtonDialog
+from src.app.session_ops import (
+    AutoResponseRuleDialog,
+    AutoResponseRulePreviewDialog,
+    AutoResponseRuleWebDialog,
+    QuickSendButtonDialog,
+)
 from src.app_state import SessionTabState
 from src.auto_response import (
     AutoResponseAction,
@@ -292,6 +297,8 @@ def test_auto_response_rule_dialog_builds_steps_with_buttons(app: QApplication) 
     assert dialog.objectName() == "workspaceDialog"
     assert dialog.findChild(QDialogButtonBox, "workspaceDialogButtons") is not None
 
+    dialog.condition_blocks[0]["pattern_input"].setText("Ctrl+B")
+    dialog.condition_blocks[0]["response_rows"][0]["response_input"].setText("Ctrl+B")
     dialog.add_send_row("display version")
     second_delay_input = dialog.condition_blocks[0]["response_rows"][1]["delay_input"]
     assert isinstance(second_delay_input, QLineEdit)
@@ -304,6 +311,17 @@ def test_auto_response_rule_dialog_builds_steps_with_buttons(app: QApplication) 
     assert values["step_delays"] == [0, 1200, 0]
     assert values["case_sensitive"] is True
     assert not hasattr(dialog, "steps_input")
+
+
+def test_new_auto_response_rule_dialog_starts_blank(app: QApplication) -> None:
+    _ = app
+    dialog = AutoResponseRuleDialog()
+
+    values = dialog.values()
+
+    assert dialog.name_input.text() == ""
+    assert values["pattern"] == ""
+    assert values["response_text"] == ""
 
 
 def test_quick_send_button_dialog_uses_workspace_surfaces(app: QApplication) -> None:
@@ -326,6 +344,50 @@ def test_auto_response_web_dialog_uses_workspace_button_surface(app: QApplicatio
     assert not dialog.isModal()
     assert dialog.minimumWidth() >= 1180
     assert dialog.minimumHeight() >= 760
+
+
+def test_new_auto_response_web_dialog_payload_starts_blank(app: QApplication) -> None:
+    _ = app
+
+    payload = AutoResponseRuleWebDialog.payload_from_rule(None)
+
+    assert payload["name"] == ""
+    assert payload["simpleRuleText"] == ""
+    assert payload["steps"][0]["pattern"] == ""
+    assert payload["steps"][0]["responses"][0]["text"] == ""
+    assert payload["actions"][0]["text"] == ""
+
+
+def test_auto_response_preview_dialog_renders_nested_flow(app: QApplication) -> None:
+    _ = app
+    payload = {
+        "name": "TEST",
+        "triggerType": "manual",
+        "once": True,
+        "actions": [
+            {
+                "kind": "loop",
+                "repeatCount": 3,
+                "intervalMs": 1000,
+                "actions": [
+                    {
+                        "kind": "send",
+                        "text": "disp version",
+                        "target": "current",
+                        "appendEnter": True,
+                    }
+                ],
+            }
+        ],
+        "targets": [{"label": "当前选中终端", "value": "current"}],
+    }
+
+    html = AutoResponseRulePreviewDialog.preview_html(payload)
+
+    assert "开始：点击按钮 TEST" in html
+    assert "循环 3 次" in html
+    assert "发送 disp version" in html
+    assert "执行后停用本规则" in html
 
 
 def test_auto_response_rule_dialog_preserves_case_sensitive_setting(app: QApplication) -> None:

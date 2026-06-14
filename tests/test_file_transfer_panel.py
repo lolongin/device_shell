@@ -27,7 +27,7 @@ def test_file_transfer_panel_exists_in_left_sidebar(app: QApplication) -> None:
     window.show_left_sidebar_panel("transfer")
 
     assert window.left_sidebar_active_panel == "transfer"
-    assert window.left_sidebar_stack.currentIndex() == 2
+    assert window.left_sidebar_stack.currentIndex() == 3
     assert window.transfer_protocol_combo.currentText() in {"FTP", "SFTP"}
     assert window.transfer_start_button.text() == "启动服务"
 

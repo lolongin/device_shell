@@ -1952,15 +1952,6 @@ QLabel#serverCardMeta {
     color: #a7b4c7;
     font-size: 11px;
 }
-QLabel#serverCardPill {
-    background: #102019;
-    border: 1px solid #22c55e;
-    border-radius: 999px;
-    color: #d8fff0;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 1px 6px;
-}
 QFrame#serverGroupHeader {
     background: #0f172a;
     border: 1px solid #243244;
@@ -1994,6 +1985,14 @@ QFrame#serverCard QPushButton#compactGhostButton {
 QFrame#serverCard QPushButton#compactGhostButton:hover {
     background: #172236;
     border-color: #334155;
+}
+QFrame#serverCard QPushButton#primaryButton {
+    padding: 6px 9px;
+    min-width: 50px;
+}
+QFrame#serverCard QPushButton#primaryButton:hover {
+    background: #16a34a;
+    border-color: #4ade80;
 }
 QFrame#temporaryProtocolCard {
     background: #08101d;

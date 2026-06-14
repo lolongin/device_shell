@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import re
@@ -33,6 +34,7 @@ try:
         QSplitter,
         QTabBar,
         QTabWidget,
+        QTextBrowser,
         QToolButton,
         QVBoxLayout,
         QWidget,
@@ -75,6 +77,7 @@ except ModuleNotFoundError:
     QSplitter = None
     QTabBar = None
     QTabWidget = None
+    QTextBrowser = None
     QToolButton = None
     QVBoxLayout = None
     QWidget = None
@@ -138,7 +141,7 @@ if QDialog is not None:
             layout.setContentsMargins(18, 16, 18, 14)
             layout.setSpacing(10)
 
-            self.name_input = QLineEdit(rule.name if rule is not None else "启动菜单 Ctrl+B")
+            self.name_input = QLineEdit(rule.name if rule is not None else "")
             self.append_enter_input = QCheckBox("发送后追加 Enter")
             self.append_enter_input.setChecked(rule.append_enter if rule is not None else False)
             self.case_sensitive_input = QCheckBox("匹配时区分大小写")
@@ -250,8 +253,10 @@ if QDialog is not None:
                     )
                 return
             self.add_wait_row(
-                rule.pattern if rule is not None else "Ctrl+B",
-                rule.response_text if rule is not None and rule.response_text else "Ctrl+B",
+                rule.pattern if rule is not None else "",
+                rule.response_text if rule is not None and rule.response_text else (
+                    "Ctrl+B" if rule is not None else ""
+                ),
             )
 
         def add_wait_row(self, pattern: str = "", response_text: str = "") -> None:
@@ -562,6 +567,7 @@ if QDialog is not None:
         """Bridge between the web rule editor and the Python dialog."""
 
         payload_changed = Signal(str)
+        preview_requested = Signal(str)
 
         def __init__(self, payload: dict[str, Any], parent: QObject | None = None) -> None:
             super().__init__(parent)
@@ -574,6 +580,174 @@ if QDialog is not None:
         @Slot(str)
         def updatePayload(self, payload: str) -> None:
             self.payload_changed.emit(payload)
+
+        @Slot(str)
+        def requestPreviewScreen(self, payload: str) -> None:
+            self.preview_requested.emit(payload)
+
+
+    class AutoResponseRulePreviewDialog(QDialog):
+        """Non-modal side window for the auto-response flow preview."""
+
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(parent)
+            self.setWindowTitle("自动响应流程图")
+            self.setObjectName("workspaceDialog")
+            self.setModal(False)
+            self.setWindowModality(Qt.NonModal)
+            self.resize(420, 680)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            self.preview = QTextBrowser(self)
+            self.preview.setOpenExternalLinks(False)
+            self.preview.setFrameShape(QFrame.NoFrame)
+            self.preview.setStyleSheet(
+                """
+                QTextBrowser {
+                    background: #0f172a;
+                    color: #f8fafc;
+                    border: 1px solid #334155;
+                    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+                    font-size: 13px;
+                }
+                """
+            )
+            layout.addWidget(self.preview, 1)
+
+        def show_for_owner(self, owner: QWidget) -> None:
+            self._move_next_to(owner)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        def _move_next_to(self, owner: QWidget) -> None:
+            owner_rect = owner.frameGeometry()
+            screen = owner.screen() or QApplication.primaryScreen()
+            if screen is None:
+                self.move(owner_rect.right() + 12, owner_rect.top())
+                return
+            available = screen.availableGeometry()
+            width = min(max(380, self.width()), max(380, available.width() // 3))
+            height = min(max(520, owner_rect.height()), available.height())
+            self.resize(width, height)
+            right_x = owner_rect.right() + 12
+            if right_x + width <= available.right():
+                x = right_x
+            else:
+                x = max(available.left(), available.right() - width + 1)
+            y = max(available.top(), min(owner_rect.top(), available.bottom() - height + 1))
+            self.move(x, y)
+
+        def update_payload(self, payload: dict[str, Any]) -> None:
+            self.preview.setHtml(self.preview_html(payload))
+
+        @classmethod
+        def preview_html(cls, payload: dict[str, Any]) -> str:
+            target_labels = {
+                str(item.get("value")): str(item.get("label"))
+                for item in payload.get("targets", [])
+                if isinstance(item, dict)
+            }
+            lines = [
+                "<html><head><style>",
+                "body{margin:0;padding:14px;background:#0f172a;color:#f8fafc;}",
+                ".title{font-weight:700;font-size:15px;margin-bottom:10px;}",
+                ".flow{display:block;}",
+                ".node{border:1px solid #243244;background:#08101d;border-radius:8px;padding:8px 10px;margin:0;}",
+                ".node.start{border-color:rgba(34,197,94,.62);background:rgba(34,197,94,.14);}",
+                ".node.send .node-title,.node.condition .node-title{color:#d8fff0;}",
+                ".node.loop .node-title,.node.wait .node-title{color:#f8e7a1;}",
+                ".node.exit .node-title{color:#fecaca;}",
+                ".node-title{display:block;font-weight:700;}",
+                ".meta{display:block;color:#a7b4c7;font-size:12px;margin-top:4px;}",
+                ".connector{text-align:center;color:#718096;line-height:1.7;}",
+                ".children{border-left:2px solid #334155;margin:7px 0 0 8px;padding-left:10px;}",
+                "</style></head><body>",
+                '<div class="title">流程图副屏</div>',
+                '<div class="flow">',
+            ]
+            trigger_type = str(payload.get("triggerType") or "match")
+            if trigger_type == "manual":
+                name = str(payload.get("name") or "未命名按钮")
+                lines.append(cls.node_html("start", f"开始：点击按钮 {name}"))
+            else:
+                pattern = str(payload.get("triggerPattern") or payload.get("pattern") or "未填写")
+                lines.append(cls.node_html("start", f"开始：终端输出包含 {pattern}"))
+            actions = payload.get("actions")
+            if not isinstance(actions, list) or not actions:
+                lines.append(cls.connector_html())
+                lines.append(cls.node_html("wait", "尚未添加动作", "从左侧添加发送、等待、判断或循环"))
+            else:
+                for action in actions:
+                    lines.append(cls.connector_html())
+                    lines.append(cls.action_html(action, target_labels))
+            if bool(payload.get("once", True)):
+                lines.append(cls.connector_html())
+                lines.append(cls.node_html("wait", "执行后停用本规则", "避免重复触发"))
+            lines.append(cls.connector_html())
+            lines.append(cls.node_html("end", "结束"))
+            lines.append("</div></body></html>")
+            return "".join(lines)
+
+        @staticmethod
+        def connector_html() -> str:
+            return '<div class="connector">↓</div>'
+
+        @staticmethod
+        def int_value(value: object, fallback: int = 0) -> int:
+            try:
+                return max(0, int(str(value).strip() or str(fallback)))
+            except (TypeError, ValueError):
+                return fallback
+
+        @classmethod
+        def node_html(cls, kind: str, title: str, meta: str = "") -> str:
+            meta_html = f'<span class="meta">{html.escape(meta)}</span>' if meta else ""
+            return (
+                f'<div class="node {html.escape(kind)}">'
+                f'<span class="node-title">{html.escape(title)}</span>{meta_html}</div>'
+            )
+
+        @classmethod
+        def action_html(cls, action: object, target_labels: dict[str, str]) -> str:
+            if not isinstance(action, dict):
+                return cls.node_html("wait", "未知动作")
+            kind = str(action.get("kind") or "send")
+            if kind == "send":
+                text = str(action.get("text") or "未填写")
+                target = target_labels.get(str(action.get("target") or "current"), "当前选中终端")
+                delay = cls.int_value(action.get("delayMs") or action.get("delay_ms"))
+                enter = "，追加 Enter" if bool(action.get("appendEnter") or action.get("append_enter")) else ""
+                wait = f"，发送前等待 {delay} ms" if delay else ""
+                return cls.node_html("send", f"发送 {text}", f"发送到 {target}{wait}{enter}")
+            if kind == "wait":
+                return cls.node_html("wait", f"等待 {cls.int_value(action.get('delayMs'))} ms", "延迟一段时间再继续")
+            if kind == "exit":
+                scope = "停止整个规则" if action.get("exitScope") == "rule" else "退出当前循环"
+                return cls.node_html("exit", f"退出：{str(action.get('exitPattern') or '未填写')}", scope)
+            if kind in {"condition", "loop"}:
+                children = action.get("actions")
+                child_count = len(children) if isinstance(children, list) else 0
+                if kind == "condition":
+                    title = f"判断：{str(action.get('conditionPattern') or '未填写')}"
+                    meta = f"命中后执行 {child_count} 个动作"
+                else:
+                    repeat = cls.int_value(action.get("repeatCount"), 1)
+                    title = "一直循环" if repeat == 0 else f"循环 {repeat} 次"
+                    meta = f"每轮间隔 {cls.int_value(action.get('intervalMs'))} ms，包含 {child_count} 个动作"
+                inner = [cls.node_html(kind, title, meta)]
+                if isinstance(children, list) and children:
+                    inner.append('<div class="children">')
+                    for index, child in enumerate(children):
+                        if index > 0:
+                            inner.append(cls.connector_html())
+                        inner.append(cls.action_html(child, target_labels))
+                    inner.append("</div>")
+                return "".join(inner)
+            return cls.node_html("wait", f"未知动作：{kind}")
 
 
     class AutoResponseRuleWebDialog(QDialog):
@@ -595,8 +769,10 @@ if QDialog is not None:
             self.resize(1280, 860)
 
             self._payload = self.payload_from_rule(rule, parent)
+            self._preview_dialog: AutoResponseRulePreviewDialog | None = None
             self._bridge = AutoResponseRuleWebBridge(self._payload, self)
             self._bridge.payload_changed.connect(self._set_payload_from_json)
+            self._bridge.preview_requested.connect(self._show_preview_screen)
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -625,6 +801,19 @@ if QDialog is not None:
                 return
             if isinstance(data, dict):
                 self._payload = data
+                if self._preview_dialog is not None and self._preview_dialog.isVisible():
+                    self._preview_dialog.update_payload(self._payload)
+
+        def _show_preview_screen(self, payload: str) -> None:
+            self._set_payload_from_json(payload)
+            if self._preview_dialog is None:
+                self._preview_dialog = AutoResponseRulePreviewDialog(self)
+            self._preview_dialog.update_payload(self._payload)
+            self._preview_dialog.show_for_owner(self)
+
+        def _close_preview_screen(self) -> None:
+            if self._preview_dialog is not None:
+                self._preview_dialog.close()
 
         def accept(self) -> None:
             name = str(self._payload.get("name") or "").strip()
@@ -636,7 +825,16 @@ if QDialog is not None:
                     f"document.getElementById('{field_id}')?.focus();"
                 )
                 return
+            self._close_preview_screen()
             super().accept()
+
+        def reject(self) -> None:
+            self._close_preview_screen()
+            super().reject()
+
+        def closeEvent(self, event: Any) -> None:  # noqa: N802
+            self._close_preview_screen()
+            super().closeEvent(event)
 
         def values(self) -> dict[str, object]:
             return self.values_from_payload(self._payload)
@@ -677,7 +875,7 @@ if QDialog is not None:
         @staticmethod
         def simple_rule_text_from_rule(rule: AutoResponseRule | None) -> str:
             if rule is None:
-                return '看到 "Ctrl+B" => Ctrl+B'
+                return ""
             response_text = rule.response_text or rule.response
             if rule.kind == "manual_loop" or rule.trigger_type == "manual":
                 if rule.loop_count > 1:
@@ -718,8 +916,10 @@ if QDialog is not None:
                     }
                     for step in rule.steps
                 ]
-            pattern = rule.pattern if rule is not None else "Ctrl+B"
-            response = rule.response_text if rule is not None and rule.response_text else "Ctrl+B"
+            pattern = rule.pattern if rule is not None else ""
+            response = rule.response_text if rule is not None and rule.response_text else (
+                "Ctrl+B" if rule is not None else ""
+            )
             append_enter = rule.append_enter if rule is not None else False
             return [
                 {
@@ -738,7 +938,7 @@ if QDialog is not None:
                 return [
                     {
                         "kind": "send",
-                        "text": "Ctrl+B",
+                        "text": "",
                         "target": "current",
                         "delayMs": 0,
                         "appendEnter": False,
