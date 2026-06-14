@@ -1853,6 +1853,14 @@ QLineEdit#commandReplaceInput:focus {
     background: #08101d;
     border-color: #60a5fa;
 }
+QLabel#commandFindCount {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 7px;
+    color: #a7b4c7;
+    font-size: 11px;
+    padding: 2px 6px;
+}
 QToolButton#commandFindIconButton,
 QToolButton#commandFindTextButton {
     color: #a7b4c7;

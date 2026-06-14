@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication, QStackedLayout, QWidget
+from PySide6.QtWidgets import QApplication, QSizePolicy, QStackedLayout, QWidget
 
 try:
     from ..theme_tokens import WORKSPACE_BG
@@ -93,6 +93,7 @@ class XtermWebWidget(QWidget):
         self._local_echo = os.getenv("DEVICE_TUI_XTERM_LOCAL_ECHO", "").lower() in {"1", "true", "yes", "on"}
 
         self.setObjectName("terminalLog")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet(
             "QWidget#terminalLog, QWidget#terminalPlaceholder, "
             f"QWebEngineView#terminalWebView {{ background: {WORKSPACE_BG}; border: 0; }}"
@@ -124,6 +125,7 @@ class XtermWebWidget(QWidget):
         self._engine_started = True
         self._view = QWebEngineView(self)
         self._view.setObjectName("terminalWebView")
+        self._view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._view.page().setBackgroundColor(QColor(WORKSPACE_BG))
         self._view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._view.customContextMenuRequested.connect(

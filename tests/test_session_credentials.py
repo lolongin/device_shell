@@ -300,28 +300,31 @@ def test_transfer_log_uses_workspace_context_menu(app: QApplication) -> None:
     assert hasattr(window, "show_transfer_log_context_menu")
 
 
-def test_activity_terminal_button_opens_terminal_workspace(app: QApplication) -> None:
+def test_activity_rail_omits_terminal_button_while_sessions_remain_accessible(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
 
-    assert not window.activity_terminal_button.isEnabled()
+    assert not hasattr(window, "activity_terminal_button")
 
     window.session_tab_widget.addTab(QWidget(), "Session")
     window.update_center_stage_state()
 
-    assert window.activity_terminal_button.isEnabled()
-    assert not window.web_shell.isHidden()
+    assert window.web_shell.isHidden()
+    assert not window.session_tab_widget.isHidden()
+    assert window.left_device_workspace_expanded
 
-    window.activity_terminal_button.click()
+    window.show_terminal_workspace()
 
     assert not window.session_tab_widget.isHidden()
-    assert window.activity_terminal_button.isChecked()
+    assert window.left_device_workspace_expanded
+    assert not window.left_sidebar_compact
+    assert not window.device_table.isHidden()
 
     window.toggle_left_sidebar()
 
     assert window.left_sidebar_collapsed
 
-    window.activity_terminal_button.click()
+    window.show_terminal_workspace()
 
     assert not window.left_sidebar_collapsed
 
@@ -342,9 +345,11 @@ def test_activity_rail_tools_toggle_and_home_restores_full_dashboard(app: QAppli
 
     assert window.center_stage_mode == "home"
     assert window.left_sidebar_active_panel == "devices"
-    assert window.left_sidebar_collapsed
-    assert window.left_sidebar_content.isHidden()
-    assert window.left_sidebar_shell.maximumWidth() == 46
+    assert not window.left_sidebar_collapsed
+    assert window.left_device_workspace_expanded
+    assert not window.left_sidebar_content.isHidden()
+    assert window.left_sidebar_shell.maximumWidth() > 46
+    assert not window.device_table.isHidden()
     assert window.activity_home_button.isChecked()
     assert not window.activity_temporary_button.isChecked()
 
@@ -362,32 +367,29 @@ def test_activity_rail_tools_toggle_and_home_restores_full_dashboard(app: QAppli
     assert not window.activity_transfer_button.isChecked()
 
 
-def test_terminal_button_closes_tool_drawer_and_restores_session_navigation(
+def test_terminal_workspace_closes_tool_drawer_and_restores_session_navigation(
     app: QApplication,
 ) -> None:
     _ = app
     window = DeviceDesktopApp()
     window.session_tab_widget.addTab(QWidget(), "Session")
     window.update_center_stage_state()
-    window.activity_terminal_button.click()
+    window.show_terminal_workspace()
 
     assert window.center_stage_mode == "sessions"
     assert window.left_sidebar_active_panel == "devices"
     assert not window.left_sidebar_collapsed
-    assert window.activity_terminal_button.isChecked()
 
     window.activity_temporary_button.click()
 
     assert window.left_sidebar_active_panel == "temporary"
     assert window.activity_temporary_button.isChecked()
-    assert not window.activity_terminal_button.isChecked()
 
-    window.activity_terminal_button.click()
+    window.show_terminal_workspace()
 
     assert window.center_stage_mode == "sessions"
     assert window.left_sidebar_active_panel == "devices"
     assert not window.left_sidebar_collapsed
-    assert window.activity_terminal_button.isChecked()
     assert not window.activity_temporary_button.isChecked()
 
 
@@ -400,8 +402,8 @@ def test_terminal_sidebar_stops_stale_width_animation(app: QApplication) -> None
     QApplication.processEvents()
 
     assert window.left_sidebar_animation is None
-    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_MIN_WIDTH
-    assert window.left_sidebar_shell.maximumWidth() == window.TERMINAL_SIDEBAR_MAX_WIDTH
+    assert window.left_sidebar_shell.minimumWidth() == 480
+    assert window.left_sidebar_shell.maximumWidth() == 820
 
 
 def test_terminal_workspace_keeps_native_control_surfaces(
@@ -460,6 +462,17 @@ def test_terminal_workspace_keeps_native_control_surfaces(
     monkeypatch.setattr(window, "session_jump_text", lambda _state: "Mock / Telnet #1")
     window.refresh_session_jump_combo()
     assert window.session_count_label.text() == "1 会话"
+
+
+def test_command_find_replace_shows_match_count(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.command_record_input.setPlainText("display version\ndisplay ip\ndisplay clock")
+
+    window.command_find_input.setText("display")
+    window.find_next_command_record_match()
+
+    assert window.command_find_count_label.text() == "1/3"
 
 
 def test_session_quick_bar_can_resize_and_hide(app: QApplication) -> None:
@@ -1221,7 +1234,7 @@ def test_terminal_navigation_web_can_shrink_to_compact_sidebar(app: QApplication
     assert window.device_navigation_web.view.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
 
 
-def test_terminal_sidebar_stack_does_not_clip_compact_navigation(app: QApplication) -> None:
+def test_terminal_sidebar_stack_does_not_clip_device_workspace(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
     window.resize(1366, 768)
@@ -1233,11 +1246,12 @@ def test_terminal_sidebar_stack_does_not_clip_compact_navigation(app: QApplicati
 
     viewport_width = window.left_sidebar_content.viewport().width()
 
-    assert window.left_sidebar_compact
+    assert not window.left_sidebar_compact
+    assert window.left_device_workspace_expanded
     assert window.left_sidebar_content.widget().sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
     assert window.left_sidebar_content.widget().width() <= viewport_width
     assert window.device_sidebar_panel.width() <= viewport_width
-    assert window.device_navigation_web.width() <= viewport_width
+    assert window.device_table.width() <= viewport_width
 
     window.close()
 
@@ -1568,14 +1582,15 @@ def test_terminal_render_surfaces_share_workspace_palette() -> None:
     assert "#d6deeb" not in canvas
 
 
-def test_center_stage_uses_web_home_until_sessions_open(app: QApplication) -> None:
+def test_home_expands_left_device_workspace_without_hiding_sessions(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
 
     window.update_center_stage_state()
 
-    assert not window.web_shell.isHidden()
-    assert window.session_tab_widget.isHidden()
+    assert window.web_shell.isHidden()
+    assert not window.session_tab_widget.isHidden()
+    assert window.left_device_workspace_expanded
 
     page = QWidget()
     window.session_tab_widget.addTab(page, "Session")
@@ -1583,24 +1598,38 @@ def test_center_stage_uses_web_home_until_sessions_open(app: QApplication) -> No
 
     assert window.web_shell.isHidden()
     assert not window.session_tab_widget.isHidden()
-    assert window.left_sidebar_compact
+    assert not window.left_sidebar_compact
+    assert window.left_device_workspace_expanded
     assert not window.activity_home_button.isChecked()
 
     window.activity_home_button.click()
 
-    assert not window.web_shell.isHidden()
-    assert window.session_tab_widget.isHidden()
+    assert window.web_shell.isHidden()
+    assert not window.session_tab_widget.isHidden()
     assert window.session_tab_widget.count() == 1
     assert not window.left_sidebar_compact
+    assert window.left_device_workspace_expanded
+    assert not window.search_input.isHidden()
+    assert not window.device_filter_frame.isHidden()
+    assert not window.device_stats_frame.isHidden()
+    assert not window.device_table.isHidden()
+    assert window.device_table.minimumHeight() >= 360
+    assert window.device_table.maximumHeight() >= 760
+    assert window.device_navigation_web.isHidden()
+    assert not window.command_record_frame.isHidden()
     assert window.activity_home_button.isChecked()
 
     window.show_terminal_workspace()
 
     assert window.web_shell.isHidden()
     assert not window.session_tab_widget.isHidden()
+    assert window.left_device_workspace_expanded
+    assert not window.device_table.isHidden()
+    assert window.device_table.maximumHeight() >= 760
+    assert window.device_navigation_web.isHidden()
 
 
-def test_left_device_pool_hides_on_home_and_returns_for_sessions(
+def test_left_device_pool_stays_visible_across_home_and_sessions(
     app: QApplication,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1611,41 +1640,41 @@ def test_left_device_pool_hides_on_home_and_returns_for_sessions(
 
     window.update_center_stage_state()
 
-    assert window.left_sidebar_collapsed
+    assert not window.left_sidebar_collapsed
 
     window.left_sidebar_collapsed = False
     window.apply_left_sidebar_state()
     window.show_web_home()
 
-    assert window.left_sidebar_collapsed
-    assert not window.left_sidebar_content.isVisible()
-    assert window.left_sidebar_shell.maximumWidth() == 46
+    assert not window.left_sidebar_collapsed
+    assert not window.left_sidebar_content.isHidden()
+    assert window.left_sidebar_shell.maximumWidth() > 46
 
     window.session_tab_widget.addTab(QWidget(), "Session")
     window.show_terminal_workspace()
 
     assert not window.left_sidebar_collapsed
-    assert window.left_sidebar_compact
-    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_MIN_WIDTH
-    assert window.left_sidebar_shell.maximumWidth() == window.TERMINAL_SIDEBAR_MAX_WIDTH
-    assert window.left_sidebar_content.minimumWidth() == window.TERMINAL_SIDEBAR_CONTENT_MIN_WIDTH
-    assert window.left_sidebar_content.maximumWidth() == window.TERMINAL_SIDEBAR_CONTENT_MAX_WIDTH
+    assert not window.left_sidebar_compact
+    assert window.left_sidebar_shell.minimumWidth() == 480
+    assert window.left_sidebar_shell.maximumWidth() == 820
+    assert window.left_sidebar_content.minimumWidth() == 420
+    assert window.left_sidebar_content.maximumWidth() == 760
     window.handle_main_splitter_moved(500, 1)
-    assert window.terminal_sidebar_width == 500
-    assert window.device_navigation_header.isHidden()
-    assert window.device_context_panel.isHidden()
+    assert window.terminal_sidebar_width == window.TERMINAL_SIDEBAR_WIDTH
+    assert not window.device_navigation_header.isHidden()
+    assert not window.device_context_panel.isHidden()
 
     window.show_web_home()
 
-    assert window.left_sidebar_collapsed
+    assert not window.left_sidebar_collapsed
     assert not window.left_sidebar_compact
 
     window.left_sidebar_collapsed = False
     window.left_sidebar_active_panel = "devices"
     window.apply_left_sidebar_state()
 
-    assert not window.left_sidebar_content.isVisible()
-    assert window.left_sidebar_shell.maximumWidth() == 46
+    assert not window.left_sidebar_content.isHidden()
+    assert window.left_sidebar_shell.maximumWidth() > 46
 
 
 def test_device_table_groups_duplicate_device_names(app: QApplication, sample_device) -> None:

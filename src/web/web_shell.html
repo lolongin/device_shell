@@ -11,7 +11,7 @@
       height: 100vh;
       min-height: 0;
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto minmax(0, 1fr);
       background:
         radial-gradient(circle at 10% 0, var(--home-glow-accent), transparent 32%),
         radial-gradient(circle at 95% 5%, var(--home-glow-blue), transparent 34%),
@@ -23,7 +23,7 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 14px;
       align-items: center;
-      padding: 14px 16px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--line);
       background: var(--surface-top);
     }
@@ -31,17 +31,17 @@
     .eyebrow {
       color: var(--accent);
       font: 800 10px/1.2 "Cascadia Mono", Consolas, monospace;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
     }
 
-    .title { margin-top: 3px; font-size: 19px; font-weight: 800; letter-spacing: -0.02em; }
+    .title { margin-top: 3px; font-size: 19px; font-weight: 800; }
     .subtitle { margin-top: 4px; color: var(--muted); line-height: 1.35; }
     .top-actions { display: flex; align-items: center; gap: 8px; }
 
     .filterbar {
       display: grid;
-      grid-template-columns: minmax(220px, 1.4fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) 92px auto auto;
+      grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) 92px auto auto;
       gap: 8px;
       align-items: center;
       padding: 10px 16px;
@@ -49,10 +49,55 @@
       background: var(--surface-filter);
     }
 
+    .filter-chips {
+      min-height: 35px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-filter);
+      overflow: auto;
+    }
+
+    .filter-chip,
+    .tree-node,
+    .inline-action,
+    .context-action {
+      cursor: pointer;
+    }
+
+    .filter-chip {
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 220px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--input);
+      white-space: nowrap;
+    }
+
+    .filter-chip:hover {
+      color: var(--text);
+      border-color: var(--blue);
+      background: var(--panel-2);
+    }
+
+    .filter-chip b {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--text);
+    }
+
     .content {
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(520px, 1fr) 340px;
+      grid-template-columns: 230px minmax(480px, 1fr) 330px;
       gap: 10px;
       padding: 10px;
       overflow: hidden;
@@ -67,17 +112,15 @@
       overflow: hidden;
     }
 
-    .panel {
+    .panel,
+    .tree-panel,
+    .context-panel {
       display: grid;
-      grid-template-rows: auto 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
     }
 
-    .side {
-      min-height: 0;
-      display: grid;
+    .context-panel {
       align-content: start;
-      gap: 10px;
-      overflow: auto;
     }
 
     .head {
@@ -85,14 +128,14 @@
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      padding: 11px 12px;
+      padding: 10px 12px;
       border-bottom: 1px solid var(--line);
       background: var(--panel-2);
     }
 
     .head-title { font-weight: 800; color: var(--text); }
     .head-sub { margin-top: 2px; color: var(--muted); font-size: 12px; }
-    .body { padding: 12px; }
+    .body { min-height: 0; padding: 12px; overflow: auto; }
 
     .stats {
       display: flex;
@@ -110,17 +153,74 @@
     .pipeline { color: var(--blue); }
     .other { color: var(--soft); }
 
+    .tree {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 5px;
+      padding: 8px;
+    }
+
+    .tree-root {
+      padding: 7px 8px;
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .tree-node {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 5px 8px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+    }
+
+    .tree-node:hover,
+    .tree-node.active {
+      color: var(--text);
+      border-color: var(--success-line);
+      background: var(--success-soft);
+    }
+
+    .tree-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      justify-self: center;
+    }
+
+    .tree-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tree-count {
+      color: var(--soft);
+      font: 700 11px/1 "Cascadia Mono", Consolas, monospace;
+    }
+
     .table {
       min-height: 0;
       display: grid;
-      grid-template-rows: 30px 1fr;
+      grid-template-rows: 30px minmax(0, 1fr);
       background: var(--bg);
     }
 
     .thead,
     .row {
       display: grid;
-      grid-template-columns: 66px minmax(180px, 1.45fr) minmax(120px, 1fr) 76px 86px 128px;
+      grid-template-columns: 72px minmax(170px, 1.5fr) minmax(116px, 0.9fr) 72px 78px 118px 168px;
       align-items: center;
     }
 
@@ -137,13 +237,21 @@
       transition: opacity 140ms ease;
       scrollbar-gutter: stable;
     }
+
     .tbody.filtering {
       opacity: 0.68;
     }
-    .cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 9px; }
+
+    .cell {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 0 9px;
+    }
 
     .row {
-      min-height: 32px;
+      min-height: 40px;
       cursor: pointer;
       transition:
         background-color 140ms ease,
@@ -158,11 +266,59 @@
       animation: content-enter 150ms ease both;
     }
 
-    .row.group { min-height: 28px; }
-    .row.group .muted { color: var(--soft); font-weight: 400; }
-    .device-panel-frame { will-change: opacity, transform; }
-    .device-name { font-size: 17px; font-weight: 800; line-height: 1.3; }
-    .meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .row.group {
+      min-height: 28px;
+      color: var(--soft);
+      background: var(--input);
+    }
+
+    .row:hover,
+    .row.selected {
+      background: var(--panel-2);
+    }
+
+    .status {
+      font-weight: 800;
+    }
+
+    .row-actions {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding-right: 8px;
+    }
+
+    .inline-action {
+      min-width: 42px;
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 7px;
+      font-size: 12px;
+    }
+
+    .inline-action:disabled {
+      opacity: 0.42;
+      cursor: default;
+    }
+
+    .device-panel-frame {
+      will-change: opacity, transform;
+    }
+
+    .device-name {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    .meta {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
     .chip {
       max-width: 190px;
       overflow: hidden;
@@ -175,38 +331,91 @@
       font-size: 12px;
     }
 
-    .kv { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 7px; line-height: 1.75; margin-top: 12px; }
+    .kv {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 7px;
+      line-height: 1.75;
+      margin-top: 12px;
+    }
+
     .key { color: var(--soft); }
     .value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
-    .sessions { display: grid; gap: 8px; }
-    .session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--input); border-radius: 9px; padding: 8px 9px; cursor: pointer; transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease, transform 140ms ease; }
+    .context-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .sessions {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .session {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--line);
+      background: var(--input);
+      border-radius: 9px;
+      padding: 8px 9px;
+      cursor: pointer;
+      transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease, transform 140ms ease;
+    }
+
     .session:hover,
-    .session.active { border-color: var(--success-line); background: var(--success-soft); }
-    .session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
-    .session-sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .session.active {
+      border-color: var(--success-line);
+      background: var(--success-soft);
+    }
+
+    .session-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    .session-sub {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
     .session-status { font-weight: 800; color: var(--muted); }
     .session-status.connected { color: var(--accent); }
     .session-status.connecting { color: var(--blue); }
     .session-status.disconnected { color: var(--danger); }
-    .empty { line-height: 1.6; padding: 14px 10px; }
+    .empty { line-height: 1.6; padding: 14px 10px; color: var(--muted); }
 
     @keyframes content-enter {
       from { opacity: 0; transform: translateY(4px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
-    @media (max-width: 1100px) {
-      .content { grid-template-columns: 1fr; overflow: auto; }
-      .panel { min-height: 460px; }
-      .side { overflow: visible; }
+    @media (max-width: 1220px) {
+      .content {
+        grid-template-columns: 210px minmax(420px, 1fr);
+        overflow: auto;
+      }
+      .context-panel {
+        grid-column: 1 / -1;
+        min-height: 260px;
+      }
     }
 
-    @media (max-width: 760px) {
+    @media (max-width: 840px) {
       .filterbar { grid-template-columns: 1fr 1fr; }
+      .content { grid-template-columns: 1fr; }
+      .tree-panel { min-height: 230px; }
       .thead,
-      .row { grid-template-columns: 54px minmax(140px, 1.4fr) 96px 64px 72px 100px; }
+      .row { grid-template-columns: 60px minmax(150px, 1.4fr) 92px 62px 66px 104px 144px; }
     }
   </style>
 </head>
@@ -214,8 +423,8 @@
   <main class="shell">
     <header class="top">
       <div>
-        <div class="eyebrow">Web Rendered Home</div>
-        <div class="title">设备池首页大屏</div>
+        <div class="eyebrow">Device Operations</div>
+        <div class="title">设备工作台</div>
         <div class="subtitle" id="summary">当前显示全部设备</div>
       </div>
       <div class="top-actions">
@@ -223,53 +432,62 @@
         <button id="refresh" type="button">刷新</button>
       </div>
     </header>
+
     <section class="filterbar">
-      <input id="search" autocomplete="off" placeholder="搜索名称、ID、板卡、型号" />
+      <input id="search" autocomplete="off" placeholder="搜索名称、ID、板卡、型号、IP" />
       <select id="domain"></select>
       <select id="status"></select>
       <input id="cpu" autocomplete="off" placeholder="CPU" />
       <button id="mine" type="button">我的</button>
       <button id="clear" type="button">清空</button>
     </section>
+
+    <section class="filter-chips" id="filterChips" aria-label="当前筛选条件"></section>
+
     <section class="content">
+      <aside class="panel tree-panel">
+        <div class="head">
+          <div>
+            <div class="head-title">设备树</div>
+            <div class="head-sub">按域和分组快速定位</div>
+          </div>
+        </div>
+        <div class="tree" id="deviceTree"></div>
+      </aside>
+
       <section class="panel">
         <div class="head">
           <div>
             <div class="head-title">设备列表</div>
-            <div class="head-sub">首页即设备池；打开终端后左侧设备池作为会话导航显示</div>
+            <div class="head-sub" id="listScope">全部设备</div>
           </div>
           <div class="stats" id="stats"></div>
         </div>
         <div class="table">
           <div class="thead">
-            <div class="cell">序号</div>
+            <div class="cell">板卡</div>
             <div class="cell">设备</div>
-            <div class="cell">板类型</div>
+            <div class="cell">类型</div>
             <div class="cell">CPU</div>
             <div class="cell">Slot</div>
             <div class="cell">状态</div>
+            <div class="cell">操作</div>
           </div>
           <div class="tbody" id="deviceRows"></div>
         </div>
       </section>
-      <aside class="side">
-        <section class="card">
-          <div class="head"><div class="head-title">当前设备</div></div>
-          <div class="body" id="devicePanel"></div>
-        </section>
-        <section class="card">
-          <div class="head"><div class="head-title">连接动作</div></div>
-          <div class="body"><div class="actions">
-            <button class="primary" data-action="telnet" type="button">连接 Telnet</button>
-            <button class="primary" data-action="ssh" type="button">连接 SSH</button>
-            <button data-action="serial" type="button">连接串口</button>
-            <button data-action="occupancy" type="button">占用 / 释放</button>
-          </div></div>
-        </section>
-        <section class="card">
-          <div class="head"><div class="head-title">已打开会话</div></div>
-          <div class="body"><div class="sessions" id="sessionList"></div></div>
-        </section>
+
+      <aside class="panel context-panel">
+        <div class="head">
+          <div>
+            <div class="head-title">当前设备</div>
+            <div class="head-sub">详情、连接和相关会话</div>
+          </div>
+        </div>
+        <div class="body">
+          <div id="devicePanel"></div>
+          <div class="sessions" id="sessionList"></div>
+        </div>
       </aside>
     </section>
   </main>
@@ -280,6 +498,7 @@
     let applying = false;
     let filterTimer = null;
     let filtering = false;
+    let activeTreeKey = "all";
     const FILTER_DEBOUNCE_MS = 140;
     const ENTER_ANIMATION_LIMIT = 80;
     const $ = (id) => document.getElementById(id);
@@ -355,6 +574,113 @@
       container.scrollTop = Math.min(previousScrollTop, container.scrollHeight);
     }
 
+    function visibleDeviceRows() {
+      const rows = (state && state.rows ? state.rows : []).filter((item) => item.kind !== "group");
+      if (activeTreeKey === "all") return rows;
+      return rows.filter((item) => treeKeyForDevice(item) === activeTreeKey || domainKey(item.domain) === activeTreeKey);
+    }
+
+    function domainKey(domain) {
+      return `domain:${domain || "未分组"}`;
+    }
+
+    function treeKeyForDevice(item) {
+      const domain = item.domain || "未分组";
+      const subdomain = item.subdomain || item.boardType || "默认分组";
+      return `group:${domain}:${subdomain}`;
+    }
+
+    function buildTreeGroups(rows) {
+      const domains = new Map();
+      rows.filter((item) => item.kind !== "group").forEach((item) => {
+        const domain = item.domain || "未分组";
+        const subdomain = item.subdomain || item.boardType || "默认分组";
+        if (!domains.has(domain)) domains.set(domain, new Map());
+        const groups = domains.get(domain);
+        if (!groups.has(subdomain)) groups.set(subdomain, []);
+        groups.get(subdomain).push(item);
+      });
+      return domains;
+    }
+
+    function renderDeviceTree(rows) {
+      const tree = $("deviceTree");
+      const fragment = document.createDocumentFragment();
+      const deviceRows = rows.filter((item) => item.kind !== "group");
+      const root = document.createElement("button");
+      root.className = `tree-node ${activeTreeKey === "all" ? "active" : ""}`.trim();
+      root.type = "button";
+      root.innerHTML = `<span class="tree-dot"></span><span class="tree-label">全部设备</span><span class="tree-count">${deviceRows.length}</span>`;
+      root.addEventListener("click", () => setActiveTree("all"));
+      fragment.appendChild(root);
+
+      const domains = buildTreeGroups(rows);
+      domains.forEach((groups, domain) => {
+        const domainButton = document.createElement("button");
+        const key = domainKey(domain);
+        const count = Array.from(groups.values()).reduce((total, list) => total + list.length, 0);
+        domainButton.className = `tree-node ${activeTreeKey === key ? "active" : ""}`.trim();
+        domainButton.type = "button";
+        domainButton.innerHTML = `<span class="tree-dot"></span><span class="tree-label">${escapeHtml(domain)}</span><span class="tree-count">${count}</span>`;
+        domainButton.addEventListener("click", () => setActiveTree(key));
+        fragment.appendChild(domainButton);
+        groups.forEach((items, group) => {
+          const groupButton = document.createElement("button");
+          const groupKey = `group:${domain}:${group}`;
+          groupButton.className = `tree-node ${activeTreeKey === groupKey ? "active" : ""}`.trim();
+          groupButton.type = "button";
+          groupButton.style.paddingLeft = "22px";
+          groupButton.innerHTML = `<span></span><span class="tree-label">${escapeHtml(group)}</span><span class="tree-count">${items.length}</span>`;
+          groupButton.addEventListener("click", () => setActiveTree(groupKey));
+          fragment.appendChild(groupButton);
+        });
+      });
+      tree.replaceChildren(fragment);
+    }
+
+    function setActiveTree(key) {
+      activeTreeKey = key || "all";
+      renderDeviceTree(state.rows || []);
+      renderDeviceRows(visibleDeviceRows());
+      updateListScope();
+    }
+
+    function updateListScope() {
+      const rows = visibleDeviceRows();
+      if (activeTreeKey === "all") {
+        $("listScope").textContent = `全部设备 · ${rows.length}`;
+        return;
+      }
+      const label = activeTreeKey.split(":").slice(1).join(" / ");
+      $("listScope").textContent = `${label} · ${rows.length}`;
+    }
+
+    function requestInlineDeviceAction(item, action, event) {
+      event.stopPropagation();
+      if (!bridge) return;
+      bridge.selectDevice(item.id);
+      window.setTimeout(() => bridge.requestAction(action), 0);
+    }
+
+    function buildInlineActions(item) {
+      const actions = document.createElement("div");
+      actions.className = "row-actions";
+      [
+        ["telnet", "Telnet", !!item.telnet],
+        ["ssh", "SSH", !!item.ssh],
+        ["serial", "串口", !!item.canSerial]
+      ].forEach(([action, label, enabled]) => {
+        const button = document.createElement("button");
+        button.className = action === "telnet" || action === "ssh" ? "inline-action primary" : "inline-action";
+        button.type = "button";
+        button.textContent = label;
+        button.disabled = !enabled;
+        button.addEventListener("click", (event) => requestInlineDeviceAction(item, action, event));
+        actions.appendChild(button);
+      });
+      return actions;
+    }
+
     function buildDeviceRow(item, index) {
       const row = document.createElement("div");
       row.className = item.kind === "group" ? "row group" : "row contextable";
@@ -363,7 +689,8 @@
       if (item.kind === "group") {
         appendCell(row, item.name, item.name);
         appendCell(row, item.subdomain || "", item.subdomain || "", "muted");
-        appendCell(row, `${item.count} 鍧楁澘`, `${item.count} 鍧楁澘`, "muted");
+        appendCell(row, `${item.count} 块板`, `${item.count} 块板`, "muted");
+        appendCell(row, "", "");
         appendCell(row, "", "");
         appendCell(row, "", "");
         appendCell(row, "", "");
@@ -374,11 +701,12 @@
       row.tabIndex = 0;
       wireDeviceRowKeyboard(row, item);
       appendCell(row, item.boardId, item.boardId);
-      appendCell(row, item.name, item.name);
+      appendCell(row, item.deviceName || item.name, item.deviceName || item.name);
       appendCell(row, item.boardType, item.boardType);
       appendCell(row, item.cpu, item.cpu);
       appendCell(row, item.slot, item.slot);
       appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText, item.statusKind)}`);
+      row.appendChild(buildInlineActions(item));
       return row;
     }
 
@@ -396,7 +724,7 @@
       title.textContent = session.title;
       const sub = document.createElement("div");
       sub.className = "session-sub";
-      sub.textContent = `${session.deviceName} / ${session.kind}`;
+      sub.textContent = `${session.deviceName} / ${session.kind}${session.host ? ` / ${session.host}` : ""}`;
       left.appendChild(title);
       left.appendChild(sub);
       const status = document.createElement("div");
@@ -434,7 +762,7 @@
       const kv = document.createElement("div");
       kv.className = "kv";
       [
-        ["板类型", device.boardType],
+        ["板卡", device.boardType],
         ["CPU", device.cpu],
         ["Slot", device.slot],
         ["Telnet", device.telnet],
@@ -452,6 +780,24 @@
         kv.appendChild(valueEl);
       });
       frame.appendChild(kv);
+
+      const actions = document.createElement("div");
+      actions.className = "context-actions";
+      [
+        ["telnet", "连接 Telnet", !!device.telnet, true],
+        ["ssh", "连接 SSH", !!device.ssh, true],
+        ["serial", "连接串口", !!device.canSerial, false],
+        ["occupancy", "占用 / 释放", true, false]
+      ].forEach(([action, label, enabled, primary]) => {
+        const button = document.createElement("button");
+        button.className = primary ? "context-action primary" : "context-action";
+        button.type = "button";
+        button.textContent = label;
+        button.disabled = !enabled;
+        button.addEventListener("click", () => bridge && bridge.requestAction(action));
+        actions.appendChild(button);
+      });
+      frame.appendChild(actions);
       return frame;
     }
 
@@ -540,41 +886,6 @@
       }
       rows.forEach((item, index) => fragment.appendChild(buildDeviceRow(item, index)));
       replaceChildrenPreservingScroll(container, fragment);
-      return;
-      container.innerHTML = "";
-      if (!rows || !rows.length) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "没有符合条件的设备。";
-        container.appendChild(empty);
-        return;
-      }
-      rows.forEach((item) => {
-        const row = document.createElement("div");
-        row.className = item.kind === "group" ? "row group" : "row contextable";
-        if (item.selected) row.classList.add("selected");
-        if (item.kind === "group") {
-          appendCell(row, item.name, item.name);
-          appendCell(row, item.subdomain || "", item.subdomain || "", "muted");
-          appendCell(row, `${item.count} 块板`, `${item.count} 块板`, "muted");
-          appendCell(row, "", "");
-          appendCell(row, "", "");
-          appendCell(row, "", "");
-          container.appendChild(row);
-          return;
-        }
-        row.addEventListener("click", () => bridge && bridge.selectDevice(item.id));
-        row.addEventListener("contextmenu", (event) => requestDeviceRowContext(row, item, event));
-        row.tabIndex = 0;
-        wireDeviceRowKeyboard(row, item);
-        appendCell(row, item.boardId, item.boardId);
-        appendCell(row, item.name, item.name);
-        appendCell(row, item.boardType, item.boardType);
-        appendCell(row, item.cpu, item.cpu);
-        appendCell(row, item.slot, item.slot);
-        appendCell(row, item.statusText, item.statusTooltip || item.statusText, `status ${statusClass(item.statusText, item.statusKind)}`);
-        container.appendChild(row);
-      });
     }
 
     function renderDevice(device) {
@@ -583,61 +894,10 @@
       if (!device) {
         fragment.appendChild(createEmpty("当前没有选中设备。"));
         panel.replaceChildren(fragment);
-        document.querySelectorAll("[data-action]").forEach((button) => button.disabled = true);
         return;
       }
-      document.querySelectorAll("[data-action]").forEach((button) => {
-        const action = button.getAttribute("data-action");
-        button.disabled = action === "serial" && !device.canSerial;
-      });
       fragment.appendChild(buildDevicePanel(device));
       panel.replaceChildren(fragment);
-      return;
-      panel.innerHTML = "";
-      if (!device) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "当前没有选中设备。";
-        panel.appendChild(empty);
-        document.querySelectorAll("[data-action]").forEach((button) => button.disabled = true);
-        return;
-      }
-      document.querySelectorAll("[data-action]").forEach((button) => {
-        const action = button.getAttribute("data-action");
-        button.disabled = action === "serial" && !device.canSerial;
-      });
-      const name = document.createElement("div");
-      name.className = "device-name";
-      name.textContent = device.name;
-      panel.appendChild(name);
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      appendMetaChip(meta, device.id);
-      appendMetaChip(meta, device.domain);
-      appendMetaChip(meta, device.statusText, `status ${statusClass(device.statusText, device.statusKind)}`);
-      appendMetaChip(meta, device.owner);
-      panel.appendChild(meta);
-      const kv = document.createElement("div");
-      kv.className = "kv";
-      [
-        ["板类型", device.boardType],
-        ["CPU", device.cpu],
-        ["Slot", device.slot],
-        ["Telnet", device.telnet],
-        ["SSH", device.ssh],
-        ["串口", device.serial || "占用后可见"]
-      ].forEach(([key, value]) => {
-        const keyEl = document.createElement("div");
-        keyEl.className = "key";
-        keyEl.textContent = key;
-        const valueEl = document.createElement("div");
-        valueEl.className = "value";
-        valueEl.textContent = value || "-";
-        valueEl.title = value || "-";
-        kv.appendChild(keyEl);
-        kv.appendChild(valueEl);
-      });
-      panel.appendChild(kv);
     }
 
     function sessionContextPoint(item) {
@@ -660,55 +920,62 @@
     function renderSessions(sessions) {
       const list = $("sessionList");
       const fragment = document.createDocumentFragment();
-      if (!sessions.length) {
-        fragment.appendChild(createEmpty("当前没有打开终端会话。"));
+      const selectedId = state && state.selectedDevice ? state.selectedDevice.id : "";
+      const related = selectedId ? sessions.filter((session) => session.deviceId === selectedId) : sessions;
+      const title = document.createElement("div");
+      title.className = "head-title";
+      title.textContent = selectedId ? "相关会话" : "已打开会话";
+      fragment.appendChild(title);
+      if (!related.length) {
+        fragment.appendChild(createEmpty(selectedId ? "当前设备没有打开的终端会话。" : "当前没有打开终端会话。"));
         list.replaceChildren(fragment);
         return;
       }
-      sessions.forEach((session, index) => fragment.appendChild(buildSessionItem(session, index)));
+      related.forEach((session, index) => fragment.appendChild(buildSessionItem(session, index)));
       list.replaceChildren(fragment);
-      return;
-      list.innerHTML = "";
-      if (!sessions.length) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "当前没有打开终端会话。";
-        list.appendChild(empty);
-        return;
-      }
-      sessions.forEach((session) => {
-        const item = document.createElement("div");
-        item.className = `session ${session.active ? "active" : ""}`.trim();
-        item.tabIndex = 0;
-        item.setAttribute("role", "button");
-        item.setAttribute("aria-label", session.title || session.tabId || "");
-        item.setAttribute("aria-current", session.active ? "true" : "false");
-        const left = document.createElement("div");
-        const title = document.createElement("div");
-        title.className = "session-title";
-        title.textContent = session.title;
-        const sub = document.createElement("div");
-        sub.className = "session-sub";
-        sub.textContent = `${session.deviceName} / ${session.kind}`;
-        left.appendChild(title);
-        left.appendChild(sub);
-        const status = document.createElement("div");
-        status.className = `session-status ${sessionStatusClass(session.status)}`;
-        status.textContent = session.statusLabel || session.status;
-        item.appendChild(left);
-        item.appendChild(status);
-        item.addEventListener("click", () => bridge && bridge.selectSession(session.tabId));
-        item.addEventListener("contextmenu", (event) => requestSessionContext(item, session, event));
-        item.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            if (bridge) bridge.selectSession(session.tabId);
-          } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-            requestSessionContext(item, session, event);
-          }
+    }
+
+    function renderFilterChips() {
+      const container = $("filterChips");
+      const fragment = document.createDocumentFragment();
+      const filters = state.filters || {};
+      const defaults = {
+        domain: (state.domains || [])[0] || "",
+        status: (state.statuses || [])[0] || ""
+      };
+      [
+        ["search", "搜索", filters.search, () => setInputValue($("search"), "")],
+        ["domain", "域", filters.domain && filters.domain !== defaults.domain ? filters.domain : "", () => $("domain").value = defaults.domain],
+        ["status", "状态", filters.status && filters.status !== defaults.status ? filters.status : "", () => $("status").value = defaults.status],
+        ["cpu", "CPU", filters.cpu, () => setInputValue($("cpu"), "")],
+        ["mine", "我的", filters.mine ? "仅我的占用" : "", () => $("mine").classList.remove("active")]
+      ].forEach(([_key, label, value, clear]) => {
+        if (!value) return;
+        const chip = document.createElement("button");
+        chip.className = "filter-chip";
+        chip.type = "button";
+        chip.innerHTML = `<span>${label}</span><b>${escapeHtml(String(value))}</b><span>×</span>`;
+        chip.addEventListener("click", () => {
+          clear();
+          sendFilters();
         });
-        list.appendChild(item);
+        fragment.appendChild(chip);
       });
+      if (!fragment.childNodes.length) {
+        const hint = document.createElement("span");
+        hint.className = "empty";
+        hint.textContent = "未启用筛选。可以用搜索、域、状态或“我的”快速收窄设备池。";
+        fragment.appendChild(hint);
+      }
+      container.replaceChildren(fragment);
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
     }
 
     window.setWebShellPayload = function setWebShellPayload(payload) {
@@ -727,8 +994,16 @@
       const sessionCount = state.sessions ? state.sessions.length : 0;
       $("sessionsWorkspace").disabled = sessionCount === 0;
       $("sessionsWorkspace").textContent = `终端会话 (${sessionCount})`;
+      const activeExists = activeTreeKey === "all" || (state.rows || []).some((item) => {
+        if (item.kind === "group") return false;
+        return treeKeyForDevice(item) === activeTreeKey || domainKey(item.domain) === activeTreeKey;
+      });
+      if (!activeExists) activeTreeKey = "all";
       renderStats(state.stats || {}, state.sessions ? state.sessions.length : 0);
-      renderDeviceRows(state.rows || []);
+      renderFilterChips();
+      renderDeviceTree(state.rows || []);
+      renderDeviceRows(visibleDeviceRows());
+      updateListScope();
       renderDevice(state.selectedDevice || null);
       renderSessions(state.sessions || []);
       applying = false;
@@ -743,11 +1018,6 @@
       $("mine").addEventListener("click", () => {
         $("mine").classList.toggle("active");
         sendFilters();
-      });
-      document.querySelectorAll("[data-action]").forEach((button) => {
-        button.addEventListener("click", () => {
-          if (bridge) bridge.requestAction(button.getAttribute("data-action"));
-        });
       });
     }
 

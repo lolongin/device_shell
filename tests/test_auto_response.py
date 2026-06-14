@@ -10,19 +10,22 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QDialogButtonBox, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QDialogButtonBox, QLineEdit, QWidget
 
 from src._sample_data import sample_devices
 from src.app.main_window import DeviceDesktopApp
 from src.app.session_ops import AutoResponseRuleDialog, AutoResponseRuleWebDialog, QuickSendButtonDialog
 from src.app_state import SessionTabState
 from src.auto_response import (
+    AutoResponseAction,
     AutoResponseRule,
     AutoResponseStep,
     TerminalQuickButton,
     decode_response_text,
     deserialize_auto_response_rule,
+    serialize_auto_response_rule,
 )
+from src.auto_response_parser import parse_simple_auto_response_rule
 from src.command_suggestions import CommandHistoryItem
 
 
@@ -42,6 +45,59 @@ def test_decode_response_text_supports_control_keys_and_escapes() -> None:
     assert decode_response_text("Ctrl+Z") == "\x1a"
     assert decode_response_text(r"\x02") == "\x02"
     assert decode_response_text("admin", append_enter=True) == "admin\r"
+
+
+def test_simple_auto_response_parser_handles_capture_rule() -> None:
+    result = parse_simple_auto_response_rule('看到 "Password:" => admin')
+
+    assert result.ok
+    assert result.rule is not None
+    assert result.rule.kind == "capture"
+    assert result.rule.trigger_type == "match"
+    assert result.rule.pattern == "Password:"
+    assert result.rule.response_text == "admin"
+
+
+def test_simple_auto_response_parser_handles_connected_and_delay_rules() -> None:
+    connected = parse_simple_auto_response_rule("连接后 => system-view")
+    delayed = parse_simple_auto_response_rule("延时 1500ms => display version")
+
+    assert connected.rule is not None
+    assert connected.rule.trigger_type == "connected"
+    assert connected.rule.pattern == ""
+    assert delayed.rule is not None
+    assert delayed.rule.trigger_type == "delay"
+    assert delayed.rule.trigger_delay_ms == 1500
+
+
+def test_simple_auto_response_parser_handles_manual_loop_rule() -> None:
+    result = parse_simple_auto_response_rule("手动循环 5 次，每 1000ms => display clock")
+
+    assert result.rule is not None
+    assert result.rule.kind == "manual_loop"
+    assert result.rule.trigger_type == "manual"
+    assert result.rule.loop_count == 5
+    assert result.rule.step_delay_ms == 1000
+    assert not result.rule.once
+
+
+def test_simple_auto_response_parser_handles_quick_send_rule() -> None:
+    result = parse_simple_auto_response_rule('按钮 "Ctrl+B" => Ctrl+B')
+
+    assert result.rule is not None
+    assert result.rule.kind == "quick_send"
+    assert result.rule.name == "Ctrl+B"
+    assert result.rule.response_text == "Ctrl+B"
+
+
+def test_simple_auto_response_parser_reports_useful_errors() -> None:
+    missing_arrow = parse_simple_auto_response_rule("看到 Password:")
+    empty_response = parse_simple_auto_response_rule("看到 Password: => ")
+
+    assert missing_arrow.error is not None
+    assert "=>" in missing_arrow.error.message
+    assert empty_response.error is not None
+    assert "发送内容" in empty_response.error.message
 
 
 def test_create_auto_response_rule_keeps_editable_metadata(app: QApplication) -> None:
@@ -91,6 +147,119 @@ def test_create_auto_response_rule_supports_workflow_steps(app: QApplication) ->
     assert rule.steps[1].responses == ["\x01"]
     assert rule.steps[1].response_delays == [0]
     assert rule.steps[1].response_append_enters == [False]
+
+
+def test_create_auto_response_rule_supports_unconditional_automation_steps(
+    app: QApplication,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    rule = window.create_auto_response_rule(
+        name="Init",
+        pattern="",
+        response_text="",
+        steps_text="=> system-view\n=> display version",
+        step_append_enters=[True, True],
+        trigger_type="connected",
+        loop_count=2,
+        once=True,
+    )
+
+    assert rule is not None
+    assert rule.pattern == ""
+    assert rule.trigger_type == "connected"
+    assert rule.loop_count == 2
+    assert len(rule.steps) == 1
+    assert rule.steps[0].pattern == ""
+    assert rule.steps[0].responses == ["system-view\r", "display version\r"]
+
+
+def test_create_auto_response_rule_accepts_simple_capture_text(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    rule = window.create_auto_response_rule(
+        name="",
+        pattern="",
+        response_text="",
+        simple_rule_text='看到 "Password:" => admin',
+    )
+
+    assert rule is not None
+    assert rule.kind == "capture"
+    assert rule.pattern == "Password:"
+    assert rule.response == "admin\r"
+    assert rule.steps[0].pattern == "Password:"
+
+
+def test_create_auto_response_rule_accepts_simple_manual_loop_text(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    rule = window.create_auto_response_rule(
+        name="",
+        pattern="",
+        response_text="",
+        kind="manual_loop",
+        simple_rule_text="手动循环 3 次，每 500ms => display clock",
+    )
+
+    assert rule is not None
+    assert rule.kind == "manual_loop"
+    assert rule.trigger_type == "manual"
+    assert rule.loop_count == 3
+    assert not rule.once
+    assert rule.steps[0].pattern == ""
+    assert rule.steps[0].response_delays == [500]
+
+
+def test_create_auto_response_rule_requires_manual_name(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    monkeypatch.setattr(window, "show_warning", lambda message: None)
+
+    rule = window.create_auto_response_rule(
+        name="",
+        pattern="start",
+        response_text="Ctrl+B",
+    )
+
+    assert rule is None
+
+
+def test_auto_response_rule_kind_round_trips() -> None:
+    rule = AutoResponseRule(
+        name="Manual patrol",
+        pattern="",
+        response="display clock\r",
+        trigger_type="manual",
+        loop_count=3,
+        kind="manual_loop",
+    )
+
+    loaded = deserialize_auto_response_rule(serialize_auto_response_rule(rule))
+
+    assert loaded is not None
+    assert loaded.kind == "manual_loop"
+
+
+def test_legacy_auto_response_rule_kind_is_inferred() -> None:
+    loaded = deserialize_auto_response_rule(
+        {
+            "name": "Manual patrol",
+            "pattern": "",
+            "response": "display clock\r",
+            "trigger_type": "manual",
+            "loop_count": 3,
+        }
+    )
+
+    assert loaded is not None
+    assert loaded.kind == "manual_loop"
 
 
 def test_create_auto_response_rule_supports_regex_and_trigger_limits(app: QApplication) -> None:
@@ -154,6 +323,9 @@ def test_auto_response_web_dialog_uses_workspace_button_surface(app: QApplicatio
 
     assert dialog.objectName() == "workspaceDialog"
     assert dialog.findChild(QDialogButtonBox, "workspaceDialogButtons") is not None
+    assert not dialog.isModal()
+    assert dialog.minimumWidth() >= 1180
+    assert dialog.minimumHeight() >= 760
 
 
 def test_auto_response_rule_dialog_preserves_case_sensitive_setting(app: QApplication) -> None:
@@ -240,6 +412,11 @@ def test_auto_response_web_dialog_values_match_workflow_payload(app: QApplicatio
         "allowStartupTrigger": True,
         "delayMs": 100,
         "maxTriggers": 2,
+        "triggerType": "delay",
+        "triggerDelayMs": 800,
+        "loopCount": 3,
+        "kind": "advanced",
+        "simpleRuleText": "",
         "steps": [
             {
                 "pattern": "Ctrl+B",
@@ -266,10 +443,199 @@ def test_auto_response_web_dialog_values_match_workflow_payload(app: QApplicatio
     assert values["step_targets"] == ["current", "session:device:linux:SSH #1", "current"]
     assert values["step_delays"] == [0, 1200, 0]
     assert values["step_append_enters"] == [False, True, False]
+    assert values["trigger_type"] == "delay"
+    assert values["trigger_delay_ms"] == 800
+    assert values["loop_count"] == 3
+    assert values["kind"] == "advanced"
+    assert values["simple_rule_text"] == ""
     assert values["append_enter"] is True
     assert values["allow_startup_trigger"] is True
     assert values["delay_ms"] == 100
     assert values["max_triggers"] == 2
+
+
+def test_auto_response_web_dialog_values_include_simple_authoring_payload(app: QApplication) -> None:
+    _ = app
+    payload = {
+        "name": "",
+        "kind": "manual_loop",
+        "simpleRuleText": "手动循环 3 次，每 500ms => display clock",
+        "steps": [{"pattern": "", "responses": [{"text": "", "target": "current", "delay": 0}]}],
+    }
+
+    values = AutoResponseRuleWebDialog.values_from_payload(payload)
+
+    assert values["kind"] == "manual_loop"
+    assert values["simple_rule_text"] == "手动循环 3 次，每 500ms => display clock"
+
+
+def test_auto_response_web_dialog_values_include_action_flow_payload(app: QApplication) -> None:
+    _ = app
+    payload = {
+        "name": "Start flow",
+        "triggerType": "match",
+        "triggerPattern": "start",
+        "matchType": "contains",
+        "once": True,
+        "actions": [
+            {"kind": "send", "text": "Ctrl+B", "target": "current", "appendEnter": False},
+            {
+                "kind": "loop",
+                "repeatCount": 3,
+                "intervalMs": 500,
+                "actions": [
+                    {"kind": "send", "text": "display clock", "target": "current", "appendEnter": True},
+                    {"kind": "exit", "exitPattern": "done", "exitScope": "loop"},
+                ],
+            },
+        ],
+    }
+
+    values = AutoResponseRuleWebDialog.values_from_payload(payload)
+
+    assert values["pattern"] == "start"
+    assert values["response_text"] == "Ctrl+B"
+    assert values["trigger_type"] == "match"
+    assert values["steps_text"] == ""
+    assert values["actions"] == payload["actions"]
+
+
+def test_auto_response_action_flow_round_trips() -> None:
+    rule = AutoResponseRule(
+        name="Loop flow",
+        pattern="start",
+        response="\x02",
+        response_text="Ctrl+B",
+        actions=[
+            AutoResponseAction(kind="send", text="Ctrl+B"),
+            AutoResponseAction(
+                kind="loop",
+                repeat_count=2,
+                interval_ms=1000,
+                actions=[AutoResponseAction(kind="send", text="display clock", append_enter=True)],
+            ),
+        ],
+    )
+
+    loaded = deserialize_auto_response_rule(serialize_auto_response_rule(rule))
+
+    assert loaded is not None
+    assert len(loaded.actions) == 2
+    assert loaded.actions[1].kind == "loop"
+    assert loaded.actions[1].actions[0].text == "display clock"
+
+
+def test_auto_response_infinite_loop_action_round_trips() -> None:
+    rule = AutoResponseRule(
+        name="Infinite patrol",
+        pattern="start",
+        response="display clock\r",
+        response_text="display clock",
+        actions=[
+            AutoResponseAction(
+                kind="loop",
+                repeat_count=0,
+                interval_ms=1000,
+                actions=[AutoResponseAction(kind="send", text="display clock", append_enter=True)],
+            )
+        ],
+    )
+
+    loaded = deserialize_auto_response_rule(serialize_auto_response_rule(rule))
+
+    assert loaded is not None
+    assert loaded.actions[0].kind == "loop"
+    assert loaded.actions[0].repeat_count == 0
+
+
+def test_auto_response_condition_action_round_trips() -> None:
+    rule = AutoResponseRule(
+        name="Conditional patrol",
+        pattern="start",
+        response="display clock\r",
+        response_text="display clock",
+        actions=[
+            AutoResponseAction(
+                kind="condition",
+                condition_pattern=r">\s*$",
+                condition_match_type="regex",
+                actions=[AutoResponseAction(kind="send", text="display clock", append_enter=True)],
+            )
+        ],
+    )
+
+    loaded = deserialize_auto_response_rule(serialize_auto_response_rule(rule))
+
+    assert loaded is not None
+    assert loaded.actions[0].kind == "condition"
+    assert loaded.actions[0].condition_pattern == r">\s*$"
+    assert loaded.actions[0].condition_match_type == "regex"
+    assert loaded.actions[0].actions[0].text == "display clock"
+
+
+def test_create_auto_response_rule_accepts_infinite_loop_action(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    rule = window.create_auto_response_rule(
+        name="Infinite patrol",
+        pattern="",
+        response_text="",
+        trigger_type="manual",
+        actions=[
+            {
+                "kind": "loop",
+                "repeatCount": 0,
+                "intervalMs": 1000,
+                "actions": [
+                    {
+                        "kind": "send",
+                        "text": "display clock",
+                        "target": "current",
+                        "appendEnter": True,
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert rule is not None
+    assert rule.actions[0].kind == "loop"
+    assert rule.actions[0].repeat_count == 0
+
+
+def test_add_auto_response_rule_quick_send_kind_creates_quick_button(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    original_count = len(window.remembered_quick_send_buttons)
+
+    class Dialog:
+        def __init__(self, parent: QWidget | None = None) -> None:
+            self.parent = parent
+
+        def exec(self) -> int:
+            return QDialog.Accepted
+
+        def values(self) -> dict[str, object]:
+            return {
+                "kind": "quick_send",
+                "simple_rule_text": '按钮 "Ctrl+B" => Ctrl+B',
+                "name": "",
+                "response_text": "",
+                "append_enter": False,
+            }
+
+    monkeypatch.setattr(window, "auto_response_rule_dialog_class", lambda: Dialog)
+
+    window.add_auto_response_rule_for_session()
+
+    assert len(window.remembered_quick_send_buttons) == original_count + 1
+    button = window.remembered_quick_send_buttons[-1]
+    assert button.name == "Ctrl+B"
+    assert button.response == "\x02"
 
 
 def test_deserialize_legacy_workflow_append_enter_backfills_actions() -> None:
@@ -978,6 +1344,185 @@ def test_auto_response_workflow_sends_multiple_actions_then_waits_for_next_match
     assert signature not in state.auto_response_rule_steps
 
 
+def test_auto_response_action_flow_runs_loop_actions(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="动作流",
+        pattern="start",
+        response="\x02",
+        response_text="Ctrl+B",
+        actions=[
+            AutoResponseAction(kind="send", text="Ctrl+B", target="current"),
+            AutoResponseAction(
+                kind="loop",
+                repeat_count=3,
+                interval_ms=0,
+                actions=[
+                    AutoResponseAction(
+                        kind="send",
+                        text="display clock",
+                        target="current",
+                        append_enter=True,
+                    )
+                ],
+            ),
+        ],
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "start")
+
+    assert sent == [
+        ("device:device:1", "\x02"),
+        ("device:device:1", "display clock\r"),
+        ("device:device:1", "display clock\r"),
+        ("device:device:1", "display clock\r"),
+    ]
+
+
+def test_auto_response_loop_can_run_conditional_actions(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Conditional loop",
+        pattern="start",
+        response="display clock\r",
+        response_text="display clock",
+        actions=[
+            AutoResponseAction(
+                kind="loop",
+                repeat_count=2,
+                interval_ms=0,
+                actions=[
+                    AutoResponseAction(
+                        kind="condition",
+                        condition_pattern=">",
+                        condition_match_type="contains",
+                        actions=[
+                            AutoResponseAction(
+                                kind="send",
+                                text="display clock",
+                                target="current",
+                                append_enter=True,
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "start>")
+
+    assert sent == [
+        ("device:device:1", "display clock\r"),
+        ("device:device:1", "display clock\r"),
+    ]
+
+
+def test_running_auto_response_button_stop_cancels_queued_actions(
+    app: QApplication,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Manual delayed",
+        pattern="",
+        response="display clock\r",
+        response_text="display clock",
+        trigger_type="manual",
+        actions=[
+            AutoResponseAction(
+                kind="send",
+                text="display clock",
+                target="current",
+                append_enter=True,
+                delay_ms=1000,
+            )
+        ],
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    scheduled: list[tuple[int, object]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.app.session_ops.QTimer",
+        SimpleNamespace(singleShot=lambda delay, callback: scheduled.append((delay, callback))),
+    )
+
+    window.toggle_auto_response_rule_from_button(rule, True)
+
+    signature = window.auto_response_rule_signature(rule)
+    assert signature in state.auto_response_running_rules
+    assert window.auto_response_rule_effective_status(rule, state)["status"] == "running"
+
+    window.toggle_auto_response_rule_from_button(rule, False)
+
+    assert signature not in state.auto_response_running_rules
+    for _delay, callback in scheduled:
+        callback()
+    assert sent == []
+
+
 def test_auto_response_workflow_respects_case_sensitive_matching(
     app: QApplication,
     tmp_path,
@@ -1193,6 +1738,243 @@ def test_auto_response_rule_can_match_existing_recent_buffer(
     window.apply_auto_response_rules(state, "")
 
     assert sent == [("device:device:1", "\x01")]
+
+
+def test_immediate_auto_response_runs_without_output_match(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Init",
+        pattern="",
+        response="display version\r",
+        response_text="display version",
+        trigger_type="immediate",
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "", trigger_event="immediate")
+
+    assert sent == [("device:device:1", "display version\r")]
+    assert window.auto_response_rule_signature(rule) in state.auto_response_triggered_rules
+
+
+def test_connected_auto_response_runs_action_only_workflow(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Connected init",
+        pattern="",
+        response="system-view\r",
+        response_text="system-view",
+        trigger_type="connected",
+        steps=[
+            AutoResponseStep(
+                pattern="",
+                responses=["system-view\r", "display clock\r"],
+                response_texts=["system-view", "display clock"],
+                response_targets=["current", "current"],
+                response_delays=[0, 0],
+                response_append_enters=[True, True],
+            )
+        ],
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "", trigger_event="connected")
+
+    assert sent == [
+        ("device:device:1", "system-view\r"),
+        ("device:device:1", "display clock\r"),
+    ]
+
+
+def test_auto_response_workflow_can_loop_without_output_match(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Loop",
+        pattern="",
+        response="display clock\r",
+        response_text="display clock",
+        trigger_type="immediate",
+        loop_count=3,
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.apply_auto_response_rules(state, "", trigger_event="immediate")
+
+    assert sent == [
+        ("device:device:1", "display clock\r"),
+        ("device:device:1", "display clock\r"),
+        ("device:device:1", "display clock\r"),
+    ]
+    assert rule.trigger_count == 3
+
+
+def test_manual_auto_response_button_runs_even_when_unchecked(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Manual patrol",
+        pattern="",
+        response="display clock\r",
+        response_text="display clock",
+        trigger_type="manual",
+        kind="manual_loop",
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+
+    window.toggle_auto_response_rule_from_button(rule, False)
+
+    assert sent == [("device:device:1", "display clock\r")]
+
+
+def test_delay_trigger_schedules_automation_start(
+    app: QApplication,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    state = _allow_auto_response(SessionTabState(
+        tab_id="device:device:1",
+        kind="device",
+        device_id="device",
+        title="Telnet #1",
+        host="127.0.0.1",
+        port=23,
+        username="admin",
+        password="admin",
+        page=QWidget(),
+        terminal=SimpleNamespace(),
+        session=SimpleNamespace(),
+        log_path=tmp_path / "session.log",
+    ))
+    rule = AutoResponseRule(
+        name="Delayed",
+        pattern="",
+        response="display version\r",
+        response_text="display version",
+        trigger_type="delay",
+        trigger_delay_ms=1500,
+    )
+    window.remembered_auto_response_rules = [rule]
+    window.session_tabs_by_id = {state.tab_id: state}
+    window.current_session_state = lambda: state  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    scheduled: list[tuple[int, object]] = []
+    window.send_session_text = lambda tab_id, text: sent.append((tab_id, text))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.app.session_ops.QTimer",
+        SimpleNamespace(singleShot=lambda delay, callback: scheduled.append((delay, callback))),
+    )
+
+    window.apply_auto_response_rules(state, "", trigger_event="connected")
+
+    assert sent == []
+    assert len(scheduled) == 1
+    delay, callback = scheduled[0]
+    assert delay == 1500
+    callback()
+    assert sent == [("device:device:1", "display version\r")]
+
+
+def test_auto_response_trigger_and_loop_fields_round_trip() -> None:
+    rule = AutoResponseRule(
+        name="Init",
+        pattern="",
+        response="display version\r",
+        trigger_type="connected",
+        trigger_delay_ms=300,
+        loop_count=4,
+    )
+
+    loaded = deserialize_auto_response_rule(serialize_auto_response_rule(rule))
+
+    assert loaded is not None
+    assert loaded.trigger_type == "connected"
+    assert loaded.trigger_delay_ms == 300
+    assert loaded.loop_count == 4
 
 
 def test_auto_response_regex_rule_matches_terminal_output(

@@ -31,9 +31,9 @@ class CommandRecordOpsMixin:
         self.send_command_text_to_current_session(command)
 
     def submit_current_command_record(self) -> None:
-        command = self.command_record_input.current_command_line()
+        command = self.command_record_input.selected_or_current_command_text()
         if not command:
-            self.set_status_message("请先将光标放到要发送的命令行。")
+            self.set_status_message("请先选中要发送的命令，或将光标放到要发送的命令行。")
             return
         self.submit_command_record_input(command)
 
@@ -46,9 +46,9 @@ class CommandRecordOpsMixin:
         self.focus_current_terminal(force=True)
 
     def broadcast_command_record_input(self) -> None:
-        command = self.command_record_input.current_command_line()
+        command = self.command_record_input.selected_or_current_command_text()
         if not command:
-            self.set_status_message("请先将光标放到要广播发送的命令行。")
+            self.set_status_message("请先选中要广播的命令，或将光标放到要广播的命令行。")
             return
         self._save_current_command_content()
         connected_states = [
@@ -155,6 +155,7 @@ class CommandRecordOpsMixin:
             self.command_find_input.setText(selected)
         self.command_find_replace_visible = True
         self.apply_command_record_panel_state()
+        self.update_command_find_count()
         self.command_find_input.setFocus()
         self.command_find_input.selectAll()
 
@@ -163,6 +164,26 @@ class CommandRecordOpsMixin:
         self.command_find_replace_bar.setVisible(False)
         if not self.command_record_collapsed:
             self.command_record_input.setFocus()
+
+    def update_command_find_count(self) -> None:
+        if not hasattr(self, "command_find_count_label"):
+            return
+        query = self.command_find_input.text()
+        if not query:
+            self.command_find_count_label.setText("0")
+            self.command_find_count_label.setToolTip("没有查找内容")
+            return
+        content = self.command_record_input.toPlainText()
+        lowered_content = content.lower()
+        lowered_query = query.lower()
+        count = lowered_content.count(lowered_query)
+        current = 0
+        cursor = self.command_record_input.textCursor()
+        selected = cursor.selectedText().replace("\u2029", "\n").lower()
+        if cursor.hasSelection() and selected == lowered_query:
+            current = lowered_content[: cursor.selectionStart()].count(lowered_query) + 1
+        self.command_find_count_label.setText(f"{current}/{count}" if current else str(count))
+        self.command_find_count_label.setToolTip(f"找到 {count} 处匹配")
 
     def find_next_command_record_match(self) -> None:
         query = self.command_find_input.text()
@@ -174,6 +195,7 @@ class CommandRecordOpsMixin:
         start = cursor.selectionEnd() if cursor.hasSelection() else cursor.position()
         if not self._select_command_record_match(query, start):
             self.set_status_message(f"未找到: {query}")
+            self.update_command_find_count()
 
     def replace_current_command_record_match(self) -> None:
         query = self.command_find_input.text()
@@ -209,6 +231,7 @@ class CommandRecordOpsMixin:
         self.command_record_input.setPlainText(updated)
         self._save_current_command_content()
         self.schedule_desktop_state_save()
+        self.update_command_find_count()
         self.set_status_message(f"已替换 {count} 处命令文本。")
         self.command_record_input.setFocus()
 
@@ -229,6 +252,7 @@ class CommandRecordOpsMixin:
         self.command_record_input.setTextCursor(cursor)
         self.command_record_input.ensureCursorVisible()
         self.command_record_input.setFocus()
+        self.update_command_find_count()
         suffix = "（已回到开头）" if wrapped else ""
         self.set_status_message(f"已定位: {query}{suffix}")
         return True

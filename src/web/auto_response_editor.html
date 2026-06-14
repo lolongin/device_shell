@@ -12,13 +12,14 @@
       display: grid;
       grid-template-rows: auto 1fr;
       background: var(--bg);
+      color: var(--text);
     }
 
     .topbar {
       display: grid;
-      grid-template-columns: minmax(240px, 1fr) 180px 180px;
+      grid-template-columns: minmax(220px, 1fr) repeat(3, 150px);
       gap: 10px;
-      padding: 16px 18px 12px;
+      padding: 14px 18px 12px;
       border-bottom: 1px solid var(--line);
       background: var(--panel);
     }
@@ -26,18 +27,139 @@
     .main {
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 260px;
+      grid-template-columns: minmax(0, 1fr) 280px;
       gap: 12px;
       padding: 14px 18px 18px;
+      overflow: hidden;
     }
 
-    .steps {
+    .main > section {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .workspace-panel {
+      min-width: 0;
+    }
+
+    .action-builder-panel {
+      margin-top: 12px;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .section-title span {
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 400;
+    }
+
+    .trigger-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .trigger-card {
+      display: grid;
+      gap: 8px;
+      height: auto;
+      min-height: 86px;
+      align-content: start;
+      justify-items: start;
+      border: 2px solid var(--line);
+      border-radius: 10px;
+      background: var(--input);
+      padding: 12px;
+      cursor: pointer;
+      text-align: left;
+      white-space: normal;
+    }
+
+    .trigger-card.selected {
+      border-color: var(--accent);
+      background: var(--success-soft);
+    }
+
+    .trigger-card.selected strong {
+      color: var(--success-text);
+    }
+
+    .trigger-card strong {
+      color: var(--text);
+    }
+
+    .trigger-card p,
+    .hint,
+    .muted {
+      color: var(--soft);
+      line-height: 1.5;
+      margin: 0;
+    }
+
+    .trigger-fields {
+      display: grid;
+      grid-template-columns: 1fr 140px;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .builder {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .toolbox {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .tool-button {
+      height: auto;
+      min-height: 58px;
+      text-align: left;
+      white-space: normal;
+      border: 1px solid var(--line);
+      background: var(--input);
+      border-radius: 8px;
+      padding: 9px 10px;
+      color: var(--text);
+    }
+
+    .tool-button small {
+      display: block;
+      color: var(--soft);
+      margin-top: 3px;
+      line-height: 1.35;
+    }
+
+    .flow {
       min-height: 0;
       overflow: auto;
       padding-right: 4px;
     }
 
-    .step {
+    .action-card {
       border: 1px solid var(--line);
       background: var(--panel);
       border-radius: 10px;
@@ -45,64 +167,69 @@
       overflow: hidden;
     }
 
-    .step-head {
-      display: grid;
-      grid-template-columns: auto minmax(220px, 1fr) 120px auto;
-      align-items: end;
-      gap: 10px;
-      padding: 12px;
-      background: var(--panel-2);
-      border-bottom: 1px solid var(--line);
+    .action-card.loop {
+      border-color: var(--warn);
     }
 
-    .step-index {
-      min-width: 58px;
+    .action-card.loop .action-title {
+      color: var(--warn-text);
+    }
+
+    .action-card.exit {
+      border-color: var(--danger-line);
+    }
+
+    .action-card.condition {
+      border-color: var(--accent);
+    }
+
+    .action-card.condition .action-title {
       color: var(--accent);
-      font-weight: 700;
-      padding-bottom: 8px;
     }
 
-    .step-delay input {
-      text-align: right;
-    }
-
-    .actions {
-      display: grid;
-      gap: 8px;
-      padding: 10px 12px 12px 70px;
-    }
-
-    .action {
-      display: grid;
-      grid-template-columns: 128px minmax(160px, 1fr) 96px 92px auto;
-      gap: 8px;
-      align-items: end;
-    }
-
-    .inline-check {
-      height: 34px;
+    .action-head {
       display: flex;
       align-items: center;
-      gap: 6px;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--line);
       color: var(--text);
-      border: 1px solid var(--line);
-      background: var(--input);
-      border-radius: 8px;
-      padding: 0 9px;
-      white-space: nowrap;
+      font-weight: 700;
     }
 
-    .inline-check input {
-      width: 15px;
-      height: 15px;
-      accent-color: var(--accent);
+    .action-body {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .loop-children {
+      border-left: 3px solid var(--warn);
+      padding-left: 10px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .inline-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+    }
+
+    .inline-row input {
+      width: 16px;
+      height: 16px;
       padding: 0;
-    }
-
-    .action.first-action .action-delay-field input {
-      color: var(--soft);
-      border-color: var(--line);
-      background: var(--input-quiet);
+      accent-color: var(--accent);
     }
 
     .side {
@@ -112,248 +239,48 @@
       gap: 10px;
     }
 
-    .panel-title {
-      color: var(--text);
-      font-weight: 700;
-      margin-bottom: 10px;
+    .modal-backdrop {
+      background: var(--overlay);
+      box-shadow: 0 18px 60px var(--shadow-strong);
     }
 
     .checks {
       display: grid;
-      gap: 10px;
+      gap: 9px;
     }
 
-    .check {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--text);
-    }
-
-    .check input {
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-      padding: 0;
-    }
-
-    .num-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-
-    .muted {
-      color: var(--muted);
-      line-height: 1.55;
-    }
-
-    .hint {
-      color: var(--soft);
-      line-height: 1.55;
-      margin-top: 8px;
-    }
-
-    .flow-preview {
-      display: grid;
-      gap: 10px;
-      max-height: 260px;
-      overflow: auto;
-      padding-right: 2px;
-    }
-
-    .flow-step {
-      position: relative;
+    .preview-list {
       display: grid;
       gap: 8px;
-      padding-left: 18px;
     }
 
-    .flow-step::before {
-      content: "";
-      position: absolute;
-      left: 5px;
-      top: 16px;
-      bottom: -11px;
-      width: 1px;
-      background: var(--line-strong);
-    }
-
-    .flow-step:last-child::before {
-      display: none;
-    }
-
-    .flow-dot {
-      position: absolute;
-      left: 0;
-      top: 5px;
-      width: 11px;
-      height: 11px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 0 3px var(--success-soft);
-    }
-
-    .flow-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      color: var(--text);
-      font-weight: 700;
-      line-height: 1.35;
-    }
-
-    .flow-wait {
-      color: var(--muted);
+    .preview-line {
       border: 1px solid var(--line);
       background: var(--input);
-      border-radius: 6px;
-      padding: 7px 8px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .flow-delay {
-      color: var(--warn-text);
-      font-size: 12px;
-      white-space: nowrap;
-    }
-
-    .flow-actions {
-      display: grid;
-      gap: 5px;
-    }
-
-    .flow-action {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 6px;
-      align-items: center;
-      border: 1px solid var(--line);
-      background: var(--input);
-      border-radius: 6px;
-      padding: 6px 7px;
-    }
-
-    .flow-command {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: var(--text);
-    }
-
-    .flow-meta {
-      display: flex;
-      justify-content: flex-end;
-      gap: 4px;
-      min-width: 0;
-    }
-
-    .flow-chip {
-      max-width: 84px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      border-radius: 8px;
+      padding: 8px;
       color: var(--muted);
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 2px 6px;
-      font-size: 11px;
-      line-height: 1.3;
+      line-height: 1.4;
     }
 
-    .flow-chip.enter {
-      color: var(--success-text);
-      border-color: var(--success-line);
-      background: var(--success-soft);
+    .preview-line b {
+      color: var(--accent);
     }
 
-    .empty-flow {
-      color: var(--soft);
-      line-height: 1.5;
-    }
-
-    .preview-entry {
-      display: grid;
-      gap: 8px;
-    }
-
-    .preview-summary {
-      color: var(--muted);
-      line-height: 1.45;
-    }
-
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      display: none;
-      place-items: center;
-      padding: 28px;
-      background: var(--overlay);
-      z-index: 20;
-    }
-
-    .modal-backdrop.open {
-      display: grid;
-    }
-
-    .modal {
-      width: min(680px, 100%);
-      max-height: min(720px, calc(100vh - 56px));
-      display: grid;
-      grid-template-rows: auto 1fr;
-      border: 1px solid var(--line-strong);
-      background: var(--panel);
-      border-radius: 12px;
-      box-shadow: 0 18px 60px var(--shadow-strong);
-      overflow: hidden;
-    }
-
-    .modal-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 13px 14px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel-2);
-    }
-
-    .modal-title {
-      font-weight: 700;
-      color: var(--text);
-    }
-
-    .modal-body {
-      min-height: 0;
-      overflow: auto;
-      padding: 14px;
-    }
-
-    .modal .flow-preview {
-      max-height: none;
-      overflow: visible;
-    }
-
-    @media (max-width: 860px) {
+    @media (max-width: 900px) {
       .topbar,
-      .main {
+      .main,
+      .trigger-grid,
+      .trigger-fields,
+      .builder,
+      .field-grid {
         grid-template-columns: 1fr;
       }
-
       .main {
         overflow: auto;
       }
-
-      .steps {
+      .flow {
         overflow: visible;
-      }
-
-      .action {
-        grid-template-columns: 1fr 1fr;
       }
     }
   </style>
@@ -363,412 +290,530 @@
     <header class="topbar">
       <div class="workspace-field">
         <label for="ruleName">规则名称</label>
-        <input id="ruleName" autocomplete="off" />
-      </div>
-      <div class="workspace-field">
-        <label for="matchType">匹配方式</label>
-        <select id="matchType">
-          <option value="contains">包含</option>
-          <option value="regex">正则</option>
-        </select>
+        <input id="ruleName" autocomplete="off" required placeholder="请输入规则名称" />
       </div>
       <div class="workspace-field">
         <label for="maxTriggers">最大触发次数</label>
         <input id="maxTriggers" type="number" min="0" step="1" />
       </div>
+      <div class="workspace-field">
+        <label for="triggerDelayMs">触发延时(ms)</label>
+        <input id="triggerDelayMs" type="number" min="0" step="1" />
+      </div>
+      <div class="workspace-field">
+        <label for="delayMs">整体延时(ms)</label>
+        <input id="delayMs" type="number" min="0" step="1" />
+      </div>
     </header>
+
     <main class="main">
-      <section class="steps" id="steps"></section>
-      <aside class="side">
+      <section>
         <div class="workspace-panel">
-          <div class="panel-title">执行选项</div>
-          <div class="checks">
-            <label class="check"><input id="appendEnter" type="checkbox" />新动作默认追加 Enter</label>
-            <label class="check"><input id="caseSensitive" type="checkbox" />匹配时区分大小写</label>
-            <label class="check"><input id="once" type="checkbox" />命中后自动停用</label>
-            <label class="check"><input id="allowStartupTrigger" type="checkbox" />连接启动阶段允许触发</label>
+          <div class="section-title">
+            1. 什么时候开始
+            <span>这里只选择触发方式</span>
           </div>
-          <div class="hint">绿色按钮表示规则当前启用；次数用完后会由主界面自动置灰。</div>
-        </div>
-        <div class="workspace-panel">
-          <div class="panel-title">节流</div>
-          <div class="num-grid">
+          <div class="trigger-grid">
+            <button type="button" class="trigger-card selected" data-trigger="match">
+              <strong>匹配终端输出后开始</strong>
+              <p>终端出现指定内容时执行动作，相当于 if。</p>
+            </button>
+            <button type="button" class="trigger-card" data-trigger="manual">
+              <strong>手动点按钮后开始</strong>
+              <p>用户点规则按钮后执行动作，可以一次发送，也可以循环。</p>
+            </button>
+          </div>
+          <div class="trigger-fields" id="matchFields">
             <div class="workspace-field">
-              <label for="delayMs">新步骤间隔(ms)</label>
-              <input id="delayMs" type="number" min="0" step="1" />
+              <label for="triggerPattern">终端输出包含</label>
+              <input id="triggerPattern" autocomplete="off" />
+            </div>
+            <div class="workspace-field">
+              <label for="matchType">匹配方式</label>
+              <select id="matchType">
+                <option value="contains">包含</option>
+                <option value="regex">正则</option>
+              </select>
+            </div>
+          </div>
+          <div class="trigger-fields hidden" id="manualFields">
+            <div class="workspace-field">
+              <label for="manualButtonName">按钮名称</label>
+              <input id="manualButtonName" autocomplete="off" required placeholder="请输入按钮名称" />
             </div>
             <div class="workspace-field">
               <label>&nbsp;</label>
-              <button class="primary" id="addStep">添加步骤</button>
+              <div class="hint">按钮会显示在终端规则栏里。</div>
             </div>
           </div>
-          <div class="hint">每个动作也可以设置独立等待时间，用于两个命令之间的延时。</div>
         </div>
-        <div class="workspace-panel preview-entry">
-          <div class="panel-title">流程预览</div>
-          <div class="preview-summary" id="flowSummary">未生成流程</div>
-          <button id="openFlowPreview">查看流程</button>
+
+        <div class="workspace-panel action-builder-panel">
+          <div class="section-title">
+            2. 编排动作
+            <span>动作里支持发送、等待、循环、退出</span>
+          </div>
+          <div class="builder">
+            <div class="toolbox">
+              <button class="tool-button" type="button" data-add="send">发送内容<small>发送命令、文本或 Ctrl+B</small></button>
+              <button class="tool-button" type="button" data-add="wait">等待<small>延迟一段时间再继续</small></button>
+              <button class="tool-button" type="button" data-add="condition">判断<small>看到内容后执行里面的动作</small></button>
+              <button class="tool-button" type="button" data-add="loop">循环<small>重复执行里面的动作</small></button>
+              <button class="tool-button" type="button" data-add="exit">退出<small>看到内容后退出循环或规则</small></button>
+            </div>
+            <div class="flow" id="actionsRoot"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <div class="workspace-panel">
+          <div class="section-title">执行选项</div>
+          <div class="checks">
+            <label class="inline-row"><input id="appendEnter" type="checkbox" />新发送默认按 Enter</label>
+            <label class="inline-row"><input id="caseSensitive" type="checkbox" />区分大小写</label>
+            <label class="inline-row"><input id="once" type="checkbox" />执行后停用本规则</label>
+            <label class="inline-row"><input id="allowStartupTrigger" type="checkbox" />连接启动阶段允许触发</label>
+          </div>
+          <p class="hint">高级次数、延时、匹配方式仍保留，但默认放在旁边，不打扰主流程。</p>
+        </div>
+        <div class="workspace-panel">
+          <div class="section-title">3. 确认预览</div>
+          <div class="preview-list" id="preview"></div>
         </div>
       </aside>
     </main>
   </div>
 
-  <div class="modal-backdrop" id="flowModal" aria-hidden="true">
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="flowModalTitle">
-      <div class="modal-head">
-        <div class="modal-title" id="flowModalTitle">规则执行流程</div>
-        <button id="closeFlowPreview">关闭</button>
+  <template id="actionTemplate">
+    <article class="action-card" data-kind="">
+      <div class="action-head">
+        <span class="action-title"></span>
+        <button type="button" class="danger remove-step" hidden>删除步骤</button>
+        <button type="button" class="danger remove-step remove-action">删除</button>
       </div>
-      <div class="modal-body">
-        <div class="flow-preview" id="flowPreview"></div>
-      </div>
-    </section>
-  </div>
-  <div class="workspace-context-menu" id="editorContextMenu" role="menu" aria-hidden="true"></div>
-
-  <template id="stepTemplate">
-    <article class="step workspace-contextable" tabindex="0" role="group" aria-label="自动响应步骤">
-      <div class="step-head">
-        <div class="step-index"></div>
-        <div class="workspace-field">
-          <label>如果终端出现</label>
-          <input class="pattern" autocomplete="off" placeholder="例如 Password: / Ctrl+B / BOOT menu" />
-        </div>
-        <div class="workspace-field step-delay">
-          <label>发送前等待(ms)</label>
-          <input class="step-delay-input" type="number" min="0" step="1" />
-        </div>
-        <button class="danger remove-step">删除步骤</button>
-      </div>
-      <div class="actions"></div>
-      <div class="workspace-button-row workspace-step-actions">
-        <button class="add-action">再发送一条</button>
-      </div>
+      <div class="action-body"></div>
     </article>
   </template>
-
-  <template id="actionTemplate">
-    <div class="action workspace-contextable" tabindex="0" role="group" aria-label="发送动作">
-      <div class="workspace-field">
-        <label>发送到</label>
-        <select class="target"></select>
-      </div>
-      <div class="workspace-field">
-        <label>发送内容</label>
-        <input class="text" autocomplete="off" placeholder="例如 admin / display version / Ctrl+B" />
-      </div>
-      <div class="workspace-field action-delay-field">
-        <label>等待(ms)</label>
-        <input class="delay" type="number" min="0" step="1" />
-      </div>
-      <label class="inline-check"><input class="append-enter" type="checkbox" />Enter</label>
-      <button class="danger remove-action">删除</button>
-    </div>
-  </template>
+  <div class="workspace-button-row workspace-step-actions" hidden></div>
+  <div class="step workspace-contextable" tabindex="0" role="group" hidden></div>
+  <div class="action workspace-contextable" tabindex="0" role="group" hidden></div>
+  <div class="workspace-context-menu" id="editorContextMenu" role="menu" aria-hidden="true"></div>
 
   <script>
     let bridge = null;
     let state = null;
-
     const $ = (id) => document.getElementById(id);
-    const stepsEl = $("steps");
+    const stepsEl = $("actionsRoot");
+
+    function intValue(value, fallback = 0) {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+    }
+
+    function normalizeAction(action) {
+      const kind = ["send", "wait", "loop", "exit", "condition"].includes(action && action.kind) ? action.kind : "send";
+      return {
+        kind,
+        text: String((action && action.text) || ""),
+        target: String((action && action.target) || "current"),
+        delayMs: intValue((action && (action.delayMs ?? action.delay_ms)) || 0),
+        appendEnter: !!(action && (action.appendEnter ?? action.append_enter)),
+        repeatCount: Math.max(0, intValue(action && (action.repeatCount ?? action.repeat_count), 1)),
+        intervalMs: intValue((action && (action.intervalMs ?? action.interval_ms)) || 0),
+        exitPattern: String((action && (action.exitPattern ?? action.exit_pattern)) || ""),
+        exitScope: ["loop", "rule"].includes(action && (action.exitScope || action.exit_scope)) ? (action.exitScope || action.exit_scope) : "loop",
+        conditionPattern: String((action && (action.conditionPattern ?? action.condition_pattern)) || ""),
+        conditionMatchType: ["contains", "regex"].includes(action && (action.conditionMatchType || action.condition_match_type)) ? (action.conditionMatchType || action.condition_match_type) : "contains",
+        actions: Array.isArray(action && action.actions) ? action.actions.map(normalizeAction) : []
+      };
+    }
+
+    function firstSend(actions) {
+      for (const action of actions) {
+        if (action.kind === "send") return action;
+        const child = firstSend(action.actions || []);
+        if (child) return child;
+      }
+      return null;
+    }
 
     function normalizeState(payload) {
-      const fallback = {
-        name: "启动菜单 Ctrl+B",
-        matchType: "contains",
-        appendEnter: false,
-        caseSensitive: true,
-        once: true,
-        allowStartupTrigger: false,
-        delayMs: 0,
-        maxTriggers: 0,
-        targets: [{ label: "当前选中终端", value: "current" }],
-        steps: [{ pattern: "Ctrl+B", responses: [{ text: "Ctrl+B", target: "current", delay: 0, appendEnter: false }] }]
+      const steps = Array.isArray(payload && payload.steps) ? payload.steps : [];
+      const firstStep = steps[0] || {};
+      const firstResponse = Array.isArray(firstStep.responses) ? firstStep.responses[0] : null;
+      const fallbackAction = {
+        kind: "send",
+        text: (firstResponse && firstResponse.text) || (payload && payload.responseText) || "Ctrl+B",
+        target: (firstResponse && firstResponse.target) || "current",
+        delayMs: (firstResponse && firstResponse.delay) || 0,
+        appendEnter: !!(firstResponse && firstResponse.appendEnter)
       };
-      const next = Object.assign(fallback, payload || {});
-      if (!Array.isArray(next.targets) || next.targets.length === 0) next.targets = fallback.targets;
-      if (!Array.isArray(next.steps) || next.steps.length === 0) next.steps = fallback.steps;
-      next.steps = next.steps.map((step) => ({
-        pattern: step && step.pattern ? String(step.pattern) : "",
-        responses: Array.isArray(step && step.responses) && step.responses.length
-          ? step.responses.map((response) => ({
-              text: response && response.text ? String(response.text) : "",
-              target: response && response.target ? String(response.target) : "current",
-              delay: Number.parseInt(response && response.delay ? response.delay : 0, 10) || 0,
-              appendEnter: !!(response && response.appendEnter)
-            }))
-          : [{ text: "", target: "current", delay: 0, appendEnter: !!next.appendEnter }]
-      }));
-      return next;
+      const actions = Array.isArray(payload && payload.actions) && payload.actions.length
+        ? payload.actions.map(normalizeAction)
+        : [normalizeAction(fallbackAction)];
+      return {
+        name: String((payload && payload.name) || ""),
+        triggerType: ["match", "manual"].includes(payload && payload.triggerType) ? payload.triggerType : "match",
+        triggerPattern: String((payload && (payload.triggerPattern || payload.pattern)) || firstStep.pattern || "Ctrl+B"),
+        matchType: ["contains", "regex"].includes(payload && payload.matchType) ? payload.matchType : "contains",
+        appendEnter: !!(payload && payload.appendEnter),
+        caseSensitive: payload && payload.caseSensitive === false ? false : true,
+        once: payload && payload.once === false ? false : true,
+        allowStartupTrigger: !!(payload && payload.allowStartupTrigger),
+        delayMs: intValue((payload && payload.delayMs) || 0),
+        maxTriggers: intValue((payload && payload.maxTriggers) || 0),
+        triggerDelayMs: intValue((payload && payload.triggerDelayMs) || 0),
+        targets: Array.isArray(payload && payload.targets) && payload.targets.length
+          ? payload.targets
+          : [{ label: "当前选中终端", value: "current" }],
+        actions
+      };
+    }
+
+    function targetOptions(selected) {
+      return state.targets.map((target) => {
+        const option = document.createElement("option");
+        option.value = target.value;
+        option.textContent = target.label;
+        if (target.value === selected) option.selected = true;
+        return option;
+      });
+    }
+
+    function field(label, input) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "workspace-field";
+      const fieldLabel = document.createElement("label");
+      fieldLabel.textContent = label;
+      wrapper.appendChild(fieldLabel);
+      wrapper.appendChild(input);
+      return wrapper;
+    }
+
+    function textInput(value, placeholder = "") {
+      const input = document.createElement("input");
+      input.value = value || "";
+      input.placeholder = placeholder;
+      input.autocomplete = "off";
+      input.addEventListener("input", sync);
+      return input;
+    }
+
+    function numberInput(value) {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.value = intValue(value);
+      input.addEventListener("input", sync);
+      return input;
+    }
+
+    function renderAction(action, container) {
+      const fragment = $("actionTemplate").content.cloneNode(true);
+      const card = fragment.querySelector(".action-card");
+      const actionEl = card;
+      const body = fragment.querySelector(".action-body");
+      const title = fragment.querySelector(".action-title");
+      card.dataset.kind = action.kind;
+      card._action = action;
+      actionEl.addEventListener("keydown", handleEditorContextMenuKey);
+      card.classList.toggle("loop", action.kind === "loop");
+      card.classList.toggle("exit", action.kind === "exit");
+      card.classList.toggle("condition", action.kind === "condition");
+      title.textContent = { send: "发送内容", wait: "等待", loop: "循环", exit: "退出", condition: "判断" }[action.kind];
+      fragment.querySelector(".remove-action").addEventListener("click", () => {
+        card.remove();
+        sync();
+      });
+
+      if (action.kind === "send") {
+        const grid = document.createElement("div");
+        grid.className = "field-grid";
+        const target = document.createElement("select");
+        targetOptions(action.target).forEach((option) => target.appendChild(option));
+        target.addEventListener("change", sync);
+        const append = document.createElement("label");
+        append.className = "inline-row";
+        const appendBox = document.createElement("input");
+        appendBox.type = "checkbox";
+        appendBox.checked = !!action.appendEnter;
+        appendBox.addEventListener("change", sync);
+        append.append(appendBox, "发送后按 Enter");
+        grid.append(
+          field("发送内容", textInput(action.text, "例如 Ctrl+B / display version")),
+          field("发送到", target),
+          field("发送前等待(ms)", numberInput(action.delayMs)),
+          append
+        );
+        body.appendChild(grid);
+      }
+
+      if (action.kind === "wait") {
+        body.appendChild(field("等待多久(ms)", numberInput(action.delayMs || 1000)));
+      }
+
+      if (action.kind === "exit") {
+        const grid = document.createElement("div");
+        grid.className = "field-grid";
+        const scope = document.createElement("select");
+        [["loop", "退出当前循环"], ["rule", "停止整个规则"]].forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          if (value === action.exitScope) option.selected = true;
+          scope.appendChild(option);
+        });
+        scope.addEventListener("change", sync);
+        grid.append(
+          field("如果看到", textInput(action.exitPattern, "例如 done")),
+          field("就", scope)
+        );
+        body.appendChild(grid);
+      }
+
+      if (action.kind === "condition") {
+        const grid = document.createElement("div");
+        grid.className = "field-grid";
+        const matchType = document.createElement("select");
+        [["contains", "包含"], ["regex", "正则"]].forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          if (value === action.conditionMatchType) option.selected = true;
+          matchType.appendChild(option);
+        });
+        matchType.addEventListener("change", sync);
+        grid.append(
+          field("如果终端输出包含", textInput(action.conditionPattern, "例如 > / done / login:")),
+          field("匹配方式", matchType)
+        );
+        body.appendChild(grid);
+
+        const tools = document.createElement("div");
+        tools.className = "workspace-button-row workspace-step-actions";
+        ["send", "wait", "loop", "exit"].forEach((kind) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = `判断内添加${{ send: "发送", wait: "等待", loop: "循环", exit: "退出" }[kind]}`;
+          button.addEventListener("click", () => {
+            renderAction(defaultAction(kind), children);
+            sync();
+          });
+          tools.appendChild(button);
+        });
+        body.appendChild(tools);
+
+        const children = document.createElement("div");
+        children.className = "loop-children";
+        children.dataset.children = "true";
+        body.appendChild(children);
+        (action.actions.length ? action.actions : [defaultAction("send")]).forEach((child) => renderAction(child, children));
+      }
+
+      if (action.kind === "loop") {
+        const grid = document.createElement("div");
+        grid.className = "field-grid";
+        grid.append(
+          field("执行次数（0=一直循环）", numberInput(action.repeatCount ?? 10)),
+          field("每轮间隔(ms)", numberInput(action.intervalMs || 1000))
+        );
+        body.appendChild(grid);
+
+        const tools = document.createElement("div");
+        tools.className = "workspace-button-row workspace-step-actions";
+        ["send", "wait", "condition", "exit"].forEach((kind) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = `循环内添加${{ send: "发送", wait: "等待", condition: "判断", exit: "退出" }[kind]}`;
+          button.addEventListener("click", () => {
+            renderAction(defaultAction(kind), children);
+            sync();
+          });
+          tools.appendChild(button);
+        });
+        body.appendChild(tools);
+
+        const children = document.createElement("div");
+        children.className = "loop-children";
+        children.dataset.children = "true";
+        body.appendChild(children);
+        (action.actions.length ? action.actions : [defaultAction("send")]).forEach((child) => renderAction(child, children));
+      }
+
+      container.appendChild(fragment);
+    }
+
+    function defaultAction(kind) {
+      if (kind === "wait") return normalizeAction({ kind: "wait", delayMs: 1000 });
+      if (kind === "loop") return normalizeAction({ kind: "loop", repeatCount: 10, intervalMs: 1000, actions: [defaultAction("send")] });
+      if (kind === "condition") return normalizeAction({ kind: "condition", conditionPattern: ">", conditionMatchType: "contains", actions: [defaultAction("send")] });
+      if (kind === "exit") return normalizeAction({ kind: "exit", exitPattern: "done", exitScope: "loop" });
+      return normalizeAction({ kind: "send", text: "", target: "current", delayMs: 0, appendEnter: state ? state.appendEnter : false });
+    }
+
+    function collectActions(container) {
+      return Array.from(container.children).filter((node) => node.classList.contains("action-card")).map((card) => {
+        const kind = card.dataset.kind;
+        const inputs = card.querySelectorAll(":scope > .action-body input, :scope > .action-body select");
+        if (kind === "send") {
+          return {
+            kind,
+            text: inputs[0].value,
+            target: inputs[1].value,
+            delayMs: intValue(inputs[2].value),
+            appendEnter: inputs[3].checked
+          };
+        }
+        if (kind === "wait") return { kind, delayMs: intValue(inputs[0].value) };
+        if (kind === "exit") return { kind, exitPattern: inputs[0].value, exitScope: inputs[1].value };
+        const children = card.querySelector(":scope > .action-body > .loop-children");
+        if (kind === "condition") {
+          return {
+            kind,
+            conditionPattern: inputs[0].value,
+            conditionMatchType: inputs[1].value,
+            actions: children ? collectActions(children) : []
+          };
+        }
+        return {
+          kind,
+          repeatCount: Math.max(0, intValue(inputs[0].value, 1)),
+          intervalMs: intValue(inputs[1].value),
+          actions: children ? collectActions(children) : []
+        };
+      });
     }
 
     function collect() {
+      const actions = collectActions($("actionsRoot"));
+      const first = firstSend(actions) || {};
+      const triggerType = document.querySelector(".trigger-card.selected").dataset.trigger;
+      const name = triggerType === "manual" ? $("manualButtonName").value : $("ruleName").value;
       return {
-        name: $("ruleName").value,
+        name,
+        kind: "advanced",
+        triggerType,
+        triggerPattern: $("triggerPattern").value,
+        pattern: $("triggerPattern").value,
         matchType: $("matchType").value,
         appendEnter: $("appendEnter").checked,
         caseSensitive: $("caseSensitive").checked,
         once: $("once").checked,
         allowStartupTrigger: $("allowStartupTrigger").checked,
-        delayMs: 0,
-        maxTriggers: Number.parseInt($("maxTriggers").value || "0", 10) || 0,
+        delayMs: intValue($("delayMs").value),
+        maxTriggers: intValue($("maxTriggers").value),
+        triggerDelayMs: intValue($("triggerDelayMs").value),
+        loopCount: 1,
+        simpleRuleText: "",
+        actions,
         targets: state.targets,
-        steps: Array.from(document.querySelectorAll(".step")).map((stepEl) => ({
-          pattern: stepEl.querySelector(".pattern").value,
-          responses: Array.from(stepEl.querySelectorAll(".action")).map((actionEl, index) => ({
-            target: actionEl.querySelector(".target").value,
-            text: actionEl.querySelector(".text").value,
-            delay: index === 0
-              ? Number.parseInt(stepEl.querySelector(".step-delay-input").value || "0", 10) || 0
-              : Number.parseInt(actionEl.querySelector(".delay").value || "0", 10) || 0,
-            appendEnter: actionEl.querySelector(".append-enter").checked
-          }))
-        }))
+        steps: []
       };
     }
 
     function sync() {
-      state = collect();
-      renderStepNumbers();
-      renderFlowPreview();
+      state = Object.assign(state, collect());
+      renderPreview();
       if (bridge) bridge.updatePayload(JSON.stringify(state));
     }
 
-    function textOrPlaceholder(value, placeholder) {
-      const text = String(value || "").trim();
-      return text || placeholder;
+    function setTrigger(triggerType) {
+      document.querySelectorAll(".trigger-card").forEach((card) => {
+        card.classList.toggle("selected", card.dataset.trigger === triggerType);
+      });
+      $("matchFields").classList.toggle("hidden", triggerType !== "match");
+      $("manualFields").classList.toggle("hidden", triggerType !== "manual");
     }
 
-    function targetLabel(value) {
-      const target = state.targets.find((item) => item.value === value);
-      if (!target) return value || "当前终端";
-      return target.label.replace(/^已打开：/, "");
+    function describeAction(action, depth = 0) {
+      const pad = depth ? "　".repeat(depth) : "";
+      if (action.kind === "send") return `${pad}发送 <b>${escapeHtml(action.text || "未填写")}</b>${action.appendEnter ? "，并按 Enter" : ""}`;
+      if (action.kind === "wait") return `${pad}等待 <b>${action.delayMs || 0} ms</b>`;
+      if (action.kind === "exit") return `${pad}如果看到 <b>${escapeHtml(action.exitPattern || "未填写")}</b>，${action.exitScope === "rule" ? "停止整个规则" : "退出当前循环"}`;
+      if (action.kind === "condition") {
+        return [
+          `${pad}如果看到 <b>${escapeHtml(action.conditionPattern || "未填写")}</b>，执行下面动作`,
+          ...(action.actions || []).map((child) => describeAction(child, depth + 1))
+        ];
+      }
+      const loopLabel = action.repeatCount === 0 ? "一直循环" : `循环 <b>${action.repeatCount || 1} 次</b>`;
+      return [
+        `${pad}${loopLabel}，每轮间隔 <b>${action.intervalMs || 0} ms</b>`,
+        ...(action.actions || []).map((child) => describeAction(child, depth + 1))
+      ];
     }
 
-    function renderFlowPreview() {
-      const preview = $("flowPreview");
-      const summary = $("flowSummary");
-      if (!preview || !state) return;
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function renderPreview() {
+      const preview = $("preview");
       preview.innerHTML = "";
-      const steps = Array.isArray(state.steps) ? state.steps : [];
-      const actionCount = steps.reduce((total, step) => {
-        return total + (Array.isArray(step.responses) ? step.responses.length : 0);
-      }, 0);
-      if (summary) {
-        summary.textContent = steps.length
-          ? `${steps.length} 个步骤，${actionCount} 条发送动作`
-          : "未生成流程";
-      }
-      if (!steps.length) {
-        const empty = document.createElement("div");
-        empty.className = "empty-flow";
-        empty.textContent = "暂无步骤。添加步骤后这里会显示执行顺序。";
-        preview.appendChild(empty);
-        return;
-      }
-      steps.forEach((step, stepIndex) => {
-        const stepEl = document.createElement("div");
-        stepEl.className = "flow-step";
-
-        const dot = document.createElement("div");
-        dot.className = "flow-dot";
-        stepEl.appendChild(dot);
-
-        const title = document.createElement("div");
-        title.className = "flow-title";
-        const titleText = document.createElement("span");
-        titleText.textContent = `第 ${stepIndex + 1} 步`;
-        title.appendChild(titleText);
-        const firstDelay = step.responses && step.responses[0]
-          ? Number.parseInt(step.responses[0].delay || 0, 10) || 0
-          : 0;
-        if (firstDelay > 0) {
-          const delay = document.createElement("span");
-          delay.className = "flow-delay";
-          delay.textContent = `等待 ${firstDelay}ms`;
-          title.appendChild(delay);
-        }
-        stepEl.appendChild(title);
-
-        const wait = document.createElement("div");
-        wait.className = "flow-wait";
-        wait.title = textOrPlaceholder(step.pattern, "未填写匹配输出");
-        wait.textContent = `等待输出：${textOrPlaceholder(step.pattern, "未填写匹配输出")}`;
-        stepEl.appendChild(wait);
-
-        const actions = document.createElement("div");
-        actions.className = "flow-actions";
-        (Array.isArray(step.responses) ? step.responses : []).forEach((action, actionIndex) => {
-          const actionEl = document.createElement("div");
-          actionEl.className = "flow-action";
-
-          const command = document.createElement("div");
-          command.className = "flow-command";
-          command.title = textOrPlaceholder(action.text, "未填写发送内容");
-          command.textContent = `${actionIndex + 1}. ${textOrPlaceholder(action.text, "未填写发送内容")}`;
-          actionEl.appendChild(command);
-
-          const meta = document.createElement("div");
-          meta.className = "flow-meta";
-          const target = document.createElement("span");
-          target.className = "flow-chip";
-          target.title = targetLabel(action.target);
-          target.textContent = targetLabel(action.target);
-          meta.appendChild(target);
-          const actionDelay = Number.parseInt(action.delay || 0, 10) || 0;
-          if (actionIndex > 0 && actionDelay > 0) {
-            const delay = document.createElement("span");
-            delay.className = "flow-chip";
-            delay.textContent = `${actionDelay}ms`;
-            meta.appendChild(delay);
-          }
-          if (action.appendEnter) {
-            const enter = document.createElement("span");
-            enter.className = "flow-chip enter";
-            enter.textContent = "Enter";
-            meta.appendChild(enter);
-          }
-          actionEl.appendChild(meta);
-          actions.appendChild(actionEl);
-        });
-        stepEl.appendChild(actions);
-        preview.appendChild(stepEl);
-      });
-    }
-
-    function fillTargets(select, selected) {
-      select.innerHTML = "";
-      state.targets.forEach((target) => {
-        const option = document.createElement("option");
-        option.value = target.value;
-        option.textContent = target.label;
-        select.appendChild(option);
-      });
-      select.value = selected || "current";
-      if (select.value !== (selected || "current")) select.value = "current";
-    }
-
-    function actionPayload(actionEl, index) {
-      const stepEl = actionEl.closest(".step");
-      return {
-        target: actionEl.querySelector(".target").value,
-        text: actionEl.querySelector(".text").value,
-        delay: index === 0 && stepEl
-          ? Number.parseInt(stepEl.querySelector(".step-delay-input").value || "0", 10) || 0
-          : Number.parseInt(actionEl.querySelector(".delay").value || "0", 10) || 0,
-        appendEnter: actionEl.querySelector(".append-enter").checked
-      };
-    }
-
-    function stepPayload(stepEl) {
-      return {
-        pattern: stepEl.querySelector(".pattern").value,
-        responses: Array.from(stepEl.querySelectorAll(".action")).map(actionPayload)
-      };
-    }
-
-    function refreshActionDelayFields(stepEl) {
-      stepEl.querySelectorAll(".action").forEach((actionEl, index) => {
-        const delayInput = actionEl.querySelector(".delay");
-        actionEl.classList.toggle("first-action", index === 0);
-        delayInput.disabled = index === 0;
-        delayInput.title = index === 0 ? "第一条发送的等待时间在步骤标题里设置" : "";
-      });
-    }
-
-    function removeActionElement(actionEl) {
-      const stepEl = actionEl.closest(".step");
-      const actions = stepEl.querySelector(".actions");
-      if (actions.querySelectorAll(".action").length <= 1) {
-        actionEl.querySelector(".text").value = "";
-        actionEl.querySelector(".delay").value = 0;
-        actionEl.querySelector(".append-enter").checked = !!state.appendEnter;
+      const lines = [];
+      if (state.triggerType === "manual") {
+        lines.push(`点击按钮 <b>${escapeHtml($("manualButtonName").value || "未命名按钮")}</b> 后开始`);
       } else {
-        actionEl.remove();
+        lines.push(`如果终端输出包含 <b>${escapeHtml($("triggerPattern").value || "未填写")}</b>，开始执行`);
       }
-      refreshActionDelayFields(stepEl);
-      sync();
+      collectActions($("actionsRoot")).forEach((action) => {
+        const descriptions = describeAction(action);
+        if (Array.isArray(descriptions)) lines.push(...descriptions);
+        else lines.push(descriptions);
+      });
+      if ($("once").checked) lines.push("执行结束后停用本规则，避免重复触发");
+      lines.forEach((line) => {
+        const item = document.createElement("div");
+        item.className = "preview-line";
+        item.innerHTML = line;
+        preview.appendChild(item);
+      });
     }
 
-    function removeStepElement(stepEl) {
-      if (document.querySelectorAll(".step").length <= 1) {
-        stepEl.querySelector(".pattern").value = "";
-        stepEl.querySelector(".actions").innerHTML = "";
-        addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
-      } else {
-        stepEl.remove();
-      }
-      sync();
-    }
-
-    function addAction(stepEl, action) {
-      const fragment = $("actionTemplate").content.cloneNode(true);
-      const actionEl = fragment.querySelector(".action");
-      fillTargets(actionEl.querySelector(".target"), action && action.target);
-      actionEl.querySelector(".text").value = action && action.text ? action.text : "";
-      actionEl.querySelector(".delay").value = action && action.delay ? action.delay : 0;
-      actionEl.querySelector(".append-enter").checked = !!(action && action.appendEnter);
-      if (stepEl.querySelectorAll(".action").length === 0) {
-        actionEl.classList.add("first-action");
-        actionEl.querySelector(".delay").disabled = true;
-        actionEl.querySelector(".delay").title = "第一条发送的等待时间在步骤标题里设置";
-      }
-      actionEl.querySelector(".remove-action").addEventListener("click", () => removeActionElement(actionEl));
-      actionEl.addEventListener("keydown", handleEditorContextMenuKey);
-      actionEl.querySelectorAll("input,select").forEach((node) => node.addEventListener("input", sync));
-      actionEl.querySelectorAll("select").forEach((node) => node.addEventListener("change", sync));
-      stepEl.querySelector(".actions").appendChild(fragment);
-      refreshActionDelayFields(stepEl);
-    }
-
-    function addStep(step) {
-      const fragment = $("stepTemplate").content.cloneNode(true);
-      const stepEl = fragment.querySelector(".step");
-      stepEl.querySelector(".pattern").value = step && step.pattern ? step.pattern : "";
-      const firstActionDelay = step && step.responses && step.responses[0]
-        ? Number.parseInt(step.responses[0].delay || 0, 10) || 0
-        : 0;
-      stepEl.querySelector(".step-delay-input").value = firstActionDelay;
-      stepEl.querySelector(".pattern").addEventListener("input", sync);
-      stepEl.querySelector(".step-delay-input").addEventListener("input", sync);
+    function render(payload) {
+      state = normalizeState(payload || {});
+      $("ruleName").value = state.name;
+      $("manualButtonName").value = state.name;
+      $("triggerPattern").value = state.triggerPattern;
+      $("matchType").value = state.matchType;
+      $("appendEnter").checked = state.appendEnter;
+      $("caseSensitive").checked = state.caseSensitive;
+      $("once").checked = state.once;
+      $("allowStartupTrigger").checked = state.allowStartupTrigger;
+      $("delayMs").value = state.delayMs;
+      $("maxTriggers").value = state.maxTriggers;
+      $("triggerDelayMs").value = state.triggerDelayMs;
+      setTrigger(state.triggerType);
+      const root = stepsEl;
+      root.innerHTML = "";
+      const stepEl = root;
       stepEl.addEventListener("keydown", handleEditorContextMenuKey);
-      stepEl.querySelector(".remove-step").addEventListener("click", () => removeStepElement(stepEl));
-      stepEl.querySelector(".add-action").addEventListener("click", () => {
-        addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
-        sync();
+      state.actions.forEach((action) => renderAction(action, root));
+      document.querySelectorAll("input, select").forEach((node) => {
+        node.addEventListener("input", sync);
+        node.addEventListener("change", sync);
       });
-      (step && step.responses ? step.responses : [{ text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter }]).forEach((action) => {
-        addAction(stepEl, action);
+      document.querySelectorAll(".trigger-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          setTrigger(card.dataset.trigger);
+          sync();
+        });
       });
-      stepsEl.appendChild(fragment);
-      renderStepNumbers();
-    }
-
-    function closeEditorContextMenu() {
-      const menu = $("editorContextMenu");
-      menu.classList.remove("open");
-      menu.setAttribute("aria-hidden", "true");
-      menu.innerHTML = "";
-    }
-
-    function addContextMenuButton(menu, label, handler, isDanger) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.setAttribute("role", "menuitem");
-      button.textContent = label;
-      if (isDanger) button.className = "danger";
-      button.addEventListener("click", () => {
-        closeEditorContextMenu();
-        handler();
+      document.querySelectorAll("[data-add]").forEach((button) => {
+        button.addEventListener("click", () => {
+          renderAction(defaultAction(button.dataset.add), root);
+          sync();
+        });
       });
-      menu.appendChild(button);
-    }
-
-    function addContextMenuSeparator(menu) {
-      const separator = document.createElement("div");
-      separator.className = "workspace-context-menu-separator";
-      menu.appendChild(separator);
+      sync();
     }
 
     function contextMenuPoint(event, anchor) {
@@ -780,44 +825,19 @@
     }
 
     function showEditorContextMenu(event) {
-      const stepEl = event.target.closest(".step");
-      if (!stepEl) {
-        closeEditorContextMenu();
-        return;
-      }
       event.preventDefault();
-      event.stopPropagation();
-      const actionEl = event.target.closest(".action");
       const menu = $("editorContextMenu");
-      menu.innerHTML = "";
-      if (actionEl) {
-        addContextMenuButton(menu, "复制动作", () => {
-          const actions = Array.from(stepEl.querySelectorAll(".action"));
-          addAction(stepEl, actionPayload(actionEl, actions.indexOf(actionEl)));
-          sync();
-        });
-        addContextMenuButton(menu, "删除动作", () => removeActionElement(actionEl), true);
-        addContextMenuSeparator(menu);
-      }
-      addContextMenuButton(menu, "新增动作", () => {
-        addAction(stepEl, { text: "", target: "current", delay: 0, appendEnter: !!state.appendEnter });
-        sync();
-      });
-      addContextMenuButton(menu, "复制步骤", () => {
-        addStep(stepPayload(stepEl));
-        sync();
-      });
-      addContextMenuButton(menu, "删除步骤", () => removeStepElement(stepEl), true);
-
-      const width = 180;
-      const height = Math.min(220, 42 * menu.querySelectorAll("button").length + 20);
-      const point = contextMenuPoint(event, actionEl || stepEl);
-      menu.style.left = `${Math.min(point.x, window.innerWidth - width - 8)}px`;
-      menu.style.top = `${Math.min(point.y, window.innerHeight - height - 8)}px`;
+      const point = contextMenuPoint(event, event.target);
+      menu.innerHTML = [
+        "<button type=\"button\">复制动作</button>",
+        "<button type=\"button\" class=\"danger\">删除动作</button>",
+        "<div class=\"workspace-context-menu-separator\"></div>",
+        "<button type=\"button\">复制步骤</button>"
+      ].join("");
+      menu.style.left = `${point.x}px`;
+      menu.style.top = `${point.y}px`;
       menu.classList.add("open");
       menu.setAttribute("aria-hidden", "false");
-      const firstButton = menu.querySelector("button");
-      if (firstButton) firstButton.focus();
     }
 
     function handleEditorContextMenuKey(event) {
@@ -826,54 +846,7 @@
       }
     }
 
-    function renderStepNumbers() {
-      document.querySelectorAll(".step").forEach((stepEl, index) => {
-        stepEl.querySelector(".step-index").textContent = `第 ${index + 1} 步`;
-      });
-    }
-
-    function render(payload) {
-      state = normalizeState(payload);
-      $("ruleName").value = state.name || "";
-      $("matchType").value = state.matchType || "contains";
-      $("appendEnter").checked = !!state.appendEnter;
-      $("caseSensitive").checked = state.caseSensitive !== false;
-      $("once").checked = state.once !== false;
-      $("allowStartupTrigger").checked = !!state.allowStartupTrigger;
-      $("delayMs").value = state.delayMs || 0;
-      $("maxTriggers").value = state.maxTriggers || 0;
-      stepsEl.innerHTML = "";
-      state.steps.forEach(addStep);
-      document.querySelectorAll("header input, header select, aside input, aside select").forEach((node) => {
-        node.addEventListener("input", sync);
-        node.addEventListener("change", sync);
-      });
-      $("openFlowPreview").addEventListener("click", () => {
-        $("flowModal").classList.add("open");
-        $("flowModal").setAttribute("aria-hidden", "false");
-      });
-      $("closeFlowPreview").addEventListener("click", closeFlowPreview);
-      $("flowModal").addEventListener("click", (event) => {
-        if (event.target === $("flowModal")) closeFlowPreview();
-      });
-      stepsEl.addEventListener("contextmenu", showEditorContextMenu);
-      document.addEventListener("click", closeEditorContextMenu);
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeEditorContextMenu();
-        if (event.key === "Escape") closeFlowPreview();
-      });
-      $("addStep").addEventListener("click", () => {
-        const stepDelay = Number.parseInt($("delayMs").value || "0", 10) || 0;
-        addStep({ pattern: "", responses: [{ text: "", target: "current", delay: stepDelay, appendEnter: !!state.appendEnter }] });
-        sync();
-      });
-      sync();
-    }
-
-    function closeFlowPreview() {
-      $("flowModal").classList.remove("open");
-      $("flowModal").setAttribute("aria-hidden", "true");
-    }
+    stepsEl.addEventListener("contextmenu", showEditorContextMenu);
 
     new QWebChannel(qt.webChannelTransport, (channel) => {
       bridge = channel.objects.autoResponseBridge;

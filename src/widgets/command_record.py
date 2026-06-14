@@ -4,9 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import QFrame, QPlainTextEdit, QWidget
+from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtGui import QColor, QPainter, QTextCursor, QTextFormat
+from PySide6.QtWidgets import QFrame, QPlainTextEdit, QTextEdit, QWidget
+
+
+class _CommandRecordLineNumberArea(QWidget):
+    def __init__(self, editor: "CommandRecordInput") -> None:
+        super().__init__(editor)
+        self._editor = editor
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        return QSize(self._editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 - Qt override
+        self._editor.line_number_area_paint_event(event)
 
 
 class CommandRecordInput(QPlainTextEdit):
@@ -21,9 +33,15 @@ class CommandRecordInput(QPlainTextEdit):
         self.setMinimumHeight(72)
         self.setMaximumHeight(16777215)
         self.setTabChangesFocus(True)
-        self.setUndoRedoEnabled(False)
+        self.setUndoRedoEnabled(True)
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.setPlaceholderText("在此输入命令...")
+        self._line_number_area = _CommandRecordLineNumberArea(self)
+        self.blockCountChanged.connect(self.update_line_number_area_width)
+        self.updateRequest.connect(self.update_line_number_area)
+        self.cursorPositionChanged.connect(self.highlight_current_line)
+        self.update_line_number_area_width()
+        self.highlight_current_line()
 
     def set_submit_handler(self, handler: Callable[[str], None]) -> None:
         self._submit_handler = handler
@@ -36,6 +54,64 @@ class CommandRecordInput(QPlainTextEdit):
 
     def current_command_line(self) -> str:
         return self.textCursor().block().text().strip()
+
+    def selected_or_current_command_text(self) -> str:
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            selected = cursor.selectedText().replace("\u2029", "\n")
+            return selected.strip()
+        return self.current_command_line()
+
+    def line_number_area_width(self) -> int:
+        digits = max(2, len(str(max(1, self.blockCount()))))
+        return 12 + self.fontMetrics().horizontalAdvance("9") * digits
+
+    def update_line_number_area_width(self) -> None:
+        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+
+    def update_line_number_area(self, rect: QRect, dy: int) -> None:
+        if dy:
+            self._line_number_area.scroll(0, dy)
+        else:
+            self._line_number_area.update(0, rect.y(), self._line_number_area.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self.update_line_number_area_width()
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        contents_rect = self.contentsRect()
+        self._line_number_area.setGeometry(
+            QRect(contents_rect.left(), contents_rect.top(), self.line_number_area_width(), contents_rect.height())
+        )
+
+    def highlight_current_line(self) -> None:
+        selection = QTextEdit.ExtraSelection()
+        selection.format.setBackground(QColor("#111c2f"))
+        selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+        selection.cursor = self.textCursor()
+        selection.cursor.clearSelection()
+        self.setExtraSelections([selection])
+
+    def line_number_area_paint_event(self, event: object) -> None:
+        painter = QPainter(self._line_number_area)
+        painter.fillRect(event.rect(), QColor("#08101d"))
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+        current_block = self.textCursor().blockNumber()
+        width = self._line_number_area.width() - 5
+        height = self.fontMetrics().height()
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                is_current = block_number == current_block
+                painter.setPen(QColor("#f8fafc" if is_current else "#718096"))
+                painter.drawText(0, top, width, height, Qt.AlignRight, str(block_number + 1))
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
+            block_number += 1
 
     def keyPressEvent(self, event: Any) -> None:  # noqa: N802
         key = event.key()
@@ -69,7 +145,7 @@ class CommandRecordInput(QPlainTextEdit):
             ctrl_pressed = bool(modifiers & Qt.ControlModifier)
             should_submit = not ctrl_pressed if self._enter_sends else ctrl_pressed
             if should_submit:
-                command = self.current_command_line()
+                command = self.selected_or_current_command_text()
                 if command and self._submit_handler is not None:
                     self._submit_handler(command)
                 return

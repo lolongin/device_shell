@@ -62,6 +62,9 @@ class SessionTabState:
     auto_response_buffer: str = ""
     auto_response_triggered_rules: set[tuple[object, ...]] = field(default_factory=set)
     auto_response_rule_steps: dict[tuple[object, ...], int] = field(default_factory=dict)
+    auto_response_rule_loops: dict[tuple[object, ...], int] = field(default_factory=dict)
+    auto_response_running_rules: set[tuple[object, ...]] = field(default_factory=set)
+    auto_response_rule_run_tokens: dict[tuple[object, ...], int] = field(default_factory=dict)
     pending_input_text: str = ""
     input_flush_scheduled: bool = False
     user_input_seen: bool = False

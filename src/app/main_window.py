@@ -320,6 +320,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.terminal_sidebar_collapsed = False
             self.left_sidebar_collapsed = False
             self.left_sidebar_compact = False
+            self.left_device_workspace_expanded = True
             self.terminal_sidebar_width = self.TERMINAL_SIDEBAR_WIDTH
             self.center_stage_mode = "home"
             self._last_center_stage_mode: str | None = None
@@ -573,6 +574,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             nav_body_layout.addWidget(filter_frame)
 
             stats_frame = QFrame()
+            self.device_stats_frame = stats_frame
             stats_frame.setObjectName("navStatsBar")
             stats_layout = QVBoxLayout(stats_frame)
             stats_layout.setContentsMargins(10, 6, 10, 6)
@@ -659,10 +661,6 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "首页大屏",
                 checked=self.center_stage_mode == "home",
             )
-            self.activity_terminal_button = self._new_activity_button(
-                "terminal",
-                "终端会话",
-            )
             self.activity_temporary_button = self._new_activity_button(
                 "connector",
                 "临时连接",
@@ -674,13 +672,11 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             layout.addWidget(self.activity_home_button)
             layout.addSpacing(4)
-            layout.addWidget(self.activity_terminal_button)
             layout.addWidget(self.activity_temporary_button)
             layout.addWidget(self.activity_transfer_button)
             layout.addStretch(1)
 
             self.activity_home_button.clicked.connect(self.show_web_home)
-            self.activity_terminal_button.clicked.connect(self.activate_terminal_workspace)
             self.activity_temporary_button.clicked.connect(
                 lambda: self.toggle_tool_sidebar_panel("temporary")
             )
@@ -1639,6 +1635,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_find_next_button.setText("↓")
             self.command_find_next_button.setToolTip("查找下一个")
 
+            self.command_find_count_label = QLabel("0")
+            self.command_find_count_label.setObjectName("commandFindCount")
+            self.command_find_count_label.setMinimumWidth(42)
+            self.command_find_count_label.setAlignment(Qt.AlignCenter)
+
             self.command_find_close_button = QToolButton()
             self.command_find_close_button.setObjectName("commandFindIconButton")
             self.command_find_close_button.setText("×")
@@ -1660,10 +1661,11 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             find_replace_layout.addWidget(self.command_find_input, 0, 0)
             find_replace_layout.addWidget(self.command_find_next_button, 0, 1)
-            find_replace_layout.addWidget(self.command_find_close_button, 0, 2)
+            find_replace_layout.addWidget(self.command_find_count_label, 0, 2)
+            find_replace_layout.addWidget(self.command_find_close_button, 0, 3)
             find_replace_layout.addWidget(self.command_replace_input, 1, 0)
             find_replace_layout.addWidget(self.command_replace_button, 1, 1)
-            find_replace_layout.addWidget(self.command_replace_all_button, 1, 2)
+            find_replace_layout.addWidget(self.command_replace_all_button, 1, 2, 1, 2)
 
             find_replace_bar.setVisible(False)
             layout.addWidget(self.command_suggestion_bar)
@@ -1852,6 +1854,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.command_broadcast_button.clicked.connect(self.broadcast_command_record_input)
             self.command_clear_button.clicked.connect(self.clear_current_command_record)
             self.command_find_input.returnPressed.connect(self.find_next_command_record_match)
+            self.command_find_input.textChanged.connect(self.update_command_find_count)
             self.command_replace_input.returnPressed.connect(self.replace_current_command_record_match)
             self.command_find_next_button.clicked.connect(self.find_next_command_record_match)
             self.command_replace_button.clicked.connect(self.replace_current_command_record_match)
@@ -2093,19 +2096,42 @@ if PYSIDE6_IMPORT_ERROR is None:
         def apply_left_sidebar_state(self, *, animated: bool = False) -> None:
             if not hasattr(self, "left_sidebar_content"):
                 return
-            on_home = getattr(self, "center_stage_mode", "home") == "home"
-            showing_device_panel = getattr(self, "left_sidebar_active_panel", "devices") == "devices"
-            collapsed = self.left_sidebar_collapsed or (on_home and showing_device_panel)
-            compact = bool(getattr(self, "left_sidebar_compact", False)) and not collapsed
+            collapsed = self.left_sidebar_collapsed
+            is_device_panel = getattr(self, "left_sidebar_active_panel", "devices") == "devices"
+            expanded = (
+                bool(getattr(self, "left_device_workspace_expanded", False))
+                and is_device_panel
+                and not collapsed
+            )
+            compact = (
+                bool(getattr(self, "left_sidebar_compact", False))
+                and is_device_panel
+                and not expanded
+                and not collapsed
+            )
             compact_width = max(
                 self.TERMINAL_SIDEBAR_MIN_WIDTH,
                 min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH))),
             )
             self.terminal_sidebar_width = compact_width
             if hasattr(self, "device_navigation_header"):
-                self.device_navigation_header.setVisible(not compact)
+                self.device_navigation_header.setVisible(not compact and not collapsed)
             if hasattr(self, "device_context_panel"):
-                self.device_context_panel.setVisible(not compact)
+                self.device_context_panel.setVisible(expanded)
+            if hasattr(self, "search_input"):
+                self.search_input.setVisible(expanded)
+            if hasattr(self, "device_filter_frame"):
+                self.device_filter_frame.setVisible(expanded)
+            if hasattr(self, "device_stats_frame"):
+                self.device_stats_frame.setVisible(expanded)
+            if hasattr(self, "device_table"):
+                self.device_table.setVisible(expanded)
+                self.device_table.setMinimumHeight(360 if expanded else 260)
+                self.device_table.setMaximumHeight(760 if expanded else 340)
+            if hasattr(self, "device_navigation_web"):
+                self.device_navigation_web.setVisible(not expanded and not collapsed)
+            if hasattr(self, "device_navigation_resize_handle"):
+                self.device_navigation_resize_handle.setVisible(not expanded and not collapsed)
             if hasattr(self, "device_navigation_toggle_button"):
                 self.device_navigation_toggle_button.setText("隐藏左侧")
                 self.device_navigation_toggle_button.setToolTip("收起终端设备导航，扩大终端区域")
@@ -2162,12 +2188,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             states = (
                 (self.activity_home_button, "home", "首页大屏", show_home and not drawer_open),
                 (
-                    self.activity_terminal_button,
-                    "terminal",
-                    "终端会话" if has_sessions else "暂无终端会话",
-                    has_sessions and not show_home and not drawer_open,
-                ),
-                (
                     self.activity_temporary_button,
                     "connector",
                     "临时连接",
@@ -2205,7 +2225,18 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if len(splitter_sizes) >= 2
                 else max(self.ACTIVITY_RAIL_WIDTH, shell.width())
             )
-            compact = bool(getattr(self, "left_sidebar_compact", False)) and not collapsed
+            is_device_panel = getattr(self, "left_sidebar_active_panel", "devices") == "devices"
+            expanded = (
+                bool(getattr(self, "left_device_workspace_expanded", False))
+                and is_device_panel
+                and not collapsed
+            )
+            compact = (
+                bool(getattr(self, "left_sidebar_compact", False))
+                and is_device_panel
+                and not expanded
+                and not collapsed
+            )
             compact_width = max(
                 self.TERMINAL_SIDEBAR_MIN_WIDTH,
                 min(self.TERMINAL_SIDEBAR_MAX_WIDTH, int(getattr(self, "terminal_sidebar_width", self.TERMINAL_SIDEBAR_WIDTH))),
@@ -2214,9 +2245,9 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.ACTIVITY_RAIL_WIDTH
                 if collapsed
                 else (
-                    compact_width
-                    if compact
-                    else self.TOOL_SIDEBAR_WIDTH
+                    self.TOOL_SIDEBAR_WIDTH
+                    if expanded
+                    else (compact_width if compact else self.TOOL_SIDEBAR_WIDTH)
                 )
             )
 
@@ -2315,8 +2346,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             if not hasattr(self, "session_quick_action_bar"):
                 return
             has_sessions = hasattr(self, "session_tab_widget") and self.session_tab_widget.count() > 0
-            show_home = getattr(self, "center_stage_mode", "home") == "home"
-            should_show = has_sessions and not show_home
+            should_show = has_sessions
             collapsed = bool(getattr(self, "session_quick_bar_collapsed", False))
             self.session_quick_action_bar.setVisible(should_show and not collapsed)
             if hasattr(self, "session_quick_restore_bar"):

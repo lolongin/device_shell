@@ -6,6 +6,17 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
+try:
+    from .auto_response_parser import (
+        infer_auto_response_rule_kind,
+        normalize_auto_response_rule_kind,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from auto_response_parser import (  # type: ignore[no-redef]
+        infer_auto_response_rule_kind,
+        normalize_auto_response_rule_kind,
+    )
+
 
 CONTROL_KEY_ALIASES = {
     "enter": "\r",
@@ -32,6 +43,24 @@ class AutoResponseStep:
 
 
 @dataclass(slots=True)
+class AutoResponseAction:
+    """One action in the simplified trigger/action rule builder."""
+
+    kind: str
+    text: str = ""
+    target: str = "current"
+    delay_ms: int = 0
+    append_enter: bool = False
+    repeat_count: int = 1
+    interval_ms: int = 0
+    exit_pattern: str = ""
+    exit_scope: str = "loop"
+    condition_pattern: str = ""
+    condition_match_type: str = "contains"
+    actions: list["AutoResponseAction"] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class AutoResponseRule:
     """A current-session rule that sends text when terminal output matches."""
 
@@ -46,9 +75,14 @@ class AutoResponseRule:
     match_type: str = "contains"
     delay_ms: int = 0
     max_triggers: int = 0
+    trigger_type: str = "match"
+    trigger_delay_ms: int = 0
+    loop_count: int = 1
+    kind: str = "capture"
     allow_startup_trigger: bool = False
     trigger_count: int = 0
     steps: list[AutoResponseStep] = field(default_factory=list)
+    actions: list[AutoResponseAction] = field(default_factory=list)
 
     def matches(self, output: str) -> bool:
         if not self.enabled or not self.pattern:
@@ -105,6 +139,10 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
         "match_type": rule.match_type,
         "delay_ms": rule.delay_ms,
         "max_triggers": rule.max_triggers,
+        "trigger_type": rule.trigger_type,
+        "trigger_delay_ms": rule.trigger_delay_ms,
+        "loop_count": rule.loop_count,
+        "kind": rule.kind,
         "allow_startup_trigger": rule.allow_startup_trigger,
         "trigger_count": rule.trigger_count,
     }
@@ -120,6 +158,8 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
             }
             for step in rule.steps
         ]
+    if rule.actions:
+        payload["actions"] = [serialize_auto_response_action(action) for action in rule.actions]
     return payload
 
 
@@ -140,6 +180,7 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
     rule_append_enter = bool(value.get("append_enter", False))
     raw_steps_value = value.get("steps")
     steps = deserialize_auto_response_steps(raw_steps_value)
+    actions = deserialize_auto_response_actions(value.get("actions"))
     if rule_append_enter and isinstance(raw_steps_value, list):
         for step, raw_step in zip(steps, raw_steps_value):
             if isinstance(raw_step, dict) and "response_append_enters" not in raw_step:
@@ -150,7 +191,10 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         response = steps[0].responses[0]
     if not response_text and steps and steps[0].response_texts:
         response_text = steps[0].response_texts[0]
-    if not pattern:
+    trigger_type = str(value.get("trigger_type") or "match").strip().lower()
+    if trigger_type not in {"match", "immediate", "connected", "delay", "manual"}:
+        trigger_type = "match"
+    if not pattern and trigger_type == "match":
         return None
     if not response:
         return None
@@ -165,6 +209,21 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         max_triggers = max(0, int(value.get("max_triggers", 0)))
     except (TypeError, ValueError):
         max_triggers = 0
+    try:
+        trigger_delay_ms = max(0, int(value.get("trigger_delay_ms", 0)))
+    except (TypeError, ValueError):
+        trigger_delay_ms = 0
+    try:
+        loop_count = max(1, min(10, int(value.get("loop_count", 1))))
+    except (TypeError, ValueError):
+        loop_count = 1
+    kind = normalize_auto_response_rule_kind(value.get("kind"))
+    if "kind" not in value:
+        kind = infer_auto_response_rule_kind(
+            trigger_type=trigger_type,
+            loop_count=loop_count,
+            steps_count=len(steps),
+        )
     try:
         trigger_count = max(0, int(value.get("trigger_count", 0)))
     except (TypeError, ValueError):
@@ -190,10 +249,85 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         match_type=match_type,
         delay_ms=delay_ms,
         max_triggers=max_triggers,
+        trigger_type=trigger_type,
+        trigger_delay_ms=trigger_delay_ms,
+        loop_count=loop_count,
+        kind=kind,
         allow_startup_trigger=allow_startup_trigger,
         trigger_count=trigger_count,
         steps=steps,
+        actions=actions,
     )
+
+
+def serialize_auto_response_action(action: AutoResponseAction) -> dict[str, object]:
+    """Serialize one action-flow node."""
+
+    payload: dict[str, object] = {
+        "kind": action.kind,
+        "text": action.text,
+        "target": action.target,
+        "delay_ms": action.delay_ms,
+        "append_enter": action.append_enter,
+        "repeat_count": action.repeat_count,
+        "interval_ms": action.interval_ms,
+        "exit_pattern": action.exit_pattern,
+        "exit_scope": action.exit_scope,
+        "condition_pattern": action.condition_pattern,
+        "condition_match_type": action.condition_match_type,
+    }
+    if action.actions:
+        payload["actions"] = [serialize_auto_response_action(child) for child in action.actions]
+    return payload
+
+
+def deserialize_auto_response_actions(value: Any) -> list[AutoResponseAction]:
+    """Load action-flow nodes, ignoring malformed entries."""
+
+    if not isinstance(value, list):
+        return []
+    actions: list[AutoResponseAction] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind not in {"send", "wait", "loop", "exit", "condition"}:
+            continue
+        try:
+            delay_ms = max(0, int(item.get("delay_ms", 0)))
+        except (TypeError, ValueError):
+            delay_ms = 0
+        try:
+            repeat_count = max(0, min(100, int(item.get("repeat_count", 1))))
+        except (TypeError, ValueError):
+            repeat_count = 1
+        try:
+            interval_ms = max(0, int(item.get("interval_ms", 0)))
+        except (TypeError, ValueError):
+            interval_ms = 0
+        exit_scope = str(item.get("exit_scope") or "loop").strip().lower()
+        if exit_scope not in {"loop", "rule"}:
+            exit_scope = "loop"
+        condition_match_type = str(item.get("condition_match_type") or "contains").strip().lower()
+        if condition_match_type not in {"contains", "regex"}:
+            condition_match_type = "contains"
+        actions.append(
+            AutoResponseAction(
+                kind=kind,
+                text=str(item.get("text") or ""),
+                target=str(item.get("target") or "current"),
+                delay_ms=delay_ms,
+                append_enter=bool(item.get("append_enter", False)),
+                repeat_count=repeat_count,
+                interval_ms=interval_ms,
+                exit_pattern=str(item.get("exit_pattern") or ""),
+                exit_scope=exit_scope,
+                condition_pattern=str(item.get("condition_pattern") or ""),
+                condition_match_type=condition_match_type,
+                actions=deserialize_auto_response_actions(item.get("actions")),
+            )
+        )
+    return actions
 
 
 def _looks_like_boot_ctrl_b_rule(
@@ -219,6 +353,8 @@ def _looks_like_boot_ctrl_b_rule(
 def auto_response_rule_allows_startup_trigger(rule: AutoResponseRule) -> bool:
     """Return whether a rule should be active during connection startup output."""
 
+    if rule.trigger_type in {"immediate", "connected", "delay", "manual"}:
+        return True
     return rule.allow_startup_trigger or _looks_like_boot_ctrl_b_rule(
         name=rule.name,
         pattern=rule.pattern,
@@ -243,7 +379,7 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
         raw_response_targets = item.get("response_targets")
         raw_response_delays = item.get("response_delays")
         raw_response_append_enters = item.get("response_append_enters")
-        if not pattern or not isinstance(raw_responses, list):
+        if not isinstance(raw_responses, list):
             continue
         responses = [str(response) for response in raw_responses if str(response)]
         response_texts = (

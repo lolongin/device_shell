@@ -351,6 +351,9 @@ class TableOpsMixin:
                     "id": device.id,
                     "boardId": self.device_table_board_id_text(device, grouped=grouped),
                     "name": device.device_type if grouped else self.device_table_device_name_text(device),
+                    "deviceName": self.temporary_device_display_name(device),
+                    "domain": device.domain,
+                    "subdomain": self.device_table_subdomain_text(device),
                     "boardType": self.device_table_board_type_text(device),
                     "cpu": device.cpu,
                     "slot": device.slot_id,
@@ -901,9 +904,11 @@ class TableOpsMixin:
                         "tabId": state.tab_id,
                         "title": state.title,
                         "kind": self.session_kind_label(state.kind),
+                        "deviceId": state.device_id,
                         "deviceName": self.temporary_device_display_name(session_device)
                         if session_device is not None
                         else state.device_id,
+                        "host": f"{state.host}:{state.port}",
                         "status": state.status_text,
                         "statusLabel": self.session_status_label(state.status_text),
                         "active": state.tab_id == current_tab_id,

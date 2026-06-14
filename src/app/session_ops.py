@@ -88,11 +88,17 @@ except ImportError:
 
 from ..app_state import DeviceTabState, SessionTabState
 from ..auto_response import (
+    AutoResponseAction,
     AutoResponseRule,
     AutoResponseStep,
     TerminalQuickButton,
     auto_response_rule_allows_startup_trigger,
     decode_response_text,
+)
+from ..auto_response_parser import (
+    ParsedAutoResponseRule,
+    normalize_auto_response_rule_kind,
+    parse_simple_auto_response_rule,
 )
 from ..data import Device
 from ..helpers import mask_password
@@ -583,8 +589,10 @@ if QDialog is not None:
             super().__init__(parent)
             self.setWindowTitle("编辑自动响应规则" if rule is not None else "新增自动响应规则")
             self.setObjectName("workspaceDialog")
-            self.setMinimumSize(960, 680)
-            self.resize(1040, 740)
+            self.setModal(False)
+            self.setWindowModality(Qt.NonModal)
+            self.setMinimumSize(1180, 760)
+            self.resize(1280, 860)
 
             self._payload = self.payload_from_rule(rule, parent)
             self._bridge = AutoResponseRuleWebBridge(self._payload, self)
@@ -618,6 +626,18 @@ if QDialog is not None:
             if isinstance(data, dict):
                 self._payload = data
 
+        def accept(self) -> None:
+            name = str(self._payload.get("name") or "").strip()
+            if not name:
+                if QMessageBox is not None:
+                    QMessageBox.warning(self, "规则名称", "规则名称需要手动填写。")
+                field_id = "manualButtonName" if self._payload.get("triggerType") == "manual" else "ruleName"
+                self.web_view.page().runJavaScript(
+                    f"document.getElementById('{field_id}')?.focus();"
+                )
+                return
+            super().accept()
+
         def values(self) -> dict[str, object]:
             return self.values_from_payload(self._payload)
 
@@ -636,7 +656,7 @@ if QDialog is not None:
         ) -> dict[str, Any]:
             steps = cls.steps_payload_from_rule(rule)
             return {
-                "name": rule.name if rule is not None else "启动菜单 Ctrl+B",
+                "name": rule.name if rule is not None else "",
                 "matchType": rule.match_type if rule is not None else "contains",
                 "appendEnter": rule.append_enter if rule is not None else False,
                 "caseSensitive": rule.case_sensitive if rule is not None else True,
@@ -644,9 +664,35 @@ if QDialog is not None:
                 "allowStartupTrigger": rule.allow_startup_trigger if rule is not None else False,
                 "delayMs": rule.delay_ms if rule is not None else 0,
                 "maxTriggers": rule.max_triggers if rule is not None else 0,
+                "triggerType": rule.trigger_type if rule is not None else "match",
+                "triggerDelayMs": rule.trigger_delay_ms if rule is not None else 0,
+                "loopCount": rule.loop_count if rule is not None else 1,
+                "kind": rule.kind if rule is not None else "capture",
+                "simpleRuleText": cls.simple_rule_text_from_rule(rule),
                 "steps": steps,
+                "actions": cls.actions_payload_from_rule(rule),
                 "targets": cls.response_target_payload(parent),
             }
+
+        @staticmethod
+        def simple_rule_text_from_rule(rule: AutoResponseRule | None) -> str:
+            if rule is None:
+                return '看到 "Ctrl+B" => Ctrl+B'
+            response_text = rule.response_text or rule.response
+            if rule.kind == "manual_loop" or rule.trigger_type == "manual":
+                if rule.loop_count > 1:
+                    delay = 0
+                    if rule.steps and rule.steps[0].response_delays:
+                        delay = rule.steps[0].response_delays[0]
+                    suffix = f"，每 {delay}ms" if delay > 0 else ""
+                    return f"手动循环 {rule.loop_count} 次{suffix} => {response_text}"
+                return f"手动 => {response_text}"
+            if rule.trigger_type == "connected":
+                return f"连接后 => {response_text}"
+            if rule.trigger_type == "delay":
+                return f"延时 {rule.trigger_delay_ms}ms => {response_text}"
+            pattern = rule.pattern or (rule.steps[0].pattern if rule.steps else "")
+            return f'看到 "{pattern}" => {response_text}' if pattern else f"手动 => {response_text}"
 
         @staticmethod
         def steps_payload_from_rule(rule: AutoResponseRule | None) -> list[dict[str, Any]]:
@@ -684,6 +730,73 @@ if QDialog is not None:
                 }
             ]
 
+        @classmethod
+        def actions_payload_from_rule(cls, rule: AutoResponseRule | None) -> list[dict[str, Any]]:
+            if rule is not None and rule.actions:
+                return [cls.action_payload_from_action(action) for action in rule.actions]
+            if rule is None:
+                return [
+                    {
+                        "kind": "send",
+                        "text": "Ctrl+B",
+                        "target": "current",
+                        "delayMs": 0,
+                        "appendEnter": False,
+                    }
+                ]
+            return cls.actions_payload_from_steps(rule)
+
+        @classmethod
+        def actions_payload_from_steps(cls, rule: AutoResponseRule) -> list[dict[str, Any]]:
+            actions: list[dict[str, Any]] = []
+            for step in rule.steps:
+                for index, response_text in enumerate(step.response_texts):
+                    actions.append(
+                        {
+                            "kind": "send",
+                            "text": response_text,
+                            "target": step.response_targets[index]
+                            if index < len(step.response_targets)
+                            else "current",
+                            "delayMs": step.response_delays[index]
+                            if index < len(step.response_delays)
+                            else 0,
+                            "appendEnter": step.response_append_enters[index]
+                            if index < len(step.response_append_enters)
+                            else rule.append_enter,
+                        }
+                    )
+            if actions:
+                return actions
+            return [
+                {
+                    "kind": "send",
+                    "text": rule.response_text or rule.response,
+                    "target": "current",
+                    "delayMs": 0,
+                    "appendEnter": rule.append_enter,
+                }
+            ]
+
+        @classmethod
+        def action_payload_from_action(cls, action: AutoResponseAction) -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "kind": action.kind,
+                "text": action.text,
+                "target": action.target,
+                "delayMs": action.delay_ms,
+                "appendEnter": action.append_enter,
+                "repeatCount": action.repeat_count,
+                "intervalMs": action.interval_ms,
+                "exitPattern": action.exit_pattern,
+                "exitScope": action.exit_scope,
+                "conditionPattern": action.condition_pattern,
+                "conditionMatchType": action.condition_match_type,
+            }
+            if action.actions:
+                payload["actions"] = [cls.action_payload_from_action(child) for child in action.actions]
+            return payload
+
         @staticmethod
         def response_target_payload(parent: QWidget | None) -> list[dict[str, str]]:
             targets = [{"label": "当前选中终端", "value": "current"}]
@@ -707,6 +820,31 @@ if QDialog is not None:
 
         @classmethod
         def values_from_payload(cls, payload: dict[str, Any]) -> dict[str, object]:
+            actions_payload = payload.get("actions")
+            if isinstance(actions_payload, list) and actions_payload:
+                first_send = cls.first_send_action_payload(actions_payload)
+                return {
+                    "name": str(payload.get("name") or "").strip(),
+                    "pattern": str(payload.get("triggerPattern") or payload.get("pattern") or "").strip(),
+                    "response_text": str((first_send or {}).get("text") or ""),
+                    "steps_text": "",
+                    "step_targets": [],
+                    "step_delays": [],
+                    "step_append_enters": [],
+                    "append_enter": bool((first_send or {}).get("appendEnter", payload.get("appendEnter", False))),
+                    "case_sensitive": bool(payload.get("caseSensitive", True)),
+                    "once": bool(payload.get("once", True)),
+                    "allow_startup_trigger": bool(payload.get("allowStartupTrigger")),
+                    "match_type": str(payload.get("matchType") or "contains"),
+                    "delay_ms": cls.parse_nonnegative_int(payload.get("delayMs")),
+                    "max_triggers": cls.parse_nonnegative_int(payload.get("maxTriggers")),
+                    "trigger_type": str(payload.get("triggerType") or "match"),
+                    "trigger_delay_ms": cls.parse_nonnegative_int(payload.get("triggerDelayMs")),
+                    "loop_count": max(1, min(10, cls.parse_nonnegative_int(payload.get("loopCount")) or 1)),
+                    "kind": normalize_auto_response_rule_kind(payload.get("kind")) or "advanced",
+                    "simple_rule_text": str(payload.get("simpleRuleText") or ""),
+                    "actions": actions_payload,
+                }
             steps = payload.get("steps")
             if not isinstance(steps, list) or not steps:
                 steps = [{"pattern": "", "responses": [{"text": "", "target": "current", "delay": 0}]}]
@@ -751,7 +889,27 @@ if QDialog is not None:
                 "match_type": str(payload.get("matchType") or "contains"),
                 "delay_ms": cls.parse_nonnegative_int(payload.get("delayMs")),
                 "max_triggers": cls.parse_nonnegative_int(payload.get("maxTriggers")),
+                "trigger_type": str(payload.get("triggerType") or "match"),
+                "trigger_delay_ms": cls.parse_nonnegative_int(payload.get("triggerDelayMs")),
+                "loop_count": max(1, min(10, cls.parse_nonnegative_int(payload.get("loopCount")) or 1)),
+                "kind": normalize_auto_response_rule_kind(payload.get("kind")),
+                "simple_rule_text": str(payload.get("simpleRuleText") or ""),
+                "actions": actions_payload if isinstance(actions_payload, list) else [],
             }
+
+        @classmethod
+        def first_send_action_payload(cls, actions: list[Any]) -> dict[str, Any] | None:
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                if str(action.get("kind") or "").lower() == "send":
+                    return action
+                children = action.get("actions")
+                if isinstance(children, list):
+                    found = cls.first_send_action_payload(children)
+                    if found is not None:
+                        return found
+            return None
 
 
     class QuickSendButtonDialog(QDialog):
@@ -1260,6 +1418,7 @@ class SessionOpsMixin:
                 and rule.once
                 and signature in state.auto_response_triggered_rules
             )
+            is_running = bool(state is not None and signature in state.auto_response_running_rules)
             startup_suppressed = bool(
                 state is None
                 or (state.suppress_auto_response_until_input and not state.user_input_seen)
@@ -1267,14 +1426,19 @@ class SessionOpsMixin:
             allows_startup_trigger = auto_response_rule_allows_startup_trigger(rule)
             waiting_for_input = bool(startup_suppressed and rule.enabled and not allows_startup_trigger)
             trigger_limit_reached = bool(rule.max_triggers and rule.trigger_count >= rule.max_triggers)
-            effective_enabled = bool(rule.enabled and not completed_once and not waiting_for_input and not trigger_limit_reached)
+            effective_enabled = bool(
+                is_running
+                or (rule.enabled and not completed_once and not waiting_for_input and not trigger_limit_reached)
+            )
+            is_manual_rule = rule.trigger_type == "manual"
             button = QToolButton()
             button.setObjectName("autoResponseRuleButton")
             button.setText(self.auto_response_rule_button_text(rule))
             button.setToolButtonStyle(Qt.ToolButtonTextOnly)
             button.setCheckable(True)
-            button.setChecked(effective_enabled)
+            button.setChecked(is_running if is_manual_rule else effective_enabled)
             button.setProperty("waitingForInput", "true" if waiting_for_input else "false")
+            button.setProperty("running", "true" if is_running else "false")
             status_text = (
                 "已执行，本终端不会再次自动发送；左键可重新启用"
                 if completed_once
@@ -1363,6 +1527,7 @@ class SessionOpsMixin:
             and rule.once
             and signature in state.auto_response_triggered_rules
         )
+        is_running = bool(state is not None and signature in state.auto_response_running_rules)
         startup_suppressed = bool(
             state is None
             or (state.suppress_auto_response_until_input and not state.user_input_seen)
@@ -1370,8 +1535,16 @@ class SessionOpsMixin:
         allows_startup_trigger = auto_response_rule_allows_startup_trigger(rule)
         waiting_for_input = bool(startup_suppressed and rule.enabled and not allows_startup_trigger)
         trigger_limit_reached = bool(rule.max_triggers and rule.trigger_count >= rule.max_triggers)
-        effective_enabled = bool(rule.enabled and not completed_once and not waiting_for_input and not trigger_limit_reached)
-        if completed_once:
+        effective_enabled = bool(
+            is_running
+            or (rule.enabled and not completed_once and not waiting_for_input and not trigger_limit_reached)
+        )
+        if is_running:
+            status = "running"
+        elif rule.trigger_type == "manual":
+            status = "manual"
+            effective_enabled = False
+        elif completed_once:
             status = "completed"
         elif trigger_limit_reached:
             status = "exhausted"
@@ -1385,6 +1558,7 @@ class SessionOpsMixin:
             "completed_once": completed_once,
             "waiting_for_input": waiting_for_input,
             "trigger_limit_reached": trigger_limit_reached,
+            "running": is_running,
             "effective_enabled": effective_enabled,
             "clickable": True,
             "status": status,
@@ -1398,6 +1572,10 @@ class SessionOpsMixin:
             "enabled": "已启用，对本终端生效；点击停用",
             "disabled": "已停用；点击启用",
         }.get(str(status.get("status")), "")
+        if str(status.get("status")) == "running":
+            state_text = "正在运行；点击停止"
+        if str(status.get("status")) == "manual":
+            state_text = "点击运行手动自动化"
         return f"{rule.name}\n匹配: {rule.pattern}\n{state_text}"
 
     def handle_terminal_web_action(self, tab_id: str, action: dict[str, object]) -> None:
@@ -1539,6 +1717,21 @@ class SessionOpsMixin:
         )
 
     def toggle_auto_response_rule_from_button(self, rule: AutoResponseRule, enabled: bool) -> None:
+        state = self.current_session_state()
+        if state is not None and self.auto_response_rule_signature(rule) in state.auto_response_running_rules:
+            self.stop_auto_response_rule_run(state, rule)
+            if rule.trigger_type != "manual" and not enabled:
+                rule.enabled = False
+                self.remember_auto_response_rule(rule)
+            self.refresh_auto_response_rule_buttons()
+            return
+        if rule.trigger_type == "manual":
+            if state is not None:
+                rule.enabled = True
+                state.auto_response_triggered_rules.discard(self.auto_response_rule_signature(rule))
+                self.apply_auto_response_rules(state, "", trigger_event="manual")
+            self.refresh_auto_response_rule_buttons()
+            return
         if enabled:
             rule.trigger_count = 0
         self.set_auto_response_rule_enabled(rule, enabled)
@@ -1583,9 +1776,24 @@ class SessionOpsMixin:
         if dialog_class is None:
             return
         dialog = dialog_class(self)
+        if self.show_auto_response_rule_dialog_non_modal(
+            dialog,
+            self.apply_added_auto_response_rule_values,
+        ):
+            return
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
+        rule_kind = normalize_auto_response_rule_kind(values.get("kind"))
+        if rule_kind == "quick_send":
+            quick_button = self.create_quick_send_button_from_rule_values(values)
+            if quick_button is None:
+                return
+            self.remembered_quick_send_buttons.append(quick_button)
+            self.schedule_desktop_state_save()
+            self.set_status_message(f"已添加快捷发送按钮: {quick_button.name}")
+            self.refresh_auto_response_rule_buttons()
+            return
         pattern = str(values["pattern"]).strip()
         rule = self.create_auto_response_rule(
             name=str(values["name"]),
@@ -1602,6 +1810,12 @@ class SessionOpsMixin:
             match_type=str(values.get("match_type") or "contains"),
             delay_ms=int(values.get("delay_ms") or 0),
             max_triggers=int(values.get("max_triggers") or 0),
+            trigger_type=str(values.get("trigger_type") or "match"),
+            trigger_delay_ms=int(values.get("trigger_delay_ms") or 0),
+            loop_count=int(values.get("loop_count") or 1),
+            kind=rule_kind,
+            simple_rule_text=str(values.get("simple_rule_text") or ""),
+            actions=list(values.get("actions", [])),
         )
         if rule is None:
             return
@@ -1610,16 +1824,32 @@ class SessionOpsMixin:
         self.refresh_auto_response_rule_buttons()
         state = self.current_session_state()
         if state is not None:
-            self.apply_auto_response_rules(state, "")
+            self.apply_auto_response_rules(state, "", trigger_event="immediate")
 
     def edit_auto_response_rule(self, rule: AutoResponseRule) -> None:
         dialog_class = self.auto_response_rule_dialog_class()
         if dialog_class is None:
             return
         dialog = dialog_class(self, rule)
+        if self.show_auto_response_rule_dialog_non_modal(
+            dialog,
+            lambda values, current_rule=rule: self.apply_edited_auto_response_rule_values(current_rule, values),
+        ):
+            return
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
+        rule_kind = normalize_auto_response_rule_kind(values.get("kind"))
+        if rule_kind == "quick_send":
+            quick_button = self.create_quick_send_button_from_rule_values(values)
+            if quick_button is None:
+                return
+            self.forget_auto_response_rule(rule)
+            self.remembered_quick_send_buttons.append(quick_button)
+            self.schedule_desktop_state_save()
+            self.set_status_message(f"已转换为快捷发送按钮: {quick_button.name}")
+            self.refresh_auto_response_rule_buttons()
+            return
         pattern = str(values["pattern"]).strip()
         old_signature = self.auto_response_rule_signature(rule)
         updated = self.create_auto_response_rule(
@@ -1637,6 +1867,12 @@ class SessionOpsMixin:
             match_type=str(values.get("match_type") or "contains"),
             delay_ms=int(values.get("delay_ms") or 0),
             max_triggers=int(values.get("max_triggers") or 0),
+            trigger_type=str(values.get("trigger_type") or "match"),
+            trigger_delay_ms=int(values.get("trigger_delay_ms") or 0),
+            loop_count=int(values.get("loop_count") or 1),
+            kind=rule_kind,
+            simple_rule_text=str(values.get("simple_rule_text") or ""),
+            actions=list(values.get("actions", [])),
         )
         if updated is None:
             return
@@ -1651,7 +1887,12 @@ class SessionOpsMixin:
         rule.match_type = updated.match_type
         rule.delay_ms = updated.delay_ms
         rule.max_triggers = updated.max_triggers
+        rule.trigger_type = updated.trigger_type
+        rule.trigger_delay_ms = updated.trigger_delay_ms
+        rule.loop_count = updated.loop_count
+        rule.kind = updated.kind
         rule.steps = updated.steps
+        rule.actions = updated.actions
         rule.enabled = True
         rule.trigger_count = 0
         self.remember_auto_response_rule(rule, old_signature=old_signature)
@@ -1659,7 +1900,128 @@ class SessionOpsMixin:
         self.refresh_auto_response_rule_buttons()
         state = self.current_session_state()
         if state is not None:
-            self.apply_auto_response_rules(state, "")
+            self.apply_auto_response_rules(state, "", trigger_event="immediate")
+
+    def show_auto_response_rule_dialog_non_modal(
+        self,
+        dialog: QDialog,
+        on_accept: Callable[[dict[str, object]], None],
+    ) -> bool:
+        if AutoResponseRuleWebDialog is None or not isinstance(dialog, AutoResponseRuleWebDialog):
+            return False
+        dialogs = getattr(self, "_auto_response_rule_dialogs", None)
+        if dialogs is None:
+            dialogs = []
+            self._auto_response_rule_dialogs = dialogs
+        dialogs.append(dialog)
+
+        def cleanup() -> None:
+            if dialog in dialogs:
+                dialogs.remove(dialog)
+            dialog.deleteLater()
+
+        dialog.accepted.connect(lambda current_dialog=dialog: on_accept(current_dialog.values()))
+        dialog.finished.connect(lambda _result: cleanup())
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def apply_added_auto_response_rule_values(self, values: dict[str, object]) -> None:
+        rule_kind = normalize_auto_response_rule_kind(values.get("kind"))
+        if rule_kind == "quick_send":
+            quick_button = self.create_quick_send_button_from_rule_values(values)
+            if quick_button is None:
+                return
+            self.remembered_quick_send_buttons.append(quick_button)
+            self.schedule_desktop_state_save()
+            self.set_status_message(f"已添加快捷发送按钮: {quick_button.name}")
+            self.refresh_auto_response_rule_buttons()
+            return
+        rule = self.create_auto_response_rule_from_values(values, kind=rule_kind)
+        if rule is None:
+            return
+        self.remember_auto_response_rule(rule)
+        self.set_status_message(f"已添加自动响应规则: {rule.name}")
+        self.refresh_auto_response_rule_buttons()
+        state = self.current_session_state()
+        if state is not None:
+            self.apply_auto_response_rules(state, "", trigger_event="immediate")
+
+    def apply_edited_auto_response_rule_values(
+        self,
+        rule: AutoResponseRule,
+        values: dict[str, object],
+    ) -> None:
+        rule_kind = normalize_auto_response_rule_kind(values.get("kind"))
+        if rule_kind == "quick_send":
+            quick_button = self.create_quick_send_button_from_rule_values(values)
+            if quick_button is None:
+                return
+            self.forget_auto_response_rule(rule)
+            self.remembered_quick_send_buttons.append(quick_button)
+            self.schedule_desktop_state_save()
+            self.set_status_message(f"已转换为快捷发送按钮: {quick_button.name}")
+            self.refresh_auto_response_rule_buttons()
+            return
+        old_signature = self.auto_response_rule_signature(rule)
+        updated = self.create_auto_response_rule_from_values(values, kind=rule_kind)
+        if updated is None:
+            return
+        rule.name = updated.name
+        rule.pattern = updated.pattern
+        rule.response = updated.response
+        rule.response_text = updated.response_text
+        rule.append_enter = updated.append_enter
+        rule.case_sensitive = updated.case_sensitive
+        rule.once = updated.once
+        rule.allow_startup_trigger = updated.allow_startup_trigger
+        rule.match_type = updated.match_type
+        rule.delay_ms = updated.delay_ms
+        rule.max_triggers = updated.max_triggers
+        rule.trigger_type = updated.trigger_type
+        rule.trigger_delay_ms = updated.trigger_delay_ms
+        rule.loop_count = updated.loop_count
+        rule.kind = updated.kind
+        rule.steps = updated.steps
+        rule.actions = updated.actions
+        rule.enabled = True
+        rule.trigger_count = 0
+        self.remember_auto_response_rule(rule, old_signature=old_signature)
+        self.set_status_message(f"已更新自动响应规则: {rule.name}")
+        self.refresh_auto_response_rule_buttons()
+        state = self.current_session_state()
+        if state is not None:
+            self.apply_auto_response_rules(state, "", trigger_event="immediate")
+
+    def create_auto_response_rule_from_values(
+        self,
+        values: dict[str, object],
+        *,
+        kind: str | None,
+    ) -> AutoResponseRule | None:
+        return self.create_auto_response_rule(
+            name=str(values["name"]),
+            pattern=str(values["pattern"]).strip(),
+            response_text=str(values["response_text"]),
+            steps_text=str(values["steps_text"]),
+            step_targets=list(values.get("step_targets", [])),
+            step_delays=list(values.get("step_delays", [])),
+            step_append_enters=list(values.get("step_append_enters", [])),
+            append_enter=bool(values["append_enter"]),
+            case_sensitive=bool(values["case_sensitive"]),
+            once=bool(values["once"]),
+            allow_startup_trigger=bool(values.get("allow_startup_trigger", False)),
+            match_type=str(values.get("match_type") or "contains"),
+            delay_ms=int(values.get("delay_ms") or 0),
+            max_triggers=int(values.get("max_triggers") or 0),
+            trigger_type=str(values.get("trigger_type") or "match"),
+            trigger_delay_ms=int(values.get("trigger_delay_ms") or 0),
+            loop_count=int(values.get("loop_count") or 1),
+            kind=kind,
+            simple_rule_text=str(values.get("simple_rule_text") or ""),
+            actions=list(values.get("actions", [])),
+        )
 
     def auto_response_rule_dialog_class(self) -> type[QDialog] | None:
         if AutoResponseRuleWebDialog is not None and QWebChannel is not None and QWebEngineView is not None:
@@ -1698,8 +2060,42 @@ class SessionOpsMixin:
         match_type: str = "contains",
         delay_ms: int = 0,
         max_triggers: int = 0,
+        trigger_type: str = "match",
+        trigger_delay_ms: int = 0,
+        loop_count: int = 1,
+        kind: str = "capture",
+        simple_rule_text: str = "",
+        actions: list[Any] | None = None,
     ) -> AutoResponseRule | None:
+        normalized_kind = normalize_auto_response_rule_kind(kind)
+        parsed_simple_rule = self.parse_simple_auto_response_rule_for_create(
+            simple_rule_text,
+            expected_kind=normalized_kind,
+        )
+        if parsed_simple_rule is None and str(simple_rule_text or "").strip():
+            return None
+        if parsed_simple_rule is not None:
+            if parsed_simple_rule.kind == "quick_send":
+                self.show_warning("快捷发送请使用“按一下发送”按钮类型。")
+                return None
+            normalized_kind = parsed_simple_rule.kind
+            name = str(name).strip() or parsed_simple_rule.name
+            pattern = parsed_simple_rule.pattern
+            response_text = parsed_simple_rule.response_text
+            append_enter = parsed_simple_rule.append_enter
+            once = parsed_simple_rule.once
+            trigger_type = parsed_simple_rule.trigger_type
+            trigger_delay_ms = parsed_simple_rule.trigger_delay_ms
+            loop_count = parsed_simple_rule.loop_count
+            steps_text = self.steps_text_from_parsed_simple_rule(parsed_simple_rule)
+            step_delays = [parsed_simple_rule.step_delay_ms]
+            step_append_enters = [parsed_simple_rule.append_enter]
+        normalized_name = str(name).strip()
+        if not normalized_name:
+            self.show_warning("规则名称需要手动填写。")
+            return None
         normalized_match_type = match_type if match_type in {"contains", "regex"} else "contains"
+        normalized_trigger_type = trigger_type if trigger_type in {"match", "immediate", "connected", "delay", "manual"} else "match"
         try:
             normalized_delay_ms = max(0, int(delay_ms))
         except (TypeError, ValueError):
@@ -1708,6 +2104,14 @@ class SessionOpsMixin:
             normalized_max_triggers = max(0, int(max_triggers))
         except (TypeError, ValueError):
             normalized_max_triggers = 0
+        try:
+            normalized_trigger_delay_ms = max(0, int(trigger_delay_ms))
+        except (TypeError, ValueError):
+            normalized_trigger_delay_ms = 0
+        try:
+            normalized_loop_count = max(1, min(10, int(loop_count)))
+        except (TypeError, ValueError):
+            normalized_loop_count = 1
         steps = self.parse_auto_response_steps(
             steps_text,
             append_enter=append_enter,
@@ -1716,6 +2120,12 @@ class SessionOpsMixin:
             step_append_enters=step_append_enters,
         )
         if steps is None:
+            return None
+        parsed_actions = self.parse_auto_response_actions(
+            actions,
+            append_enter=append_enter,
+        )
+        if parsed_actions is None:
             return None
         if normalized_match_type == "regex":
             for pattern_candidate in [pattern, *(step.pattern for step in steps)]:
@@ -1730,6 +2140,16 @@ class SessionOpsMixin:
             response = steps[0].responses[0]
             response_text = steps[0].response_texts[0]
             pattern = steps[0].pattern
+        elif parsed_actions:
+            first_send = self.first_send_auto_response_action(parsed_actions)
+            if first_send is None:
+                self.show_warning("动作流程至少需要一个发送动作。")
+                return None
+            response_text = first_send.text
+            response = decode_response_text(response_text, append_enter=first_send.append_enter)
+            if normalized_trigger_type == "match" and not pattern.strip():
+                self.show_warning("匹配输出触发需要填写匹配内容。")
+                return None
         else:
             if not pattern.strip():
                 self.show_warning("匹配内容不能为空。")
@@ -1738,6 +2158,7 @@ class SessionOpsMixin:
         if not response:
             self.show_warning("发送内容不能为空。")
             return None
+        name = normalized_name
         return AutoResponseRule(
             name=name.strip() or "自动响应",
             pattern=pattern.strip(),
@@ -1750,8 +2171,179 @@ class SessionOpsMixin:
             match_type=normalized_match_type,
             delay_ms=normalized_delay_ms,
             max_triggers=normalized_max_triggers,
+            trigger_type=normalized_trigger_type,
+            trigger_delay_ms=normalized_trigger_delay_ms,
+            loop_count=normalized_loop_count,
+            kind=normalized_kind,
             steps=steps,
+            actions=parsed_actions,
         )
+
+    def first_send_auto_response_action(
+        self,
+        actions: list[AutoResponseAction],
+    ) -> AutoResponseAction | None:
+        for action in actions:
+            if action.kind == "send":
+                return action
+            child = self.first_send_auto_response_action(action.actions)
+            if child is not None:
+                return child
+        return None
+
+    def parse_auto_response_actions(
+        self,
+        actions: list[Any] | None,
+        *,
+        append_enter: bool,
+    ) -> list[AutoResponseAction] | None:
+        if not actions:
+            return []
+        parsed: list[AutoResponseAction] = []
+        for index, action in enumerate(actions, start=1):
+            if not isinstance(action, dict):
+                continue
+            kind = str(action.get("kind") or "").strip().lower()
+            if kind not in {"send", "wait", "loop", "exit", "condition"}:
+                self.show_warning(f"动作 {index} 类型无效。")
+                return None
+            parsed_action = self.parse_auto_response_action(action, append_enter=append_enter)
+            if parsed_action is None:
+                return None
+            parsed.append(parsed_action)
+        return parsed
+
+    def parse_auto_response_action(
+        self,
+        action: dict[str, Any],
+        *,
+        append_enter: bool,
+    ) -> AutoResponseAction | None:
+        kind = str(action.get("kind") or "").strip().lower()
+        delay_ms = self.parse_nonnegative_action_int(action.get("delayMs", action.get("delay_ms", 0)))
+        repeat_count = self.normalize_auto_response_repeat_count(
+            action.get("repeatCount", action.get("repeat_count", 1))
+        )
+        interval_ms = self.parse_nonnegative_action_int(action.get("intervalMs", action.get("interval_ms", 0)))
+        exit_scope = str(action.get("exitScope", action.get("exit_scope", "loop")) or "loop").strip().lower()
+        if exit_scope not in {"loop", "rule"}:
+            exit_scope = "loop"
+        condition_match_type = str(
+            action.get("conditionMatchType", action.get("condition_match_type", "contains")) or "contains"
+        ).strip().lower()
+        if condition_match_type not in {"contains", "regex"}:
+            condition_match_type = "contains"
+        child_actions = self.parse_auto_response_actions(
+            action.get("actions") if isinstance(action.get("actions"), list) else [],
+            append_enter=append_enter,
+        )
+        if child_actions is None:
+            return None
+        text = str(action.get("text") or "")
+        action_append_enter = bool(action.get("appendEnter", action.get("append_enter", append_enter)))
+        if kind == "send" and not text.strip():
+            self.show_warning("发送动作的内容不能为空。")
+            return None
+        if kind == "loop" and not child_actions:
+            self.show_warning("循环动作中至少需要一个动作。")
+            return None
+        condition_pattern = str(
+            action.get("conditionPattern", action.get("condition_pattern", "")) or ""
+        )
+        if kind == "condition":
+            if not condition_pattern.strip():
+                self.show_warning("判断动作需要填写匹配内容。")
+                return None
+            if not child_actions:
+                self.show_warning("判断动作中至少需要一个动作。")
+                return None
+            if condition_match_type == "regex":
+                try:
+                    re.compile(condition_pattern)
+                except re.error as exc:
+                    self.show_warning(f"Invalid condition regex pattern: {exc}")
+                    return None
+        return AutoResponseAction(
+            kind=kind,
+            text=text,
+            target=self.normalize_auto_response_target(action.get("target")),
+            delay_ms=delay_ms,
+            append_enter=action_append_enter,
+            repeat_count=repeat_count,
+            interval_ms=interval_ms,
+            exit_pattern=str(action.get("exitPattern", action.get("exit_pattern", "")) or ""),
+            exit_scope=exit_scope,
+            condition_pattern=condition_pattern,
+            condition_match_type=condition_match_type,
+            actions=child_actions,
+        )
+
+    @staticmethod
+    def parse_nonnegative_action_int(value: object) -> int:
+        try:
+            return max(0, int(str(value).strip() or "0"))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def normalize_auto_response_repeat_count(value: object) -> int:
+        try:
+            count = int(str(value).strip() or "1")
+        except (TypeError, ValueError):
+            count = 1
+        if count <= 0:
+            return 0
+        return max(1, min(100, count))
+
+    def create_quick_send_button_from_rule_values(
+        self,
+        values: dict[str, object],
+    ) -> TerminalQuickButton | None:
+        parsed_simple_rule = self.parse_simple_auto_response_rule_for_create(
+            str(values.get("simple_rule_text") or ""),
+            expected_kind="quick_send",
+        )
+        if parsed_simple_rule is not None:
+            return self.create_quick_send_button(
+                name=parsed_simple_rule.name,
+                response_text=parsed_simple_rule.response_text,
+                append_enter=parsed_simple_rule.append_enter,
+            )
+        if str(values.get("simple_rule_text") or "").strip():
+            return None
+        return self.create_quick_send_button(
+            name=values.get("name", ""),
+            response_text=values.get("response_text", ""),
+            append_enter=values.get("append_enter", False),
+        )
+
+    def parse_simple_auto_response_rule_for_create(
+        self,
+        simple_rule_text: str,
+        *,
+        expected_kind: str,
+    ) -> ParsedAutoResponseRule | None:
+        if not simple_rule_text.strip() or expected_kind == "advanced":
+            return None
+        result = parse_simple_auto_response_rule(simple_rule_text)
+        if result.error is not None:
+            self.show_warning(f"简单规则第 {result.error.line_number} 行：{result.error.message}")
+            return None
+        if result.rule is None:
+            return None
+        if expected_kind == "quick_send" and result.rule.kind != "quick_send":
+            self.show_warning("按一下发送请使用：按钮 名称 => 发送内容。")
+            return None
+        if expected_kind != "quick_send" and result.rule.kind == "quick_send":
+            self.show_warning("快捷发送规则请切换到“按一下发送”。")
+            return None
+        return result.rule
+
+    @staticmethod
+    def steps_text_from_parsed_simple_rule(rule: ParsedAutoResponseRule) -> str:
+        if rule.pattern:
+            return f"{rule.pattern} => {rule.response_text}"
+        return f"=> {rule.response_text}"
 
     def parse_auto_response_steps(
         self,
@@ -1786,6 +2378,70 @@ class SessionOpsMixin:
             elif current_step is None:
                 self.show_warning(f"流程步骤第 {line_number} 行缺少匹配内容。")
                 return None
+            response_append_enter = (
+                bool(step_append_enters[target_index])
+                if step_append_enters is not None and target_index < len(step_append_enters)
+                else append_enter
+            )
+            response = decode_response_text(response_text, append_enter=response_append_enter)
+            if not response:
+                self.show_warning(f"流程步骤第 {line_number} 行发送内容不能为空。")
+                return None
+            current_step.responses.append(response)
+            current_step.response_texts.append(response_text)
+            current_step.response_targets.append(
+                self.normalize_auto_response_target(
+                    step_targets[target_index] if step_targets and target_index < len(step_targets) else "current"
+                )
+            )
+            try:
+                response_delay = max(
+                    0,
+                    int(step_delays[target_index] if step_delays and target_index < len(step_delays) else 0),
+                )
+            except (TypeError, ValueError):
+                response_delay = 0
+            current_step.response_delays.append(response_delay)
+            current_step.response_append_enters.append(response_append_enter)
+            target_index += 1
+        if not steps:
+            self.show_warning("流程步骤不能为空。")
+            return None
+        return steps
+
+    def parse_auto_response_steps(
+        self,
+        steps_text: str,
+        *,
+        append_enter: bool,
+        step_targets: list[str] | None = None,
+        step_delays: list[int] | None = None,
+        step_append_enters: list[bool] | None = None,
+    ) -> list[AutoResponseStep] | None:
+        if not steps_text.strip():
+            return []
+        steps: list[AutoResponseStep] = []
+        current_step: AutoResponseStep | None = None
+        target_index = 0
+        for line_number, raw_line in enumerate(steps_text.splitlines(), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if "=>" not in line:
+                self.show_warning(f"流程步骤第 {line_number} 行缺少 =>。")
+                return None
+            pattern_text, response_text = line.split("=>", 1)
+            pattern = pattern_text.strip()
+            response_text = response_text.strip()
+            if not response_text:
+                self.show_warning(f"流程步骤第 {line_number} 行发送内容不能为空。")
+                return None
+            if pattern:
+                current_step = AutoResponseStep(pattern=pattern)
+                steps.append(current_step)
+            elif current_step is None:
+                current_step = AutoResponseStep(pattern="")
+                steps.append(current_step)
             response_append_enter = (
                 bool(step_append_enters[target_index])
                 if step_append_enters is not None and target_index < len(step_append_enters)
@@ -2027,48 +2683,36 @@ class SessionOpsMixin:
         has_sessions = self.session_tab_widget.count() > 0
         if not has_sessions:
             self.center_stage_mode = "home"
+            self.left_device_workspace_expanded = True
         show_home = getattr(self, "center_stage_mode", "home") == "home"
         current_mode = "home" if show_home else "sessions"
         mode_changed = getattr(self, "_last_center_stage_mode", None) != current_mode
         self._last_center_stage_mode = current_mode
-        self.web_shell.setVisible(show_home)
-        self.session_tab_widget.setVisible(has_sessions and not show_home)
-        if show_home:
-            self.center_stage_splitter.setSizes([1, 0])
-        else:
-            self.center_stage_splitter.setSizes([0, 1])
+        self.web_shell.setVisible(False)
+        self.session_tab_widget.setVisible(True)
+        self.center_stage_splitter.setSizes([0, 1])
         if hasattr(self, "activity_home_button"):
             self.activity_home_button.setToolTip("首页大屏")
-        if hasattr(self, "activity_terminal_button"):
-            self.activity_terminal_button.setEnabled(has_sessions)
-            self.activity_terminal_button.setToolTip(
-                "终端会话" if has_sessions else "暂无终端会话"
-            )
         if hasattr(self, "sync_activity_rail_state"):
             self.sync_activity_rail_state()
         for widget_name in ("command_record_frame",):
             widget = getattr(self, widget_name, None)
             if widget is not None:
-                widget.setVisible(has_sessions and not show_home)
+                widget.setVisible(has_sessions)
         if hasattr(self, "apply_session_quick_bar_state"):
             self.apply_session_quick_bar_state()
-        compact_left = has_sessions and not show_home
+        compact_left = False
         compact_changed = getattr(self, "left_sidebar_compact", False) != compact_left
         self.left_sidebar_compact = compact_left
         if getattr(self, "left_sidebar_active_panel", "devices") != "devices":
             return
-        if show_home and not self.left_sidebar_collapsed:
-            self.left_sidebar_collapsed = True
-            self.apply_left_sidebar_state()
-        elif not show_home and has_sessions:
-            remembered_collapsed = bool(getattr(self, "terminal_sidebar_collapsed", False))
-            if self.left_sidebar_collapsed != remembered_collapsed:
-                self.left_sidebar_collapsed = remembered_collapsed
+        if not show_home and has_sessions:
+            if mode_changed and self.left_sidebar_collapsed:
+                self.left_sidebar_collapsed = False
                 self.apply_left_sidebar_state()
             elif mode_changed or compact_changed:
                 self.apply_left_sidebar_state()
         elif mode_changed:
-            self.left_sidebar_collapsed = show_home
             self.apply_left_sidebar_state()
         elif compact_changed:
             self.apply_left_sidebar_state()
@@ -2076,7 +2720,8 @@ class SessionOpsMixin:
     def show_web_home(self) -> None:
         self.center_stage_mode = "home"
         self.left_sidebar_active_panel = "devices"
-        self.left_sidebar_collapsed = True
+        self.left_device_workspace_expanded = True
+        self.left_sidebar_collapsed = False
         if hasattr(self, "left_sidebar_stack"):
             self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
@@ -2089,11 +2734,10 @@ class SessionOpsMixin:
         was_in_terminal = getattr(self, "center_stage_mode", "home") != "home"
         self.center_stage_mode = "sessions"
         self.left_sidebar_active_panel = "devices"
+        self.left_device_workspace_expanded = True
         if was_in_terminal and self.left_sidebar_collapsed:
             self.terminal_sidebar_collapsed = False
-            self.left_sidebar_collapsed = False
-        else:
-            self.left_sidebar_collapsed = bool(getattr(self, "terminal_sidebar_collapsed", False))
+        self.left_sidebar_collapsed = False
         if hasattr(self, "left_sidebar_stack"):
             self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
@@ -2259,6 +2903,10 @@ class SessionOpsMixin:
                 match_type=rule.match_type,
                 delay_ms=rule.delay_ms,
                 max_triggers=rule.max_triggers,
+                trigger_type=rule.trigger_type,
+                trigger_delay_ms=rule.trigger_delay_ms,
+                loop_count=rule.loop_count,
+                kind=rule.kind,
                 trigger_count=0,
                 steps=[
                     AutoResponseStep(
@@ -2271,8 +2919,29 @@ class SessionOpsMixin:
                     )
                     for step in rule.steps
                 ],
+                actions=SessionOpsMixin.clone_auto_response_actions(rule.actions),
             )
             for rule in rules
+        ]
+
+    @staticmethod
+    def clone_auto_response_actions(actions: list[AutoResponseAction]) -> list[AutoResponseAction]:
+        return [
+            AutoResponseAction(
+                kind=action.kind,
+                text=action.text,
+                target=action.target,
+                delay_ms=action.delay_ms,
+                append_enter=action.append_enter,
+                repeat_count=action.repeat_count,
+                interval_ms=action.interval_ms,
+                exit_pattern=action.exit_pattern,
+                exit_scope=action.exit_scope,
+                condition_pattern=action.condition_pattern,
+                condition_match_type=action.condition_match_type,
+                actions=SessionOpsMixin.clone_auto_response_actions(action.actions),
+            )
+            for action in actions
         ]
 
     @staticmethod
@@ -2288,6 +2957,23 @@ class SessionOpsMixin:
             )
             for step in rule.steps
         )
+        def action_signature(action: AutoResponseAction) -> tuple[object, ...]:
+            return (
+                action.kind,
+                action.text,
+                action.target,
+                action.delay_ms,
+                action.append_enter,
+                action.repeat_count,
+                action.interval_ms,
+                action.exit_pattern,
+                action.exit_scope,
+                action.condition_pattern,
+                action.condition_match_type,
+                tuple(action_signature(child) for child in action.actions),
+            )
+
+        actions_signature = tuple(action_signature(action) for action in rule.actions)
         return (
             rule.name,
             rule.pattern,
@@ -2300,7 +2986,12 @@ class SessionOpsMixin:
             rule.match_type,
             rule.delay_ms,
             rule.max_triggers,
+            rule.trigger_type,
+            rule.trigger_delay_ms,
+            rule.loop_count,
+            rule.kind,
             steps_signature,
+            actions_signature,
         )
 
     def remember_auto_response_rule(
@@ -2328,6 +3019,69 @@ class SessionOpsMixin:
         for state in self.session_tabs_by_id.values():
             state.auto_response_triggered_rules.discard(signature)
             state.auto_response_rule_steps.pop(signature, None)
+            state.auto_response_rule_loops.pop(signature, None)
+            state.auto_response_running_rules.discard(signature)
+            state.auto_response_rule_run_tokens[signature] = state.auto_response_rule_run_tokens.get(signature, 0) + 1
+
+    def start_auto_response_rule_run(self, state: SessionTabState, rule: AutoResponseRule) -> int:
+        signature = self.auto_response_rule_signature(rule)
+        token = state.auto_response_rule_run_tokens.get(signature, 0) + 1
+        state.auto_response_rule_run_tokens[signature] = token
+        state.auto_response_running_rules.add(signature)
+        return token
+
+    def auto_response_rule_run_is_active(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        run_token: int,
+    ) -> bool:
+        signature = self.auto_response_rule_signature(rule)
+        return (
+            signature in state.auto_response_running_rules
+            and state.auto_response_rule_run_tokens.get(signature) == run_token
+            and self.auto_response_rule_is_registered(state, rule)
+        )
+
+    def finish_auto_response_rule_run(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        run_token: int,
+    ) -> None:
+        if not self.auto_response_rule_run_is_active(state, rule, run_token):
+            return
+        signature = self.auto_response_rule_signature(rule)
+        state.auto_response_running_rules.discard(signature)
+        self.refresh_auto_response_rule_buttons()
+        self.schedule_desktop_state_save()
+
+    def stop_auto_response_rule_run(self, state: SessionTabState, rule: AutoResponseRule) -> None:
+        signature = self.auto_response_rule_signature(rule)
+        state.auto_response_running_rules.discard(signature)
+        state.auto_response_rule_steps.pop(signature, None)
+        state.auto_response_rule_loops.pop(signature, None)
+        state.auto_response_rule_run_tokens[signature] = state.auto_response_rule_run_tokens.get(signature, 0) + 1
+        state.auto_response_buffer = ""
+        self.set_status_message(f"已停止自动响应规则: {rule.name}")
+        self.refresh_auto_response_rule_buttons()
+        self.schedule_desktop_state_save()
+
+    def schedule_auto_response_rule_run_finish(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        run_token: int,
+        delay_ms: int,
+    ) -> None:
+        delay_ms = max(0, int(delay_ms or 0))
+        if delay_ms > 0 and QTimer is not None:
+            QTimer.singleShot(
+                delay_ms,
+                lambda: self.finish_auto_response_rule_run(state, rule, run_token),
+            )
+            return
+        self.finish_auto_response_rule_run(state, rule, run_token)
 
     def forget_auto_response_rule(self, rule: AutoResponseRule) -> None:
         target_signature = self.auto_response_rule_signature(rule)
@@ -3051,6 +3805,7 @@ class SessionOpsMixin:
             current_state.connecting = False
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Connected")
+            self.apply_auto_response_rules(current_state, "", trigger_event="connected")
             self.set_status_message(f"会话已连接: {current_state.title}")
             self.focus_current_terminal()
 
@@ -3245,6 +4000,516 @@ class SessionOpsMixin:
             self.refresh_auto_response_rule_buttons()
             self.schedule_desktop_state_save()
             return
+
+    def apply_auto_response_rules(
+        self,
+        state: SessionTabState,
+        message: str,
+        *,
+        trigger_event: str = "output",
+    ) -> None:
+        selected_state = self.current_session_state()
+        if selected_state is not None and selected_state is not state:
+            return
+        startup_suppressed = state.suppress_auto_response_until_input and not state.user_input_seen
+        rules = self.remembered_auto_response_rules or state.auto_response_rules
+        if startup_suppressed and not any(
+            rule.enabled and auto_response_rule_allows_startup_trigger(rule) for rule in rules
+        ):
+            if message:
+                state.auto_response_buffer = ""
+            return
+        previous_buffer = state.auto_response_buffer
+        state.auto_response_buffer = (previous_buffer + message)[-4096:]
+        for rule in list(rules):
+            if startup_suppressed and not auto_response_rule_allows_startup_trigger(rule):
+                continue
+            signature = self.auto_response_rule_signature(rule)
+            if rule.once and signature in state.auto_response_triggered_rules:
+                continue
+            if rule.max_triggers and rule.trigger_count >= rule.max_triggers:
+                continue
+            if signature in state.auto_response_running_rules and trigger_event not in {"step", "loop", "delayed"}:
+                continue
+            if rule.actions:
+                has_infinite_loop = self.auto_response_actions_have_infinite_loop(rule.actions)
+                scan_text = self.auto_response_scan_text(previous_buffer, message, rule.pattern)
+                if self.auto_response_rule_needs_delayed_start(rule, trigger_event, 0):
+                    run_token = self.start_auto_response_rule_run(state, rule)
+                    self.refresh_auto_response_rule_buttons()
+                    self.schedule_delayed_auto_response_rule(state, rule, run_token=run_token)
+                    continue
+                if not self.auto_response_action_flow_ready(rule, scan_text, trigger_event):
+                    continue
+                rule.trigger_count += 1
+                run_token = self.start_auto_response_rule_run(state, rule)
+                final_delay_ms, exit_scope = self.execute_auto_response_action_flow(state, rule, scan_text, run_token)
+                infinite_loop_running = state.auto_response_rule_loops.get(signature) == -1
+                state.auto_response_buffer = ""
+                if rule.once and not infinite_loop_running:
+                    state.auto_response_triggered_rules.add(signature)
+                    rule.enabled = False
+                if rule.max_triggers and rule.trigger_count >= rule.max_triggers and not infinite_loop_running:
+                    rule.enabled = False
+                if exit_scope == "rule":
+                    rule.enabled = False
+                if not infinite_loop_running:
+                    self.schedule_auto_response_rule_run_finish(state, rule, run_token, final_delay_ms)
+                self.refresh_auto_response_rule_buttons()
+                self.schedule_desktop_state_save()
+                return
+            steps = self.effective_auto_response_steps(rule)
+            if not steps:
+                continue
+            step_index = state.auto_response_rule_steps.get(signature, 0)
+            if step_index >= len(steps):
+                if rule.once:
+                    state.auto_response_triggered_rules.add(signature)
+                continue
+            step = steps[step_index]
+            scan_text = self.auto_response_scan_text(previous_buffer, message, step.pattern)
+            if self.auto_response_rule_needs_delayed_start(rule, trigger_event, step_index):
+                run_token = self.start_auto_response_rule_run(state, rule)
+                self.refresh_auto_response_rule_buttons()
+                self.schedule_delayed_auto_response_rule(state, rule, run_token=run_token)
+                continue
+            if not self.auto_response_step_ready(rule, step, scan_text, trigger_event, step_index):
+                continue
+            rule.trigger_count += 1
+            run_token = self.start_auto_response_rule_run(state, rule)
+            final_delay_ms = self.execute_auto_response_step(state, rule, step, step_index, len(steps), run_token)
+            next_step_index = step_index + 1
+            completed_rule = next_step_index >= len(steps)
+            if completed_rule:
+                current_loop = state.auto_response_rule_loops.get(signature, 0) + 1
+                if current_loop < self.auto_response_loop_count(rule):
+                    state.auto_response_rule_loops[signature] = current_loop
+                    state.auto_response_rule_steps[signature] = 0
+                    state.auto_response_buffer = ""
+                    if steps and not steps[0].pattern.strip():
+                        self.apply_auto_response_rules(state, "", trigger_event="loop")
+                else:
+                    state.auto_response_rule_steps.pop(signature, None)
+                    state.auto_response_rule_loops.pop(signature, None)
+                    if rule.once:
+                        state.auto_response_triggered_rules.add(signature)
+                        rule.enabled = False
+            else:
+                state.auto_response_rule_steps[signature] = next_step_index
+                state.auto_response_buffer = ""
+                next_step = steps[next_step_index]
+                if not next_step.pattern.strip():
+                    self.apply_auto_response_rules(state, "", trigger_event="step")
+            if rule.max_triggers and rule.trigger_count >= rule.max_triggers:
+                rule.enabled = False
+            self.refresh_auto_response_rule_buttons()
+            self.schedule_desktop_state_save()
+            return
+
+    @staticmethod
+    def auto_response_loop_count(rule: AutoResponseRule) -> int:
+        try:
+            return max(1, min(10, int(rule.loop_count)))
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def auto_response_rule_needs_delayed_start(
+        rule: AutoResponseRule,
+        trigger_event: str,
+        step_index: int,
+    ) -> bool:
+        return (
+            rule.trigger_type == "delay"
+            and step_index == 0
+            and trigger_event in {"connected", "immediate", "manual"}
+        )
+
+    def schedule_delayed_auto_response_rule(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        *,
+        run_token: int,
+    ) -> None:
+        delay_ms = max(0, int(rule.trigger_delay_ms or 0))
+        if delay_ms > 0 and QTimer is not None:
+            QTimer.singleShot(
+                delay_ms,
+                lambda tab_id=state.tab_id, token=run_token: self.apply_delayed_auto_response_rule(
+                    tab_id,
+                    rule,
+                    token,
+                ),
+            )
+            return
+        self.apply_delayed_auto_response_rule(state.tab_id, rule, run_token)
+
+    def apply_delayed_auto_response_rule(
+        self,
+        tab_id: str,
+        rule: AutoResponseRule,
+        run_token: int,
+    ) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is not None and self.auto_response_rule_run_is_active(state, rule, run_token):
+            signature = self.auto_response_rule_signature(rule)
+            state.auto_response_running_rules.discard(signature)
+            self.apply_auto_response_rules(state, "", trigger_event="delayed")
+
+    def auto_response_step_ready(
+        self,
+        rule: AutoResponseRule,
+        step: AutoResponseStep,
+        output: str,
+        trigger_event: str,
+        step_index: int,
+    ) -> bool:
+        if not rule.enabled:
+            return False
+        if not step.pattern.strip():
+            if step_index > 0 or trigger_event in {"step", "loop"}:
+                return True
+            return (
+                (rule.trigger_type == "immediate" and trigger_event in {"immediate", "connected"})
+                or (rule.trigger_type == "connected" and trigger_event == "connected")
+                or (rule.trigger_type == "delay" and trigger_event == "delayed")
+                or (rule.trigger_type == "manual" and trigger_event == "manual")
+            )
+        return trigger_event == "output" and self.auto_response_step_matches(rule, step, output)
+
+    def auto_response_action_flow_ready(
+        self,
+        rule: AutoResponseRule,
+        output: str,
+        trigger_event: str,
+    ) -> bool:
+        if not rule.enabled:
+            return False
+        if rule.trigger_type == "manual":
+            return trigger_event == "manual"
+        if rule.trigger_type == "immediate":
+            return trigger_event in {"immediate", "connected"}
+        if rule.trigger_type == "connected":
+            return trigger_event == "connected"
+        if rule.trigger_type == "delay":
+            return trigger_event == "delayed"
+        if rule.pattern.strip():
+            step = AutoResponseStep(pattern=rule.pattern)
+            return trigger_event == "output" and self.auto_response_step_matches(rule, step, output)
+        return trigger_event in {"immediate", "manual", "connected"}
+
+    def execute_auto_response_step(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        step: AutoResponseStep,
+        step_index: int,
+        step_count: int,
+        run_token: int,
+    ) -> int:
+        self.write_session_log_line(
+            state,
+            "SYS",
+            f"Auto response sent: {rule.name} step {step_index + 1}/{step_count}",
+        )
+        self.set_status_message(f"自动化已执行: {rule.name}（命中 {rule.trigger_count} 次）")
+        cumulative_delay_ms = max(0, int(rule.delay_ms or 0))
+        last_response_index = len(step.responses) - 1
+        for index, response in enumerate(step.responses):
+            target = step.response_targets[index] if index < len(step.response_targets) else "source"
+            if index < len(step.response_delays):
+                try:
+                    cumulative_delay_ms += max(0, int(step.response_delays[index]))
+                except (TypeError, ValueError):
+                    pass
+            target_tab_id = self.auto_response_target_tab_id(state, target)
+            if not target_tab_id:
+                self.write_session_log_line(state, "SYS", f"Auto response target missing: {target}")
+                self.set_status_message(f"自动化目标终端不存在: {target}")
+                continue
+            if cumulative_delay_ms > 0 and QTimer is not None:
+                QTimer.singleShot(
+                    cumulative_delay_ms,
+                    lambda tab_id=target_tab_id, text=response, token=run_token, finish=index == last_response_index: self.send_auto_response_text_if_running(
+                        state,
+                        rule,
+                        token,
+                        tab_id,
+                        text,
+                        finish=finish,
+                    ),
+                )
+            else:
+                self.send_auto_response_text_if_running(
+                    state,
+                    rule,
+                    run_token,
+                    target_tab_id,
+                    response,
+                    finish=index == last_response_index,
+                )
+        return cumulative_delay_ms
+
+    def execute_auto_response_action_flow(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        scan_text: str,
+        run_token: int,
+    ) -> tuple[int, str | None]:
+        self.write_session_log_line(state, "SYS", f"Auto response flow started: {rule.name}")
+        self.set_status_message(f"自动化流程已执行: {rule.name}（命中 {rule.trigger_count} 次）")
+        return self.schedule_auto_response_actions(
+            state,
+            rule,
+            rule.actions,
+            scan_text,
+            max(0, int(rule.delay_ms or 0)),
+            run_token,
+        )
+
+    def schedule_auto_response_actions(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        actions: list[AutoResponseAction],
+        scan_text: str,
+        cumulative_delay_ms: int,
+        run_token: int,
+    ) -> tuple[int, str | None]:
+        delay_ms = cumulative_delay_ms
+        for action in actions:
+            kind = action.kind
+            if kind == "wait":
+                delay_ms += max(0, int(action.delay_ms or 0))
+                continue
+            if kind == "exit":
+                if action.exit_pattern and self.auto_response_pattern_matches(
+                    rule,
+                    action.exit_pattern,
+                    scan_text,
+                ):
+                    return delay_ms, action.exit_scope
+                continue
+            if kind == "send":
+                delay_ms += max(0, int(action.delay_ms or 0))
+                self.schedule_auto_response_send(state, rule, action, delay_ms, run_token)
+                continue
+            if kind == "condition":
+                condition_scan_text = state.auto_response_buffer or scan_text
+                if self.auto_response_action_condition_matches(rule, action, condition_scan_text):
+                    next_delay, exit_scope = self.schedule_auto_response_actions(
+                        state,
+                        rule,
+                        action.actions,
+                        condition_scan_text,
+                        delay_ms,
+                        run_token,
+                    )
+                    delay_ms = next_delay
+                    if exit_scope is not None:
+                        return delay_ms, exit_scope
+                continue
+            if kind == "loop":
+                repeat_count = self.normalize_auto_response_repeat_count(action.repeat_count)
+                interval_ms = max(0, int(action.interval_ms or 0))
+                if repeat_count == 0:
+                    self.schedule_auto_response_infinite_loop(
+                        state,
+                        rule,
+                        action,
+                        scan_text,
+                        delay_ms,
+                        run_token,
+                    )
+                    return delay_ms, "loop"
+                for _iteration in range(repeat_count):
+                    next_delay, exit_scope = self.schedule_auto_response_actions(
+                        state,
+                        rule,
+                        action.actions,
+                        scan_text,
+                        delay_ms,
+                        run_token,
+                    )
+                    delay_ms = next_delay
+                    if exit_scope == "rule":
+                        return delay_ms, "rule"
+                    if exit_scope == "loop":
+                        break
+                    delay_ms += interval_ms
+        return delay_ms, None
+
+    def schedule_auto_response_infinite_loop(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        action: AutoResponseAction,
+        scan_text: str,
+        start_delay_ms: int,
+        run_token: int,
+    ) -> None:
+        signature = self.auto_response_rule_signature(rule)
+        state.auto_response_rule_loops[signature] = -1
+        if QTimer is None:
+            self.run_auto_response_infinite_loop_iteration(state, rule, action, scan_text, run_token)
+            return
+        QTimer.singleShot(
+            max(0, int(start_delay_ms or 0)),
+            lambda: self.run_auto_response_infinite_loop_iteration(state, rule, action, scan_text, run_token),
+        )
+
+    def run_auto_response_infinite_loop_iteration(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        action: AutoResponseAction,
+        scan_text: str,
+        run_token: int,
+    ) -> None:
+        signature = self.auto_response_rule_signature(rule)
+        if (
+            not rule.enabled
+            or state.auto_response_rule_loops.get(signature) != -1
+            or not self.auto_response_rule_run_is_active(state, rule, run_token)
+            or not self.auto_response_rule_is_registered(state, rule)
+        ):
+            state.auto_response_rule_loops.pop(signature, None)
+            state.auto_response_running_rules.discard(signature)
+            return
+        latest_scan_text = state.auto_response_buffer or scan_text
+        next_delay, exit_scope = self.schedule_auto_response_actions(
+            state,
+            rule,
+            action.actions,
+            latest_scan_text,
+            0,
+            run_token,
+        )
+        if exit_scope is not None:
+            self.finish_auto_response_infinite_loop(state, rule, exit_scope)
+            return
+        if QTimer is None:
+            self.finish_auto_response_infinite_loop(state, rule, "loop")
+            return
+        interval_ms = max(0, int(action.interval_ms or 0))
+        next_iteration_delay_ms = max(10, int(next_delay or 0) + interval_ms)
+        QTimer.singleShot(
+            next_iteration_delay_ms,
+            lambda: self.run_auto_response_infinite_loop_iteration(state, rule, action, scan_text, run_token),
+        )
+
+    def finish_auto_response_infinite_loop(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        exit_scope: str | None,
+    ) -> None:
+        signature = self.auto_response_rule_signature(rule)
+        state.auto_response_rule_loops.pop(signature, None)
+        state.auto_response_running_rules.discard(signature)
+        if exit_scope == "rule":
+            rule.enabled = False
+        if rule.once:
+            state.auto_response_triggered_rules.add(signature)
+            rule.enabled = False
+        if rule.max_triggers and rule.trigger_count >= rule.max_triggers:
+            rule.enabled = False
+        self.refresh_auto_response_rule_buttons()
+        self.schedule_desktop_state_save()
+
+    def auto_response_rule_is_registered(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+    ) -> bool:
+        signature = self.auto_response_rule_signature(rule)
+        rules = self.remembered_auto_response_rules or state.auto_response_rules
+        return any(self.auto_response_rule_signature(saved_rule) == signature for saved_rule in rules)
+
+    @classmethod
+    def auto_response_actions_have_infinite_loop(cls, actions: list[AutoResponseAction]) -> bool:
+        for action in actions:
+            if action.kind == "loop" and cls.normalize_auto_response_repeat_count(action.repeat_count) == 0:
+                return True
+            if action.actions and cls.auto_response_actions_have_infinite_loop(action.actions):
+                return True
+        return False
+
+    def schedule_auto_response_send(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        action: AutoResponseAction,
+        delay_ms: int,
+        run_token: int,
+    ) -> None:
+        response = decode_response_text(action.text, append_enter=action.append_enter)
+        if not response:
+            return
+        target_tab_id = self.auto_response_target_tab_id(state, action.target)
+        if not target_tab_id:
+            self.write_session_log_line(state, "SYS", f"Auto response target missing: {action.target}")
+            self.set_status_message(f"自动化目标终端不存在: {action.target}")
+            return
+        if delay_ms > 0 and QTimer is not None:
+            QTimer.singleShot(
+                delay_ms,
+                lambda tab_id=target_tab_id, text=response, token=run_token: self.send_auto_response_text_if_running(
+                    state,
+                    rule,
+                    token,
+                    tab_id,
+                    text,
+                ),
+            )
+        else:
+            self.send_auto_response_text_if_running(state, rule, run_token, target_tab_id, response)
+
+    def send_auto_response_text_if_running(
+        self,
+        state: SessionTabState,
+        rule: AutoResponseRule,
+        run_token: int,
+        tab_id: str,
+        text: str,
+        *,
+        finish: bool = False,
+    ) -> None:
+        if not self.auto_response_rule_run_is_active(state, rule, run_token):
+            return
+        self.send_session_text(tab_id, text)
+        if finish:
+            self.finish_auto_response_rule_run(state, rule, run_token)
+
+    def auto_response_pattern_matches(
+        self,
+        rule: AutoResponseRule,
+        pattern: str,
+        output: str,
+    ) -> bool:
+        step = AutoResponseStep(pattern=pattern)
+        return self.auto_response_step_matches(rule, step, output)
+
+    def auto_response_action_condition_matches(
+        self,
+        rule: AutoResponseRule,
+        action: AutoResponseAction,
+        output: str,
+    ) -> bool:
+        pattern = action.condition_pattern.strip()
+        if not rule.enabled or not pattern:
+            return False
+        if action.condition_match_type == "regex":
+            flags = 0 if rule.case_sensitive else re.IGNORECASE
+            try:
+                return re.search(pattern, output, flags) is not None
+            except re.error:
+                return False
+        haystack = output if rule.case_sensitive else output.lower()
+        needle = pattern if rule.case_sensitive else pattern.lower()
+        return needle in haystack
 
     @staticmethod
     def auto_response_scan_text(
@@ -3481,6 +4746,7 @@ class SessionOpsMixin:
             current_state.connecting = False
             self.set_session_status(tab_id, "Connected")
             self.write_session_log_line(current_state, "SYS", "Reconnected")
+            self.apply_auto_response_rules(current_state, "", trigger_event="connected")
             self.focus_current_terminal()
             self.set_status_message(f"会话已重连: {current_state.title}")
 
