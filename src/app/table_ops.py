@@ -73,9 +73,9 @@ class TableOpsMixin:
             self.rebuild_device_indexes()
             self.refresh_domain_options()
             self.apply_filters()
-            if hasattr(self, "restore_remembered_terminal_sessions_once"):
-                self.restore_remembered_terminal_sessions_once()
             self.set_status_message(f"已加载 {len(self.devices)} 台设备")
+            if hasattr(self, "schedule_restore_remembered_terminal_sessions_once"):
+                self.schedule_restore_remembered_terminal_sessions_once()
             self.schedule_next_refresh()
 
         def handle_error(exc: Exception) -> None:
@@ -139,6 +139,8 @@ class TableOpsMixin:
                 status_counts[device.status] += 1
 
         self.visible_devices = visible_devices
+        self.visible_device_display_rows = self.build_device_table_display_rows(visible_devices)
+        self._visible_device_display_row_ids = tuple(device.id for device in visible_devices)
         self.visible_status_counts = status_counts
         self.owned_visible_devices = [
             device for device in visible_devices if self.is_my_occupied_device(device)
@@ -150,7 +152,6 @@ class TableOpsMixin:
         self.refresh_device_table()
         self.refresh_owned_table()
         self.ensure_valid_selection()
-        self.refresh_device_navigation_web()
         self.refresh_device_context()
         self.refresh_workspace_context()
         self.update_controls()
@@ -256,19 +257,98 @@ class TableOpsMixin:
             if not isinstance(table, QTableWidget):
                 self._table_render_jobs.pop(0)
                 continue
-            table.setUpdatesEnabled(False)
-            try:
-                self.render_table_job_rows(job, max_rows=180)
-            finally:
-                table.setUpdatesEnabled(True)
+            self.render_table_job_rows(job, max_rows=24, max_seconds=0.004)
             if int(job["row"]) >= len(job["devices"]):
                 self._table_render_jobs.pop(0)
             if (time.perf_counter() - frame_started) >= 0.008:
                 break
         if self._table_render_jobs:
-            self.table_render_timer.start(0)
+            self.table_render_timer.start(16)
 
-    def render_table_job_rows(self, job: dict[str, object], max_rows: int) -> None:
+    def schedule_render_visible_device_table_rows(self) -> None:
+        if hasattr(self, "device_table_visible_render_timer"):
+            self.device_table_visible_render_timer.start(40)
+
+    def schedule_render_visible_owned_table_rows(self) -> None:
+        if hasattr(self, "owned_table_visible_render_timer"):
+            self.owned_table_visible_render_timer.start(40)
+
+    def render_visible_device_table_rows(self) -> None:
+        more_rows = self.render_visible_table_rows(
+            self.device_table,
+            self.current_device_table_display_rows(),
+            "device",
+            self.device_table_rendered_rows,
+            max_rows=10,
+        )
+        if more_rows:
+            self.schedule_render_visible_device_table_rows()
+
+    def render_visible_owned_table_rows(self) -> None:
+        if not hasattr(self, "owned_table"):
+            return
+        more_rows = self.render_visible_table_rows(
+            self.owned_table,
+            self.owned_visible_devices,
+            "owned",
+            self.owned_table_rendered_rows,
+            max_rows=10,
+        )
+        if more_rows:
+            self.schedule_render_visible_owned_table_rows()
+
+    def render_visible_table_rows(
+        self,
+        table: QTableWidget,
+        rows: list[object],
+        kind: str,
+        rendered_rows: set[int],
+        *,
+        max_rows: int = 10,
+    ) -> bool:
+        if not rows:
+            return False
+        first_row = table.rowAt(0)
+        if first_row < 0:
+            first_row = max(0, table.verticalScrollBar().value())
+        last_row = table.rowAt(max(0, table.viewport().height() - 1))
+        if last_row < first_row:
+            last_row = min(len(rows) - 1, first_row + 80)
+        start_row = max(0, first_row - 20)
+        end_row = min(len(rows), last_row + 41)
+        keyword = self.search_input.text().strip().lower()
+        rendered_count = 0
+        more_rows = False
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            for row in range(start_row, end_row):
+                if row in rendered_rows:
+                    continue
+                if rendered_count >= max_rows:
+                    more_rows = True
+                    break
+                row_data = rows[row]
+                if kind == "owned":
+                    if isinstance(row_data, Device):
+                        self.render_owned_table_row(row, row_data, keyword)
+                else:
+                    self.render_device_table_display_row(row, row_data, keyword)
+                rendered_rows.add(row)
+                rendered_count += 1
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(True)
+        if hasattr(table, "schedule_column_adapt"):
+            table.schedule_column_adapt()
+        return more_rows
+
+    def render_table_job_rows(
+        self,
+        job: dict[str, object],
+        max_rows: int,
+        max_seconds: float | None = None,
+    ) -> None:
         rows = job["devices"]
         if not isinstance(rows, list):
             return
@@ -276,6 +356,7 @@ class TableOpsMixin:
         kind = str(job["kind"])
         row = int(job["row"])
         end_row = min(len(rows), row + max_rows)
+        started = time.perf_counter()
         for current_row in range(row, end_row):
             row_data = rows[current_row]
             if kind == "owned":
@@ -285,6 +366,10 @@ class TableOpsMixin:
                 self.render_owned_table_row(current_row, device, keyword)
             else:
                 self.render_device_table_display_row(current_row, row_data, keyword)
+            row = current_row + 1
+            if max_seconds is not None and row < len(rows) and (time.perf_counter() - started) >= max_seconds:
+                job["row"] = row
+                return
         job["row"] = end_row
 
     def build_device_table_display_rows(self, devices: list[Device]) -> list[dict[str, object]]:
@@ -311,6 +396,16 @@ class TableOpsMixin:
             rows.append({"kind": "device", "device": device, "grouped": True})
         return rows
 
+    def current_device_table_display_rows(self) -> list[dict[str, object]]:
+        visible_ids = tuple(device.id for device in self.visible_devices)
+        rows = getattr(self, "visible_device_display_rows", None)
+        cached_ids = getattr(self, "_visible_device_display_row_ids", ())
+        if rows is None or cached_ids != visible_ids:
+            rows = self.build_device_table_display_rows(self.visible_devices)
+            self.visible_device_display_rows = rows
+            self._visible_device_display_row_ids = visible_ids
+        return rows
+
     def render_device_table_display_row(self, row: int, row_data: object, keyword: str) -> None:
         if not isinstance(row_data, dict):
             return
@@ -328,7 +423,7 @@ class TableOpsMixin:
             self.render_device_table_row(row, device, keyword, grouped=bool(row_data.get("grouped")))
 
     def device_navigation_payload(self) -> dict[str, object]:
-        display_rows = self.build_device_table_display_rows(self.visible_devices)
+        display_rows = self.current_device_table_display_rows()
         rows: list[dict[str, object]] = []
         for row_data in display_rows:
             if row_data.get("kind") == "group":
@@ -670,15 +765,15 @@ class TableOpsMixin:
             return
         self._last_device_table_signature = signature
         self.cancel_table_render_jobs()
-        generation = self._table_render_generation
         table = self.device_table
-        display_rows = self.build_device_table_display_rows(self.visible_devices)
+        display_rows = self.current_device_table_display_rows()
         table.setUpdatesEnabled(False)
         table.blockSignals(True)
         try:
             table.clearSpans()
             table.setRowCount(len(display_rows))
             self.device_table_rows = {}
+            self.device_table_rendered_rows = set()
             for row, row_data in enumerate(display_rows):
                 if row_data.get("kind") != "device":
                     continue
@@ -688,21 +783,19 @@ class TableOpsMixin:
             sync_rows = min(80, len(display_rows))
             for row in range(sync_rows):
                 self.render_device_table_display_row(row, display_rows[row], keyword)
+                self.device_table_rendered_rows.add(row)
         finally:
             table.blockSignals(False)
             table.setUpdatesEnabled(True)
-        self.enqueue_table_render_job(
-            table,
-            display_rows,
-            keyword,
-            "device",
-            generation,
-            sync_rows,
-        )
+        if hasattr(table, "schedule_column_adapt"):
+            table.schedule_column_adapt()
+        self.schedule_render_visible_device_table_rows()
 
     def refresh_device_navigation_web(self) -> None:
         web_nav = getattr(self, "device_navigation_web", None)
         if web_nav is not None and hasattr(web_nav, "set_payload"):
+            if hasattr(web_nav, "isVisible") and not web_nav.isVisible():
+                return
             web_nav.set_payload(self.session_navigation_payload())
 
     def terminal_navigation_default_device_ids(self, limit: int = 10) -> list[str]:
@@ -936,6 +1029,8 @@ class TableOpsMixin:
     def refresh_web_shell(self) -> None:
         web_shell = getattr(self, "web_shell", None)
         if web_shell is not None and hasattr(web_shell, "set_payload"):
+            if hasattr(web_shell, "isVisible") and not web_shell.isVisible():
+                return
             web_shell.set_payload(self.web_shell_payload())
 
     def refresh_owned_table(self) -> None:
@@ -960,22 +1055,19 @@ class TableOpsMixin:
         try:
             table.setRowCount(len(self.owned_visible_devices))
             self.owned_table_rows = {}
+            self.owned_table_rendered_rows = set()
             for row, device in enumerate(self.owned_visible_devices):
                 self.owned_table_rows[device.id] = row
             sync_rows = min(60, len(self.owned_visible_devices))
             for row in range(sync_rows):
                 self.render_owned_table_row(row, self.owned_visible_devices[row], keyword)
+                self.owned_table_rendered_rows.add(row)
         finally:
             table.blockSignals(False)
             table.setUpdatesEnabled(True)
-        self.enqueue_table_render_job(
-            table,
-            self.owned_visible_devices,
-            keyword,
-            "owned",
-            self._table_render_generation,
-            sync_rows,
-        )
+        if hasattr(table, "schedule_column_adapt"):
+            table.schedule_column_adapt()
+        self.schedule_render_visible_owned_table_rows()
 
     def _set_table_item(
         self,
@@ -1242,7 +1334,6 @@ class TableOpsMixin:
         self.refresh_device_context()
         self.refresh_workspace_context()
         self.update_controls()
-        self.refresh_device_navigation_web()
 
     def handle_owned_table_selected(self) -> None:
         device_id = self._device_id_from_table(self.owned_table, 0)
@@ -1258,7 +1349,6 @@ class TableOpsMixin:
         self.refresh_device_context()
         self.refresh_workspace_context()
         self.update_controls()
-        self.refresh_device_navigation_web()
 
     def locate_device_in_list(self, device_id: str) -> None:
         device = self.get_device_by_id(device_id)

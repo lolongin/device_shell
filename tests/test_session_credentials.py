@@ -15,7 +15,17 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialogButtonBox, QFrame, QLabel, QLineEdit, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QFrame,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QWidget,
+)
 
 from src._sample_data import STATUS_IDLE, STATUS_OCCUPIED, STATUS_OTHER, STATUS_PIPELINE, sample_devices
 from src.app_state import SessionTabState
@@ -755,6 +765,31 @@ def test_terminal_sessions_round_trip_and_restore_without_credentials_in_state(
     assert next_state.title == "SSH #5"
 
 
+def test_startup_terminal_session_restore_is_opt_in(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    sample_device,
+) -> None:
+    _ = app
+    monkeypatch.delenv("DEVICE_TUI_AUTO_RESTORE_SESSIONS", raising=False)
+    window = DeviceDesktopApp()
+    window.devices = [sample_device]
+    window.rebuild_device_indexes()
+    window.remembered_terminal_sessions = [{
+        "device_id": sample_device.id,
+        "kind": "device",
+        "title": "Telnet #1",
+        "host": sample_device.telnet_ip,
+        "port": sample_device.telnet_port,
+        "active": True,
+    }]
+
+    window.schedule_restore_remembered_terminal_sessions_once()
+
+    assert window.terminal_sessions_restored
+    assert window.ordered_session_states() == []
+
+
 def test_always_on_top_keeps_visible_window_visible(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
@@ -1130,6 +1165,140 @@ def test_session_navigation_payload_is_terminal_focused(
     assert payload["sessions"][0]["active"] is True
     assert payload["selectedDevice"]["id"] == device.id
     assert payload["selectedDevice"]["slot"] == "SLOT-11"
+
+
+def test_apply_filters_refreshes_web_navigation_once(app: QApplication, sample_device) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.devices = [sample_device]
+    window.rebuild_device_indexes()
+    calls: list[str] = []
+    window.refresh_device_navigation_web = lambda: calls.append("navigation")  # type: ignore[method-assign]
+    window.refresh_web_shell = lambda: calls.append("shell")  # type: ignore[method-assign]
+
+    window.apply_filters()
+
+    assert calls.count("navigation") == 1
+    assert calls.count("shell") == 1
+    assert window.visible_device_display_rows
+
+
+def test_hidden_web_views_skip_device_payload_builds(app: QApplication, sample_device) -> None:
+    _ = app
+
+    class FakeWebView:
+        def __init__(self, visible: bool) -> None:
+            self.visible = visible
+            self.payloads: list[dict[str, object]] = []
+
+        def isVisible(self) -> bool:  # noqa: N802
+            return self.visible
+
+        def set_payload(self, payload: dict[str, object]) -> None:
+            self.payloads.append(payload)
+
+    window = DeviceDesktopApp()
+    window.devices = [sample_device]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+    navigation = FakeWebView(False)
+    shell = FakeWebView(False)
+    window.device_navigation_web = navigation  # type: ignore[assignment]
+    window.web_shell = shell  # type: ignore[assignment]
+
+    window.refresh_device_navigation_web()
+    window.refresh_web_shell()
+
+    assert navigation.payloads == []
+    assert shell.payloads == []
+
+    navigation.visible = True
+    shell.visible = True
+    window.refresh_device_navigation_web()
+    window.refresh_web_shell()
+
+    assert navigation.payloads
+    assert shell.payloads
+
+
+def test_table_render_job_yields_after_time_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.app import table_ops as table_ops_module
+    from src.app.table_ops import TableOpsMixin
+
+    class Harness(TableOpsMixin):
+        pass
+
+    harness = Harness()
+    rendered_rows: list[int] = []
+    harness.render_device_table_display_row = (  # type: ignore[method-assign]
+        lambda row, _row_data, _keyword: rendered_rows.append(row)
+    )
+    times = iter([0.0, 0.005])
+    monkeypatch.setattr(table_ops_module.time, "perf_counter", lambda: next(times))
+    job: dict[str, object] = {
+        "devices": [{"kind": "device"} for _ in range(10)],
+        "keyword": "",
+        "kind": "device",
+        "row": 0,
+    }
+
+    harness.render_table_job_rows(job, max_rows=10, max_seconds=0.004)
+
+    assert rendered_rows == [0]
+    assert job["row"] == 1
+
+
+def test_large_device_table_does_not_enqueue_startup_backfill(app: QApplication, sample_device) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.devices = [
+        replace(
+            sample_device,
+            id=f"LARGE-{index:04d}",
+            name=f"Large Device {index:04d}",
+            board_id=f"B-{index:04d}",
+        )
+        for index in range(140)
+    ]
+    window.rebuild_device_indexes()
+    window.cancel_table_render_jobs()
+
+    window.apply_filters()
+
+    assert window.device_table.rowCount() > len(window.device_table_rendered_rows)
+    assert len(window.device_table_rendered_rows) <= 120
+    assert window._table_render_jobs == []
+
+
+def test_device_table_avoids_resize_to_contents_for_large_lists(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    header = window.device_table.horizontalHeader()
+
+    for column in range(window.device_table.columnCount()):
+        assert header.sectionResizeMode(column) != QHeaderView.ResizeToContents
+
+
+def test_device_table_stretch_column_stops_after_content_fits(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.devices = window.repository.fetch_devices()[:3]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+    QApplication.processEvents()
+    table = window.device_table
+
+    table.resize(1800, 300)
+    QApplication.processEvents()
+    table._spread()
+    fitted_width = table.columnWidth(1)
+
+    table.resize(2200, 300)
+    QApplication.processEvents()
+    table._spread()
+
+    assert table.columnWidth(1) == fitted_width
+    assert table.columnWidth(1) >= 200
 
 
 def test_web_shell_payload_includes_selected_device(app: QApplication, sample_device) -> None:

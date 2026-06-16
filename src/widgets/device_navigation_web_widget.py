@@ -108,6 +108,8 @@ class DeviceNavigationWebWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self._loaded = False
         self._pending_payload: dict[str, Any] | None = None
+        self._pending_payload_json = ""
+        self._last_applied_payload_json = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -145,18 +147,24 @@ class DeviceNavigationWebWidget(QWidget):
 
     def set_payload(self, payload: dict[str, Any]) -> None:
         self._pending_payload = payload
+        self._pending_payload_json = json.dumps(payload, ensure_ascii=False)
         if not self._loaded:
             return
-        self._apply_payload(payload)
+        self._apply_payload_json(self._pending_payload_json)
 
     def _apply_payload(self, payload: dict[str, Any]) -> None:
-        encoded = json.dumps(payload, ensure_ascii=False)
+        self._apply_payload_json(json.dumps(payload, ensure_ascii=False))
+
+    def _apply_payload_json(self, encoded: str) -> None:
+        if encoded == self._last_applied_payload_json:
+            return
+        self._last_applied_payload_json = encoded
         self.view.page().runJavaScript(f"window.setDeviceNavigationPayload({encoded});")
 
     def _handle_load_finished(self, ok: bool) -> None:
         self._loaded = ok
         if ok and self._pending_payload is not None:
-            self._apply_payload(self._pending_payload)
+            self._apply_payload_json(self._pending_payload_json)
 
     def _handle_filters_changed(self, payload: str) -> None:
         try:

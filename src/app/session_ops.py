@@ -3317,6 +3317,19 @@ class SessionOpsMixin:
 
     # ---- Remembered terminal sessions ----
 
+    def schedule_restore_remembered_terminal_sessions_once(self) -> None:
+        if getattr(self, "terminal_sessions_restored", False):
+            return
+        remembered = list(getattr(self, "remembered_terminal_sessions", []))
+        if not remembered:
+            self.terminal_sessions_restored = True
+            return
+        enabled = os.getenv("DEVICE_TUI_AUTO_RESTORE_SESSIONS", "").strip().lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            self.terminal_sessions_restored = True
+            return
+        QTimer.singleShot(1500, self.restore_remembered_terminal_sessions_once)
+
     def restore_remembered_terminal_sessions_once(self) -> None:
         if getattr(self, "terminal_sessions_restored", False):
             return

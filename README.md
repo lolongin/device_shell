@@ -86,6 +86,8 @@ Useful environment variables:
 - `DEVICE_TUI_TERMINAL_WIDGET`: terminal renderer, defaults to `xterm`.
   Use `canvas` for the previous PySide/pyte renderer or `legacy` for the
   previous `QPlainTextEdit` renderer.
+- `DEVICE_TUI_AUTO_RESTORE_SESSIONS`: set to `1` to automatically reopen saved
+  terminal sessions on startup.
 - `DEVICE_TUI_XTERM_LOCAL_ECHO`: set to `1` only for endpoints which do not
   echo typed characters themselves. Leave it unset for normal SSH shells.
 

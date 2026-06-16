@@ -501,6 +501,7 @@
     let activeTreeKey = "all";
     const FILTER_DEBOUNCE_MS = 140;
     const ENTER_ANIMATION_LIMIT = 80;
+    const MAX_RENDERED_DEVICE_ROWS = 220;
     const $ = (id) => document.getElementById(id);
 
     function debounceFilters() {
@@ -578,6 +579,22 @@
       const rows = (state && state.rows ? state.rows : []).filter((item) => item.kind !== "group");
       if (activeTreeKey === "all") return rows;
       return rows.filter((item) => treeKeyForDevice(item) === activeTreeKey || domainKey(item.domain) === activeTreeKey);
+    }
+
+    function selectedDeviceId() {
+      return state && state.selectedDevice ? state.selectedDevice.id : "";
+    }
+
+    function renderedDeviceRows(rows) {
+      const source = rows || [];
+      if (source.length <= MAX_RENDERED_DEVICE_ROWS) return source;
+      const rendered = source.slice(0, MAX_RENDERED_DEVICE_ROWS);
+      const selectedId = selectedDeviceId();
+      if (selectedId && !rendered.some((item) => item.id === selectedId)) {
+        const selected = source.find((item) => item.id === selectedId);
+        if (selected) rendered[rendered.length - 1] = selected;
+      }
+      return rendered;
     }
 
     function domainKey(domain) {
@@ -884,7 +901,7 @@
         replaceChildrenPreservingScroll(container, fragment);
         return;
       }
-      rows.forEach((item, index) => fragment.appendChild(buildDeviceRow(item, index)));
+      renderedDeviceRows(rows).forEach((item, index) => fragment.appendChild(buildDeviceRow(item, index)));
       replaceChildrenPreservingScroll(container, fragment);
     }
 

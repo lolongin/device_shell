@@ -284,9 +284,13 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.search_index: dict[str, str] = {}
             self.device_by_id: dict[str, Device] = {}
             self.device_table_rows: dict[str, int] = {}
+            self.device_table_rendered_rows: set[int] = set()
             self.owned_table_rows: dict[str, int] = {}
+            self.owned_table_rendered_rows: set[int] = set()
             self.devices: list[Device] = []
             self.visible_devices: list[Device] = []
+            self.visible_device_display_rows: list[dict[str, object]] = []
+            self._visible_device_display_row_ids: tuple[str, ...] = ()
             self.owned_visible_devices: list[Device] = []
             self.visible_status_counts: dict[str, int] = {}
             self.selected_device_id = ""
@@ -379,6 +383,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.table_render_timer = QTimer(self)
             self.table_render_timer.setSingleShot(True)
             self.table_render_timer.timeout.connect(self.process_table_render_jobs)
+            self.device_table_visible_render_timer = QTimer(self)
+            self.device_table_visible_render_timer.setSingleShot(True)
+            self.device_table_visible_render_timer.timeout.connect(self.render_visible_device_table_rows)
+            self.owned_table_visible_render_timer = QTimer(self)
+            self.owned_table_visible_render_timer.setSingleShot(True)
+            self.owned_table_visible_render_timer.timeout.connect(self.render_visible_owned_table_rows)
 
             self.load_desktop_state()
             self._build_window()
@@ -1753,17 +1763,22 @@ if PYSIDE6_IMPORT_ERROR is None:
             header.setHighlightSections(False)
             header.setSectionsClickable(False)
             if len(headers) == 6:
-                header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(0, QHeaderView.Interactive)
                 header.setSectionResizeMode(1, QHeaderView.Interactive)
-                header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-                header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-                header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-                header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(2, QHeaderView.Interactive)
+                header.setSectionResizeMode(3, QHeaderView.Interactive)
+                header.setSectionResizeMode(4, QHeaderView.Interactive)
+                header.setSectionResizeMode(5, QHeaderView.Interactive)
                 header.setStretchLastSection(False)
                 header.setMinimumSectionSize(20)
                 table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
                 table.set_stretch_column(1)
+                table.setColumnWidth(0, 92)
                 table.setColumnWidth(1, 200)
+                table.setColumnWidth(2, 118)
+                table.setColumnWidth(3, 86)
+                table.setColumnWidth(4, 72)
+                table.setColumnWidth(5, 106)
             elif len(headers) == 5:
                 header.setSectionResizeMode(0, QHeaderView.Interactive)
                 header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1840,10 +1855,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.web_shell.session_context_requested.connect(self.show_web_session_context_menu)
 
             self.device_table.itemSelectionChanged.connect(self.handle_device_table_selected)
+            self.device_table.verticalScrollBar().valueChanged.connect(self.schedule_render_visible_device_table_rows)
             self.device_table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.device_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
             if hasattr(self, "owned_table"):
                 self.owned_table.itemSelectionChanged.connect(self.handle_owned_table_selected)
+                self.owned_table.verticalScrollBar().valueChanged.connect(self.schedule_render_visible_owned_table_rows)
                 self.owned_table.setContextMenuPolicy(Qt.CustomContextMenu)
                 self.owned_table.customContextMenuRequested.connect(self.show_device_table_context_menu)
 
@@ -2144,7 +2161,10 @@ if PYSIDE6_IMPORT_ERROR is None:
                 self.device_table.setMinimumHeight(360 if expanded else 260)
                 self.device_table.setMaximumHeight(760 if expanded else 340)
             if hasattr(self, "device_navigation_web"):
-                self.device_navigation_web.setVisible(not expanded and not collapsed)
+                navigation_visible = not expanded and not collapsed
+                self.device_navigation_web.setVisible(navigation_visible)
+                if navigation_visible and hasattr(self, "refresh_device_navigation_web"):
+                    self.refresh_device_navigation_web()
             if hasattr(self, "device_navigation_resize_handle"):
                 self.device_navigation_resize_handle.setVisible(not expanded and not collapsed)
             if hasattr(self, "device_navigation_toggle_button"):

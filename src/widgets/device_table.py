@@ -39,6 +39,9 @@ class CopyableDeviceTable(QTableWidget):
         self._field_copy_handler = field_copy_handler
         self._stretch_column = 1
         self._stretch_base = 200
+        self._stretch_auto_fit = True
+        self._stretch_padding = 28
+        self._stretch_sample_limit = 300
         self._adapt_timer: QTimer | None = None
         self.setItemDelegate(NoFocusItemDelegate(self))
 
@@ -48,14 +51,28 @@ class CopyableDeviceTable(QTableWidget):
     def set_stretch_base(self, width: int) -> None:
         self._stretch_base = width
 
-    def resizeEvent(self, event: Any) -> None:  # noqa: N802
-        super().resizeEvent(event)
+    def set_stretch_auto_fit(
+        self,
+        enabled: bool,
+        *,
+        padding: int = 28,
+        sample_limit: int = 300,
+    ) -> None:
+        self._stretch_auto_fit = enabled
+        self._stretch_padding = max(0, padding)
+        self._stretch_sample_limit = max(1, sample_limit)
+
+    def schedule_column_adapt(self) -> None:
         if self._adapt_timer is None:
             self._adapt_timer = QTimer(self)
             self._adapt_timer.setSingleShot(True)
             self._adapt_timer.timeout.connect(self._spread)
         if not self._adapt_timer.isActive():
             self._adapt_timer.start(30)
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.schedule_column_adapt()
 
     def _spread(self) -> None:
         vp = self.viewport()
@@ -68,8 +85,28 @@ class CopyableDeviceTable(QTableWidget):
                 other_total += self.columnWidth(col)
         if other_total <= 0:
             return
-        desired = max(40, available - other_total)
-        self.setColumnWidth(self._stretch_column, desired)
+        desired = max(self._stretch_base, available - other_total)
+        if self._stretch_auto_fit:
+            desired = min(desired, self._stretch_content_width())
+        if self.columnWidth(self._stretch_column) != desired:
+            self.setColumnWidth(self._stretch_column, desired)
+
+    def _stretch_content_width(self) -> int:
+        column = self._stretch_column
+        header = self.horizontalHeaderItem(column)
+        values = [header.text() if header is not None else ""]
+        sampled = 0
+        for row in range(self.rowCount()):
+            item = self.item(row, column)
+            if item is None:
+                continue
+            values.append(item.text())
+            sampled += 1
+            if sampled >= self._stretch_sample_limit:
+                break
+        metrics = self.fontMetrics()
+        content_width = max((metrics.horizontalAdvance(value) for value in values), default=0)
+        return max(self._stretch_base, content_width + self._stretch_padding)
 
     def keyPressEvent(self, event: Any) -> None:  # noqa: N802
         if event.matches(QKeySequence.Copy):

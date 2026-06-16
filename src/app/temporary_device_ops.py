@@ -390,6 +390,8 @@ class TemporaryDeviceOpsMixin:
             current = self.search_index.get(device.id, "")
             text = build_search_text(device)
             self.search_index[device.id] = f"{current} {text}".strip() if current else text
+        self.visible_device_display_rows = []
+        self._visible_device_display_row_ids = ()
         self._last_device_table_signature = ()
         self._last_owned_table_signature = ()
 
