@@ -1,0 +1,119 @@
+from pathlib import Path
+
+from src.package_upgrade import (
+    PackageFileEntry,
+    PackageUpgradeConfig,
+    StartupInfo,
+    build_cleanup_plan,
+    generate_huawei_upgrade_plan,
+    parse_dir_entries,
+    parse_display_startup,
+    parse_free_space_bytes,
+)
+
+
+def test_parse_display_startup_extracts_current_and_next_system() -> None:
+    output = """
+      Current startup system software: flash:/S5735-V200R021C00.cc
+      Next startup system software: flash:/S5735-V200R022C00.cc
+    """
+
+    startup = parse_display_startup(output)
+
+    assert startup.current_system == "flash:/S5735-V200R021C00.cc"
+    assert startup.next_system == "flash:/S5735-V200R022C00.cc"
+
+
+def test_parse_dir_entries_and_free_space_from_vrp_output() -> None:
+    output = """
+    Directory of flash:/
+
+      Idx  Attr     Size(Byte)  Date        Time       FileName
+        0  -rw-    512,000,000  Jan 01 2026 10:00:00  old.cc
+        1  -rw-    640,000,000  Jan 02 2026 10:00:00  current.cc
+
+    1,048,576 KB total (256,000 KB free)
+    """
+
+    entries = parse_dir_entries(output, "flash:/")
+
+    assert parse_free_space_bytes(output) == 256_000 * 1024
+    assert [entry.name for entry in entries] == ["old.cc", "current.cc"]
+    assert entries[0].path == "flash:/old.cc"
+    assert entries[0].size_bytes == 512_000_000
+
+
+def test_cleanup_plan_deletes_only_unprotected_old_cc_packages() -> None:
+    startup = StartupInfo(
+        current_system="flash:/current.cc",
+        next_system="flash:/next.cc",
+    )
+    entries = [
+        PackageFileEntry("flash:/current.cc", "current.cc", 500_000_000),
+        PackageFileEntry("flash:/next.cc", "next.cc", 500_000_000),
+        PackageFileEntry("flash:/old-large.cc", "old-large.cc", 700_000_000),
+        PackageFileEntry("flash:/notes.txt", "notes.txt", 900_000_000),
+        PackageFileEntry("flash:/target.cc", "target.cc", 600_000_000),
+    ]
+
+    plan = build_cleanup_plan(
+        storage="flash:/",
+        free_bytes=100_000_000,
+        target_bytes=600_000_000,
+        entries=entries,
+        startup=startup,
+        target_package_name="target.cc",
+        reserve_bytes=0,
+    )
+
+    assert plan.has_enough_space
+    assert [entry.path for entry in plan.delete_entries] == ["flash:/old-large.cc"]
+
+
+def test_cleanup_plan_reports_not_enough_space_when_only_protected_packages_exist() -> None:
+    startup = StartupInfo(
+        current_system="flash:/current.cc",
+        next_system="flash:/next.cc",
+    )
+    entries = [
+        PackageFileEntry("flash:/current.cc", "current.cc", 500_000_000),
+        PackageFileEntry("flash:/next.cc", "next.cc", 500_000_000),
+    ]
+
+    plan = build_cleanup_plan(
+        storage="flash:/",
+        free_bytes=100_000_000,
+        target_bytes=600_000_000,
+        entries=entries,
+        startup=startup,
+        target_package_name="target.cc",
+        reserve_bytes=0,
+    )
+
+    assert not plan.has_enough_space
+    assert plan.delete_entries == []
+
+
+def test_huawei_upgrade_plan_includes_dual_controller_steps_and_cleanup() -> None:
+    config = PackageUpgradeConfig(
+        package_path=Path("S5735-V200R023C00.cc"),
+        server_host="192.0.2.10",
+        protocol="ftp",
+        port=2121,
+        username="u",
+        password="p",
+        include_slave=True,
+        cleanup_entries=[
+            PackageFileEntry("flash:/old.cc", "old.cc", 500_000_000),
+            PackageFileEntry("slave#flash:/old.cc", "old.cc", 500_000_000, storage="slave#flash:/"),
+        ],
+    )
+
+    plan = generate_huawei_upgrade_plan(config)
+    script = "\n".join(plan.commands)
+
+    assert "delete /unreserved /quiet flash:/old.cc" in script
+    assert "delete /unreserved /quiet slave#flash:/old.cc" in script
+    assert "ftp 192.0.2.10 2121" in script
+    assert "copy flash:/S5735-V200R023C00.cc slave#flash:/S5735-V200R023C00.cc" in script
+    assert "startup system-software flash:/S5735-V200R023C00.cc all" in script

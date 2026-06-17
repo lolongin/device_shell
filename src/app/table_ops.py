@@ -266,6 +266,8 @@ class TableOpsMixin:
             self.table_render_timer.start(16)
 
     def schedule_render_visible_device_table_rows(self) -> None:
+        if hasattr(getattr(self, "device_table", None), "set_device_rows"):
+            return
         if hasattr(self, "device_table_visible_render_timer"):
             self.device_table_visible_render_timer.start(40)
 
@@ -274,6 +276,8 @@ class TableOpsMixin:
             self.owned_table_visible_render_timer.start(40)
 
     def render_visible_device_table_rows(self) -> None:
+        if hasattr(getattr(self, "device_table", None), "set_device_rows"):
+            return
         more_rows = self.render_visible_table_rows(
             self.device_table,
             self.current_device_table_display_rows(),
@@ -581,6 +585,145 @@ class TableOpsMixin:
             tooltip=self.device_occupancy_tooltip(device),
         )
 
+    def device_table_model_rows(
+        self,
+        display_rows: list[dict[str, object]],
+        keyword: str,
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for row_data in display_rows:
+            if row_data.get("kind") == "group":
+                name = str(row_data.get("name") or "")
+                subdomain = str(row_data.get("subdomain") or "")
+                count = int(row_data.get("count") or 0)
+                rows.append(
+                    {
+                        "kind": "group",
+                        "height": 24,
+                        "cells": [
+                            self.device_table_model_cell(
+                                self.device_table_name_text(name, subdomain),
+                                "",
+                                foreground=HTML_TEXT,
+                                background=HTML_PANEL,
+                                bold=True,
+                                tooltip=name,
+                            ),
+                            self.device_table_model_cell("", "", foreground=HTML_SOFT, background=HTML_PANEL),
+                            self.device_table_model_cell(
+                                f"{count} 块板",
+                                "",
+                                foreground=HTML_SOFT,
+                                background=HTML_PANEL,
+                                bold=True,
+                            ),
+                            self.device_table_model_cell("", "", foreground=HTML_SOFT, background=HTML_PANEL),
+                            self.device_table_model_cell("", "", foreground=HTML_SOFT, background=HTML_PANEL),
+                            self.device_table_model_cell("", "", foreground=HTML_SOFT, background=HTML_PANEL),
+                        ],
+                    }
+                )
+                continue
+            device = row_data.get("device")
+            if not isinstance(device, Device):
+                continue
+            grouped = bool(row_data.get("grouped"))
+            board_type = self.device_table_board_type_text(device)
+            hidden_keyword_match = self.device_matches_hidden_keyword(
+                device,
+                keyword,
+                visible_values=(
+                    device.board_id,
+                    device.name,
+                    self.device_table_subdomain_text(device),
+                    device.device_type,
+                    board_type,
+                    device.cpu,
+                    device.slot_id,
+                    device.status,
+                    self.device_occupancy_duration_text(device),
+                ),
+            )
+            status_text = self.device_table_status_text(device)
+            rows.append(
+                {
+                    "kind": "device",
+                    "height": 26 if grouped else 30,
+                    "cells": [
+                        self.device_table_model_cell(
+                            self.device_table_board_id_text(device, grouped=grouped),
+                            device.id,
+                            highlight=self.text_matches_keyword(device.board_id, keyword),
+                            tooltip=device.board_id,
+                        ),
+                        self.device_table_model_cell(
+                            device.device_type if grouped else self.device_table_device_name_text(device),
+                            device.id,
+                            highlight=hidden_keyword_match
+                            or self.text_matches_keyword(device.name, keyword)
+                            or self.text_matches_keyword(self.device_table_subdomain_text(device), keyword),
+                            tooltip=device.name if grouped else None,
+                        ),
+                        self.device_table_model_cell(
+                            board_type,
+                            device.id,
+                            highlight=self.text_matches_keyword(board_type, keyword),
+                        ),
+                        self.device_table_model_cell(
+                            device.cpu,
+                            device.id,
+                            highlight=self.text_matches_keyword(device.cpu, keyword),
+                        ),
+                        self.device_table_model_cell(
+                            device.slot_id,
+                            device.id,
+                            highlight=self.text_matches_keyword(device.slot_id, keyword),
+                        ),
+                        self.device_table_model_cell(
+                            status_text,
+                            device.id,
+                            color=status_color(device.status),
+                            highlight=self.text_matches_keyword(device.status, keyword)
+                            or self.text_matches_keyword(self.device_occupancy_duration_text(device), keyword),
+                            tooltip=self.device_occupancy_tooltip(device),
+                        ),
+                    ],
+                }
+            )
+        return rows
+
+    def device_table_model_cell(
+        self,
+        text: str,
+        device_id: str,
+        *,
+        color: str | None = None,
+        highlight: bool = False,
+        foreground: str | None = None,
+        background: str | None = None,
+        bold: bool = False,
+        tooltip: str | None = None,
+    ) -> dict[str, object]:
+        cell: dict[str, object] = {
+            "text": text,
+            "device_id": device_id,
+            "tooltip": text if tooltip is None else tooltip,
+        }
+        if highlight:
+            cell["background"] = HTML_SELECTED
+            cell["foreground"] = HTML_TEXT
+            cell["bold"] = True
+            return cell
+        if color:
+            cell["foreground"] = color
+        if foreground:
+            cell["foreground"] = foreground
+        if background:
+            cell["background"] = background
+        if bold:
+            cell["bold"] = True
+        return cell
+
     def device_table_board_id_text(self, device: Device, *, grouped: bool) -> str:
         if grouped:
             prefix = f"{device.id}-"
@@ -767,6 +910,21 @@ class TableOpsMixin:
         self.cancel_table_render_jobs()
         table = self.device_table
         display_rows = self.current_device_table_display_rows()
+        if hasattr(table, "set_device_rows"):
+            self.device_table_rows = {}
+            for row, row_data in enumerate(display_rows):
+                if row_data.get("kind") != "device":
+                    continue
+                device = row_data.get("device")
+                if isinstance(device, Device):
+                    self.device_table_rows.setdefault(device.id, row)
+            self.device_table_rendered_rows = set()
+            table.blockSignals(True)
+            try:
+                table.set_device_rows(self.device_table_model_rows(display_rows, keyword))
+            finally:
+                table.blockSignals(False)
+            return
         table.setUpdatesEnabled(False)
         table.blockSignals(True)
         try:

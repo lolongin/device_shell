@@ -16,6 +16,11 @@ SE = 240
 NEGOTIATION_COMMANDS = {DO, DONT, WILL, WONT}
 OPTION_ECHO = 1
 OPTION_SUPPRESS_GO_AHEAD = 3
+OPTION_TERMINAL_TYPE = 24
+OPTION_NAWS = 31
+TERMINAL_TYPE_IS = 0
+TERMINAL_TYPE_SEND = 1
+TERM_TYPE = "xterm-256color"
 
 USERNAME_PATTERNS = ("username:", "login:")
 PASSWORD_PATTERNS = ("password:",)
@@ -43,6 +48,9 @@ class HuaweiTelnetSession:
         self._read_lock = asyncio.Lock()
         self._pending_iac = bytearray()
         self._closed = True
+        self._terminal_columns = 160
+        self._terminal_lines = 40
+        self._naws_enabled = False
 
     @property
     def is_connected(self) -> bool:
@@ -57,10 +65,12 @@ class HuaweiTelnetSession:
         login_timeout_seconds: float = 12.0,
         require_prompt: bool = True,
         setup_command: str | None = None,
+        term_size: tuple[int, int] = (160, 40),
     ) -> None:
         if self.is_connected:
             await self.disconnect("Disconnected previous session.")
 
+        self.set_terminal_size(*term_size)
         self._on_status("Connecting")
         self._on_output(f"\n=== Connecting to {host}:{port} ===\n")
         self._reader, self._writer = await asyncio.open_connection(host, port)
@@ -123,6 +133,20 @@ class HuaweiTelnetSession:
         except OSError as exc:
             await self.disconnect("Connection lost.")
             raise TelnetSessionError(str(exc)) from exc
+
+    def set_terminal_size(self, columns: int, lines: int) -> None:
+        self._terminal_columns = self._clamp_terminal_dimension(columns)
+        self._terminal_lines = self._clamp_terminal_dimension(lines)
+
+    async def resize_terminal(self, columns: int, lines: int) -> None:
+        self.set_terminal_size(columns, lines)
+        if not self.is_connected or self._writer is None or not self._naws_enabled:
+            return
+        self._writer.write(self._naws_subnegotiation())
+        try:
+            await self._writer.drain()
+        except OSError:
+            return
 
     async def _login(
         self,
@@ -273,6 +297,7 @@ class HuaweiTelnetSession:
                 if end_index == -1:
                     self._pending_iac.extend(payload[index:])
                     break
+                outgoing.extend(self._handle_subnegotiation(payload[index + 2 : end_index]))
                 index = end_index + 2
                 continue
 
@@ -290,21 +315,70 @@ class HuaweiTelnetSession:
         text = visible.replace(b"\r\x00", b"\r").replace(b"\x00", b"").decode("utf-8", errors="ignore")
         return text
 
-    def _negotiate_option(self, command: int, option: int) -> tuple[int, int, int]:
+    def _negotiate_option(self, command: int, option: int) -> bytes:
         if command == WILL:
             if option in {OPTION_ECHO, OPTION_SUPPRESS_GO_AHEAD}:
-                return (IAC, DO, option)
-            return (IAC, DONT, option)
+                return bytes([IAC, DO, option])
+            return bytes([IAC, DONT, option])
 
         if command == DO:
             if option == OPTION_SUPPRESS_GO_AHEAD:
-                return (IAC, WILL, option)
-            return (IAC, WONT, option)
+                return bytes([IAC, WILL, option])
+            if option == OPTION_NAWS:
+                self._naws_enabled = True
+                return bytes([IAC, WILL, option]) + self._naws_subnegotiation()
+            if option == OPTION_TERMINAL_TYPE:
+                return bytes([IAC, WILL, option])
+            return bytes([IAC, WONT, option])
 
         if command == WONT:
-            return (IAC, DONT, option)
+            if option == OPTION_NAWS:
+                self._naws_enabled = False
+            return bytes([IAC, DONT, option])
 
-        return (IAC, WONT, option)
+        return bytes([IAC, WONT, option])
+
+    def _handle_subnegotiation(self, payload: bytes | bytearray) -> bytes:
+        if not payload:
+            return b""
+        option = payload[0]
+        if option == OPTION_TERMINAL_TYPE and len(payload) >= 2 and payload[1] == TERMINAL_TYPE_SEND:
+            return self._terminal_type_subnegotiation()
+        return b""
+
+    def _naws_subnegotiation(self) -> bytes:
+        columns = self._terminal_columns
+        lines = self._terminal_lines
+        payload = bytes(
+            [
+                OPTION_NAWS,
+                (columns >> 8) & 0xFF,
+                columns & 0xFF,
+                (lines >> 8) & 0xFF,
+                lines & 0xFF,
+            ]
+        )
+        return self._subnegotiation(payload)
+
+    def _terminal_type_subnegotiation(self) -> bytes:
+        payload = bytes([OPTION_TERMINAL_TYPE, TERMINAL_TYPE_IS]) + TERM_TYPE.encode("ascii")
+        return self._subnegotiation(payload)
+
+    def _subnegotiation(self, payload: bytes) -> bytes:
+        escaped = bytearray()
+        for byte in payload:
+            escaped.append(byte)
+            if byte == IAC:
+                escaped.append(IAC)
+        return bytes([IAC, SB]) + bytes(escaped) + bytes([IAC, SE])
+
+    @staticmethod
+    def _clamp_terminal_dimension(value: int) -> int:
+        try:
+            dimension = int(value)
+        except (TypeError, ValueError):
+            dimension = 0
+        return max(1, min(65535, dimension))
 
     async def _drain_writer(self) -> None:
         if self._writer is None:

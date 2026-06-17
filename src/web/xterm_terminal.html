@@ -336,6 +336,19 @@
         suggestionElement.style.display = 'none';
       }
 
+      function shouldClearSuggestionForData(data) {
+        if (!data) {
+          return false;
+        }
+        if (data === '\r' || data === '\n' || data === '\t' || data === '\x7f') {
+          return true;
+        }
+        if (data.indexOf('\x1b') >= 0) {
+          return true;
+        }
+        return false;
+      }
+
       function setTerminalFontSize(fontSize) {
         const nextSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(fontSize)));
         if (term.options.fontSize === nextSize) {
@@ -452,8 +465,27 @@
           if (bridge) {
             bridge.sendData(activeSuggestion);
           }
+          clearSuggestion();
           event.preventDefault();
           return false;
+        }
+
+        if (
+          activeSuggestion
+          && (
+            event.key === 'ArrowUp'
+            || event.key === 'ArrowDown'
+            || event.key === 'ArrowLeft'
+            || event.key === 'Home'
+            || event.key === 'End'
+            || event.key === 'Tab'
+            || event.key === 'Enter'
+            || event.key === 'Escape'
+            || event.key === 'Backspace'
+            || event.key === 'Delete'
+          )
+        ) {
+          clearSuggestion();
         }
 
         return true;
@@ -468,6 +500,9 @@
       }, { passive: false });
 
       term.onData((data) => {
+        if (shouldClearSuggestionForData(data)) {
+          clearSuggestion();
+        }
         if (bridge) {
           if (data === '\r' || data === '\n') {
             bridge.sendDataWithLine(data, currentTerminalLineText());

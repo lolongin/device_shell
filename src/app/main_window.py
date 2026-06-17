@@ -169,7 +169,7 @@ try:
     )
     from ..session_protocol import SessionCallbacks, SessionUnavailableError
     from ..telnet_session import HuaweiTelnetSession, TelnetSessionError
-    from ..widgets.device_table import CopyableDeviceTable
+    from ..widgets.device_table import CopyableDeviceTable, VirtualDeviceTable
     from ..widgets.device_navigation_web_widget import DeviceNavigationWebWidget
     from ..widgets.web_shell_widget import WebShellWidget
     from ..widgets.search_input import SelectAllLineEdit
@@ -208,7 +208,7 @@ except ImportError:
     )
     from session_protocol import SessionCallbacks, SessionUnavailableError
     from telnet_session import HuaweiTelnetSession, TelnetSessionError
-    from widgets.device_table import CopyableDeviceTable
+    from widgets.device_table import CopyableDeviceTable, VirtualDeviceTable
     from widgets.device_navigation_web_widget import DeviceNavigationWebWidget
     from widgets.web_shell_widget import WebShellWidget
     from widgets.search_input import SelectAllLineEdit
@@ -230,6 +230,7 @@ from .occupancy_ops import OccupancyOpsMixin
 from .command_record_ops import CommandRecordOpsMixin
 from .desktop_state import DesktopStateMixin
 from .file_transfer_ops import FileTransferOpsMixin
+from .package_upgrade_ops import PackageUpgradeOpsMixin
 from .table_ops import TableOpsMixin
 from .temporary_device_ops import TemporaryDeviceOpsMixin
 from .server_ops import ServerOpsMixin
@@ -251,6 +252,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         CommandRecordOpsMixin,
         DesktopStateMixin,
         FileTransferOpsMixin,
+        PackageUpgradeOpsMixin,
         TemporaryDeviceOpsMixin,
         ServerOpsMixin,
         TableOpsMixin,
@@ -348,6 +350,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.transfer_password = "device"
             self.transfer_writable = True
             self.transfer_service = None
+            self.package_upgrade_send_interval_ms = 900
             self.left_sidebar_active_panel = "devices"
             self.left_sidebar_animation = None
             self.command_tab_buttons: list[QToolButton] = []
@@ -657,6 +660,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.left_sidebar_stack.addWidget(self._build_temporary_panel())
             self.left_sidebar_stack.addWidget(self._build_server_panel())
             self.left_sidebar_stack.addWidget(self._build_transfer_panel())
+            self.left_sidebar_stack.addWidget(self._build_package_upgrade_panel())
             scroll.setWidget(stack_container)
             shell_layout.addWidget(scroll, 1)
             self.apply_left_sidebar_state(animated=True)
@@ -687,12 +691,17 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "transfer",
                 "文件传输",
             )
+            self.activity_package_upgrade_button = self._new_activity_button(
+                "upgrade",
+                "自动换大包",
+            )
 
             layout.addWidget(self.activity_home_button)
             layout.addSpacing(4)
             layout.addWidget(self.activity_temporary_button)
             layout.addWidget(self.activity_server_button)
             layout.addWidget(self.activity_transfer_button)
+            layout.addWidget(self.activity_package_upgrade_button)
             layout.addStretch(1)
 
             self.activity_home_button.clicked.connect(self.show_web_home)
@@ -704,6 +713,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             self.activity_transfer_button.clicked.connect(
                 lambda: self.toggle_tool_sidebar_panel("transfer")
+            )
+            self.activity_package_upgrade_button.clicked.connect(
+                lambda: self.toggle_tool_sidebar_panel("package_upgrade")
             )
             return rail
 
@@ -783,6 +795,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawLine(16, 15, 8, 15)
                 painter.drawLine(8, 15, 11, 12)
                 painter.drawLine(8, 15, 11, 18)
+            elif kind == "upgrade":
+                painter.drawRoundedRect(5, 5, 14, 14, 2, 2)
+                painter.drawEllipse(7, 7, 10, 10)
+                painter.drawLine(12, 8, 12, 16)
+                painter.drawLine(12, 8, 9, 11)
+                painter.drawLine(12, 8, 15, 11)
+                painter.drawLine(9, 17, 15, 17)
             else:
                 painter.drawEllipse(7, 7, 10, 10)
             painter.end()
@@ -1739,7 +1758,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             return label
 
         def _new_table(self, headers: list[str]) -> QTableWidget:
-            table = CopyableDeviceTable(
+            table_class = VirtualDeviceTable if len(headers) == 6 else CopyableDeviceTable
+            table = table_class(
                 self.copy_selected_table_row,
                 self.copy_selected_device_field,
                 self,
@@ -1779,6 +1799,8 @@ if PYSIDE6_IMPORT_ERROR is None:
                 table.setColumnWidth(3, 86)
                 table.setColumnWidth(4, 72)
                 table.setColumnWidth(5, 106)
+                if hasattr(table, "set_fill_column"):
+                    table.set_fill_column(5)
             elif len(headers) == 5:
                 header.setSectionResizeMode(0, QHeaderView.Interactive)
                 header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1823,6 +1845,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.temporary_save_button.clicked.connect(self.add_and_open_temporary_device)
             self.temporary_clear_button.clicked.connect(self.clear_temporary_form)
             self.wire_transfer_events()
+            self.wire_package_upgrade_events()
             self.clear_filters_button.clicked.connect(self.clear_filters)
             if hasattr(self, "device_navigation_web"):
                 self.device_navigation_web.device_selected.connect(self.activate_device)
@@ -2102,7 +2125,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_terminal_workspace()
 
         def toggle_tool_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"temporary", "server", "transfer"}:
+            if panel not in {"temporary", "server", "transfer", "package_upgrade"}:
                 return
             if self.left_sidebar_active_panel == panel and not self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = True
@@ -2112,11 +2135,17 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_left_sidebar_panel(panel)
 
         def show_left_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"devices", "temporary", "server", "transfer"}:
+            if panel not in {"devices", "temporary", "server", "transfer", "package_upgrade"}:
                 panel = "devices"
             self.left_sidebar_active_panel = panel
             if hasattr(self, "left_sidebar_stack"):
-                panel_index = {"devices": 0, "temporary": 1, "server": 2, "transfer": 3}.get(panel, 0)
+                panel_index = {
+                    "devices": 0,
+                    "temporary": 1,
+                    "server": 2,
+                    "transfer": 3,
+                    "package_upgrade": 4,
+                }.get(panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             if self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = False
@@ -2209,7 +2238,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                     if total > 0:
                         splitter.setSizes([left_width, max(1, total - left_width)])
             if hasattr(self, "left_sidebar_stack"):
-                panel_index = {"devices": 0, "temporary": 1, "server": 2, "transfer": 3}.get(self.left_sidebar_active_panel, 0)
+                panel_index = {
+                    "devices": 0,
+                    "temporary": 1,
+                    "server": 2,
+                    "transfer": 3,
+                    "package_upgrade": 4,
+                }.get(self.left_sidebar_active_panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             self.sync_activity_rail_state()
 
@@ -2219,7 +2254,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             show_home = getattr(self, "center_stage_mode", "home") == "home"
             has_sessions = hasattr(self, "session_tab_widget") and self.session_tab_widget.count() > 0
             panel = getattr(self, "left_sidebar_active_panel", "devices")
-            drawer_open = not self.left_sidebar_collapsed and panel in {"temporary", "server", "transfer"}
+            drawer_open = not self.left_sidebar_collapsed and panel in {
+                "temporary",
+                "server",
+                "transfer",
+                "package_upgrade",
+            }
             states = (
                 (self.activity_home_button, "home", "首页大屏", show_home and not drawer_open),
                 (
@@ -2239,6 +2279,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "transfer",
                     "文件传输",
                     drawer_open and panel == "transfer",
+                ),
+                (
+                    self.activity_package_upgrade_button,
+                    "upgrade",
+                    "自动换大包",
+                    drawer_open and panel == "package_upgrade",
                 ),
             )
             for button, icon_name, tooltip, active in states:

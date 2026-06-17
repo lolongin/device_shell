@@ -1,0 +1,375 @@
+"""Huawei VRP system package upgrade planning helpers."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+CC_SUFFIX = ".cc"
+DEFAULT_MASTER_STORAGE = "flash:/"
+DEFAULT_SLAVE_STORAGE = "slave#flash:/"
+
+
+@dataclass(slots=True)
+class StartupInfo:
+    """Current and next startup files parsed from ``display startup``."""
+
+    current_system: str = ""
+    next_system: str = ""
+
+
+@dataclass(slots=True)
+class PackageFileEntry:
+    """One file entry parsed from a Huawei file-system listing."""
+
+    path: str
+    name: str
+    size_bytes: int
+    storage: str = DEFAULT_MASTER_STORAGE
+    modified_text: str = ""
+
+
+@dataclass(slots=True)
+class CleanupPlan:
+    """Automatic cleanup decision for old system packages."""
+
+    storage: str
+    required_bytes: int
+    free_bytes: int
+    target_bytes: int
+    delete_entries: list[PackageFileEntry] = field(default_factory=list)
+    protected_paths: set[str] = field(default_factory=set)
+
+    @property
+    def reclaim_bytes(self) -> int:
+        return sum(entry.size_bytes for entry in self.delete_entries)
+
+    @property
+    def has_enough_space(self) -> bool:
+        return self.free_bytes + self.reclaim_bytes >= self.required_bytes
+
+
+@dataclass(slots=True)
+class PackageUpgradeConfig:
+    """Inputs needed to generate a Huawei package upgrade command script."""
+
+    package_path: Path
+    server_host: str
+    protocol: str = "ftp"
+    port: int = 2121
+    username: str = "device"
+    password: str = "device"
+    master_storage: str = DEFAULT_MASTER_STORAGE
+    slave_storage: str = DEFAULT_SLAVE_STORAGE
+    include_slave: bool = True
+    auto_delete_old_packages: bool = True
+    reboot_after_setting: bool = False
+    verify_md5: str = ""
+    cleanup_entries: list[PackageFileEntry] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PackageUpgradePlan:
+    """Generated commands and metadata for the UI to run or inspect."""
+
+    commands: list[str]
+    cleanup_paths: list[str]
+    protected_paths: list[str]
+    notes: list[str] = field(default_factory=list)
+
+
+def normalize_storage(value: str) -> str:
+    storage = value.strip() or DEFAULT_MASTER_STORAGE
+    if storage.endswith("/"):
+        return storage
+    return f"{storage}/"
+
+
+def join_storage_path(storage: str, filename: str) -> str:
+    return f"{normalize_storage(storage)}{Path(filename).name}"
+
+
+def normalize_package_path(value: str) -> str:
+    normalized = value.strip().replace("\\", "/")
+    return normalized.casefold()
+
+
+def package_basename(value: str) -> str:
+    cleaned = value.strip().replace("\\", "/")
+    return cleaned.rsplit("/", 1)[-1].casefold()
+
+
+def parse_display_startup(output: str) -> StartupInfo:
+    current = ""
+    next_system = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        lowered = stripped.casefold()
+        if "current startup system software" in lowered:
+            current = _value_after_colon(stripped)
+        elif "next startup system software" in lowered:
+            next_system = _value_after_colon(stripped)
+    return StartupInfo(current_system=current, next_system=next_system)
+
+
+def _value_after_colon(line: str) -> str:
+    if ":" in line:
+        return line.split(":", 1)[1].strip()
+    parts = line.split()
+    return parts[-1] if parts else ""
+
+
+def parse_free_space_bytes(output: str) -> int:
+    """Parse free flash bytes from common Huawei ``dir`` output variants."""
+
+    patterns = (
+        r"\((?P<value>[\d,]+)\s*(?P<unit>[kmgt]?b)\s+free\)",
+        r"(?P<value>[\d,]+)\s*(?P<unit>[kmgt]?b)\s+free",
+        r"free\s*[:=]\s*(?P<value>[\d,]+)\s*(?P<unit>[kmgt]?b)",
+    )
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, output, flags=re.IGNORECASE))
+        if matches:
+            match = matches[-1]
+            return _to_bytes(match.group("value"), match.group("unit"))
+    return 0
+
+
+def parse_dir_entries(output: str, storage: str = DEFAULT_MASTER_STORAGE) -> list[PackageFileEntry]:
+    """Parse file entries from Huawei ``dir`` output.
+
+    The parser intentionally accepts multiple loose formats because VRP output
+    varies across product lines and languages.
+    """
+
+    normalized_storage = normalize_storage(storage)
+    entries: list[PackageFileEntry] = []
+    for line in output.splitlines():
+        entry = _parse_numbered_dir_line(line, normalized_storage)
+        if entry is not None:
+            entries.append(entry)
+            continue
+        entry = _parse_simple_size_line(line, normalized_storage)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def _parse_numbered_dir_line(line: str, storage: str) -> PackageFileEntry | None:
+    match = re.match(
+        r"^\s*\d+\s+[-d][rwx-]+\s+(?P<size>[\d,]+)\s+"
+        r"(?P<date>.+?)\s+(?P<name>[^\s]+)\s*$",
+        line,
+    )
+    if match is None:
+        return None
+    name = match.group("name").strip()
+    if not name or name in {".", ".."}:
+        return None
+    size = int(match.group("size").replace(",", ""))
+    return PackageFileEntry(
+        path=join_storage_path(storage, name),
+        name=name,
+        size_bytes=size,
+        storage=storage,
+        modified_text=match.group("date").strip(),
+    )
+
+
+def _parse_simple_size_line(line: str, storage: str) -> PackageFileEntry | None:
+    match = re.search(
+        r"(?P<name>[^\s]+\.cc)\s+(?P<size>[\d,]+)\s*(?P<unit>[kmgt]?b)\b",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    name = match.group("name").strip()
+    return PackageFileEntry(
+        path=join_storage_path(storage, name),
+        name=name,
+        size_bytes=_to_bytes(match.group("size"), match.group("unit")),
+        storage=storage,
+    )
+
+
+def _to_bytes(value: str, unit: str) -> int:
+    number = int(value.replace(",", ""))
+    normalized_unit = unit.lower()
+    multipliers = {
+        "b": 1,
+        "kb": 1024,
+        "mb": 1024 * 1024,
+        "gb": 1024 * 1024 * 1024,
+        "tb": 1024 * 1024 * 1024 * 1024,
+    }
+    return number * multipliers.get(normalized_unit, 1)
+
+
+def build_cleanup_plan(
+    *,
+    storage: str,
+    free_bytes: int,
+    target_bytes: int,
+    entries: list[PackageFileEntry],
+    startup: StartupInfo,
+    target_package_name: str,
+    reserve_bytes: int = 64 * 1024 * 1024,
+    protected_names: set[str] | None = None,
+) -> CleanupPlan:
+    """Choose old system packages to delete without touching protected files."""
+
+    required_bytes = max(0, target_bytes + reserve_bytes)
+    protected = _protected_package_paths(
+        startup=startup,
+        target_package_name=target_package_name,
+        storage=storage,
+        protected_names=protected_names or set(),
+    )
+    plan = CleanupPlan(
+        storage=normalize_storage(storage),
+        required_bytes=required_bytes,
+        free_bytes=max(0, free_bytes),
+        target_bytes=max(0, target_bytes),
+        protected_paths=protected,
+    )
+    if plan.free_bytes >= required_bytes:
+        return plan
+
+    candidates = [
+        entry for entry in entries
+        if _can_delete_package(entry, protected, target_package_name)
+    ]
+    candidates.sort(key=lambda entry: (-entry.size_bytes, entry.name.casefold()))
+    available = plan.free_bytes
+    for entry in candidates:
+        if available >= required_bytes:
+            break
+        plan.delete_entries.append(entry)
+        available += entry.size_bytes
+    return plan
+
+
+def _protected_package_paths(
+    *,
+    startup: StartupInfo,
+    target_package_name: str,
+    storage: str,
+    protected_names: set[str],
+) -> set[str]:
+    protected = {
+        normalize_package_path(startup.current_system),
+        normalize_package_path(startup.next_system),
+        normalize_package_path(join_storage_path(storage, target_package_name)),
+        package_basename(startup.current_system),
+        package_basename(startup.next_system),
+        package_basename(target_package_name),
+    }
+    protected.update(package_basename(name) for name in protected_names if name.strip())
+    protected.discard("")
+    return protected
+
+
+def _can_delete_package(
+    entry: PackageFileEntry,
+    protected_paths: set[str],
+    target_package_name: str,
+) -> bool:
+    if not entry.name.casefold().endswith(CC_SUFFIX):
+        return False
+    if package_basename(entry.name) == package_basename(target_package_name):
+        return False
+    normalized_path = normalize_package_path(entry.path)
+    normalized_name = package_basename(entry.name)
+    return normalized_path not in protected_paths and normalized_name not in protected_paths
+
+
+def generate_huawei_upgrade_plan(config: PackageUpgradeConfig) -> PackageUpgradePlan:
+    package_name = config.package_path.name
+    master_storage = normalize_storage(config.master_storage)
+    slave_storage = normalize_storage(config.slave_storage)
+    master_package = join_storage_path(master_storage, package_name)
+    slave_package = join_storage_path(slave_storage, package_name)
+    protocol = config.protocol.lower()
+    cleanup_entries = [
+        entry for entry in config.cleanup_entries
+        if config.auto_delete_old_packages and entry.name.casefold().endswith(CC_SUFFIX)
+    ]
+    cleanup_paths = [entry.path for entry in cleanup_entries]
+    commands: list[str] = [
+        "screen-length 0 temporary",
+        "display version",
+        "display startup",
+    ]
+    for entry in cleanup_entries:
+        commands.append(f"delete /unreserved /quiet {entry.path}")
+    commands.extend(_download_commands(config, package_name, master_package, protocol))
+    if config.include_slave:
+        commands.append(f"copy {master_package} {slave_package}")
+    commands.extend(_verification_commands(config, master_package, slave_package))
+    if config.include_slave:
+        commands.append(f"startup system-software {master_package} all")
+        commands.append(
+            f"# If this device does not support 'all', run: startup system-software {slave_package} slave-board"
+        )
+    else:
+        commands.append(f"startup system-software {master_package}")
+    commands.extend([
+        "display startup",
+        "save",
+    ])
+    if config.reboot_after_setting:
+        commands.append("reboot")
+    else:
+        commands.append("# Reboot manually after confirming display startup.")
+    notes = [
+        "旧 .cc 包会在进入下载前删除，保护当前启动包、下次启动包和目标包。",
+        "双主控默认使用 startup system-software <package> all；不支持时改用注释里的 slave-board 命令。",
+    ]
+    return PackageUpgradePlan(
+        commands=commands,
+        cleanup_paths=cleanup_paths,
+        protected_paths=[],
+        notes=notes,
+    )
+
+
+def _download_commands(
+    config: PackageUpgradeConfig,
+    package_name: str,
+    master_package: str,
+    protocol: str,
+) -> list[str]:
+    if protocol == "sftp":
+        return [
+            f"sftp {config.server_host} {config.port}",
+            config.username,
+            config.password,
+            f"get {package_name} {master_package}",
+            "quit",
+        ]
+    return [
+        f"ftp {config.server_host} {config.port}",
+        config.username,
+        config.password,
+        "binary",
+        f"get {package_name} {master_package}",
+        "quit",
+    ]
+
+
+def _verification_commands(
+    config: PackageUpgradeConfig,
+    master_package: str,
+    slave_package: str,
+) -> list[str]:
+    commands = [f"dir {master_package}"]
+    if config.include_slave:
+        commands.append(f"dir {slave_package}")
+    if config.verify_md5:
+        commands.append(f"verify /md5 {master_package}")
+        if config.include_slave:
+            commands.append(f"verify /md5 {slave_package}")
+    return commands

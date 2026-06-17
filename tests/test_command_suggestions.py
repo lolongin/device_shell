@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.command_suggestions import (
     CommandHistoryItem,
     deserialize_command_history_item,
@@ -134,6 +136,18 @@ def test_xterm_command_suggestion_does_not_intercept_tab() -> None:
     assert sent == ["\t"]
     assert "".join(terminal._pending_command_chars) == "di"
     assert terminal._current_command_suggestion == ""
+
+
+def test_xterm_page_clears_suggestion_before_history_navigation() -> None:
+    page = (Path(__file__).resolve().parents[1] / "src" / "web" / "xterm_terminal.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function shouldClearSuggestionForData(data)" in page
+    assert "event.key === 'ArrowUp'" in page
+    assert "event.key === 'ArrowDown'" in page
+    assert "shouldClearSuggestionForData(data)" in page
+    assert "clearSuggestion();" in page[page.index("term.onData((data) =>") :]
 
 
 def test_xterm_records_tab_completed_command_from_terminal_line() -> None:

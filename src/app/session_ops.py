@@ -3997,6 +3997,7 @@ class SessionOpsMixin:
                 login_timeout_seconds=3.0 if state.kind == "serial" else 12.0,
                 require_prompt=state.kind != "serial",
                 setup_command=None,
+                term_size=state.terminal.terminal_dimensions(),
             )
             return None
 
@@ -4076,7 +4077,7 @@ class SessionOpsMixin:
 
     def resize_session_pty(self, tab_id: str, columns: int, lines: int) -> None:
         state = self.session_tabs_by_id.get(tab_id)
-        if state is None or not isinstance(state.session, LinuxSshSession):
+        if state is None or not hasattr(state.session, "resize_terminal"):
             return
 
         async def resize() -> None:
@@ -4939,6 +4940,7 @@ class SessionOpsMixin:
                 login_timeout_seconds=3.0 if state.kind == "serial" else 12.0,
                 require_prompt=state.kind != "serial",
                 setup_command=None,
+                term_size=state.terminal.terminal_dimensions(),
             )
             return None
 

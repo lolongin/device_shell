@@ -2869,4 +2869,28 @@ QCheckBox::indicator:checked {
     background: #22c55e;
     border-color: #4ade80;
 }
+QTableView {
+    background: #020617;
+    alternate-background-color: #020617;
+    border: 1px solid #243244;
+    border-radius: 12px;
+    gridline-color: transparent;
+    selection-background-color: #24324a;
+    selection-color: #f8fafc;
+}
+QTableView::item {
+    padding: 6px 9px;
+    border-bottom: 1px solid #111c2f;
+}
+QTableView::item:selected,
+QTableView::item:selected:hover {
+    background: #24324a;
+    color: #f8fafc;
+}
+QTableView::item:hover {
+    background: #111c2f;
+}
+QTableView#deviceTable {
+    border-color: #243244;
+}
 """

@@ -32,6 +32,7 @@ from src.app_state import SessionTabState
 from src.app.main_window import DeviceDesktopApp
 from src.app.temporary_device_ops import TemporaryDeviceDialog
 from src.styles import APP_STYLE, STATUS_COLORS
+from src.widgets.device_table import VirtualDeviceTable
 
 
 @pytest.fixture(scope="module")
@@ -1270,6 +1271,13 @@ def test_large_device_table_does_not_enqueue_startup_backfill(app: QApplication,
     assert window._table_render_jobs == []
 
 
+def test_main_device_table_uses_virtual_model(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+
+    assert isinstance(window.device_table, VirtualDeviceTable)
+
+
 def test_device_table_avoids_resize_to_contents_for_large_lists(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
@@ -1296,9 +1304,16 @@ def test_device_table_stretch_column_stops_after_content_fits(app: QApplication)
     table.resize(2200, 300)
     QApplication.processEvents()
     table._spread()
+    fitted_width = table.columnWidth(1)
+
+    table.resize(2600, 300)
+    QApplication.processEvents()
+    table._spread()
 
     assert table.columnWidth(1) == fitted_width
     assert table.columnWidth(1) >= 200
+    assert table.columnWidth(5) > 106
+    assert sum(table.columnWidth(column) for column in range(table.columnCount())) >= table.viewport().width()
 
 
 def test_web_shell_payload_includes_selected_device(app: QApplication, sample_device) -> None:
