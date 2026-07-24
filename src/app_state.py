@@ -60,6 +60,9 @@ class SessionTabState:
     log_pending_records: list[tuple[str, str, bool]] = field(default_factory=list)
     auto_response_rules: list[AutoResponseRule] = field(default_factory=list)
     auto_response_buffer: str = ""
+    recent_output_buffer: str = ""
+    output_cursor: int = 0
+    output_buffer_start_cursor: int = 0
     auto_response_triggered_rules: set[tuple[object, ...]] = field(default_factory=set)
     auto_response_rule_steps: dict[tuple[object, ...], int] = field(default_factory=dict)
     auto_response_rule_loops: dict[tuple[object, ...], int] = field(default_factory=dict)

@@ -4131,6 +4131,11 @@ class SessionOpsMixin:
         if state is None or not message:
             return
 
+        state.output_cursor += len(message)
+        state.recent_output_buffer = (state.recent_output_buffer + message)[-120_000:]
+        state.output_buffer_start_cursor = (
+            state.output_cursor - len(state.recent_output_buffer)
+        )
         state.terminal.append_output(message)
         self.write_session_log(state, "OUT", message)
         self.apply_auto_response_rules(state, message)

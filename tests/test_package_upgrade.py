@@ -5,10 +5,13 @@ from src.package_upgrade import (
     PackageUpgradeConfig,
     StartupInfo,
     build_cleanup_plan,
+    dir_contains_package,
+    find_upgrade_failure,
     generate_huawei_upgrade_plan,
     parse_dir_entries,
     parse_display_startup,
     parse_free_space_bytes,
+    startup_uses_package,
 )
 
 
@@ -41,6 +44,41 @@ def test_parse_dir_entries_and_free_space_from_vrp_output() -> None:
     assert [entry.name for entry in entries] == ["old.cc", "current.cc"]
     assert entries[0].path == "flash:/old.cc"
     assert entries[0].size_bytes == 512_000_000
+
+
+def test_upgrade_output_helpers_confirm_package_and_startup() -> None:
+    dir_output = """
+    Directory of flash:/
+      0  -rw-    640,000,000  Jan 02 2026 10:00:00  target.cc
+    1,048,576 KB total (300,000 KB free)
+    """
+    startup_output = """
+      Current startup system software: flash:/current.cc
+      Next startup system software: flash:/target.cc
+    """
+
+    assert dir_contains_package(
+        dir_output,
+        storage="flash:/",
+        package_name="target.cc",
+        expected_size=640_000_000,
+    )
+    assert startup_uses_package(startup_output, "target.cc")
+    assert find_upgrade_failure("Error: insufficient space.") == "error"
+
+
+def test_dir_contains_package_rejects_wrong_size() -> None:
+    dir_output = """
+    Directory of flash:/
+      0  -rw-    640,000,000  Jan 02 2026 10:00:00  target.cc
+    """
+
+    assert not dir_contains_package(
+        dir_output,
+        storage="flash:/",
+        package_name="target.cc",
+        expected_size=700_000_000,
+    )
 
 
 def test_cleanup_plan_deletes_only_unprotected_old_cc_packages() -> None:

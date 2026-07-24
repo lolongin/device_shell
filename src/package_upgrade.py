@@ -10,6 +10,36 @@ from pathlib import Path
 CC_SUFFIX = ".cc"
 DEFAULT_MASTER_STORAGE = "flash:/"
 DEFAULT_SLAVE_STORAGE = "slave#flash:/"
+UPGRADE_FAILURE_PATTERNS = (
+    "error",
+    "failed",
+    "failure",
+    "fail",
+    "not found",
+    "no such file",
+    "insufficient",
+    "not enough",
+    "invalid",
+    "denied",
+    "refused",
+    "timeout",
+    "timed out",
+    "unrecognized command",
+    "unknown command",
+    "too large",
+    "md5 check failed",
+    "wrong",
+    "abort",
+    "错误",
+    "失败",
+    "不存在",
+    "没有",
+    "空间不足",
+    "无效",
+    "拒绝",
+    "超时",
+    "中止",
+)
 
 
 @dataclass(slots=True)
@@ -155,6 +185,46 @@ def parse_dir_entries(output: str, storage: str = DEFAULT_MASTER_STORAGE) -> lis
         if entry is not None:
             entries.append(entry)
     return entries
+
+
+def find_upgrade_failure(output: str) -> str:
+    """Return a human-readable failure marker found in command output."""
+
+    lowered = output.casefold()
+    for pattern in UPGRADE_FAILURE_PATTERNS:
+        if pattern.casefold() in lowered:
+            return pattern
+    return ""
+
+
+def dir_contains_package(
+    output: str,
+    *,
+    storage: str,
+    package_name: str,
+    expected_size: int = 0,
+    tolerance_ratio: float = 0.02,
+) -> bool:
+    """Check whether ``dir`` output contains the target package with plausible size."""
+
+    target = package_basename(package_name)
+    entries = parse_dir_entries(output, storage)
+    for entry in entries:
+        if package_basename(entry.name) != target:
+            continue
+        if expected_size <= 0:
+            return True
+        allowed_delta = max(4096, int(expected_size * tolerance_ratio))
+        return abs(entry.size_bytes - expected_size) <= allowed_delta
+    return False
+
+
+def startup_uses_package(output: str, package_name: str) -> bool:
+    """Return True when display startup shows the package as next startup software."""
+
+    target = package_basename(package_name)
+    startup = parse_display_startup(output)
+    return bool(target and package_basename(startup.next_system) == target)
 
 
 def _parse_numbered_dir_line(line: str, storage: str) -> PackageFileEntry | None:

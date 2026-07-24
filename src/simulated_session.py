@@ -18,6 +18,25 @@ class SimulatedTerminalSession:
         self._admin_waiting = False
         self._boot_task: asyncio.Task[None] | None = None
         self._line_buffer = ""
+        self._upgrade_package_name = "target.cc"
+        self._upgrade_package_size = 640_000_000
+        self._current_system = "flash:/current.cc"
+        self._next_system = "flash:/current.cc"
+        self._files_by_storage: dict[str, dict[str, int]] = {
+            "flash:/": {
+                "current.cc": 500_000_000,
+                "old.cc": 500_000_000,
+            },
+            "slave#flash:/": {
+                "current.cc": 500_000_000,
+                "old-slave.cc": 500_000_000,
+            },
+        }
+        self._upgrade_fail_download = False
+        self._upgrade_fail_space = False
+        self._upgrade_fail_startup = False
+        self._transfer_mode = ""
+        self._transfer_phase = ""
 
     @property
     def is_connected(self) -> bool:
@@ -52,6 +71,10 @@ class SimulatedTerminalSession:
 
     async def send_command(self, command: str) -> None:
         await self.send_text(command.rstrip() + "\r")
+
+    def configure_package_upgrade(self, package_name: str, package_size: int) -> None:
+        self._upgrade_package_name = package_name or self._upgrade_package_name
+        self._upgrade_package_size = max(1, package_size)
 
     async def send_text(self, text: str) -> None:
         if not self.is_connected:
@@ -129,10 +152,29 @@ class SimulatedTerminalSession:
     async def _handle_command(self, command: str) -> None:
         lowered = command.lower()
         self.callbacks.on_output("\n")
+        if self._transfer_mode:
+            await self._handle_transfer_command(command)
+            return
         if lowered == "help":
             self.callbacks.on_output(
-                "Commands: help, reboot, display version, menu, admin, biglog [lines], exit\n"
+                "Commands: help, reboot, display version, display startup, dir flash:/, "
+                "menu, admin, biglog [lines], exit\n"
+                "Upgrade toggles: sim upgrade fail-download|fail-space|fail-startup on|off\n"
                 "Use 'menu' to test Ctrl+B, 'admin' to test Ctrl+A.\n<sim> "
+            )
+            return
+        if lowered.startswith("sim upgrade "):
+            self._handle_upgrade_toggle(lowered)
+            return
+        if lowered == "screen-length 0 temporary":
+            self.callbacks.on_output("Info: Screen length disabled temporarily.\n<sim> ")
+            return
+        if lowered == "display startup":
+            self.callbacks.on_output(
+                "MainBoard:\n"
+                f"  Current startup system software: {self._current_system}\n"
+                f"  Next startup system software: {self._next_system}\n"
+                "<sim> "
             )
             return
         if lowered == "reboot":
@@ -141,6 +183,26 @@ class SimulatedTerminalSession:
             return
         if lowered == "display version":
             self.callbacks.on_output("SimOS V1.0 build 2026-05-29\n<sim> ")
+            return
+        if lowered.startswith("dir "):
+            self._handle_dir(command)
+            return
+        if lowered.startswith("delete "):
+            self._handle_delete(command)
+            return
+        if lowered.startswith("ftp ") or lowered.startswith("sftp "):
+            self._transfer_mode = "sftp" if lowered.startswith("sftp ") else "ftp"
+            self._transfer_phase = "username"
+            self.callbacks.on_output("Connected to simulated transfer service.\nUser: ")
+            return
+        if lowered.startswith("copy "):
+            self._handle_copy(command)
+            return
+        if lowered.startswith("startup system-software "):
+            self._handle_startup_system_software(command)
+            return
+        if lowered.startswith("verify /md5 "):
+            self.callbacks.on_output("Info: The file verified successfully.\n<sim> ")
             return
         if lowered == "menu":
             self._boot_waiting = True
@@ -160,6 +222,145 @@ class SimulatedTerminalSession:
             self.callbacks.on_output(f"Selected menu option {lowered}.\n<sim> ")
             return
         self.callbacks.on_output(f"Unknown command: {command}\n<sim> ")
+
+    def _handle_upgrade_toggle(self, lowered: str) -> None:
+        parts = lowered.split()
+        if (
+            len(parts) != 4
+            or parts[2] not in {"fail-download", "fail-space", "fail-startup"}
+            or parts[3] not in {"on", "off"}
+        ):
+            self.callbacks.on_output(
+                "Usage: sim upgrade fail-download|fail-space|fail-startup on|off\n<sim> "
+            )
+            return
+        enabled = parts[3] == "on"
+        if parts[2] == "fail-download":
+            self._upgrade_fail_download = enabled
+        elif parts[2] == "fail-space":
+            self._upgrade_fail_space = enabled
+        elif parts[2] == "fail-startup":
+            self._upgrade_fail_startup = enabled
+        state = "on" if enabled else "off"
+        self.callbacks.on_output(f"Simulated upgrade {parts[2]} is {state}.\n<sim> ")
+
+    @staticmethod
+    def _normalize_storage(value: str) -> str:
+        storage = value.strip()
+        if not storage:
+            return "flash:/"
+        if storage.endswith("/"):
+            return storage
+        if storage.endswith(":"):
+            return f"{storage}/"
+        if "/" in storage:
+            return storage.rsplit("/", 1)[0] + "/"
+        return storage
+
+    @staticmethod
+    def _basename(value: str) -> str:
+        return value.strip().replace("\\", "/").rsplit("/", 1)[-1]
+
+    def _handle_dir(self, command: str) -> None:
+        target = command.split(maxsplit=1)[1].strip() if len(command.split(maxsplit=1)) > 1 else "flash:/"
+        storage = self._normalize_storage(target)
+        requested_name = self._basename(target) if target.lower().endswith(".cc") else ""
+        files = dict(self._files_by_storage.get(storage, {}))
+        if self._upgrade_fail_space:
+            current_name = self._basename(self._current_system)
+            files = {name: size for name, size in files.items() if name == current_name}
+        total_bytes = 1_500_000_000
+        used_bytes = sum(files.values())
+        free_bytes = 1_024 if self._upgrade_fail_space else max(128_000_000, total_bytes - used_bytes)
+        lines = [f"Directory of {storage}\n\n", "  Idx  Attr     Size(Byte)  Date        Time       FileName\n"]
+        index = 0
+        for name, size in sorted(files.items()):
+            if requested_name and name.casefold() != requested_name.casefold():
+                continue
+            lines.append(f"  {index:3d}  -rw-    {size:,}  Jan 01 2026 10:00:00  {name}\n")
+            index += 1
+        lines.append(f"\n1,464,844 KB total ({free_bytes // 1024:,} KB free)\n<sim> ")
+        self.callbacks.on_output("".join(lines))
+
+    def _handle_delete(self, command: str) -> None:
+        path = command.split()[-1]
+        storage = self._normalize_storage(path)
+        name = self._basename(path)
+        files = self._files_by_storage.setdefault(storage, {})
+        if name in files:
+            del files[name]
+            self.callbacks.on_output(f"Delete {path} OK.\n<sim> ")
+            return
+        self.callbacks.on_output(f"Warning: {path} does not exist.\n<sim> ")
+
+    async def _handle_transfer_command(self, command: str) -> None:
+        lowered = command.lower()
+        if self._transfer_phase == "username":
+            self._transfer_phase = "password"
+            self.callbacks.on_output("Password: ")
+            return
+        if self._transfer_phase == "password":
+            self._transfer_phase = "ready"
+            self.callbacks.on_output("230 User logged in.\nftp> ")
+            return
+        if lowered == "binary":
+            self.callbacks.on_output("200 Type set to I.\nftp> ")
+            return
+        if lowered.startswith("get "):
+            if self._upgrade_fail_download:
+                self.callbacks.on_output("Error: failed to download package from simulated server.\nftp> ")
+                return
+            parts = command.split()
+            remote_name = parts[1] if len(parts) >= 2 else self._upgrade_package_name
+            local_path = parts[2] if len(parts) >= 3 else f"flash:/{remote_name}"
+            storage = self._normalize_storage(local_path)
+            local_name = self._basename(local_path) or self._basename(remote_name)
+            self._files_by_storage.setdefault(storage, {})[local_name] = self._upgrade_package_size
+            self.callbacks.on_output(
+                f"226 Transfer complete. {local_name} saved to {storage}\nftp> "
+            )
+            return
+        if lowered in {"quit", "bye"}:
+            self._transfer_mode = ""
+            self._transfer_phase = ""
+            self.callbacks.on_output("221 Goodbye.\n<sim> ")
+            return
+        self.callbacks.on_output("200 OK.\nftp> ")
+
+    def _handle_copy(self, command: str) -> None:
+        parts = command.split()
+        if len(parts) < 3:
+            self.callbacks.on_output("Error: invalid copy command.\n<sim> ")
+            return
+        source = parts[1]
+        target = parts[2]
+        source_storage = self._normalize_storage(source)
+        source_name = self._basename(source)
+        target_storage = self._normalize_storage(target)
+        target_name = self._basename(target)
+        source_size = self._files_by_storage.get(source_storage, {}).get(source_name)
+        if source_size is None:
+            self.callbacks.on_output(f"Error: source file {source} not found.\n<sim> ")
+            return
+        self._files_by_storage.setdefault(target_storage, {})[target_name] = source_size
+        self.callbacks.on_output(f"Copy {source} to {target} OK.\n<sim> ")
+
+    def _handle_startup_system_software(self, command: str) -> None:
+        if self._upgrade_fail_startup:
+            self.callbacks.on_output("Error: startup system-software rejected by simulated device.\n<sim> ")
+            return
+        parts = command.split()
+        if len(parts) < 3:
+            self.callbacks.on_output("Error: invalid startup command.\n<sim> ")
+            return
+        package_path = parts[2]
+        storage = self._normalize_storage(package_path)
+        name = self._basename(package_path)
+        if name not in self._files_by_storage.get(storage, {}):
+            self.callbacks.on_output(f"Error: system software {package_path} not found.\n<sim> ")
+            return
+        self._next_system = package_path
+        self.callbacks.on_output(f"Info: Succeeded in setting next startup software to {package_path}.\n<sim> ")
 
     async def _emit_large_log(self, command: str) -> None:
         parts = command.split()

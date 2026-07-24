@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "asyncssh>=2.22,<3",
+    "mcp>=1.27,<2",
     "PySide6-WebEngine>=6.7,<7",
     "telnetlib3>=4.0,<5",
     "pyftpdlib>=2.0,<3",
@@ -16,6 +17,7 @@ dependencies = [
 [project.scripts]
 device-tui = "src.desktop_app:main"
 device-tui-desktop = "src.desktop_app:main"
+device-tui-mcp = "src.mcp_server:main"
 
 [build-system]
 requires = ["setuptools>=68"]

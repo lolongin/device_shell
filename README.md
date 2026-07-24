@@ -125,9 +125,71 @@ Each log rolls over automatically at 10 MB by default. Use the terminal
 toolbar's `日志 > 设置日志分卷大小...` action to choose a value from
 1 MB to 1024 MB. The log root and rollover size are saved in desktop state.
 
+## AI Tool Calling and MCP
+
+The desktop app starts a local-only control API on a random `127.0.0.1` port.
+It writes connection details to:
+
+```text
+%LOCALAPPDATA%\DeviceTUI\app-control.json
+```
+
+Install the project, start the desktop app, and configure an MCP client to run:
+
+```text
+device-tui-mcp
+```
+
+The equivalent source checkout command is:
+
+```powershell
+python -m src.mcp_server
+```
+
+The MCP server exposes these tools:
+
+- `system_status`
+- `device_list`
+- `device_get`
+- `device_select`
+- `session_list`
+- `session_manage`
+- `session_open`
+- `terminal_execute`
+- `terminal_send_command`
+- `terminal_read`
+- `package_upgrade_start`
+- `approval_get`
+- `operation_get`
+
+For reliable daily commands, use `session_manage(action="open", ...)` and keep
+the returned `session_id`, then call `terminal_execute`. The result contains
+only output produced after that command was sent and identifies whether it
+completed by matching a prompt, by the idle fallback, by timeout, or by
+disconnect. The older session and terminal tools remain available for
+compatibility.
+
+Device TUI executes external tool calls immediately by default, including
+configuration, reboot, file-changing, and package-upgrade actions. Risk
+classification, audit logging, authorization, and the guarded package-upgrade
+state machine remain active. Approval configured by the MCP client or Codex is
+not changed by this setting.
+
+Set `DEVICE_TUI_APPROVAL_MODE=required` before starting Device TUI to restore
+the legacy in-app approval list and `批准` / `拒绝` buttons. In that mode,
+guarded calls return `approval_required`; poll `approval_get` and retry the
+original tool with the returned single-use `approval_token`.
+
+The control server never listens on the LAN. Set
+`DEVICE_TUI_APP_CONTROL=0` to disable it. Override the runtime and audit paths
+with `DEVICE_TUI_CONTROL_STATE` and `DEVICE_TUI_CONTROL_AUDIT`.
+
 ## Project Layout
 
 - `src/desktop_app.py`: PySide6 desktop GUI
+- `src/app_control_server.py`: local App Control HTTP server
+- `src/app_control_client.py`: reusable Tool Calling client
+- `src/mcp_server.py`: MCP tool facade
 - `src/data.py`: device model and sample/generated data
 - `src/repository.py`: sample and API-backed repositories
 - `src/api_client.py`: HTTP API client used by GUI API mode

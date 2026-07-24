@@ -234,6 +234,7 @@ from .package_upgrade_ops import PackageUpgradeOpsMixin
 from .table_ops import TableOpsMixin
 from .temporary_device_ops import TemporaryDeviceOpsMixin
 from .server_ops import ServerOpsMixin
+from .ai_device_ops import AiDeviceOpsMixin
 
 try:
     from ..widgets.xterm_web_widget import prewarm_xterm_webengine
@@ -253,6 +254,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         DesktopStateMixin,
         FileTransferOpsMixin,
         PackageUpgradeOpsMixin,
+        AiDeviceOpsMixin,
         TemporaryDeviceOpsMixin,
         ServerOpsMixin,
         TableOpsMixin,
@@ -281,6 +283,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             super().__init__()
             self.repository = repository or create_repository_from_env()
             self.async_loop = AsyncLoopThread()
+            self.ui_thread_ident = threading.get_ident()
             self.ui_queue: queue.SimpleQueue[tuple[Callable[..., None], tuple[object, ...]]] = queue.SimpleQueue()
             self.repository_lock = threading.Lock()
             self.search_index: dict[str, str] = {}
@@ -366,6 +369,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._table_render_generation = 0
             self.next_session_sequence = 1
             self._xterm_prewarm_page = None
+            self.app_control_service = None
+            self.app_control_server = None
 
             self.refresh_timer = QTimer(self)
             self.refresh_timer.setSingleShot(True)
@@ -401,6 +406,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.update_controls()
             self.ui_timer.start()
             self.refresh_snapshot()
+            control_enabled = os.getenv("DEVICE_TUI_APP_CONTROL", "1").strip().casefold()
+            if control_enabled not in {"0", "false", "no", "off"} and not os.getenv(
+                "PYTEST_CURRENT_TEST"
+            ):
+                self.start_app_control_server()
             QTimer.singleShot(300, self._prewarm_terminal_webengine)
 
         def _prewarm_terminal_webengine(self) -> None:
@@ -661,6 +671,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.left_sidebar_stack.addWidget(self._build_server_panel())
             self.left_sidebar_stack.addWidget(self._build_transfer_panel())
             self.left_sidebar_stack.addWidget(self._build_package_upgrade_panel())
+            self.left_sidebar_stack.addWidget(self._build_ai_device_panel())
             scroll.setWidget(stack_container)
             shell_layout.addWidget(scroll, 1)
             self.apply_left_sidebar_state(animated=True)
@@ -696,12 +707,15 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "自动换大包",
             )
 
+            self.activity_ai_device_button = self._new_activity_button("ai", "AI 设备助手")
+
             layout.addWidget(self.activity_home_button)
             layout.addSpacing(4)
             layout.addWidget(self.activity_temporary_button)
             layout.addWidget(self.activity_server_button)
             layout.addWidget(self.activity_transfer_button)
             layout.addWidget(self.activity_package_upgrade_button)
+            layout.addWidget(self.activity_ai_device_button)
             layout.addStretch(1)
 
             self.activity_home_button.clicked.connect(self.show_web_home)
@@ -716,6 +730,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             self.activity_package_upgrade_button.clicked.connect(
                 lambda: self.toggle_tool_sidebar_panel("package_upgrade")
+            )
+            self.activity_ai_device_button.clicked.connect(
+                lambda: self.toggle_tool_sidebar_panel("ai_device")
             )
             return rail
 
@@ -802,6 +819,13 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawLine(12, 8, 9, 11)
                 painter.drawLine(12, 8, 15, 11)
                 painter.drawLine(9, 17, 15, 17)
+            elif kind == "ai":
+                painter.drawRoundedRect(5, 5, 14, 14, 4, 4)
+                painter.drawEllipse(8, 9, 2, 2)
+                painter.drawEllipse(14, 9, 2, 2)
+                painter.drawLine(9, 15, 15, 15)
+                painter.drawLine(12, 3, 12, 5)
+                painter.drawLine(12, 19, 12, 21)
             else:
                 painter.drawEllipse(7, 7, 10, 10)
             painter.end()
@@ -1846,6 +1870,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.temporary_clear_button.clicked.connect(self.clear_temporary_form)
             self.wire_transfer_events()
             self.wire_package_upgrade_events()
+            self.wire_ai_device_events()
             self.clear_filters_button.clicked.connect(self.clear_filters)
             if hasattr(self, "device_navigation_web"):
                 self.device_navigation_web.device_selected.connect(self.activate_device)
@@ -2125,7 +2150,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_terminal_workspace()
 
         def toggle_tool_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"temporary", "server", "transfer", "package_upgrade"}:
+            if panel not in {"temporary", "server", "transfer", "package_upgrade", "ai_device"}:
                 return
             if self.left_sidebar_active_panel == panel and not self.left_sidebar_collapsed:
                 self.left_sidebar_collapsed = True
@@ -2135,7 +2160,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.show_left_sidebar_panel(panel)
 
         def show_left_sidebar_panel(self, panel: str) -> None:
-            if panel not in {"devices", "temporary", "server", "transfer", "package_upgrade"}:
+            if panel not in {"devices", "temporary", "server", "transfer", "package_upgrade", "ai_device"}:
                 panel = "devices"
             self.left_sidebar_active_panel = panel
             if hasattr(self, "left_sidebar_stack"):
@@ -2145,6 +2170,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "server": 2,
                     "transfer": 3,
                     "package_upgrade": 4,
+                    "ai_device": 5,
                 }.get(panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             if self.left_sidebar_collapsed:
@@ -2244,6 +2270,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "server": 2,
                     "transfer": 3,
                     "package_upgrade": 4,
+                    "ai_device": 5,
                 }.get(self.left_sidebar_active_panel, 0)
                 self.left_sidebar_stack.setCurrentIndex(panel_index)
             self.sync_activity_rail_state()
@@ -2259,6 +2286,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 "server",
                 "transfer",
                 "package_upgrade",
+                "ai_device",
             }
             states = (
                 (self.activity_home_button, "home", "首页大屏", show_home and not drawer_open),
@@ -2285,6 +2313,12 @@ if PYSIDE6_IMPORT_ERROR is None:
                     "upgrade",
                     "自动换大包",
                     drawer_open and panel == "package_upgrade",
+                ),
+                (
+                    self.activity_ai_device_button,
+                    "ai",
+                    "AI 设备助手",
+                    drawer_open and panel == "ai_device",
                 ),
             )
             for button, icon_name, tooltip, active in states:
@@ -2483,6 +2517,38 @@ if PYSIDE6_IMPORT_ERROR is None:
         def dispatch_ui(self, callback: Callable[..., None], *args: object) -> None:
             self.ui_queue.put((callback, args))
 
+        def call_on_ui_thread(
+            self,
+            callback: Callable[[], object],
+            *,
+            timeout: float = 10.0,
+        ) -> object:
+            if threading.get_ident() == self.ui_thread_ident:
+                return callback()
+            if self.closed:
+                raise RuntimeError("Device TUI 正在关闭。")
+            result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+            cancelled = threading.Event()
+
+            def execute() -> None:
+                if cancelled.is_set():
+                    return
+                try:
+                    result_queue.put((True, callback()))
+                except Exception as exc:
+                    result_queue.put((False, exc))
+
+            self.dispatch_ui(execute)
+            try:
+                ok, value = result_queue.get(timeout=timeout)
+            except queue.Empty as exc:
+                cancelled.set()
+                raise TimeoutError("Qt UI thread call timed out") from exc
+            if not ok:
+                assert isinstance(value, Exception)
+                raise value
+            return value
+
         def _drain_ui_queue(self) -> None:
             processed = 0
             deadline = time.monotonic() + 0.012
@@ -2616,6 +2682,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 event.accept()
                 return
 
+            self.stop_app_control_server()
             self.closed = True
             self.save_desktop_state()
             self.state_save_timer.stop()

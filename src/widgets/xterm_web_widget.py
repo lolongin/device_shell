@@ -45,6 +45,10 @@ class _XtermBridge(QObject):
     def sendDataWithLine(self, data: str, line: str) -> None:  # noqa: N802 - called from JavaScript
         self.data_with_line_received.emit(data, line)
 
+    @Slot(str)
+    def cacheCompletionLine(self, line: str) -> None:  # noqa: N802 - called from JavaScript
+        self._terminal.cache_completion_line(line)
+
     @Slot(int, int)
     def resize(self, columns: int, lines: int) -> None:
         self.resized.emit(columns, lines)
@@ -276,6 +280,9 @@ class XtermWebWidget(QWidget):
         if text in {"\r", "\n"}:
             self._sync_pending_command_from_terminal_line(terminal_line)
         self._handle_input(text)
+
+    def cache_completion_line(self, terminal_line: str) -> None:
+        self._sync_pending_command_from_terminal_line(terminal_line)
 
     def _sync_pending_command_from_terminal_line(self, terminal_line: str) -> None:
         if not terminal_line or not self._pending_command_chars:

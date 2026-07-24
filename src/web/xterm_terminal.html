@@ -216,6 +216,8 @@
       let fitRetryTimer = 0;
       let activeSuggestion = '';
       let activeSuggestionPrefix = '';
+      let completionLineCaptureTimer = 0;
+      let completionLineCaptureUntil = 0;
       const semanticTokenPattern = /\b(error|failed?|failure|fatal|critical|success|succeeded|pass(?:ed)?|ok|done|warn(?:ing)?|caution|timeout|info|notice|debug|trace)\b/ig;
       const semanticTokenColors = {
         error: '\x1b[91m',
@@ -423,6 +425,24 @@
         }
       }
 
+      function captureCompletionLine() {
+        if (bridge) {
+          bridge.cacheCompletionLine(currentTerminalLineText());
+        }
+        if (Date.now() < completionLineCaptureUntil) {
+          completionLineCaptureTimer = window.setTimeout(captureCompletionLine, 80);
+          return;
+        }
+        completionLineCaptureTimer = 0;
+      }
+
+      function scheduleCompletionLineCapture() {
+        completionLineCaptureUntil = Date.now() + 1200;
+        if (!completionLineCaptureTimer) {
+          completionLineCaptureTimer = window.setTimeout(captureCompletionLine, 30);
+        }
+      }
+
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== 'keydown') {
           return true;
@@ -506,6 +526,9 @@
         if (bridge) {
           if (data === '\r' || data === '\n') {
             bridge.sendDataWithLine(data, currentTerminalLineText());
+          } else if (data === '\t') {
+            bridge.sendData(data);
+            scheduleCompletionLineCapture();
           } else {
             bridge.sendData(data);
           }

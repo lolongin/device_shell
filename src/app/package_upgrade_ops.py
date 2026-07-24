@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 try:
@@ -49,15 +50,30 @@ from ..package_upgrade import (
     PackageUpgradeConfig,
     StartupInfo,
     build_cleanup_plan,
+    dir_contains_package,
+    find_upgrade_failure,
     generate_huawei_upgrade_plan,
     parse_dir_entries,
     parse_display_startup,
     parse_free_space_bytes,
+    startup_uses_package,
 )
 
 
 class PackageUpgradeOpsMixin:
     """Mixin providing package upgrade planning and command sending."""
+
+    PACKAGE_UPGRADE_PIPELINE = (
+        ("precheck", "1 预检启动项和空间"),
+        ("cleanup", "2 安全清理旧包"),
+        ("download", "3 下载目标系统包"),
+        ("verify", "4 校验主备包"),
+        ("startup", "5 设置下次启动项"),
+        ("confirm", "6 最终确认"),
+    )
+    PACKAGE_UPGRADE_MAX_RETRIES = 2
+    PACKAGE_UPGRADE_COMMAND_TIMEOUT_MS = 45_000
+    PACKAGE_UPGRADE_QUIET_MS = 1_100
 
     def _build_package_upgrade_panel(self) -> QWidget:
         panel = QWidget()
@@ -135,11 +151,13 @@ class PackageUpgradeOpsMixin:
         self.package_upgrade_auto_delete_checkbox.setChecked(True)
         form_layout.addRow("", self.package_upgrade_auto_delete_checkbox)
         self.package_upgrade_reboot_checkbox = QCheckBox("包含 reboot 命令")
-        self.package_upgrade_reboot_checkbox.setChecked(False)
+        self.package_upgrade_reboot_checkbox.setChecked(True)
+        form_layout.addRow("", self.package_upgrade_reboot_checkbox)
 
         if hasattr(form_layout, "setRowVisible"):
             for row_index in range(2, form_layout.rowCount()):
                 form_layout.setRowVisible(row_index, False)
+            form_layout.setRowVisible(form_layout.rowCount() - 1, True)
 
         self.package_upgrade_startup_output = self._new_package_upgrade_textarea(
             "粘贴 display startup 输出，用于保护当前/下次启动包"
@@ -181,6 +199,23 @@ class PackageUpgradeOpsMixin:
         self.package_upgrade_status_label.setWordWrap(True)
         group_layout.addWidget(self.package_upgrade_status_label)
 
+        self.package_upgrade_pipeline_labels: dict[str, QLabel] = {}
+        pipeline_frame = QFrame()
+        pipeline_frame.setObjectName("transferConfigCard")
+        pipeline_layout = QVBoxLayout(pipeline_frame)
+        pipeline_layout.setContentsMargins(10, 8, 10, 8)
+        pipeline_layout.setSpacing(4)
+        pipeline_title = QLabel("安全流水线")
+        pipeline_title.setObjectName("sectionCaption")
+        pipeline_layout.addWidget(pipeline_title)
+        for key, label_text in self.PACKAGE_UPGRADE_PIPELINE:
+            step_label = QLabel(f"待开始  {label_text}")
+            step_label.setObjectName("activeFilterText")
+            step_label.setWordWrap(True)
+            self.package_upgrade_pipeline_labels[key] = step_label
+            pipeline_layout.addWidget(step_label)
+        group_layout.addWidget(pipeline_frame)
+
         self.package_upgrade_script_output = QPlainTextEdit()
         self.package_upgrade_script_output.setObjectName("transferLogOutput")
         self.package_upgrade_script_output.setReadOnly(False)
@@ -208,6 +243,64 @@ class PackageUpgradeOpsMixin:
         self.package_upgrade_read_terminal_button.clicked.connect(self.read_package_upgrade_precheck_from_terminal)
         self.package_upgrade_start_transfer_button.clicked.connect(self.start_package_upgrade_transfer_service)
         self.package_upgrade_protocol_combo.currentTextChanged.connect(self.update_package_upgrade_default_port)
+
+    def reset_package_upgrade_pipeline(self) -> None:
+        if not hasattr(self, "package_upgrade_pipeline_labels"):
+            return
+        for key, label_text in self.PACKAGE_UPGRADE_PIPELINE:
+            self.package_upgrade_pipeline_labels[key].setText(f"待开始  {label_text}")
+
+    def set_package_upgrade_step_status(self, key: str, status: str, detail: str = "") -> None:
+        if not hasattr(self, "package_upgrade_pipeline_labels"):
+            return
+        labels = dict(self.PACKAGE_UPGRADE_PIPELINE)
+        label = self.package_upgrade_pipeline_labels.get(key)
+        if label is None:
+            return
+        suffix = f" - {detail}" if detail else ""
+        label.setText(f"{status}  {labels.get(key, key)}{suffix}")
+        operation = getattr(self, "package_upgrade_operation_state", None)
+        if isinstance(operation, dict):
+            operation["stage"] = key
+            operation["message"] = label.text()
+
+    def fail_package_upgrade_run(self, key: str, message: str) -> None:
+        self.set_package_upgrade_step_status(key, "停住", message)
+        self.package_upgrade_status_label.setText(message)
+        self.set_status_message(message)
+        self.package_upgrade_one_click_button.setEnabled(True)
+        operation = getattr(self, "package_upgrade_operation_state", None)
+        if isinstance(operation, dict):
+            operation.update({"status": "failed", "stage": key, "message": message})
+
+    def finish_package_upgrade_run(self, message: str) -> None:
+        self.set_package_upgrade_step_status("confirm", "完成", message)
+        self.package_upgrade_status_label.setText(message)
+        self.set_status_message(message)
+        self.package_upgrade_one_click_button.setEnabled(True)
+        operation = getattr(self, "package_upgrade_operation_state", None)
+        if isinstance(operation, dict):
+            operation.update({"status": "completed", "stage": "confirm", "message": message})
+
+    def package_upgrade_status_snapshot(self) -> dict[str, Any]:
+        operation = dict(
+            getattr(
+                self,
+                "package_upgrade_operation_state",
+                {
+                    "status": "idle",
+                    "stage": "",
+                    "message": "当前没有自动换包操作。",
+                    "device_id": "",
+                },
+            )
+        )
+        labels = getattr(self, "package_upgrade_pipeline_labels", {})
+        operation["steps"] = {
+            key: label.text()
+            for key, label in labels.items()
+        }
+        return operation
 
     def choose_package_upgrade_file(self) -> None:
         selected, _filter = QFileDialog.getOpenFileName(
@@ -245,24 +338,33 @@ class PackageUpgradeOpsMixin:
             self.package_upgrade_slave_dir_output.setPlainText(text)
         self.generate_package_upgrade_script()
 
-    def run_package_upgrade_one_click(self, _checked: bool = False) -> None:
+    def run_package_upgrade_one_click(self, _checked: bool = False) -> bool:
         device = self.get_selected_device()
         if device is None:
             self.show_warning("请先在设备列表中选择要更换大包的设备。")
-            return
+            return False
         if self.package_upgrade_config() is None:
-            return
+            return False
         if not self.ensure_package_upgrade_transfer_service():
-            return
+            return False
+        self.package_upgrade_operation_state = {
+            "status": "running",
+            "stage": "precheck",
+            "message": "正在准备自动换包预检。",
+            "device_id": device.id,
+        }
         self.activate_device(device.id)
+        self.show_left_sidebar_panel("package_upgrade")
         state = self.package_upgrade_session_for_device(device.id)
         if state is None:
             self.open_device_session(device)
+            self.show_left_sidebar_panel("package_upgrade")
             self.set_status_message(f"正在打开设备会话，准备一键更换: {device.name}")
             self._schedule_package_upgrade_precheck(device.id, delay_ms=6500)
-            return
-        self.jump_to_session(state.tab_id)
+            return True
+        self.jump_to_package_upgrade_session(state.tab_id)
         self._start_package_upgrade_precheck(state.tab_id)
+        return True
 
     def package_upgrade_session_for_device(self, device_id: str) -> Any | None:
         states = self._session_states_for_device(device_id)
@@ -292,13 +394,25 @@ class PackageUpgradeOpsMixin:
         if state is None:
             self.set_status_message("未找到设备会话，无法继续一键更换。")
             return
-        self.jump_to_session(state.tab_id)
+        self.jump_to_package_upgrade_session(state.tab_id)
         self._start_package_upgrade_precheck(state.tab_id)
+
+    def jump_to_package_upgrade_session(self, tab_id: str) -> None:
+        self.jump_to_session(tab_id)
+        self.show_left_sidebar_panel("package_upgrade")
 
     def _start_package_upgrade_precheck(self, tab_id: str) -> None:
         config = self.package_upgrade_config()
         if config is None:
             return
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            self.set_status_message("目标会话已关闭，停止一键更换。")
+            return
+        if hasattr(state.session, "configure_package_upgrade"):
+            state.session.configure_package_upgrade(config.package_path.name, config.package_path.stat().st_size)
+        self.package_upgrade_one_click_button.setEnabled(False)
+        self.reset_package_upgrade_pipeline()
         commands = [
             "screen-length 0 temporary",
             "display startup",
@@ -306,39 +420,187 @@ class PackageUpgradeOpsMixin:
         ]
         if config.include_slave:
             commands.append(f"dir {config.slave_storage}")
+        self.package_upgrade_run = {
+            "tab_id": tab_id,
+            "config": config,
+            "precheck_offset": self.package_upgrade_output_offset(state),
+            "precheck_commands": commands,
+            "precheck_outputs": {},
+        }
+        self.package_upgrade_status_label.setText("正在预检设备，请保持终端会话在当前设备。")
         self.set_status_message("正在预检查启动包和存储空间...")
-        self._send_package_upgrade_commands(tab_id, commands, index=0)
-        delay_ms = len(commands) * int(getattr(self, "package_upgrade_send_interval_ms", 900)) + 5500
-        if QTimer is None:
+        self._run_package_upgrade_precheck_command(tab_id, 0)
+
+    def _run_package_upgrade_precheck_command(self, tab_id: str, index: int) -> None:
+        run = getattr(self, "package_upgrade_run", {})
+        commands = list(run.get("precheck_commands") or [])
+        if index >= len(commands):
             self._finish_package_upgrade_one_click(tab_id)
             return
-        QTimer.singleShot(
-            delay_ms,
-            lambda tab_id=tab_id: self._finish_package_upgrade_one_click(tab_id),
+        command = commands[index]
+
+        def done(output: str, tab_id: str = tab_id, index: int = index, command: str = command) -> None:
+            run = getattr(self, "package_upgrade_run", {})
+            outputs = run.get("precheck_outputs")
+            if isinstance(outputs, dict):
+                outputs[command] = output
+            self._run_package_upgrade_precheck_command(tab_id, index + 1)
+
+        self.send_package_upgrade_command_and_wait(
+            tab_id,
+            command,
+            step_key="precheck",
+            detail=f"{index + 1}/{len(commands)} {command}",
+            on_done=done,
+            timeout_ms=25_000,
         )
 
     def _finish_package_upgrade_one_click(self, tab_id: str) -> None:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             self.set_status_message("目标会话已关闭，停止一键更换。")
+            self.package_upgrade_one_click_button.setEnabled(True)
             return
         text = self.package_upgrade_terminal_text(state)
-        if text:
+        run = getattr(self, "package_upgrade_run", {})
+        precheck_offset = int(run.get("precheck_offset", 0) or 0)
+        recent_precheck_text = self.package_upgrade_output_since(state, precheck_offset)
+        if recent_precheck_text:
+            text = recent_precheck_text
+        config = self.package_upgrade_config()
+        if config is None:
+            self.package_upgrade_one_click_button.setEnabled(True)
+            return
+        precheck_outputs = run.get("precheck_outputs")
+        if isinstance(precheck_outputs, dict) and precheck_outputs:
+            self.package_upgrade_startup_output.setPlainText(str(precheck_outputs.get("display startup") or text))
+            self.package_upgrade_master_dir_output.setPlainText(
+                str(precheck_outputs.get(f"dir {config.master_storage}") or text)
+            )
+            if self.package_upgrade_include_slave_checkbox.isChecked():
+                self.package_upgrade_slave_dir_output.setPlainText(
+                    str(precheck_outputs.get(f"dir {config.slave_storage}") or text)
+                )
+        elif text:
             self.package_upgrade_startup_output.setPlainText(text)
             self.package_upgrade_master_dir_output.setPlainText(text)
             if self.package_upgrade_include_slave_checkbox.isChecked():
                 self.package_upgrade_slave_dir_output.setPlainText(text)
         self.generate_package_upgrade_script()
-        self.send_package_upgrade_script(tab_id=tab_id)
+        cleanup_entries, blockers, status_lines = self.package_upgrade_safety_report(config)
+        if status_lines:
+            self.package_upgrade_status_label.setText("；".join(status_lines))
+        if blockers:
+            self.fail_package_upgrade_run("precheck", "；".join(blockers))
+            return
+        self.set_package_upgrade_step_status("precheck", "完成", "空间和启动项已读取")
+        self._run_package_upgrade_execution(tab_id, config, cleanup_entries)
 
     @staticmethod
     def package_upgrade_terminal_text(state: Any) -> str:
+        recent = str(getattr(state, "recent_output_buffer", "") or "")
+        if recent:
+            return recent
         terminal = state.terminal
         if hasattr(terminal, "all_text"):
             return str(terminal.all_text() or "")
         if hasattr(terminal, "toPlainText"):
             return str(terminal.toPlainText() or "")
         return ""
+
+    def package_upgrade_output_offset(self, state: Any) -> int:
+        return len(str(getattr(state, "recent_output_buffer", "") or ""))
+
+    def package_upgrade_output_since(self, state: Any, offset: int) -> str:
+        text = str(getattr(state, "recent_output_buffer", "") or "")
+        if offset < 0 or offset > len(text):
+            return text
+        return text[offset:]
+
+    def send_package_upgrade_command_and_wait(
+        self,
+        tab_id: str,
+        command: str,
+        *,
+        step_key: str,
+        detail: str,
+        on_done: Any,
+        validate: Any | None = None,
+        timeout_ms: int | None = None,
+        retries_left: int | None = None,
+        stop_on_failure: bool = True,
+    ) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            self.fail_package_upgrade_run(step_key, "目标终端会话已关闭，自动换包停止。")
+            return
+        if not state.session.is_connected:
+            self.fail_package_upgrade_run(step_key, "目标终端未连接，自动换包停止。")
+            return
+        retries = self.PACKAGE_UPGRADE_MAX_RETRIES if retries_left is None else retries_left
+        timeout = self.PACKAGE_UPGRADE_COMMAND_TIMEOUT_MS if timeout_ms is None else timeout_ms
+        self.set_package_upgrade_step_status(step_key, "进行中", detail)
+        offset = self.package_upgrade_output_offset(state)
+        started = time.monotonic()
+        last_change = started
+        last_size = 0
+        self.send_session_text(tab_id, f"{command}\r")
+
+        def poll() -> None:
+            nonlocal last_change, last_size
+            current_state = self.session_tabs_by_id.get(tab_id)
+            if current_state is None:
+                self.fail_package_upgrade_run(step_key, "目标终端会话已关闭，自动换包停止。")
+                return
+            output = self.package_upgrade_output_since(current_state, offset)
+            now = time.monotonic()
+            if len(output) != last_size:
+                last_size = len(output)
+                last_change = now
+            elapsed_ms = int((now - started) * 1000)
+            quiet_ms = int((now - last_change) * 1000)
+            if output and quiet_ms >= self.PACKAGE_UPGRADE_QUIET_MS:
+                failure = find_upgrade_failure(output)
+                if failure and stop_on_failure:
+                    self.fail_package_upgrade_run(step_key, f"{detail} 失败，设备输出包含: {failure}")
+                    return
+                if validate is not None:
+                    validation_error = validate(output)
+                    if validation_error:
+                        self.fail_package_upgrade_run(step_key, validation_error)
+                        return
+                on_done(output)
+                return
+            if elapsed_ms >= timeout:
+                if retries > 0:
+                    self.set_package_upgrade_step_status(
+                        step_key,
+                        "重试",
+                        f"{detail} 超时，剩余 {retries} 次",
+                    )
+                    self.send_package_upgrade_command_and_wait(
+                        tab_id,
+                        command,
+                        step_key=step_key,
+                        detail=detail,
+                        on_done=on_done,
+                        validate=validate,
+                        timeout_ms=timeout,
+                        retries_left=retries - 1,
+                        stop_on_failure=stop_on_failure,
+                    )
+                    return
+                self.fail_package_upgrade_run(step_key, f"{detail} 超时，未确认设备响应。")
+                return
+            if QTimer is None:
+                self.fail_package_upgrade_run(step_key, f"{detail} 未确认完成。")
+                return
+            QTimer.singleShot(300, poll)
+
+        if QTimer is None:
+            poll()
+            return
+        QTimer.singleShot(300, poll)
 
     def start_package_upgrade_transfer_service(self) -> None:
         self.ensure_package_upgrade_transfer_service(show_running_message=True)
@@ -439,6 +701,310 @@ class PackageUpgradeOpsMixin:
             include_slave=self.package_upgrade_include_slave_checkbox.isChecked(),
             auto_delete_old_packages=self.package_upgrade_auto_delete_checkbox.isChecked(),
             reboot_after_setting=self.package_upgrade_reboot_checkbox.isChecked(),
+        )
+
+    def package_upgrade_safety_report(
+        self,
+        config: PackageUpgradeConfig,
+    ) -> tuple[list[PackageFileEntry], list[str], list[str]]:
+        if not config.auto_delete_old_packages:
+            return [], [], ["自动删除已关闭"]
+        package_size = config.package_path.stat().st_size
+        startup = parse_display_startup(self.package_upgrade_startup_output.toPlainText())
+        status_lines: list[str] = []
+        blockers: list[str] = []
+        entries: list[PackageFileEntry] = []
+
+        def evaluate_storage(label: str, storage: str, text: str) -> None:
+            if not text:
+                blockers.append(f"未读取到{label}目录输出")
+                return
+            free_bytes = parse_free_space_bytes(text)
+            if free_bytes <= 0:
+                blockers.append(f"无法确认{label}剩余空间")
+            plan = build_cleanup_plan(
+                storage=storage,
+                free_bytes=free_bytes,
+                target_bytes=package_size,
+                entries=parse_dir_entries(text, storage),
+                startup=startup,
+                target_package_name=config.package_path.name,
+            )
+            entries.extend(plan.delete_entries)
+            status_lines.append(
+                f"{label}删除 {len(plan.delete_entries)} 个旧包，释放 {plan.reclaim_bytes // (1024 * 1024)} MB"
+            )
+            if not plan.has_enough_space:
+                blockers.append(f"{label}清理后空间仍不足")
+
+        evaluate_storage("主控", config.master_storage, self.package_upgrade_master_dir_output.toPlainText())
+        if config.include_slave:
+            evaluate_storage("备控", config.slave_storage, self.package_upgrade_slave_dir_output.toPlainText())
+        return entries, blockers, status_lines
+
+    def _run_package_upgrade_execution(
+        self,
+        tab_id: str,
+        config: PackageUpgradeConfig,
+        cleanup_entries: list[PackageFileEntry],
+    ) -> None:
+        cleanup_commands = [f"delete /unreserved /quiet {entry.path}" for entry in cleanup_entries]
+        if cleanup_commands:
+            self._run_package_upgrade_command_sequence(
+                tab_id,
+                cleanup_commands,
+                step_key="cleanup",
+                detail="安全删除未使用旧包",
+                on_done=lambda: self._run_package_upgrade_download(tab_id, config),
+            )
+            return
+        self.set_package_upgrade_step_status("cleanup", "完成", "无需删除旧包")
+        self._run_package_upgrade_download(tab_id, config)
+
+    def _run_package_upgrade_command_sequence(
+        self,
+        tab_id: str,
+        commands: list[str],
+        *,
+        step_key: str,
+        detail: str,
+        on_done: Any,
+        index: int = 0,
+    ) -> None:
+        if index >= len(commands):
+            self.set_package_upgrade_step_status(step_key, "完成", detail)
+            on_done()
+            return
+        command = commands[index]
+        self.send_package_upgrade_command_and_wait(
+            tab_id,
+            command,
+            step_key=step_key,
+            detail=f"{detail} {index + 1}/{len(commands)}",
+            on_done=lambda _output, tab_id=tab_id, commands=commands, index=index: (
+                self._run_package_upgrade_command_sequence(
+                    tab_id,
+                    commands,
+                    step_key=step_key,
+                    detail=detail,
+                    on_done=on_done,
+                    index=index + 1,
+                )
+            ),
+        )
+
+    def _run_package_upgrade_download(self, tab_id: str, config: PackageUpgradeConfig) -> None:
+        package_size = config.package_path.stat().st_size
+        if dir_contains_package(
+            self.package_upgrade_master_dir_output.toPlainText(),
+            storage=config.master_storage,
+            package_name=config.package_path.name,
+            expected_size=package_size,
+        ):
+            self.set_package_upgrade_step_status("download", "完成", "主控目标包已存在且大小匹配")
+            self._run_package_upgrade_verify_master(tab_id, config)
+            return
+        package_name = config.package_path.name
+        master_package = f"{config.master_storage.rstrip('/')}/{package_name}"
+        if config.protocol.lower() == "sftp":
+            commands = [
+                f"sftp {config.server_host} {config.port}",
+                config.username,
+                config.password,
+                f"get {package_name} {master_package}",
+                "quit",
+            ]
+        else:
+            commands = [
+                f"ftp {config.server_host} {config.port}",
+                config.username,
+                config.password,
+                "binary",
+                f"get {package_name} {master_package}",
+                "quit",
+            ]
+        self._run_package_upgrade_command_sequence(
+            tab_id,
+            commands,
+            step_key="download",
+            detail="下载目标包",
+            on_done=lambda: self._run_package_upgrade_verify_master(tab_id, config),
+        )
+
+    def _run_package_upgrade_verify_master(self, tab_id: str, config: PackageUpgradeConfig) -> None:
+        package_name = config.package_path.name
+        package_size = config.package_path.stat().st_size
+        master_package = f"{config.master_storage.rstrip('/')}/{package_name}"
+
+        def validate(output: str) -> str:
+            if dir_contains_package(
+                output,
+                storage=config.master_storage,
+                package_name=package_name,
+                expected_size=package_size,
+            ):
+                return ""
+            return "主控未确认到目标包，或目标包大小与本地文件不匹配。"
+
+        self.send_package_upgrade_command_and_wait(
+            tab_id,
+            f"dir {master_package}",
+            step_key="verify",
+            detail="确认主控目标包",
+            validate=validate,
+            on_done=lambda _output: self._run_package_upgrade_slave_sync(tab_id, config),
+        )
+
+    def _run_package_upgrade_slave_sync(self, tab_id: str, config: PackageUpgradeConfig) -> None:
+        package_name = config.package_path.name
+        package_size = config.package_path.stat().st_size
+        master_package = f"{config.master_storage.rstrip('/')}/{package_name}"
+        slave_package = f"{config.slave_storage.rstrip('/')}/{package_name}"
+        if not config.include_slave:
+            self.set_package_upgrade_step_status("verify", "完成", "单主控目标包已确认")
+            self._run_package_upgrade_startup(tab_id, config)
+            return
+
+        def verify_slave() -> None:
+            def validate(output: str) -> str:
+                if dir_contains_package(
+                    output,
+                    storage=config.slave_storage,
+                    package_name=package_name,
+                    expected_size=package_size,
+                ):
+                    return ""
+                return "备控未确认到目标包，或目标包大小与本地文件不匹配。"
+
+            self.send_package_upgrade_command_and_wait(
+                tab_id,
+                f"dir {slave_package}",
+                step_key="verify",
+                detail="确认备控目标包",
+                validate=validate,
+                on_done=lambda _output: self._run_package_upgrade_startup(tab_id, config),
+            )
+
+        self.send_package_upgrade_command_and_wait(
+            tab_id,
+            f"copy {master_package} {slave_package}",
+            step_key="verify",
+            detail="同步目标包到备控",
+            on_done=lambda _output: verify_slave(),
+            timeout_ms=90_000,
+        )
+
+    def _run_package_upgrade_startup(self, tab_id: str, config: PackageUpgradeConfig) -> None:
+        package_name = config.package_path.name
+        master_package = f"{config.master_storage.rstrip('/')}/{package_name}"
+        slave_package = f"{config.slave_storage.rstrip('/')}/{package_name}"
+        command = (
+            f"startup system-software {master_package} all"
+            if config.include_slave
+            else f"startup system-software {master_package}"
+        )
+
+        def after_startup(output: str) -> None:
+            if config.include_slave and find_upgrade_failure(output):
+                self.set_package_upgrade_step_status("startup", "重试", "all 不可用，尝试主备分开设置")
+                fallback = [
+                    f"startup system-software {master_package}",
+                    f"startup system-software {slave_package} slave-board",
+                ]
+                self._run_package_upgrade_command_sequence(
+                    tab_id,
+                    fallback,
+                    step_key="startup",
+                    detail="主备分开设置启动项",
+                    on_done=lambda: self._run_package_upgrade_confirm(tab_id, config),
+                )
+                return
+            self.set_package_upgrade_step_status("startup", "完成", "启动项命令已发送")
+            self._run_package_upgrade_confirm(tab_id, config)
+
+        self.send_package_upgrade_command_and_wait(
+            tab_id,
+            command,
+            step_key="startup",
+            detail="设置下次启动系统包",
+            on_done=after_startup,
+            stop_on_failure=False,
+        )
+
+    def _run_package_upgrade_confirm(self, tab_id: str, config: PackageUpgradeConfig) -> None:
+        def validate(output: str) -> str:
+            if startup_uses_package(output, config.package_path.name):
+                return ""
+            return "最终 display startup 未确认目标包为下次启动系统包，已停止。"
+
+        def after_confirm(_output: str) -> None:
+            self.set_package_upgrade_step_status("confirm", "完成", "下次启动项已确认")
+            if not config.reboot_after_setting:
+                self.finish_package_upgrade_run("换包已完成并确认下次启动项。请人工确认业务窗口后重启。")
+                return
+            self._run_package_upgrade_reboot(tab_id)
+            return
+            self.send_package_upgrade_command_and_wait(
+                tab_id,
+                "reboot",
+                step_key="confirm",
+                detail="发送 reboot",
+                on_done=lambda _output: self.finish_package_upgrade_run("已发送 reboot，请观察设备重启。"),
+                stop_on_failure=False,
+                timeout_ms=20_000,
+            )
+
+        self.send_package_upgrade_command_and_wait(
+            tab_id,
+            "display startup",
+            step_key="confirm",
+            detail="最终确认启动项",
+            validate=validate,
+            on_done=after_confirm,
+        )
+
+    def _run_package_upgrade_reboot(self, tab_id: str) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            self.fail_package_upgrade_run("confirm", "目标终端会话已关闭，无法发送 reboot。")
+            return
+        self.set_package_upgrade_step_status("confirm", "进行中", "发送 reboot 并等待重启完成")
+        offset = self.package_upgrade_output_offset(state)
+        started = time.monotonic()
+        self.send_session_text(tab_id, "reboot\r")
+        self._wait_package_upgrade_reboot_completion(tab_id, offset, started)
+
+    def _wait_package_upgrade_reboot_completion(self, tab_id: str, offset: int, started: float) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None:
+            self.fail_package_upgrade_run("confirm", "目标终端会话已关闭，未确认重启完成。")
+            return
+        output = self.package_upgrade_output_since(state, offset)
+        lowered = output.casefold()
+        complete_markers = (
+            "system ready",
+            "login:",
+            "username:",
+            "<sim> ",
+        )
+        if "reboot" in lowered and any(marker in lowered for marker in complete_markers):
+            self.finish_package_upgrade_run("reboot 已完成，设备已重新进入可交互状态。")
+            return
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 180_000:
+            self.fail_package_upgrade_run("confirm", "已发送 reboot，但 180 秒内未确认设备重启完成。")
+            return
+        self.set_package_upgrade_step_status("confirm", "等待", f"reboot 中 {elapsed_ms // 1000}s")
+        if QTimer is None:
+            self.fail_package_upgrade_run("confirm", "已发送 reboot，但当前环境无法继续等待重启完成。")
+            return
+        QTimer.singleShot(
+            1000,
+            lambda tab_id=tab_id, offset=offset, started=started: self._wait_package_upgrade_reboot_completion(
+                tab_id,
+                offset,
+                started,
+            ),
         )
 
     def package_upgrade_cleanup_entries(

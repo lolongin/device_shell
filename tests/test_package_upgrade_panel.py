@@ -27,10 +27,20 @@ def test_package_upgrade_panel_exists_in_left_sidebar(app: QApplication) -> None
     assert "华为" not in window.package_upgrade_one_click_button.text()
     assert window.package_upgrade_auto_delete_checkbox.isChecked()
     assert window.package_upgrade_include_slave_checkbox.isChecked()
+    assert window.package_upgrade_reboot_checkbox.isChecked()
+    assert not window.package_upgrade_reboot_checkbox.isHidden()
     assert window.package_upgrade_startup_output.parent() is None
     assert window.package_upgrade_script_output.parent() is None
     assert window.package_upgrade_read_terminal_button.parent() is None
     assert window.package_upgrade_send_button.parent() is None
+    assert set(window.package_upgrade_pipeline_labels) == {
+        "precheck",
+        "cleanup",
+        "download",
+        "verify",
+        "startup",
+        "confirm",
+    }
 
 
 def test_package_upgrade_panel_generates_dual_controller_cleanup_script(
@@ -73,3 +83,35 @@ def test_package_upgrade_panel_generates_dual_controller_cleanup_script(
     assert "ftp 192.0.2.10 2121" in script
     assert "copy flash:/target.cc slave#flash:/target.cc" in script
     assert "startup system-software flash:/target.cc all" in script
+
+
+def test_package_upgrade_jump_keeps_upgrade_panel_visible(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.show_left_sidebar_panel("package_upgrade")
+    window.jump_to_session = lambda _tab_id: window.show_left_sidebar_panel("devices")
+
+    window.jump_to_package_upgrade_session("tab-1")
+
+    assert window.left_sidebar_active_panel == "package_upgrade"
+
+
+def test_package_upgrade_safety_report_blocks_unconfirmed_space(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    package = tmp_path / "target.cc"
+    package.write_bytes(b"0" * 1024)
+    window = DeviceDesktopApp()
+    window.package_upgrade_file_input.setText(str(package))
+    window.package_upgrade_server_host_input.setText("192.0.2.10")
+    window.package_upgrade_master_dir_output.setPlainText("Directory of flash:/\n")
+    window.package_upgrade_slave_dir_output.setPlainText("Directory of slave#flash:/\n")
+    config = window.package_upgrade_config()
+
+    assert config is not None
+    _entries, blockers, _status = window.package_upgrade_safety_report(config)
+
+    assert "无法确认主控剩余空间" in blockers
+    assert "无法确认备控剩余空间" in blockers

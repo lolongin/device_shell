@@ -116,6 +116,10 @@ def test_infer_completed_command_from_terminal_line_supports_token_completion() 
         infer_completed_command_from_terminal_line("cd d", r"lon@HOST C:\Users\74527>cd d:\\")
         == r"cd d:\\"
     )
+    assert (
+        infer_completed_command_from_terminal_line("cat /proc/k", "root@box:~# cat /proc/kbox")
+        == "cat /proc/kbox"
+    )
 
 
 def test_xterm_command_suggestion_does_not_intercept_tab() -> None:
@@ -148,6 +152,8 @@ def test_xterm_page_clears_suggestion_before_history_navigation() -> None:
     assert "event.key === 'ArrowDown'" in page
     assert "shouldClearSuggestionForData(data)" in page
     assert "clearSuggestion();" in page[page.index("term.onData((data) =>") :]
+    assert "scheduleCompletionLineCapture();" in page
+    assert "cacheCompletionLine(currentTerminalLineText())" in page
 
 
 def test_xterm_records_tab_completed_command_from_terminal_line() -> None:
@@ -168,6 +174,29 @@ def test_xterm_records_tab_completed_command_from_terminal_line() -> None:
 
     assert sent == ["\r"]
     assert recorded == [r"cd d:\\"]
+    assert terminal._pending_command_chars == []
+
+
+def test_xterm_caches_tab_completed_line_before_enter() -> None:
+    terminal = XtermWebWidget.__new__(XtermWebWidget)
+    recorded: list[str] = []
+    sent: list[str] = []
+    terminal._raw_sender = sent.append
+    terminal._command_recorder = recorded.append
+    terminal._command_suggestion_provider = None
+    terminal._enter_reconnect_handler = None
+    terminal._pending_command_chars = list("cat /proc/k")
+    terminal._current_command_suggestion = ""
+    terminal._local_echo = False
+    terminal._ready = False
+    terminal._view = None
+
+    terminal._handle_input("\t")
+    terminal.cache_completion_line("root@box:~# cat /proc/kbox")
+    terminal._handle_input_with_terminal_line("\r", "cat /proc/k")
+
+    assert sent == ["\t", "\r"]
+    assert recorded == ["cat /proc/kbox"]
     assert terminal._pending_command_chars == []
 
 
