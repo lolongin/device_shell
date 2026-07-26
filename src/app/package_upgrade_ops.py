@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import time
 from typing import Any
@@ -46,10 +47,13 @@ from ..file_transfer_service import TransferServiceConfig, TransferServiceContro
 from ..package_upgrade import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
+    STANDBY_STORAGE_ABSENT,
+    STANDBY_STORAGE_AVAILABLE,
     PackageFileEntry,
     PackageUpgradeConfig,
     StartupInfo,
     build_cleanup_plan,
+    classify_standby_storage,
     dir_contains_package,
     find_upgrade_failure,
     generate_huawei_upgrade_plan,
@@ -58,6 +62,7 @@ from ..package_upgrade import (
     parse_free_space_bytes,
     startup_uses_package,
 )
+from ..terminal_orchestration import TerminalPlanError, parse_terminal_plan
 
 
 class PackageUpgradeOpsMixin:
@@ -144,7 +149,7 @@ class PackageUpgradeOpsMixin:
         form_layout.addRow("主控路径", self.package_upgrade_master_storage_input)
         form_layout.addRow("备控路径", self.package_upgrade_slave_storage_input)
 
-        self.package_upgrade_include_slave_checkbox = QCheckBox("双主控：同步备控并设置 all / slave-board")
+        self.package_upgrade_include_slave_checkbox = QCheckBox("自动探测双主控并同步备控")
         self.package_upgrade_include_slave_checkbox.setChecked(True)
         form_layout.addRow("", self.package_upgrade_include_slave_checkbox)
         self.package_upgrade_auto_delete_checkbox = QCheckBox("空间不足时自动删除未使用旧 .cc 包")
@@ -265,6 +270,10 @@ class PackageUpgradeOpsMixin:
             operation["message"] = label.text()
 
     def fail_package_upgrade_run(self, key: str, message: str) -> None:
+        run = getattr(self, "package_upgrade_run", None)
+        if isinstance(run, dict):
+            run["cancelled"] = True
+        self.release_package_upgrade_lease()
         self.set_package_upgrade_step_status(key, "停住", message)
         self.package_upgrade_status_label.setText(message)
         self.set_status_message(message)
@@ -274,6 +283,7 @@ class PackageUpgradeOpsMixin:
             operation.update({"status": "failed", "stage": key, "message": message})
 
     def finish_package_upgrade_run(self, message: str) -> None:
+        self.release_package_upgrade_lease()
         self.set_package_upgrade_step_status("confirm", "完成", message)
         self.package_upgrade_status_label.setText(message)
         self.set_status_message(message)
@@ -281,6 +291,44 @@ class PackageUpgradeOpsMixin:
         operation = getattr(self, "package_upgrade_operation_state", None)
         if isinstance(operation, dict):
             operation.update({"status": "completed", "stage": "confirm", "message": message})
+
+    def release_package_upgrade_lease(self) -> None:
+        run = getattr(self, "package_upgrade_run", None)
+        if not isinstance(run, dict):
+            return
+        tab_id = str(run.get("tab_id") or "")
+        owner_id = str(run.get("lease_owner_id") or "")
+        coordinator = getattr(self, "terminal_execution_coordinator", None)
+        if coordinator is not None and tab_id and owner_id:
+            coordinator.release_external_lease(tab_id, owner_id)
+
+    def cancel_package_upgrade_for_user_input(
+        self,
+        tab_id: str,
+        owner_id: str,
+    ) -> None:
+        run = getattr(self, "package_upgrade_run", None)
+        if not isinstance(run, dict):
+            return
+        if (
+            str(run.get("tab_id") or "") != tab_id
+            or str(run.get("lease_owner_id") or "") != owner_id
+        ):
+            return
+        self.fail_package_upgrade_run(
+            str(getattr(self, "package_upgrade_operation_state", {}).get("stage") or "precheck"),
+            "检测到人工终端输入，自动换包已停止。",
+        )
+
+    def package_upgrade_run_is_active(self) -> bool:
+        run = getattr(self, "package_upgrade_run", None)
+        operation = getattr(self, "package_upgrade_operation_state", None)
+        return bool(
+            isinstance(run, dict)
+            and not run.get("cancelled")
+            and isinstance(operation, dict)
+            and operation.get("status") == "running"
+        )
 
     def package_upgrade_status_snapshot(self) -> dict[str, Any]:
         operation = dict(
@@ -409,8 +457,28 @@ class PackageUpgradeOpsMixin:
         if state is None:
             self.set_status_message("目标会话已关闭，停止一键更换。")
             return
+        lease_owner_id = f"package-upgrade:{time.monotonic_ns()}"
+        try:
+            self.terminal_execution_coordinator.acquire_external_lease(
+                tab_id,
+                lease_owner_id,
+                on_cancel=lambda tab_id=tab_id, owner_id=lease_owner_id: (
+                    self.cancel_package_upgrade_for_user_input(tab_id, owner_id)
+                ),
+            )
+        except TerminalPlanError as exc:
+            self.fail_package_upgrade_run(
+                "precheck",
+                f"终端正在执行其他任务，无法开始换包: {exc}",
+            )
+            return
         if hasattr(state.session, "configure_package_upgrade"):
-            state.session.configure_package_upgrade(config.package_path.name, config.package_path.stat().st_size)
+            state.session.configure_package_upgrade(
+                config.package_path.name,
+                config.package_path.stat().st_size,
+                config.username,
+                config.password,
+            )
         self.package_upgrade_one_click_button.setEnabled(False)
         self.reset_package_upgrade_pipeline()
         commands = [
@@ -426,18 +494,28 @@ class PackageUpgradeOpsMixin:
             "precheck_offset": self.package_upgrade_output_offset(state),
             "precheck_commands": commands,
             "precheck_outputs": {},
+            "lease_owner_id": lease_owner_id,
+            "cancelled": False,
         }
         self.package_upgrade_status_label.setText("正在预检设备，请保持终端会话在当前设备。")
         self.set_status_message("正在预检查启动包和存储空间...")
         self._run_package_upgrade_precheck_command(tab_id, 0)
 
     def _run_package_upgrade_precheck_command(self, tab_id: str, index: int) -> None:
+        if not self.package_upgrade_run_is_active():
+            return
         run = getattr(self, "package_upgrade_run", {})
         commands = list(run.get("precheck_commands") or [])
         if index >= len(commands):
             self._finish_package_upgrade_one_click(tab_id)
             return
         command = commands[index]
+        config = run.get("config")
+        is_standby_probe = bool(
+            isinstance(config, PackageUpgradeConfig)
+            and config.include_slave
+            and command == f"dir {config.slave_storage}"
+        )
 
         def done(output: str, tab_id: str = tab_id, index: int = index, command: str = command) -> None:
             run = getattr(self, "package_upgrade_run", {})
@@ -453,6 +531,7 @@ class PackageUpgradeOpsMixin:
             detail=f"{index + 1}/{len(commands)} {command}",
             on_done=done,
             timeout_ms=25_000,
+            stop_on_failure=not is_standby_probe,
         )
 
     def _finish_package_upgrade_one_click(self, tab_id: str) -> None:
@@ -467,8 +546,8 @@ class PackageUpgradeOpsMixin:
         recent_precheck_text = self.package_upgrade_output_since(state, precheck_offset)
         if recent_precheck_text:
             text = recent_precheck_text
-        config = self.package_upgrade_config()
-        if config is None:
+        config = run.get("config")
+        if not isinstance(config, PackageUpgradeConfig):
             self.package_upgrade_one_click_button.setEnabled(True)
             return
         precheck_outputs = run.get("precheck_outputs")
@@ -486,14 +565,41 @@ class PackageUpgradeOpsMixin:
             self.package_upgrade_master_dir_output.setPlainText(text)
             if self.package_upgrade_include_slave_checkbox.isChecked():
                 self.package_upgrade_slave_dir_output.setPlainText(text)
-        self.generate_package_upgrade_script()
+        mode_status = ""
+        if config.include_slave:
+            slave_output = ""
+            if isinstance(precheck_outputs, dict):
+                slave_output = str(precheck_outputs.get(f"dir {config.slave_storage}") or "")
+            standby_state = classify_standby_storage(slave_output, config.slave_storage)
+            if standby_state == STANDBY_STORAGE_ABSENT:
+                config = replace(config, include_slave=False)
+                run["config"] = config
+                mode_status = "未检测到备控，按单主控执行"
+            elif standby_state == STANDBY_STORAGE_AVAILABLE:
+                mode_status = "已检测到备控，按双主控执行"
+            else:
+                self.fail_package_upgrade_run(
+                    "precheck",
+                    "无法确认备控存储是否存在，未自动降级；请检查设备返回或手动关闭自动探测。",
+                )
+                return
         cleanup_entries, blockers, status_lines = self.package_upgrade_safety_report(config)
+        plan_config = replace(config, cleanup_entries=cleanup_entries)
+        self.package_upgrade_script_output.setPlainText(
+            "\n".join(generate_huawei_upgrade_plan(plan_config).commands)
+        )
+        if mode_status:
+            status_lines.insert(0, mode_status)
         if status_lines:
             self.package_upgrade_status_label.setText("；".join(status_lines))
         if blockers:
             self.fail_package_upgrade_run("precheck", "；".join(blockers))
             return
-        self.set_package_upgrade_step_status("precheck", "完成", "空间和启动项已读取")
+        self.set_package_upgrade_step_status(
+            "precheck",
+            "完成",
+            mode_status or "空间和启动项已读取",
+        )
         self._run_package_upgrade_execution(tab_id, config, cleanup_entries)
 
     @staticmethod
@@ -530,6 +636,8 @@ class PackageUpgradeOpsMixin:
         retries_left: int | None = None,
         stop_on_failure: bool = True,
     ) -> None:
+        if not self.package_upgrade_run_is_active():
+            return
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             self.fail_package_upgrade_run(step_key, "目标终端会话已关闭，自动换包停止。")
@@ -544,10 +652,18 @@ class PackageUpgradeOpsMixin:
         started = time.monotonic()
         last_change = started
         last_size = 0
-        self.send_session_text(tab_id, f"{command}\r")
+        run = getattr(self, "package_upgrade_run", {})
+        self.send_session_text(
+            tab_id,
+            f"{command}\r",
+            origin="package_upgrade",
+            execution_id=str(run.get("lease_owner_id") or ""),
+        )
 
         def poll() -> None:
             nonlocal last_change, last_size
+            if not self.package_upgrade_run_is_active():
+                return
             current_state = self.session_tabs_by_id.get(tab_id)
             if current_state is None:
                 self.fail_package_upgrade_run(step_key, "目标终端会话已关闭，自动换包停止。")
@@ -806,30 +922,166 @@ class PackageUpgradeOpsMixin:
             return
         package_name = config.package_path.name
         master_package = f"{config.master_storage.rstrip('/')}/{package_name}"
-        if config.protocol.lower() == "sftp":
-            commands = [
-                f"sftp {config.server_host} {config.port}",
-                config.username,
-                config.password,
-                f"get {package_name} {master_package}",
-                "quit",
-            ]
-        else:
-            commands = [
-                f"ftp {config.server_host} {config.port}",
-                config.username,
-                config.password,
-                "binary",
-                f"get {package_name} {master_package}",
-                "quit",
-            ]
-        self._run_package_upgrade_command_sequence(
-            tab_id,
-            commands,
-            step_key="download",
-            detail="下载目标包",
-            on_done=lambda: self._run_package_upgrade_verify_master(tab_id, config),
+        transfer_timeout = min(
+            3500,
+            max(120, int(package_size / (1024 * 1024)) * 2),
         )
+        if config.protocol.lower() == "sftp":
+            login_success = ["sftp_prompt", "ftp_prompt"]
+            login_responses = [
+                {
+                    "match": "host_key_prompt",
+                    "text": "yes",
+                    "max_matches": 1,
+                },
+                {
+                    "match": "username_prompt",
+                    "secret_ref": "transfer.username",
+                    "max_matches": 1,
+                },
+                {
+                    "match": "password_prompt",
+                    "secret_ref": "transfer.password",
+                    "max_matches": 2,
+                },
+            ]
+            protocol_steps: list[dict[str, Any]] = []
+        else:
+            login_success = ["ftp_prompt"]
+            login_responses = [
+                {
+                    "match": "username_prompt",
+                    "secret_ref": "transfer.username",
+                    "max_matches": 1,
+                },
+                {
+                    "match": "password_prompt",
+                    "secret_ref": "transfer.password",
+                    "max_matches": 1,
+                },
+            ]
+            protocol_steps = [
+                {"type": "send", "text": "binary", "label": "切换二进制模式"},
+                {
+                    "type": "expect",
+                    "success": ["ftp_prompt"],
+                    "failures": ["Error:", "Unknown command"],
+                    "timeout_seconds": 30,
+                    "label": "确认二进制模式",
+                },
+            ]
+        transfer_prompt = "sftp_prompt" if config.protocol.lower() == "sftp" else "ftp_prompt"
+        steps = [
+            {
+                "type": "send",
+                "text": f"{config.protocol.lower()} {config.server_host} {config.port}",
+                "label": f"连接 {config.protocol.upper()} 服务",
+            },
+            {
+                "type": "expect",
+                "success": login_success,
+                "responses": login_responses,
+                "failures": [
+                    "Login incorrect",
+                    "Authentication failed",
+                    "Permission denied",
+                    "Host key verification failed",
+                    "530 ",
+                ],
+                "timeout_seconds": 45,
+                "label": "本地自动登录文件服务",
+            },
+            *protocol_steps,
+            {
+                "type": "send",
+                "text": f"get {package_name} {master_package}",
+                "label": f"下载 {package_name}",
+            },
+            {
+                "type": "expect",
+                "success": [transfer_prompt, "ftp_prompt"],
+                "failures": [
+                    "Error:",
+                    "failed",
+                    "No such file",
+                    "not found",
+                    "timed out",
+                    "Connection closed",
+                ],
+                "timeout_seconds": transfer_timeout,
+                "label": "等待系统包下载完成",
+                "max_output_chars": 32_768,
+            },
+            {"type": "send", "text": "quit", "label": "退出文件客户端"},
+            {
+                "type": "expect",
+                "success": ["device_prompt"],
+                "failures": ["Error:"],
+                "timeout_seconds": 30,
+                "label": "返回设备命令行",
+            },
+        ]
+        try:
+            plan = parse_terminal_plan(
+                steps,
+                total_timeout_seconds=min(3600, transfer_timeout + 120),
+            )
+            runner = self.terminal_execution_coordinator.start(
+                session_id=tab_id,
+                device_id=str(getattr(self.session_tabs_by_id.get(tab_id), "device_id", "")),
+                plan=plan,
+                lease_owner_id=str(
+                    getattr(self, "package_upgrade_run", {}).get("lease_owner_id")
+                    or ""
+                ),
+            )
+        except TerminalPlanError as exc:
+            self.fail_package_upgrade_run(
+                "download",
+                f"下载流程无法启动: {exc}",
+            )
+            return
+        run = getattr(self, "package_upgrade_run", None)
+        if isinstance(run, dict):
+            run["download_execution_id"] = runner.execution_id
+        operation = getattr(self, "package_upgrade_operation_state", None)
+        if isinstance(operation, dict):
+            operation["execution_id"] = runner.execution_id
+        self.set_package_upgrade_step_status(
+            "download",
+            "进行中",
+            f"本地自动登录并下载 {package_name}",
+        )
+        runner.add_done_callback(
+            lambda completed, tab_id=tab_id, config=config: (
+                self._finish_package_upgrade_download_execution(
+                    tab_id,
+                    config,
+                    completed.public_dict(),
+                )
+            )
+        )
+
+    def _finish_package_upgrade_download_execution(
+        self,
+        tab_id: str,
+        config: PackageUpgradeConfig,
+        result: dict[str, Any],
+    ) -> None:
+        if result.get("status") != "completed":
+            failed_step = int(result.get("current_step", 0))
+            message = str(result.get("message") or "文件下载交互未完成。")
+            self.fail_package_upgrade_run(
+                "download",
+                f"下载步骤 {failed_step} 失败: {message}",
+            )
+            return
+        self.set_package_upgrade_step_status(
+            "download",
+            "完成",
+            "文件服务登录和系统包下载完成",
+        )
+        self._run_package_upgrade_verify_master(tab_id, config)
 
     def _run_package_upgrade_verify_master(self, tab_id: str, config: PackageUpgradeConfig) -> None:
         package_name = config.package_path.name
@@ -971,7 +1223,13 @@ class PackageUpgradeOpsMixin:
         self.set_package_upgrade_step_status("confirm", "进行中", "发送 reboot 并等待重启完成")
         offset = self.package_upgrade_output_offset(state)
         started = time.monotonic()
-        self.send_session_text(tab_id, "reboot\r")
+        run = getattr(self, "package_upgrade_run", {})
+        self.send_session_text(
+            tab_id,
+            "reboot\r",
+            origin="package_upgrade",
+            execution_id=str(run.get("lease_owner_id") or ""),
+        )
         self._wait_package_upgrade_reboot_completion(tab_id, offset, started)
 
     def _wait_package_upgrade_reboot_completion(self, tab_id: str, offset: int, started: float) -> None:
@@ -1093,7 +1351,11 @@ class PackageUpgradeOpsMixin:
             self.set_status_message("目标终端会话已关闭，停止发送换包命令。")
             return
         command = commands[index]
-        self.send_session_text(tab_id, f"{command}\r")
+        self.send_session_text(
+            tab_id,
+            f"{command}\r",
+            origin="package_upgrade",
+        )
         if QTimer is None:
             self._send_package_upgrade_commands(tab_id, commands, index + 1)
             return

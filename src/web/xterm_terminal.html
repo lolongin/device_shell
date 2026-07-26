@@ -374,6 +374,10 @@
         focus() {
           term.focus();
         },
+        scrollToLiveInput() {
+          term.clearSelection();
+          term.scrollToBottom();
+        },
         fit() {
           fitAndNotify();
         },

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QTimer, Qt
     from PySide6.QtWidgets import (
         QFrame,
         QGroupBox,
@@ -23,6 +23,7 @@ try:
         QWidget,
     )
 except ModuleNotFoundError:
+    QTimer = None
     Qt = None
     QFrame = None
     QGroupBox = None
@@ -56,11 +57,80 @@ from ..app_control_server import (
     AppControlHttpServer,
     default_audit_path,
 )
+from ..managed_file_transfer import ManagedTransferError
 from ..terminal_execution import incremental_terminal_output
+from ..terminal_orchestration import (
+    TerminalPlanError,
+    TerminalExecutionCoordinator,
+    TerminalInput,
+    build_batch_plan,
+    parse_terminal_plan,
+)
 
 
 class AiDeviceOpsMixin:
     """Expose a guarded device-operation surface for AI planners."""
+
+    def initialize_terminal_execution_coordinator(self) -> None:
+        def schedule(delay_ms: int, callback: Any) -> None:
+            if QTimer is None:
+                callback()
+                return
+            QTimer.singleShot(max(0, delay_ms), callback)
+
+        self.terminal_execution_coordinator = TerminalExecutionCoordinator(
+            send_input=self._send_terminal_execution_input,
+            resolve_secret=self._resolve_terminal_execution_secret,
+            schedule=schedule,
+        )
+
+    def _send_terminal_execution_input(
+        self,
+        session_id: str,
+        payload: TerminalInput,
+        execution_id: str,
+    ) -> None:
+        if payload.sensitive:
+            self.arm_sensitive_session_echo(session_id, payload.text.rstrip("\r\n"))
+        self.send_session_text(
+            session_id,
+            payload.text,
+            origin="ai_execution",
+            execution_id=execution_id,
+            sensitive=payload.sensitive,
+            secret_ref=payload.secret_ref,
+        )
+
+    def _resolve_terminal_execution_secret(self, secret_ref: str) -> str:
+        if secret_ref == "file_transfer.username":
+            service = getattr(self, "transfer_service", None)
+            config = getattr(service, "config", None)
+            if service is not None and service.is_running and config is not None:
+                return config.username
+            if hasattr(self, "transfer_username_input"):
+                return self.transfer_username_input.text().strip()
+            return str(getattr(self, "transfer_username", "")).strip()
+        if secret_ref == "file_transfer.password":
+            service = getattr(self, "transfer_service", None)
+            config = getattr(service, "config", None)
+            if service is not None and service.is_running and config is not None:
+                return config.password
+            if hasattr(self, "transfer_password_input"):
+                return self.transfer_password_input.text()
+            return str(getattr(self, "transfer_password", ""))
+        if secret_ref == "transfer.username":
+            if hasattr(self, "package_upgrade_username_input"):
+                return self.package_upgrade_username_input.text().strip()
+            if hasattr(self, "transfer_username_input"):
+                return self.transfer_username_input.text().strip()
+            return str(getattr(self, "transfer_username", "")).strip()
+        if secret_ref == "transfer.password":
+            if hasattr(self, "package_upgrade_password_input"):
+                return self.package_upgrade_password_input.text()
+            if hasattr(self, "transfer_password_input"):
+                return self.transfer_password_input.text()
+            return str(getattr(self, "transfer_password", ""))
+        raise KeyError(secret_ref)
 
     def _build_ai_device_panel(self) -> QWidget:
         panel = QWidget()
@@ -128,6 +198,7 @@ class AiDeviceOpsMixin:
         self.ai_external_approve_button.setEnabled(False)
         self.ai_external_reject_button = QPushButton("拒绝")
         self.ai_external_reject_button.setObjectName("compactGhostButton")
+        self.ai_external_reject_button.setProperty("buttonRole", "danger")
         self.ai_external_reject_button.setEnabled(False)
         approval_row.addWidget(self.ai_external_approve_button, 1)
         approval_row.addWidget(self.ai_external_reject_button, 1)
@@ -434,6 +505,9 @@ class AiDeviceOpsMixin:
             "session_manage": self._execute_ai_session_manage,
             "terminal_execute_start": self._execute_ai_terminal_start,
             "terminal_execution_snapshot": self._execute_ai_terminal_snapshot,
+            "terminal_plan_start": self._execute_ai_terminal_plan_start,
+            "terminal_execution_get": self._execute_ai_terminal_execution_get,
+            "terminal_execution_cancel": self._execute_ai_terminal_execution_cancel,
             "list_devices": self._execute_ai_list_devices,
             "select_device": self._execute_ai_select_device,
             "open_session": self._execute_ai_open_session,
@@ -441,6 +515,10 @@ class AiDeviceOpsMixin:
             "read_terminal": self._execute_ai_read_terminal,
             "run_package_upgrade": self._execute_ai_package_upgrade,
             "get_package_upgrade_status": self._execute_ai_package_upgrade_status,
+            "list_managed_transfer_files": self._execute_ai_managed_transfer_list,
+            "start_managed_file_transfer": self._execute_ai_managed_transfer_start,
+            "get_managed_file_transfer": self._execute_ai_managed_transfer_get,
+            "cancel_managed_file_transfer": self._execute_ai_managed_transfer_cancel,
         }
         handler = handlers.get(guarded_action.kind)
         if handler is None:
@@ -456,7 +534,7 @@ class AiDeviceOpsMixin:
         operation = getattr(self, "package_upgrade_operation_state", {})
         active_operations = int(
             isinstance(operation, dict) and operation.get("status") == "running"
-        )
+        ) + int(getattr(self, "managed_transfer_active_count", lambda: 0)())
         return AiDeviceToolResult(
             action,
             ok=True,
@@ -603,7 +681,11 @@ class AiDeviceOpsMixin:
                 "命令不能为空。",
                 http_status=400,
             )
-        self.send_session_text(state.tab_id, f"{command}\r")
+        self.send_session_text(
+            state.tab_id,
+            f"{command}\r",
+            origin="ai_execution",
+        )
         return AiDeviceToolResult(
             action,
             ok=True,
@@ -656,6 +738,100 @@ class AiDeviceOpsMixin:
             },
         )
 
+    def _execute_ai_terminal_plan_start(self, action: AiDeviceAction) -> AiDeviceToolResult:
+        state, failure = self._ai_resolve_session(action, require_connected=True)
+        if failure is not None:
+            return failure
+        assert state is not None
+        try:
+            plan_kind = str(action.params.get("plan_kind") or "")
+            if plan_kind == "batch":
+                plan = build_batch_plan(
+                    list(action.params.get("commands") or []),
+                    command_timeout_seconds=float(
+                        action.params.get("command_timeout_seconds", 30)
+                    ),
+                    total_timeout_seconds=float(
+                        action.params.get("total_timeout_seconds", 60)
+                    ),
+                    max_output_chars=int(
+                        action.params.get("max_output_chars_per_step", 16_384)
+                    ),
+                )
+            else:
+                plan = parse_terminal_plan(
+                    list(action.params.get("steps") or []),
+                    total_timeout_seconds=float(
+                        action.params.get("total_timeout_seconds", 60)
+                    ),
+                )
+            runner = self.terminal_execution_coordinator.start(
+                session_id=state.tab_id,
+                device_id=state.device_id,
+                plan=plan,
+                idempotency_key=str(
+                    action.params.get("coordinator_idempotency_key") or ""
+                ),
+            )
+        except TerminalPlanError as exc:
+            http_status = 409 if exc.code == "session_busy" else 400
+            return self._ai_failure(
+                action,
+                exc.code,
+                str(exc),
+                http_status=http_status,
+            )
+        snapshot = runner.public_dict()
+        snapshot["_completion_event"] = runner.completion_event
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=f"终端执行已启动: {runner.execution_id}",
+            data=snapshot,
+        )
+
+    def _execute_ai_terminal_execution_get(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        execution_id = str(action.params.get("execution_id") or "")
+        try:
+            runner = self.terminal_execution_coordinator.get(execution_id)
+        except TerminalPlanError as exc:
+            return self._ai_failure(
+                action,
+                exc.code,
+                str(exc),
+                http_status=404,
+            )
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=f"终端执行状态: {runner.status}",
+            data=runner.public_dict(),
+        )
+
+    def _execute_ai_terminal_execution_cancel(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        execution_id = str(action.params.get("execution_id") or "")
+        try:
+            runner = self.terminal_execution_coordinator.cancel(execution_id)
+        except TerminalPlanError as exc:
+            return self._ai_failure(
+                action,
+                exc.code,
+                str(exc),
+                http_status=404,
+            )
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=f"终端执行已取消: {execution_id}",
+            data=runner.public_dict(),
+        )
+
     def _execute_ai_list_devices(self, action: AiDeviceAction) -> AiDeviceToolResult:
         snapshots = self.ai_device_snapshots()
         return AiDeviceToolResult(
@@ -695,7 +871,11 @@ class AiDeviceOpsMixin:
         command = action.command.strip()
         if not command:
             return AiDeviceToolResult(action, ok=False, message="命令不能为空。")
-        self.send_session_text(state.tab_id, f"{command}\r")
+        self.send_session_text(
+            state.tab_id,
+            f"{command}\r",
+            origin="ai_execution",
+        )
         return AiDeviceToolResult(action, ok=True, message=f"已发送命令: {command}", data={"tab_id": state.tab_id})
 
     def _execute_ai_read_terminal(self, action: AiDeviceAction) -> AiDeviceToolResult:
@@ -748,6 +928,96 @@ class AiDeviceOpsMixin:
             ok=True,
             message=str(snapshot.get("message") or "已读取自动换包状态。"),
             data=snapshot,
+        )
+
+    def _execute_ai_managed_transfer_list(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        try:
+            data = self.managed_transfer_file_list(
+                relative_path=str(action.params.get("path") or ""),
+                recursive=bool(action.params.get("recursive", True)),
+                limit=int(action.params.get("limit", 200)),
+            )
+        except ManagedTransferError as exc:
+            return self._ai_failure(
+                action,
+                exc.code,
+                str(exc),
+                http_status=404
+                if exc.code in {"transfer_root_unavailable", "transfer_source_not_found"}
+                else 400,
+            )
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=f"共享目录中有 {data['count']} 个可传文件。",
+            data=data,
+        )
+
+    def _execute_ai_managed_transfer_start(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        try:
+            data = self.start_managed_file_transfer(
+                device_id=action.device_id,
+                source_path=str(action.params.get("source_path") or ""),
+                destination_path=str(action.params.get("destination_path") or ""),
+                overwrite=bool(action.params.get("overwrite", False)),
+            )
+        except ManagedTransferError as exc:
+            return self._ai_failure(
+                action,
+                exc.code,
+                str(exc),
+                http_status=404
+                if exc.code in {"device_not_found", "transfer_source_not_found"}
+                else 409,
+            )
+        ok = data.get("status") != "failed"
+        return AiDeviceToolResult(
+            action,
+            ok=ok,
+            message=str(data.get("message") or "托管文件传输已启动。"),
+            data=data,
+            error_code=str(data.get("error_code") or "") if not ok else "",
+            http_status=409,
+        )
+
+    def _execute_ai_managed_transfer_get(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        try:
+            data = self.managed_transfer_status_snapshot(
+                str(action.params.get("operation_id") or "")
+            )
+        except ManagedTransferError as exc:
+            return self._ai_failure(action, exc.code, str(exc), http_status=404)
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=str(data.get("message") or "已读取文件传输状态。"),
+            data=data,
+        )
+
+    def _execute_ai_managed_transfer_cancel(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        try:
+            data = self.cancel_managed_file_transfer(
+                str(action.params.get("operation_id") or "")
+            )
+        except ManagedTransferError as exc:
+            return self._ai_failure(action, exc.code, str(exc), http_status=404)
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=str(data.get("message") or "文件传输已取消。"),
+            data=data,
         )
 
     def _ai_device(self, device_id: str) -> Any | None:

@@ -37,7 +37,17 @@ class DeviceTabState:
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
+    tab_close_slot: QWidget | None = None
     tab_close_button: QToolButton | None = None
+
+
+@dataclass(slots=True)
+class SessionInputRecord:
+    text: str
+    origin: str = "internal"
+    execution_id: str = ""
+    sensitive: bool = False
+    secret_ref: str = ""
 
 
 @dataclass(slots=True)
@@ -69,13 +79,18 @@ class SessionTabState:
     auto_response_running_rules: set[tuple[object, ...]] = field(default_factory=set)
     auto_response_rule_run_tokens: dict[tuple[object, ...], int] = field(default_factory=dict)
     pending_input_text: str = ""
+    pending_input_records: list[SessionInputRecord] = field(default_factory=list)
     input_flush_scheduled: bool = False
+    sensitive_echo_value: str = ""
+    sensitive_echo_buffer: str = ""
+    sensitive_echo_deadline: float = 0.0
     user_input_seen: bool = False
     suppress_auto_response_until_input: bool = True
     terminal_ready_wait_attempts: int = 0
     tab_title_label: QLabel | None = None
     tab_header: QWidget | None = None
     tab_status_dot: QLabel | None = None
+    tab_close_slot: QWidget | None = None
     tab_close_button: QToolButton | None = None
     connecting: bool = False
     status_text: str = "Disconnected"

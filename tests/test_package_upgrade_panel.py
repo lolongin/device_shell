@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +28,7 @@ def test_package_upgrade_panel_exists_in_left_sidebar(app: QApplication) -> None
     assert "华为" not in window.package_upgrade_one_click_button.text()
     assert window.package_upgrade_auto_delete_checkbox.isChecked()
     assert window.package_upgrade_include_slave_checkbox.isChecked()
+    assert "自动探测双主控" in window.package_upgrade_include_slave_checkbox.text()
     assert window.package_upgrade_reboot_checkbox.isChecked()
     assert not window.package_upgrade_reboot_checkbox.isHidden()
     assert window.package_upgrade_startup_output.parent() is None
@@ -115,3 +117,60 @@ def test_package_upgrade_safety_report_blocks_unconfirmed_space(
 
     assert "无法确认主控剩余空间" in blockers
     assert "无法确认备控剩余空间" in blockers
+
+
+def test_one_click_precheck_downgrades_absent_standby_to_single_controller(
+    app: QApplication,
+    tmp_path,
+) -> None:
+    _ = app
+    package = tmp_path / "target.cc"
+    package.write_bytes(b"0" * 1024)
+    window = DeviceDesktopApp()
+    window.package_upgrade_file_input.setText(str(package))
+    config = window.package_upgrade_config()
+    assert config is not None
+
+    tab_id = "upgrade-single-controller"
+    window.session_tabs_by_id[tab_id] = SimpleNamespace(
+        recent_output_buffer="",
+        terminal=SimpleNamespace(toPlainText=lambda: ""),
+    )
+    window.package_upgrade_operation_state = {
+        "status": "running",
+        "stage": "precheck",
+        "message": "",
+    }
+    window.package_upgrade_run = {
+        "tab_id": tab_id,
+        "config": config,
+        "precheck_offset": 0,
+        "precheck_outputs": {
+            "display startup": (
+                "Current startup system software: flash:/current.cc\n"
+                "Next startup system software: flash:/current.cc\n"
+            ),
+            f"dir {config.master_storage}": (
+                "Directory of flash:/\n"
+                "1,048,576 KB total (256,000 KB free)\n"
+            ),
+            f"dir {config.slave_storage}": "Error: The device does not exist.\n",
+        },
+        "cancelled": False,
+    }
+    captured: dict[str, object] = {}
+    window._run_package_upgrade_execution = (
+        lambda received_tab_id, received_config, cleanup_entries: captured.update(
+            tab_id=received_tab_id,
+            config=received_config,
+            cleanup_entries=cleanup_entries,
+        )
+    )
+
+    window._finish_package_upgrade_one_click(tab_id)
+
+    effective_config = captured["config"]
+    assert effective_config.include_slave is False
+    assert captured["tab_id"] == tab_id
+    assert "未检测到备控，按单主控执行" in window.package_upgrade_status_label.text()
+    assert "slave#flash:/" not in window.package_upgrade_script_output.toPlainText()

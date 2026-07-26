@@ -6,13 +6,24 @@ import html
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 try:
     from PySide6.QtCore import QObject, QEvent, QMimeData, QPoint, Qt, QTimer, QUrl, Signal, Slot
-    from PySide6.QtGui import QAction, QColor, QDrag, QFont, QIcon, QKeySequence, QPixmap, QTextBlockFormat
+    from PySide6.QtGui import (
+        QAction,
+        QColor,
+        QDrag,
+        QFont,
+        QFontMetrics,
+        QIcon,
+        QKeySequence,
+        QPixmap,
+        QTextBlockFormat,
+    )
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -53,6 +64,7 @@ except ModuleNotFoundError:
     QColor = None
     QDrag = None
     QFont = None
+    QFontMetrics = None
     QIcon = None
     QKeySequence = None
     QPixmap = None
@@ -89,7 +101,7 @@ except ImportError:
     QWebChannel = None
     QWebEngineView = None
 
-from ..app_state import DeviceTabState, SessionTabState
+from ..app_state import DeviceTabState, SessionInputRecord, SessionTabState
 from ..auto_response import (
     AutoResponseAction,
     AutoResponseRule,
@@ -292,6 +304,7 @@ if QDialog is not None:
             pattern_input.setPlaceholderText("设备打印了什么就填什么，例如 Password: / Ctrl+B")
             remove_button = QPushButton("删除步骤")
             remove_button.setObjectName("compactGhostButton")
+            remove_button.setProperty("buttonRole", "danger")
             remove_button.setFixedWidth(68)
 
             header_layout.addWidget(QLabel("如果终端出现"))
@@ -381,6 +394,7 @@ if QDialog is not None:
             self.fit_response_target_combo_popup(target_combo)
             remove_button = QPushButton("删除")
             remove_button.setObjectName("compactGhostButton")
+            remove_button.setProperty("buttonRole", "danger")
             remove_button.setFixedWidth(48)
             response_label = QLabel("")
 
@@ -2906,15 +2920,7 @@ class SessionOpsMixin:
         self.left_sidebar_compact = compact_left
         if getattr(self, "left_sidebar_active_panel", "devices") != "devices":
             return
-        if not show_home and has_sessions:
-            if mode_changed and self.left_sidebar_collapsed:
-                self.left_sidebar_collapsed = False
-                self.apply_left_sidebar_state()
-            elif mode_changed or compact_changed:
-                self.apply_left_sidebar_state()
-        elif mode_changed:
-            self.apply_left_sidebar_state()
-        elif compact_changed:
+        if mode_changed or compact_changed:
             self.apply_left_sidebar_state()
 
     def show_web_home(self) -> None:
@@ -2922,6 +2928,7 @@ class SessionOpsMixin:
         self.left_sidebar_active_panel = "devices"
         self.left_device_workspace_expanded = True
         self.left_sidebar_collapsed = False
+        self.terminal_sidebar_collapsed = False
         if hasattr(self, "left_sidebar_stack"):
             self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
@@ -2931,13 +2938,9 @@ class SessionOpsMixin:
     def show_terminal_workspace(self) -> None:
         if self.session_tab_widget.count() <= 0:
             return
-        was_in_terminal = getattr(self, "center_stage_mode", "home") != "home"
         self.center_stage_mode = "sessions"
         self.left_sidebar_active_panel = "devices"
         self.left_device_workspace_expanded = True
-        if was_in_terminal and self.left_sidebar_collapsed:
-            self.terminal_sidebar_collapsed = False
-        self.left_sidebar_collapsed = False
         if hasattr(self, "left_sidebar_stack"):
             self.left_sidebar_stack.setCurrentIndex(0)
         self.update_center_stage_state()
@@ -3490,8 +3493,7 @@ class SessionOpsMixin:
         existing = self.device_tabs_by_id.get(device.id)
         if existing is not None:
             existing.title = display_name
-            if existing.tab_title_label is not None:
-                existing.tab_title_label.setText(display_name)
+            self._refresh_tab_title(existing)
             index = self.session_tab_widget.indexOf(existing.page)
             if index >= 0:
                 self.session_tab_widget.setCurrentIndex(index)
@@ -3669,7 +3671,13 @@ class SessionOpsMixin:
             status_text="Connecting",
         )
 
-        terminal.set_raw_sender(lambda text, tab_id=tab_id: self.send_session_text(tab_id, text))
+        terminal.set_raw_sender(
+            lambda text, tab_id=tab_id: self.send_session_text(
+                tab_id,
+                text,
+                origin="user",
+            )
+        )
         terminal.set_command_recorder(lambda command, state=state: self.remember_command_history(command, state=state))
         if hasattr(terminal, "set_command_suggestion_provider"):
             terminal.set_command_suggestion_provider(
@@ -3696,11 +3704,15 @@ class SessionOpsMixin:
             state,
             close_callback=lambda page=state.page: self.close_device_tab_for_page(page),
             close_tooltip="关闭设备会话",
-            min_label_width=112,
-            header_height=23,
-            dot_size=8,
-            close_slot_size=(21, 19),
-            close_button_size=15,
+            tab_level="device",
+            min_label_width=48,
+            max_label_width=160,
+            header_height=20,
+            dot_size=7,
+            close_slot_size=(18, 18),
+            close_button_size=14,
+            layout_margins=(5, 1, 0, 1),
+            layout_spacing=5,
         )
         self._install_device_context_menu_on_tab_header(state.device_id, state)
 
@@ -3711,11 +3723,15 @@ class SessionOpsMixin:
             state,
             close_callback=lambda page=state.page: self.close_session_tab_for_page(page),
             close_tooltip="关闭会话",
-            min_label_width=44,
-            header_height=20,
+            tab_level="session",
+            min_label_width=36,
+            max_label_width=110,
+            header_height=18,
             dot_size=6,
             close_slot_size=(17, 16),
             close_button_size=13,
+            layout_margins=(5, 0, 0, 0),
+            layout_spacing=4,
         )
         self._install_device_context_menu_on_tab_header(state.device_id, state)
 
@@ -3740,6 +3756,8 @@ class SessionOpsMixin:
                     )
                 )
             else:
+                widget.setProperty("deviceTabId", device_id)
+                widget.installEventFilter(self)
                 widget.customContextMenuRequested.connect(
                     lambda pos, widget=widget, device_id=device_id: self.show_device_quick_context_menu(
                         device_id,
@@ -3755,33 +3773,43 @@ class SessionOpsMixin:
         state: DeviceTabState | SessionTabState,
         close_callback: Callable[[], None],
         close_tooltip: str,
+        tab_level: str,
         min_label_width: int,
+        max_label_width: int,
         header_height: int,
         dot_size: int,
         close_slot_size: tuple[int, int],
         close_button_size: int,
+        layout_margins: tuple[int, int, int, int],
+        layout_spacing: int,
     ) -> None:
         if QToolButton is None:
             return
         header = QWidget(tab_widget)
         header.setObjectName("tabHeader")
+        header.setProperty("tabLevel", tab_level)
         header.setFixedHeight(header_height)
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(7, 2, 0, 2)
-        layout.setSpacing(5)
+        layout.setContentsMargins(*layout_margins)
+        layout.setSpacing(layout_spacing)
 
         dot = QLabel(header)
         dot.setObjectName("tabStatusDot")
+        dot.setProperty("tabLevel", tab_level)
         dot.setFixedSize(dot_size, dot_size)
         layout.addWidget(dot, 0, Qt.AlignVCenter)
 
         label = QLabel(state.title, header)
         label.setObjectName("tabHeaderLabel")
+        label.setProperty("tabLevel", tab_level)
+        label.setProperty("maxTitleWidth", max_label_width)
         label.setMinimumWidth(min_label_width)
+        label.setMaximumWidth(max_label_width)
         layout.addWidget(label, 1)
 
         close_slot = QWidget(tab_widget.tabBar())
-        close_slot.setObjectName("tabHeader")
+        close_slot.setObjectName("tabCloseSlot")
+        close_slot.setProperty("tabLevel", tab_level)
         close_slot.setFixedSize(*close_slot_size)
         close_layout = QHBoxLayout(close_slot)
         close_layout.setContentsMargins(0, 1, 4, 1)
@@ -3789,6 +3817,7 @@ class SessionOpsMixin:
 
         button = QToolButton(close_slot)
         button.setObjectName("tabCloseButton")
+        button.setProperty("tabLevel", tab_level)
         button.setText("×")
         button.setAutoRaise(True)
         button.setFixedSize(close_button_size, close_button_size)
@@ -3802,11 +3831,111 @@ class SessionOpsMixin:
         state.tab_title_label = label
         state.tab_header = header
         state.tab_status_dot = dot
+        state.tab_close_slot = close_slot
         state.tab_close_button = button
+        owner_property = "sessionTabId" if isinstance(state, SessionTabState) else "deviceTabId"
+        owner_value = state.tab_id if isinstance(state, SessionTabState) else state.device_id
+        for widget in (header, label, dot, close_slot, button):
+            widget.setProperty(owner_property, owner_value)
+            widget.installEventFilter(self)
         tab_widget.setTabText(index, "")
         tab_widget.tabBar().setTabButton(index, QTabBar.LeftSide, header)
         tab_widget.tabBar().setTabButton(index, QTabBar.RightSide, close_slot)
         self._refresh_tab_header_styles()
+
+    def eventFilter(self, watched: Any, event: Any) -> bool:  # noqa: N802
+        state = self._tab_header_state_for_widget(watched)
+        if state is not None and QEvent is not None:
+            event_type = event.type()
+            if event_type == QEvent.Enter:
+                if state.tab_header is not None:
+                    state.tab_header.setProperty("hovered", True)
+                self._refresh_tab_header_styles()
+            elif event_type == QEvent.Leave:
+                QTimer.singleShot(0, lambda state=state: self._finish_tab_header_leave(state))
+            elif (
+                event_type == QEvent.MouseButtonRelease
+                and event.button() == Qt.MiddleButton
+            ):
+                if isinstance(state, SessionTabState):
+                    self.close_session_tab(state.tab_id)
+                else:
+                    self.close_device_tab_for_page(state.page)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _tab_header_state_for_widget(
+        self,
+        widget: Any,
+    ) -> DeviceTabState | SessionTabState | None:
+        if not hasattr(widget, "property"):
+            return None
+        session_id = str(widget.property("sessionTabId") or "")
+        if session_id:
+            return self.session_tabs_by_id.get(session_id)
+        device_id = str(widget.property("deviceTabId") or "")
+        if device_id:
+            return self.device_tabs_by_id.get(device_id)
+        return None
+
+    def _finish_tab_header_leave(
+        self,
+        state: DeviceTabState | SessionTabState,
+    ) -> None:
+        hovered = any(
+            widget is not None and widget.underMouse()
+            for widget in (
+                state.tab_header,
+                state.tab_close_slot,
+                state.tab_close_button,
+            )
+        )
+        if state.tab_header is not None:
+            state.tab_header.setProperty("hovered", hovered)
+        self._refresh_tab_header_styles()
+
+    def _refresh_tab_title(
+        self,
+        state: DeviceTabState | SessionTabState,
+    ) -> None:
+        label = state.tab_title_label
+        if label is None:
+            return
+        full_title = state.title
+        max_width = int(label.property("maxTitleWidth") or label.maximumWidth())
+        visible_title = (
+            QFontMetrics(label.font()).elidedText(full_title, Qt.ElideRight, max_width)
+            if QFontMetrics is not None
+            else full_title
+        )
+        label.setText(visible_title)
+        if isinstance(state, SessionTabState):
+            tooltip = "\n".join(
+                (
+                    full_title,
+                    f"{self.session_kind_label(state.kind)} · {state.host}:{state.port}",
+                    state.status_text,
+                )
+            )
+        else:
+            children = self._session_states_for_device(state.device_id)
+            endpoints = []
+            for child in children[:3]:
+                endpoints.append(
+                    f"{self.session_kind_label(child.kind)} · {child.host}:{child.port}"
+                )
+            tooltip_lines = [
+                full_title,
+                state.device_id,
+                self._device_connection_state(state).title(),
+                *endpoints,
+            ]
+            if len(children) > 3:
+                tooltip_lines.append(f"另有 {len(children) - 3} 个会话")
+            tooltip = "\n".join(tooltip_lines)
+        for widget in (state.tab_header, label, state.tab_status_dot):
+            if widget is not None:
+                widget.setToolTip(tooltip)
 
     def _tab_connection_state(self, state: SessionTabState) -> str:
         if state.connecting:
@@ -3818,7 +3947,7 @@ class SessionOpsMixin:
         return "error"
 
     def refresh_session_header(self, state: SessionTabState) -> None:
-        del state
+        self._refresh_tab_title(state)
 
     def _device_connection_state(self, state: DeviceTabState) -> str:
         child_states = self._session_states_for_device(state.device_id)
@@ -3836,6 +3965,11 @@ class SessionOpsMixin:
         selected: bool,
         connection_state: str,
     ) -> None:
+        self._refresh_tab_title(state)
+        hovered = bool(
+            state.tab_header is not None
+            and state.tab_header.property("hovered")
+        )
         if state.tab_header is not None:
             state.tab_header.setProperty("selected", selected)
             state.tab_header.style().unpolish(state.tab_header)
@@ -3853,6 +3987,8 @@ class SessionOpsMixin:
             state.tab_status_dot.update()
         if state.tab_close_button is not None:
             state.tab_close_button.setProperty("selected", selected)
+            state.tab_close_button.setProperty("hovered", hovered)
+            state.tab_close_button.setVisible(selected or hovered)
             state.tab_close_button.style().unpolish(state.tab_close_button)
             state.tab_close_button.style().polish(state.tab_close_button)
             state.tab_close_button.update()
@@ -4091,6 +4227,9 @@ class SessionOpsMixin:
             return
         previous_status = state.status_text
         state.status_text = status
+        coordinator = getattr(self, "terminal_execution_coordinator", None)
+        if coordinator is not None:
+            coordinator.on_session_state(tab_id, status)
 
         if status in {"Connecting", "Connected"}:
             state.reconnect_hint_visible = False
@@ -4131,14 +4270,77 @@ class SessionOpsMixin:
         if state is None or not message:
             return
 
-        state.output_cursor += len(message)
-        state.recent_output_buffer = (state.recent_output_buffer + message)[-120_000:]
+        coordinator = getattr(self, "terminal_execution_coordinator", None)
+        execution_was_active = bool(
+            coordinator is not None
+            and coordinator.active_execution_id(tab_id)
+        )
+        message = self.filter_sensitive_session_echo(state, message)
+        if not message:
+            return
+        safe_message = (
+            coordinator.redact_output(tab_id, message)
+            if coordinator is not None
+            else message
+        )
+        state.output_cursor += len(safe_message)
+        state.recent_output_buffer = (
+            state.recent_output_buffer + safe_message
+        )[-120_000:]
         state.output_buffer_start_cursor = (
             state.output_cursor - len(state.recent_output_buffer)
         )
-        state.terminal.append_output(message)
-        self.write_session_log(state, "OUT", message)
-        self.apply_auto_response_rules(state, message)
+        state.terminal.append_output(safe_message)
+        self.write_session_log(state, "OUT", safe_message)
+        if coordinator is not None:
+            coordinator.on_output(tab_id, message)
+        if not execution_was_active and (
+            coordinator is None or not coordinator.active_execution_id(tab_id)
+        ):
+            self.apply_auto_response_rules(state, safe_message)
+
+    def arm_sensitive_session_echo(self, tab_id: str, value: str) -> None:
+        state = self.session_tabs_by_id.get(tab_id)
+        if state is None or not value:
+            return
+        state.sensitive_echo_value = value
+        state.sensitive_echo_buffer = ""
+        state.sensitive_echo_deadline = time.monotonic() + 2.0
+
+    @staticmethod
+    def filter_sensitive_session_echo(state: SessionTabState, message: str) -> str:
+        secret = str(getattr(state, "sensitive_echo_value", "") or "")
+        if not secret:
+            return message
+        if time.monotonic() > float(
+            getattr(state, "sensitive_echo_deadline", 0.0) or 0.0
+        ):
+            prefix = str(getattr(state, "sensitive_echo_buffer", "") or "")
+            state.sensitive_echo_value = ""
+            state.sensitive_echo_buffer = ""
+            state.sensitive_echo_deadline = 0.0
+            return prefix + message
+        pending = str(getattr(state, "sensitive_echo_buffer", "") or "")
+        output: list[str] = []
+        for index, char in enumerate(message):
+            candidate = pending + char
+            if secret.startswith(candidate):
+                pending = candidate
+                if pending == secret:
+                    pending = ""
+                    state.sensitive_echo_value = ""
+                    state.sensitive_echo_deadline = 0.0
+                    output.append(message[index + 1 :])
+                    break
+                continue
+            output.append(pending)
+            output.append(message[index:])
+            pending = ""
+            state.sensitive_echo_value = ""
+            state.sensitive_echo_deadline = 0.0
+            break
+        state.sensitive_echo_buffer = pending
+        return "".join(output)
 
     def apply_auto_response_rules(self, state: SessionTabState, message: str) -> None:
         selected_state = self.current_session_state()
@@ -4808,11 +5010,33 @@ class SessionOpsMixin:
             return ""
         return source_state.tab_id
 
-    def send_session_text(self, tab_id: str, text: str) -> None:
+    def send_session_text(
+        self,
+        tab_id: str,
+        text: str,
+        *,
+        origin: str = "internal",
+        execution_id: str = "",
+        sensitive: bool = False,
+        secret_ref: str = "",
+    ) -> None:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             return
 
+        coordinator = getattr(self, "terminal_execution_coordinator", None)
+        if origin == "user" and coordinator is not None:
+            cancelled_id = coordinator.cancel_for_user_input(tab_id)
+            if cancelled_id:
+                state.pending_input_records = [
+                    record
+                    for record in getattr(state, "pending_input_records", [])
+                    if record.execution_id != cancelled_id
+                ]
+                state.pending_input_text = "".join(
+                    record.text for record in state.pending_input_records
+                )
+                self.set_status_message("已停止 AI 执行，终端由你接管。")
         rule_buttons_need_refresh = bool(
             text and state.suppress_auto_response_until_input and not state.user_input_seen
         )
@@ -4823,7 +5047,19 @@ class SessionOpsMixin:
                 self.refresh_auto_response_rule_buttons()
         if text == "\x7f":
             text = "\x08" if state.kind in {"device", "serial"} else "\x7f"
-        self.log_session_input(state, text)
+        if not sensitive:
+            self.log_session_input(state, text)
+        if not hasattr(state, "pending_input_records"):
+            state.pending_input_records = []
+        state.pending_input_records.append(
+            SessionInputRecord(
+                text=text,
+                origin=origin,
+                execution_id=execution_id,
+                sensitive=sensitive,
+                secret_ref=secret_ref,
+            )
+        )
         state.pending_input_text += text
         if state.input_flush_scheduled:
             return
@@ -4837,7 +5073,9 @@ class SessionOpsMixin:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
             return
-        text = state.pending_input_text
+        records = list(getattr(state, "pending_input_records", []))
+        text = "".join(record.text for record in records) or state.pending_input_text
+        state.pending_input_records = []
         state.pending_input_text = ""
         state.input_flush_scheduled = False
         if not text:

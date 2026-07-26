@@ -1034,6 +1034,11 @@ class InteractiveTerminal(QPlainTextEdit):
     def set_command_recorder(self, recorder: Callable[[str], None]) -> None:
         self._command_recorder = recorder
 
+    def scroll_to_live_input(self) -> None:
+        """Reveal the terminal cursor after leaving a historical scroll position."""
+        self._restore_terminal_cursor()
+        self.ensureCursorVisible()
+
     def resizeEvent(self, event: Any) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._sync_terminal_tab_stop()

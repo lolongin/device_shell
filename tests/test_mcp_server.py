@@ -18,11 +18,18 @@ def test_mcp_server_exposes_device_control_tools() -> None:
         "session_manage",
         "session_open",
         "terminal_execute",
+        "terminal_execute_batch",
+        "terminal_interact",
         "terminal_send_command",
         "terminal_read",
+        "execution_get",
+        "execution_cancel",
+        "file_transfer_list",
+        "file_transfer_start",
         "package_upgrade_start",
         "approval_get",
         "operation_get",
+        "operation_cancel",
     }
 
     send_tool = next(tool for tool in tools if tool.name == "terminal_send_command")
@@ -34,5 +41,21 @@ def test_mcp_server_exposes_device_control_tools() -> None:
     assert "session_id" in execute_tool.inputSchema["properties"]
     assert "device_id" in execute_tool.inputSchema["properties"]
 
+    batch_tool = next(tool for tool in tools if tool.name == "terminal_execute_batch")
+    assert batch_tool.inputSchema["required"] == ["commands"]
+    assert "mode" in batch_tool.inputSchema["properties"]
+
+    interact_tool = next(tool for tool in tools if tool.name == "terminal_interact")
+    assert interact_tool.inputSchema["required"] == ["steps"]
+    assert "total_timeout_seconds" in interact_tool.inputSchema["properties"]
+
     manage_tool = next(tool for tool in tools if tool.name == "session_manage")
     assert manage_tool.inputSchema["required"] == ["action"]
+
+    transfer_tool = next(tool for tool in tools if tool.name == "file_transfer_start")
+    assert transfer_tool.inputSchema["required"] == [
+        "device_id",
+        "source_path",
+        "destination_path",
+    ]
+    assert "overwrite" in transfer_tool.inputSchema["properties"]

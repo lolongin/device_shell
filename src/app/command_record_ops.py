@@ -42,6 +42,7 @@ class CommandRecordOpsMixin:
         if state is None:
             self.set_status_message("命令已记录，当前没有打开的终端会话。")
             return
+        state.terminal.scroll_to_live_input()
         self.send_session_text(state.tab_id, self.command_record_payload(command))
         self.focus_current_terminal(force=True)
 

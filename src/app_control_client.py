@@ -147,6 +147,118 @@ class AppControlClient:
             request_timeout_seconds=timeout_seconds + 5,
         )
 
+    def terminal_execute_batch(
+        self,
+        commands: list[str],
+        *,
+        session_id: str | None = None,
+        device_id: str | None = None,
+        command_timeout_seconds: int = 30,
+        total_timeout_seconds: int | None = None,
+        max_output_chars_per_step: int = 16_384,
+        mode: str = "auto",
+        approval_token: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "commands": commands,
+            "session_id": session_id,
+            "device_id": device_id,
+            "command_timeout_seconds": command_timeout_seconds,
+            "max_output_chars_per_step": max_output_chars_per_step,
+            "mode": mode,
+            "approval_token": approval_token,
+            "idempotency_key": idempotency_key,
+        }
+        if total_timeout_seconds is not None:
+            payload["total_timeout_seconds"] = total_timeout_seconds
+        request_timeout = (
+            min(total_timeout_seconds, 60) + 5
+            if total_timeout_seconds is not None
+            else 65
+        )
+        return self._request(
+            "POST",
+            "/v1/terminal/execute-batch",
+            payload,
+            request_timeout_seconds=request_timeout,
+        )
+
+    def terminal_interact(
+        self,
+        steps: list[dict[str, Any]],
+        *,
+        session_id: str | None = None,
+        device_id: str | None = None,
+        total_timeout_seconds: int = 60,
+        mode: str = "auto",
+        approval_token: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/terminal/interact",
+            {
+                "steps": steps,
+                "session_id": session_id,
+                "device_id": device_id,
+                "total_timeout_seconds": total_timeout_seconds,
+                "mode": mode,
+                "approval_token": approval_token,
+                "idempotency_key": idempotency_key,
+            },
+            request_timeout_seconds=min(total_timeout_seconds, 60) + 5,
+        )
+
+    def execution_get(self, execution_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/executions/{quote(execution_id, safe='')}")
+
+    def execution_cancel(self, execution_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/executions/cancel",
+            {"execution_id": execution_id},
+        )
+
+    def file_transfer_list(
+        self,
+        *,
+        path: str = "",
+        recursive: bool = True,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        query = urlencode(
+            {
+                "path": path,
+                "recursive": "true" if recursive else "false",
+                "limit": limit,
+            }
+        )
+        return self._request("GET", f"/v1/file-transfer/files?{query}")
+
+    def file_transfer_start(
+        self,
+        device_id: str,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+        approval_token: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/file-transfer/start",
+            {
+                "device_id": device_id,
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "overwrite": overwrite,
+                "approval_token": approval_token,
+                "idempotency_key": idempotency_key,
+            },
+        )
+
     def package_upgrade_start(
         self,
         device_id: str,
@@ -169,6 +281,13 @@ class AppControlClient:
 
     def operation_get(self, operation_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/operations/{operation_id}")
+
+    def operation_cancel(self, operation_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/operations/cancel",
+            {"operation_id": operation_id},
+        )
 
     def _request(
         self,

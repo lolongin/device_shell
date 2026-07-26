@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -58,6 +59,56 @@ class FakeBackend:
                 ok=True,
                 message="换包已完成。",
                 data={"status": "completed", "stage": "confirm"},
+            )
+        if action.kind == "list_managed_transfer_files":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="读取到 1 个文件。",
+                data={
+                    "files": [
+                        {
+                            "relative_path": "target.cc",
+                            "name": "target.cc",
+                            "size_bytes": 1024,
+                        }
+                    ],
+                    "count": 1,
+                    "truncated": False,
+                },
+            )
+        if action.kind == "start_managed_file_transfer":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="传输已启动。",
+                data={
+                    "operation_id": "transfer-1",
+                    "status": "running",
+                    "stage": "prechecking",
+                },
+            )
+        if action.kind == "get_managed_file_transfer":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="传输已完成。",
+                data={
+                    "operation_id": "transfer-1",
+                    "status": "completed",
+                    "stage": "completed",
+                },
+            )
+        if action.kind == "cancel_managed_file_transfer":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="传输已取消。",
+                data={
+                    "operation_id": "transfer-1",
+                    "status": "cancelled",
+                    "stage": "cancelled",
+                },
             )
         return AiDeviceToolResult(action, ok=True, message="执行成功。")
 
@@ -134,6 +185,69 @@ class ReliabilityBackend:
                 ok=True,
                 message="snapshot",
                 data=dict(snapshot),
+            )
+        return AiDeviceToolResult(action, ok=True, message="ok")
+
+
+@dataclass
+class OrchestrationBackend:
+    actions: list[AiDeviceAction]
+
+    def execute_ai_device_action(
+        self,
+        action: AiDeviceAction,
+        *,
+        approved: bool = False,
+    ) -> AiDeviceToolResult:
+        _ = approved
+        self.actions.append(action)
+        if action.kind == "terminal_plan_start":
+            completed = threading.Event()
+            completed.set()
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="started",
+                data={
+                    "execution_id": "execution-1",
+                    "session_id": "session-1",
+                    "device_id": "SIM-TERMINAL",
+                    "status": "running",
+                    "_completion_event": completed,
+                },
+            )
+        if action.kind == "terminal_execution_get":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="completed",
+                data={
+                    "execution_id": "execution-1",
+                    "session_id": "session-1",
+                    "device_id": "SIM-TERMINAL",
+                    "status": "completed",
+                    "steps": [
+                        {
+                            "index": 0,
+                            "type": "send",
+                            "status": "completed",
+                            "label": "display version",
+                        },
+                        {
+                            "index": 1,
+                            "type": "expect",
+                            "status": "completed",
+                            "output": "SimOS V2\n<sim> ",
+                        },
+                    ],
+                },
+            )
+        if action.kind == "terminal_execution_cancel":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="cancelled",
+                data={"execution_id": "execution-1", "status": "cancelled"},
             )
         return AiDeviceToolResult(action, ok=True, message="ok")
 
@@ -306,6 +420,80 @@ def test_package_upgrade_creates_queryable_operation() -> None:
     assert queried["data"]["operation"]["status"] == "completed"
 
 
+def test_managed_file_transfer_creates_queryable_operation() -> None:
+    service, backend = make_service()
+
+    list_status, listed = service.invoke(
+        "file_transfer_list",
+        {"path": "", "recursive": True, "limit": 20},
+    )
+    start_status, started = service.invoke(
+        "file_transfer_start",
+        {
+            "device_id": "SIM-TERMINAL",
+            "source_path": "target.cc",
+            "destination_path": "flash:/target.cc",
+            "overwrite": False,
+        },
+    )
+    operation_id = started["data"]["operation_id"]
+    query_status, queried = service.invoke(
+        "operation_get",
+        {"operation_id": operation_id},
+    )
+
+    assert list_status == 200
+    assert listed["data"]["files"][0]["relative_path"] == "target.cc"
+    assert start_status == 200
+    assert operation_id == "transfer-1"
+    assert query_status == 200
+    assert queried["data"]["operation"]["kind"] == "managed_file_transfer"
+    assert queried["data"]["operation"]["status"] == "completed"
+    assert [action.kind for action, _approved in backend.actions] == [
+        "list_managed_transfer_files",
+        "start_managed_file_transfer",
+        "get_managed_file_transfer",
+    ]
+
+
+def test_managed_file_transfer_requires_explicit_boolean_overwrite() -> None:
+    service, backend = make_service()
+
+    status, response = service.invoke(
+        "file_transfer_start",
+        {
+            "device_id": "SIM-TERMINAL",
+            "source_path": "target.cc",
+            "destination_path": "flash:/target.cc",
+            "overwrite": "yes",
+        },
+    )
+
+    assert status == 400
+    assert response["error"]["code"] == "invalid_request"
+    assert backend.actions == []
+
+
+def test_managed_file_transfer_operation_can_be_cancelled() -> None:
+    service, _backend = make_service()
+    _status, started = service.invoke(
+        "file_transfer_start",
+        {
+            "device_id": "SIM-TERMINAL",
+            "source_path": "target.cc",
+            "destination_path": "flash:/target.cc",
+        },
+    )
+
+    cancel_status, cancelled = service.invoke(
+        "operation_cancel",
+        {"operation_id": started["data"]["operation_id"]},
+    )
+
+    assert cancel_status == 200
+    assert cancelled["data"]["operation"]["status"] == "cancelled"
+
+
 def test_unknown_approval_mode_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEVICE_TUI_APPROVAL_MODE", "unexpected")
 
@@ -462,6 +650,66 @@ def test_terminal_execute_disconnect_preserves_partial_output() -> None:
     assert response["error"]["code"] == "session_disconnected"
     assert response["data"]["status"] == "disconnected"
     assert response["data"]["output"] == "rebooting now..."
+
+
+def test_terminal_execute_batch_waits_on_local_completion_event() -> None:
+    backend = OrchestrationBackend(actions=[])
+    service = AppControlService(backend)
+
+    status, response = service.invoke(
+        "terminal_execute_batch",
+        {
+            "session_id": "session-1",
+            "commands": ["display version", "dir flash:/"],
+            "total_timeout_seconds": 30,
+        },
+    )
+
+    assert status == 200
+    assert response["data"]["status"] == "completed"
+    assert [action.kind for action in backend.actions] == [
+        "terminal_plan_start",
+        "terminal_execution_get",
+    ]
+    assert backend.actions[0].risk == RiskLevel.LOW
+
+
+def test_long_terminal_interaction_returns_async_execution() -> None:
+    backend = OrchestrationBackend(actions=[])
+    service = AppControlService(backend)
+
+    status, response = service.invoke(
+        "terminal_interact",
+        {
+            "session_id": "session-1",
+            "steps": [
+                {"type": "send", "text": "ftp 192.0.2.10 2121"},
+                {"type": "expect", "success": ["ftp_prompt"]},
+            ],
+            "total_timeout_seconds": 120,
+        },
+    )
+
+    assert status == 200
+    assert response["data"]["status"] == "running"
+    assert [action.kind for action in backend.actions] == ["terminal_plan_start"]
+    assert backend.actions[0].risk == RiskLevel.FLOW
+
+
+def test_terminal_interaction_rejects_unapproved_secret_reference() -> None:
+    service, backend = make_service()
+
+    status, response = service.invoke(
+        "terminal_interact",
+        {
+            "device_id": "SIM-TERMINAL",
+            "steps": [{"type": "send", "secret_ref": "environment.PASSWORD"}],
+        },
+    )
+
+    assert status == 400
+    assert response["error"]["code"] == "secret_ref_not_allowed"
+    assert backend.actions == []
 
 
 def test_audit_log_redacts_secrets(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
@@ -282,6 +282,8 @@ def test_device_navigation_button_collapses_terminal_sidebar(app: QApplication) 
     _ = app
     window = DeviceDesktopApp()
     window.session_tab_widget.addTab(QWidget(), "Session")
+    window.left_sidebar_collapsed = False
+    window.apply_left_sidebar_state()
     window.show_terminal_workspace()
     window.show()
     QApplication.processEvents()
@@ -303,6 +305,119 @@ def test_device_navigation_button_collapses_terminal_sidebar(app: QApplication) 
     assert window.left_sidebar_shell.maximumWidth() == 46
 
 
+def test_sidebar_splitter_persists_width_only_after_user_release(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.left_sidebar_collapsed = False
+    window.terminal_sidebar_width = 420
+    window.apply_left_sidebar_state()
+
+    window.handle_main_splitter_moved(500, 1)
+
+    assert window.terminal_sidebar_width == 420
+
+    window.handle_main_splitter_drag_started()
+    window.handle_main_splitter_moved(500, 1)
+
+    assert window.left_sidebar_user_dragging
+    assert window.terminal_sidebar_width == 420
+
+    window.handle_main_splitter_drag_finished(500)
+
+    assert not window.left_sidebar_user_dragging
+    assert window.terminal_sidebar_width == window.clamp_left_sidebar_open_width(500)
+
+
+@pytest.mark.parametrize(
+    ("released_width", "collapsed", "preferred_width"),
+    [
+        (180, True, 420),
+        (181, False, 300),
+        (299, False, 300),
+        (300, False, 300),
+    ],
+)
+def test_sidebar_splitter_release_snap_rules(
+    app: QApplication,
+    released_width: int,
+    collapsed: bool,
+    preferred_width: int,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.left_sidebar_collapsed = False
+    window.terminal_sidebar_width = 420
+    window.apply_left_sidebar_state()
+    window.show()
+    QApplication.processEvents()
+
+    window.handle_main_splitter_drag_started()
+    window.handle_main_splitter_drag_finished(released_width)
+
+    assert window.left_sidebar_collapsed is collapsed
+    assert window.terminal_sidebar_width == preferred_width
+    assert window.main_splitter.sizes()[0] == (
+        window.ACTIVITY_RAIL_WIDTH if collapsed else preferred_width
+    )
+
+
+def test_sidebar_toggle_restores_preferred_open_width(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.left_sidebar_collapsed = True
+    window.terminal_sidebar_width = 430
+    window.apply_left_sidebar_state()
+    window.show()
+    QApplication.processEvents()
+
+    window.toggle_left_sidebar()
+
+    assert not window.left_sidebar_collapsed
+    assert window.main_splitter.sizes()[0] == window.clamp_left_sidebar_open_width(430)
+
+
+def test_sidebar_release_and_restore_has_no_artificial_maximum(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.resize(1700, 1000)
+    window.left_sidebar_collapsed = False
+    window.apply_left_sidebar_state()
+    window.show()
+    QApplication.processEvents()
+
+    window.handle_main_splitter_drag_started()
+    window.handle_main_splitter_drag_finished(900)
+
+    assert window.terminal_sidebar_width == 900
+    assert window.main_splitter.sizes()[0] == 900
+
+    window.toggle_left_sidebar()
+    window.toggle_left_sidebar()
+
+    assert window.terminal_sidebar_width == 900
+    assert window.main_splitter.sizes()[0] == 900
+
+
+def test_sidebar_collapse_range_shows_release_hint_and_pauses_density(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.left_sidebar_collapsed = False
+    window.apply_left_sidebar_state()
+
+    window.handle_main_splitter_drag_started()
+    window.handle_main_splitter_moved(180, 1)
+
+    handle = window.main_splitter.handle(1)
+    assert handle.property("collapseHint") is True
+    assert handle.toolTip() == "释放以收起"
+    assert window.device_table._density_adaptation_paused
+
+    window.handle_main_splitter_drag_finished(181)
+
+    assert handle.property("collapseHint") is False
+    assert not window.device_table._density_adaptation_paused
+
+
 def test_transfer_log_uses_workspace_context_menu(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
@@ -317,6 +432,8 @@ def test_activity_rail_omits_terminal_button_while_sessions_remain_accessible(ap
 
     assert not hasattr(window, "activity_terminal_button")
 
+    window.left_sidebar_collapsed = False
+    window.apply_left_sidebar_state()
     window.session_tab_widget.addTab(QWidget(), "Session")
     window.update_center_stage_state()
 
@@ -337,7 +454,7 @@ def test_activity_rail_omits_terminal_button_while_sessions_remain_accessible(ap
 
     window.show_terminal_workspace()
 
-    assert not window.left_sidebar_collapsed
+    assert window.left_sidebar_collapsed
 
 
 def test_activity_rail_tools_toggle_and_home_restores_full_dashboard(app: QApplication) -> None:
@@ -413,8 +530,8 @@ def test_terminal_sidebar_stops_stale_width_animation(app: QApplication) -> None
     QApplication.processEvents()
 
     assert window.left_sidebar_animation is None
-    assert window.left_sidebar_shell.minimumWidth() == 480
-    assert window.left_sidebar_shell.maximumWidth() == 820
+    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_MIN_WIDTH
+    assert window.left_sidebar_shell.maximumWidth() == window.SIDEBAR_UNBOUNDED_MAX_WIDTH
 
 
 def test_terminal_workspace_keeps_native_control_surfaces(
@@ -517,8 +634,11 @@ def test_session_quick_bar_can_resize_and_hide(app: QApplication) -> None:
 
 def test_terminal_workspace_uses_workspace_style_overrides() -> None:
     assert "/* Terminal workspace shell */" in APP_STYLE
+    assert "/* Compact flat terminal tabs */" in APP_STYLE
     assert "QTabWidget#sessionTabs::pane" in APP_STYLE
+    assert "border-bottom: 2px solid #22c55e" in APP_STYLE
     assert "QTabWidget#deviceSessionTabs QTabBar::tab:selected" in APP_STYLE
+    assert 'QLabel#tabStatusDot[tabLevel="session"]' in APP_STYLE
     assert "QFrame#sessionQuickBar" in APP_STYLE
     assert "QFrame#sessionQuickRestoreBar" in APP_STYLE
     assert "QFrame#sessionJumpResizeHandle" in APP_STYLE
@@ -527,6 +647,55 @@ def test_terminal_workspace_uses_workspace_style_overrides() -> None:
     assert "QLabel#terminalSessionCountPill" in APP_STYLE
     assert "QFrame#commandRecordDock" in APP_STYLE
     assert "border-color: #22c55e" in APP_STYLE
+
+
+def test_terminal_tabs_use_compact_two_level_headers(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.open_simulated_session()
+    window.open_simulated_session()
+    QApplication.processEvents()
+
+    device_state = next(iter(window.device_tabs_by_id.values()))
+    sessions = list(window.session_tabs_by_id.values())
+    inactive_session, active_session = sessions
+
+    assert device_state.tab_header.height() == 20
+    assert device_state.tab_status_dot.property("tabLevel") == "device"
+    assert device_state.tab_status_dot.width() == 7
+    assert not device_state.tab_close_button.isHidden()
+
+    assert active_session.tab_header.height() == 18
+    assert active_session.tab_status_dot.property("tabLevel") == "session"
+    assert active_session.tab_status_dot.width() == 6
+    assert not active_session.tab_close_button.isHidden()
+    assert inactive_session.tab_close_button.isHidden()
+
+    QApplication.sendEvent(inactive_session.tab_header, QEvent(QEvent.Enter))
+    assert not inactive_session.tab_close_button.isHidden()
+    QApplication.sendEvent(inactive_session.tab_header, QEvent(QEvent.Leave))
+    QApplication.processEvents()
+    assert inactive_session.tab_close_button.isHidden()
+
+    inactive_session.title = "模拟终端会话名称非常非常长，需要在标签中省略显示"
+    window._refresh_tab_title(inactive_session)
+    assert inactive_session.tab_title_label.text() != inactive_session.title
+    assert inactive_session.title in inactive_session.tab_title_label.toolTip()
+    assert "localhost:0" in inactive_session.tab_title_label.toolTip()
+
+    closed: list[str] = []
+    monkeypatch.setattr(window, "close_session_tab", closed.append)
+    middle_release = SimpleNamespace(
+        type=lambda: QEvent.MouseButtonRelease,
+        button=lambda: Qt.MiddleButton,
+    )
+    assert window.eventFilter(inactive_session.tab_header, middle_release)
+    assert closed == [inactive_session.tab_id]
+
+    window.close()
 
 
 def test_workspace_dialog_style_overrides() -> None:
@@ -556,6 +725,39 @@ def test_native_workspace_foundation_style_overrides() -> None:
     assert "QSplitter::handle:hover" in APP_STYLE
     assert "selection-background-color: #24324a" in APP_STYLE
     assert "color: #718096;" in APP_STYLE
+
+
+def test_global_button_system_defines_shared_roles_and_states() -> None:
+    assert "/* Global button system */" in APP_STYLE
+    assert "QPushButton#primaryButton" in APP_STYLE
+    assert 'QPushButton[buttonRole="danger"]' in APP_STYLE
+    assert 'QToolButton#commandActionButton[buttonRole="primary"]' in APP_STYLE
+    assert 'QToolButton#commandActionButton[buttonRole="danger"]' in APP_STYLE
+    assert "QPushButton:pressed" in APP_STYLE
+    assert "QPushButton:focus" in APP_STYLE
+    assert "QPushButton:disabled" in APP_STYLE
+    assert "QToolButton#activityRailButton:checked" in APP_STYLE
+
+
+def test_global_button_geometry_and_command_roles(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.show()
+    QApplication.processEvents()
+
+    assert window.connection_telnet_button.height() == 28
+    assert window.toolbar_refresh_button.height() == 24
+    assert window.quick_reconnect_button.width() == 24
+    assert window.quick_reconnect_button.height() == 24
+    assert window.activity_home_button.width() == 34
+    assert window.activity_home_button.height() == 34
+    assert window.command_broadcast_button.property("buttonRole") == "secondary"
+    assert window.command_send_button.property("buttonRole") == "primary"
+    assert window.command_clear_button.property("buttonRole") == "danger"
+    assert window.transfer_stop_button.property("buttonRole") == "danger"
+    assert window.ai_external_reject_button.property("buttonRole") == "danger"
+
+    window.close()
 
 
 def test_oled_final_cascade_overrides_legacy_native_palette() -> None:
@@ -1287,7 +1489,7 @@ def test_device_table_avoids_resize_to_contents_for_large_lists(app: QApplicatio
         assert header.sectionResizeMode(column) != QHeaderView.ResizeToContents
 
 
-def test_device_table_stretch_column_stops_after_content_fits(app: QApplication) -> None:
+def test_device_table_stretch_column_consumes_remaining_width(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
     window.devices = window.repository.fetch_devices()[:3]
@@ -1310,10 +1512,97 @@ def test_device_table_stretch_column_stops_after_content_fits(app: QApplication)
     QApplication.processEvents()
     table._spread()
 
-    assert table.columnWidth(1) == fitted_width
+    assert table.columnWidth(1) > fitted_width
     assert table.columnWidth(1) >= 200
-    assert table.columnWidth(5) > 106
+    assert table.columnWidth(5) == 106
     assert sum(table.columnWidth(column) for column in range(table.columnCount())) >= table.viewport().width()
+
+
+def test_device_table_switches_columns_by_viewport_width(app: QApplication) -> None:
+    _ = app
+    host = QWidget()
+    host.resize(900, 500)
+    table = VirtualDeviceTable(lambda _table: None, lambda _table, _field: None, host)
+    table.setColumnCount(6)
+    table.setHorizontalHeaderLabels(["序号", "设备", "板类型", "CPU", "Slot", "状态"])
+    for column, width in enumerate((92, 200, 118, 86, 72, 106)):
+        table.setColumnWidth(column, width)
+    table.resize(700, 300)
+    table.show()
+    host.show()
+    QApplication.processEvents()
+    table.set_responsive_density_enabled(True)
+    table._spread()
+    assert table.responsive_density == table.DENSITY_FULL
+    assert table.visible_columns() == (0, 1, 2, 3, 4, 5)
+
+    table.resize(450, 300)
+    table._spread()
+    assert table.responsive_density == table.DENSITY_MEDIUM
+    assert table.visible_columns() == (0, 1, 2, 3, 5)
+
+    table.resize(300, 300)
+    table._spread()
+    assert table.responsive_density == table.DENSITY_COMPACT
+    assert table.visible_columns() == (0, 1, 5)
+
+
+def test_device_table_density_uses_breakpoint_hysteresis(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    table = window.device_table
+    table.set_responsive_density_enabled(True)
+    table._apply_density(table.DENSITY_COMPACT)
+
+    assert table._density_for_width(355) == table.DENSITY_COMPACT
+    assert table._density_for_width(356) == table.DENSITY_MEDIUM
+
+    table._apply_density(table.DENSITY_MEDIUM)
+
+    assert table._density_for_width(535) == table.DENSITY_MEDIUM
+    assert table._density_for_width(536) == table.DENSITY_FULL
+
+
+def test_device_table_compact_group_row_relocates_title_and_count(
+    app: QApplication,
+    sample_device,
+) -> None:
+    _ = app
+    first = replace(sample_device, id="GROUP-A", board_id="0001")
+    second = replace(sample_device, id="GROUP-B", board_id="0002")
+    window = DeviceDesktopApp()
+    window.devices = [first, second]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+    table = window.device_table
+
+    table._apply_density(table.DENSITY_COMPACT)
+
+    assert table.item(0, 0).text() == sample_device.name
+    assert table.columnSpan(0, 0) == 2
+    assert table.item(0, 5).text() == ""
+    assert "2 块板" in table.item(0, 0).toolTip()
+
+
+def test_device_table_hidden_fields_remain_in_row_tooltips(app: QApplication, sample_device) -> None:
+    _ = app
+    device = replace(
+        sample_device,
+        id="TOOLTIP-DEVICE",
+        cpu="ARM-X",
+        extra={**sample_device.extra, "slot_id": "SLOT-X", "board_type": "Core Board"},
+    )
+    window = DeviceDesktopApp()
+    window.devices = [device]
+    window.rebuild_device_indexes()
+    window.apply_filters()
+
+    for column in range(window.device_table.columnCount()):
+        tooltip = window.device_table.item(0, column).toolTip()
+        assert "TOOLTIP-DEVICE" in tooltip
+        assert "Core Board" in tooltip
+        assert "ARM-X" in tooltip
+        assert "SLOT-X" in tooltip
 
 
 def test_web_shell_payload_includes_selected_device(app: QApplication, sample_device) -> None:
@@ -1839,10 +2128,10 @@ def test_left_device_pool_stays_visible_across_home_and_sessions(
 
     assert not window.left_sidebar_collapsed
     assert not window.left_sidebar_compact
-    assert window.left_sidebar_shell.minimumWidth() == 480
-    assert window.left_sidebar_shell.maximumWidth() == 820
-    assert window.left_sidebar_content.minimumWidth() == 420
-    assert window.left_sidebar_content.maximumWidth() == 760
+    assert window.left_sidebar_shell.minimumWidth() == window.TERMINAL_SIDEBAR_MIN_WIDTH
+    assert window.left_sidebar_shell.maximumWidth() == window.SIDEBAR_UNBOUNDED_MAX_WIDTH
+    assert window.left_sidebar_content.minimumWidth() == 0
+    assert window.left_sidebar_content.maximumWidth() == window.SIDEBAR_UNBOUNDED_MAX_WIDTH
     window.handle_main_splitter_moved(500, 1)
     assert window.terminal_sidebar_width == window.TERMINAL_SIDEBAR_WIDTH
     assert not window.device_navigation_header.isHidden()
@@ -1895,15 +2184,15 @@ def test_device_table_groups_duplicate_device_names(app: QApplication, sample_de
 
     assert window.device_table.rowCount() == 5
     assert window.device_table.item(0, 0).text() == sample_device.name
-    assert window.device_table.columnSpan(0, 0) == 2
+    assert window.device_table.columnSpan(0, 0) == 5
     assert window.device_table.item(0, 0).background().color().name() == "#08101d"
     assert window.device_table.item(0, 0).foreground().color().name() == "#f8fafc"
-    assert window.device_table.item(0, 2).foreground().color().name() == "#718096"
-    assert window.device_table.item(0, 2).text() == "2 块板"
+    assert window.device_table.item(0, 5).foreground().color().name() == "#718096"
+    assert window.device_table.item(0, 5).text() == "2 块板"
     assert window.device_table.item(1, 0).text() == "0001"
     assert window.device_table.item(1, 1).text() == "Main Board"
-    assert window.device_table.item(1, 0).toolTip() == "0001"
-    assert window.device_table.item(1, 1).toolTip() == sample_device.name
+    assert "TEST-001-A" in window.device_table.item(1, 0).toolTip()
+    assert sample_device.name in window.device_table.item(1, 1).toolTip()
     assert window.device_table.item(1, 2).text() == "Main Board"
     assert window.device_table.item(2, 0).text() == "0002"
     assert window.device_table.item(2, 2).text() == "Line Board"

@@ -206,6 +206,10 @@ class XtermWebWidget(QWidget):
             return
         self._queue_write(text)
 
+    def scroll_to_live_input(self) -> None:
+        """Leave xterm scrollback and reveal the live input location."""
+        self._run_terminal_js("scrollToLiveInput()")
+
     def clear_terminal(self) -> None:
         self._run_terminal_js("clear()")
 

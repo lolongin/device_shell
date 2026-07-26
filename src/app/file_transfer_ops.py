@@ -130,6 +130,7 @@ class FileTransferOpsMixin:
         self.transfer_start_button.setObjectName("primaryButton")
         self.transfer_stop_button = QPushButton("停止")
         self.transfer_stop_button.setObjectName("compactGhostButton")
+        self.transfer_stop_button.setProperty("buttonRole", "danger")
         self.transfer_stop_button.setEnabled(False)
         action_row.addWidget(self.transfer_start_button, 1)
         action_row.addWidget(self.transfer_stop_button)

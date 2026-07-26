@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -50,6 +51,9 @@ class _SessionHarness(SessionOpsMixin):
     def refresh_auto_response_rule_buttons(self) -> None:
         pass
 
+    def set_status_message(self, _message: str) -> None:
+        pass
+
 
 def test_session_input_is_batched_until_next_ui_tick(monkeypatch: object) -> None:
     callbacks: list[Any] = []
@@ -77,3 +81,55 @@ def test_session_input_is_batched_until_next_ui_tick(monkeypatch: object) -> Non
 
     asyncio.run(harness.coroutines[0])
     assert harness.session.sent == ["ab"]
+
+
+def test_user_input_drops_unsent_ai_execution_input(monkeypatch: object) -> None:
+    callbacks: list[Any] = []
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_interval: int, callback: Any) -> None:  # noqa: N802
+            callbacks.append(callback)
+
+    class FakeCoordinator:
+        def cancel_for_user_input(self, _tab_id: str) -> str:
+            return "execution-1"
+
+    monkeypatch.setattr(session_ops_module, "QTimer", FakeTimer)
+    harness = _SessionHarness()
+    harness.terminal_execution_coordinator = FakeCoordinator()
+
+    harness.send_session_text(
+        "tab",
+        "stale-password\r",
+        origin="ai_execution",
+        execution_id="execution-1",
+        sensitive=True,
+    )
+    harness.send_session_text("tab", "display version\r", origin="user")
+
+    assert harness.state.pending_input_text == "display version\r"
+    assert [record.origin for record in harness.state.pending_input_records] == ["user"]
+
+    callbacks[0]()
+    asyncio.run(harness.coroutines[0])
+    assert harness.session.sent == ["display version\r"]
+
+
+def test_sensitive_echo_filter_handles_character_chunks_and_no_echo() -> None:
+    state = SimpleNamespace(
+        sensitive_echo_value="secret",
+        sensitive_echo_buffer="",
+        sensitive_echo_deadline=time.monotonic() + 2,
+    )
+
+    assert SessionOpsMixin.filter_sensitive_session_echo(state, "s") == ""
+    assert SessionOpsMixin.filter_sensitive_session_echo(state, "ec") == ""
+    assert SessionOpsMixin.filter_sensitive_session_echo(state, "ret\nPassword: ") == "\nPassword: "
+    assert state.sensitive_echo_value == ""
+
+    state.sensitive_echo_value = "secret"
+    state.sensitive_echo_buffer = ""
+    state.sensitive_echo_deadline = time.monotonic() + 2
+    assert SessionOpsMixin.filter_sensitive_session_echo(state, "230 Logged in") == "230 Logged in"
+    assert state.sensitive_echo_value == ""

@@ -35,6 +35,7 @@ class TransferServiceController:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._bound_port = 0
+        self._config: TransferServiceConfig | None = None
 
     @property
     def is_running(self) -> bool:
@@ -47,6 +48,21 @@ class TransferServiceController:
     @property
     def bound_port(self) -> int:
         return self._bound_port
+
+    @property
+    def config(self) -> TransferServiceConfig | None:
+        config = self._config
+        if config is None:
+            return None
+        return TransferServiceConfig(
+            protocol=config.protocol,
+            host=config.host,
+            port=config.port,
+            root=config.root,
+            username=config.username,
+            password=config.password,
+            writable=config.writable,
+        )
 
     def start(self, config: TransferServiceConfig) -> None:
         with self._lock:
@@ -63,6 +79,15 @@ class TransferServiceController:
             else:
                 raise RuntimeError(f"不支持的传输协议: {config.protocol}")
             self._protocol = protocol
+            self._config = TransferServiceConfig(
+                protocol=protocol,
+                host=config.host,
+                port=self._bound_port or config.port,
+                root=config.root,
+                username=config.username,
+                password=config.password,
+                writable=config.writable,
+            )
 
     def stop(self) -> None:
         with self._lock:
@@ -89,6 +114,7 @@ class TransferServiceController:
             self._sftp_acceptor = None
             self._protocol = ""
             self._bound_port = 0
+            self._config = None
 
         if thread is not None:
             thread.join(timeout=3)

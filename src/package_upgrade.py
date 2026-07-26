@@ -10,6 +10,9 @@ from pathlib import Path
 CC_SUFFIX = ".cc"
 DEFAULT_MASTER_STORAGE = "flash:/"
 DEFAULT_SLAVE_STORAGE = "slave#flash:/"
+STANDBY_STORAGE_AVAILABLE = "available"
+STANDBY_STORAGE_ABSENT = "absent"
+STANDBY_STORAGE_INDETERMINATE = "indeterminate"
 UPGRADE_FAILURE_PATTERNS = (
     "error",
     "failed",
@@ -39,6 +42,23 @@ UPGRADE_FAILURE_PATTERNS = (
     "拒绝",
     "超时",
     "中止",
+)
+STANDBY_STORAGE_ABSENT_PATTERNS = (
+    "device is not present",
+    "device not present",
+    "device does not exist",
+    "no such device",
+    "no device available",
+    "storage device does not exist",
+    "path does not exist",
+    "directory does not exist",
+    "filesystem does not exist",
+    "file system does not exist",
+    "wrong device",
+    "设备不存在",
+    "存储设备不存在",
+    "文件系统不存在",
+    "无此设备",
 )
 
 
@@ -165,6 +185,22 @@ def parse_free_space_bytes(output: str) -> int:
             match = matches[-1]
             return _to_bytes(match.group("value"), match.group("unit"))
     return 0
+
+
+def classify_standby_storage(output: str, storage: str = DEFAULT_SLAVE_STORAGE) -> str:
+    """Classify whether a standby-controller storage directory is available."""
+
+    lowered = output.casefold()
+    normalized_storage = normalize_storage(storage).casefold()
+    directory_markers = (
+        f"directory of {normalized_storage}",
+        f"directory of {normalized_storage.rstrip('/')}",
+    )
+    if any(marker in lowered for marker in directory_markers) or parse_free_space_bytes(output) > 0:
+        return STANDBY_STORAGE_AVAILABLE
+    if any(pattern.casefold() in lowered for pattern in STANDBY_STORAGE_ABSENT_PATTERNS):
+        return STANDBY_STORAGE_ABSENT
+    return STANDBY_STORAGE_INDETERMINATE
 
 
 def parse_dir_entries(output: str, storage: str = DEFAULT_MASTER_STORAGE) -> list[PackageFileEntry]:

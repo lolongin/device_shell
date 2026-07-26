@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 
 from .session_protocol import SessionCallbacks
 
@@ -37,6 +38,15 @@ class SimulatedTerminalSession:
         self._upgrade_fail_startup = False
         self._transfer_mode = ""
         self._transfer_phase = ""
+        self._transfer_binary = False
+        self._transfer_username = "device"
+        self._transfer_password = "device"
+        self._transfer_source_path = self._upgrade_package_name
+        self._transfer_source_size = self._upgrade_package_size
+        self._transfer_destination_path = ""
+        self._transfer_size_mismatch = False
+        self._transfer_input_timeout = 0.0
+        self._transfer_timeout_task: asyncio.Task[None] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -65,6 +75,7 @@ class SimulatedTerminalSession:
             except asyncio.CancelledError:
                 pass
             self._boot_task = None
+        self._cancel_transfer_timeout()
         self.callbacks.on_status("Disconnected")
         if message:
             self.callbacks.on_output(f"\n=== {message} ===\n")
@@ -72,9 +83,41 @@ class SimulatedTerminalSession:
     async def send_command(self, command: str) -> None:
         await self.send_text(command.rstrip() + "\r")
 
-    def configure_package_upgrade(self, package_name: str, package_size: int) -> None:
+    def configure_package_upgrade(
+        self,
+        package_name: str,
+        package_size: int,
+        username: str = "device",
+        password: str = "device",
+    ) -> None:
         self._upgrade_package_name = package_name or self._upgrade_package_name
         self._upgrade_package_size = max(1, package_size)
+        self._transfer_username = username
+        self._transfer_password = password
+        self._transfer_source_path = self._upgrade_package_name
+        self._transfer_source_size = self._upgrade_package_size
+        self._transfer_destination_path = ""
+        self._transfer_size_mismatch = False
+
+    def configure_managed_transfer(
+        self,
+        *,
+        username: str,
+        password: str,
+        source_path: str,
+        source_size: int,
+        destination_path: str,
+        size_mismatch: bool = False,
+    ) -> None:
+        self._transfer_username = username
+        self._transfer_password = password
+        self._transfer_source_path = source_path
+        self._transfer_source_size = max(1, int(source_size))
+        self._transfer_destination_path = destination_path
+        self._transfer_size_mismatch = bool(size_mismatch)
+
+    def configure_transfer_input_timeout(self, seconds: float) -> None:
+        self._transfer_input_timeout = max(0.0, float(seconds))
 
     async def send_text(self, text: str) -> None:
         if not self.is_connected:
@@ -193,7 +236,9 @@ class SimulatedTerminalSession:
         if lowered.startswith("ftp ") or lowered.startswith("sftp "):
             self._transfer_mode = "sftp" if lowered.startswith("sftp ") else "ftp"
             self._transfer_phase = "username"
+            self._transfer_binary = self._transfer_mode == "sftp"
             self.callbacks.on_output("Connected to simulated transfer service.\nUser: ")
+            self._arm_transfer_timeout()
             return
         if lowered.startswith("copy "):
             self._handle_copy(command)
@@ -296,36 +341,123 @@ class SimulatedTerminalSession:
     async def _handle_transfer_command(self, command: str) -> None:
         lowered = command.lower()
         if self._transfer_phase == "username":
+            self._cancel_transfer_timeout()
+            if command != self._transfer_username:
+                self.callbacks.on_output("530 Login incorrect.\n<sim> ")
+                self._reset_transfer_state()
+                return
             self._transfer_phase = "password"
             self.callbacks.on_output("Password: ")
+            self._arm_transfer_timeout()
             return
         if self._transfer_phase == "password":
+            self._cancel_transfer_timeout()
+            if command != self._transfer_password:
+                self.callbacks.on_output("530 Login incorrect.\n<sim> ")
+                self._reset_transfer_state()
+                return
             self._transfer_phase = "ready"
-            self.callbacks.on_output("230 User logged in.\nftp> ")
+            self.callbacks.on_output(f"230 User logged in.\n{self._transfer_prompt()} ")
             return
         if lowered == "binary":
-            self.callbacks.on_output("200 Type set to I.\nftp> ")
+            if self._transfer_mode != "ftp":
+                self.callbacks.on_output(
+                    f"500 Unknown SFTP command: {command}\n{self._transfer_prompt()} "
+                )
+                return
+            self._transfer_binary = True
+            self.callbacks.on_output(f"200 Type set to I.\n{self._transfer_prompt()} ")
             return
         if lowered.startswith("get "):
-            if self._upgrade_fail_download:
-                self.callbacks.on_output("Error: failed to download package from simulated server.\nftp> ")
+            if self._transfer_mode == "ftp" and not self._transfer_binary:
+                self.callbacks.on_output(
+                    f"503 Use binary mode before get.\n{self._transfer_prompt()} "
+                )
                 return
-            parts = command.split()
-            remote_name = parts[1] if len(parts) >= 2 else self._upgrade_package_name
-            local_path = parts[2] if len(parts) >= 3 else f"flash:/{remote_name}"
+            if self._upgrade_fail_download:
+                self.callbacks.on_output(
+                    "550 Failed to download file from simulated server.\n"
+                    f"{self._transfer_prompt()} "
+                )
+                return
+            try:
+                parts = shlex.split(command)
+            except ValueError:
+                parts = []
+            if len(parts) != 3:
+                self.callbacks.on_output(
+                    f"501 Usage: get source destination\n{self._transfer_prompt()} "
+                )
+                return
+            remote_name = parts[1].replace("\\", "/")
+            local_path = parts[2].replace("\\", "/")
+            if remote_name != self._transfer_source_path.replace("\\", "/"):
+                self.callbacks.on_output(
+                    f"550 Source file not found: {remote_name}\n{self._transfer_prompt()} "
+                )
+                return
+            if (
+                self._transfer_destination_path
+                and local_path != self._transfer_destination_path
+            ):
+                self.callbacks.on_output(
+                    f"550 Unexpected destination: {local_path}\n{self._transfer_prompt()} "
+                )
+                return
             storage = self._normalize_storage(local_path)
             local_name = self._basename(local_path) or self._basename(remote_name)
-            self._files_by_storage.setdefault(storage, {})[local_name] = self._upgrade_package_size
+            stored_size = self._transfer_source_size
+            if self._transfer_size_mismatch:
+                stored_size = max(1, stored_size - 1)
+            self._files_by_storage.setdefault(storage, {})[local_name] = stored_size
             self.callbacks.on_output(
-                f"226 Transfer complete. {local_name} saved to {storage}\nftp> "
+                f"226 Transfer complete. {local_name} saved to {storage}\n"
+                f"{self._transfer_prompt()} "
             )
             return
         if lowered in {"quit", "bye"}:
-            self._transfer_mode = ""
-            self._transfer_phase = ""
+            self._cancel_transfer_timeout()
             self.callbacks.on_output("221 Goodbye.\n<sim> ")
+            self._reset_transfer_state()
             return
-        self.callbacks.on_output("200 OK.\nftp> ")
+        if lowered.startswith("put "):
+            self.callbacks.on_output(
+                f"502 PUT is not supported by the simulated device client.\n"
+                f"{self._transfer_prompt()} "
+            )
+            return
+        self.callbacks.on_output(
+            f"500 Unknown FTP command: {command}\n{self._transfer_prompt()} "
+        )
+
+    def _arm_transfer_timeout(self) -> None:
+        self._cancel_transfer_timeout()
+        if self._transfer_input_timeout <= 0:
+            return
+        phase = self._transfer_phase
+
+        async def expire() -> None:
+            await asyncio.sleep(self._transfer_input_timeout)
+            if self._transfer_mode and self._transfer_phase == phase:
+                self.callbacks.on_output("421 Login input timeout.\n<sim> ")
+                self._reset_transfer_state()
+
+        self._transfer_timeout_task = asyncio.create_task(expire())
+
+    def _cancel_transfer_timeout(self) -> None:
+        task = self._transfer_timeout_task
+        self._transfer_timeout_task = None
+        if task is not None:
+            task.cancel()
+
+    def _transfer_prompt(self) -> str:
+        return "sftp>" if self._transfer_mode == "sftp" else "ftp>"
+
+    def _reset_transfer_state(self) -> None:
+        self._cancel_transfer_timeout()
+        self._transfer_mode = ""
+        self._transfer_phase = ""
+        self._transfer_binary = False
 
     def _handle_copy(self, command: str) -> None:
         parts = command.split()

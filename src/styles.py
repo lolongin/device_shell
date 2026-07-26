@@ -2653,6 +2653,18 @@ QSplitter::handle:horizontal {
 QSplitter::handle:horizontal:hover {
     background: #243244;
 }
+QSplitter::handle:hover {
+    background: #243244;
+}
+QSplitterHandle#mainSplitterHandle {
+    background: #0f172a;
+}
+QSplitterHandle#mainSplitterHandle:hover {
+    background: #243244;
+}
+QSplitterHandle#mainSplitterHandle[collapseHint="true"] {
+    background: #10b981;
+}
 QMenu {
     background: #0f172a;
     color: #f8fafc;
@@ -2892,5 +2904,336 @@ QTableView::item:hover {
 }
 QTableView#deviceTable {
     border-color: #243244;
+}
+
+/* Compact flat terminal tabs */
+QTabWidget#sessionTabs::tab-bar {
+    left: 6px;
+}
+QTabWidget#sessionTabs QTabBar::tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0px;
+    color: #8fa0b7;
+    min-width: 72px;
+    min-height: 28px;
+    padding: 0px 5px;
+    margin: 0px 3px 0px 0px;
+}
+QTabWidget#sessionTabs QTabBar::tab:selected {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid #22c55e;
+    color: #f8fafc;
+    min-height: 28px;
+    margin-top: 0px;
+}
+QTabWidget#sessionTabs QTabBar::tab:hover:!selected {
+    background: #0b1525;
+    border-bottom-color: #243244;
+    color: #d8e4f5;
+}
+QTabWidget#deviceSessionTabs::tab-bar {
+    left: 4px;
+}
+QTabWidget#deviceSessionTabs QTabBar::tab {
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    color: #8fa0b7;
+    min-width: 48px;
+    min-height: 24px;
+    padding: 0px 4px;
+    margin: 2px 2px 0px 0px;
+}
+QTabWidget#deviceSessionTabs QTabBar::tab:selected {
+    background: #101b2b;
+    border: none;
+    color: #e5edf6;
+    min-height: 24px;
+    margin-top: 2px;
+}
+QTabWidget#deviceSessionTabs QTabBar::tab:hover:!selected {
+    background: #0b1525;
+    color: #d8e4f5;
+}
+QWidget#tabHeader,
+QWidget#tabCloseSlot {
+    background: transparent;
+    border: none;
+}
+QLabel#tabHeaderLabel {
+    background: transparent;
+    border: none;
+    padding: 0px;
+    color: #8fa0b7;
+}
+QLabel#tabHeaderLabel[selected="true"] {
+    color: #f8fafc;
+}
+QLabel#tabStatusDot {
+    border: none;
+}
+QLabel#tabStatusDot[tabLevel="device"] {
+    border-radius: 3px;
+}
+QLabel#tabStatusDot[tabLevel="session"] {
+    border-radius: 2px;
+}
+QToolButton#tabCloseButton {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 0px;
+    color: #718096;
+    font-size: 11px;
+}
+QToolButton#tabCloseButton:hover {
+    background: #2d1215;
+    border: none;
+    color: #fecaca;
+}
+
+/* Global button system */
+QPushButton {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 6px;
+    color: #a7b4c7;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background: #111c2f;
+    border-color: #60a5fa;
+    color: #f8fafc;
+}
+QPushButton:pressed {
+    background: #0b1525;
+    border-color: #3b82f6;
+    color: #f8fafc;
+}
+QPushButton:focus {
+    border-color: #60a5fa;
+}
+QPushButton#compactGhostButton,
+QPushButton#filterToggleButton {
+    border-radius: 5px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0px 8px;
+}
+QPushButton#primaryButton,
+QPushButton[connectionAction="primary"] {
+    background: #15803d;
+    border-color: #22c55e;
+    color: #f8fafc;
+}
+QPushButton#primaryButton:hover,
+QPushButton[connectionAction="primary"]:hover {
+    background: #16a34a;
+    border-color: #4ade80;
+    color: #ffffff;
+}
+QPushButton#primaryButton:pressed,
+QPushButton[connectionAction="primary"]:pressed {
+    background: #166534;
+    border-color: #22c55e;
+}
+QPushButton#dangerButton,
+QPushButton[buttonRole="danger"] {
+    background: #08101d;
+    border-color: #243244;
+    color: #a7b4c7;
+}
+QPushButton#dangerButton:hover,
+QPushButton[buttonRole="danger"]:hover {
+    background: #2d1215;
+    border-color: #f87171;
+    color: #fecaca;
+}
+QPushButton#dangerButton:pressed,
+QPushButton[buttonRole="danger"]:pressed {
+    background: #450a0a;
+    border-color: #ef4444;
+    color: #fee2e2;
+}
+QPushButton#filterToggleButton:checked,
+QPushButton#compactGhostButton:checked {
+    background: #163326;
+    border-color: #22c55e;
+    color: #d8fff0;
+}
+
+QToolButton#quickActionIconButton,
+QToolButton#quickDangerIconButton,
+QToolButton#autoResponseMenuButton,
+QToolButton#autoResponseRuleButton,
+QToolButton#commandSuggestionButton,
+QToolButton#commandTabButton,
+QToolButton#commandActionButton,
+QToolButton#commandEnterModeButton,
+QToolButton#commandCollapseButton,
+QToolButton#inspectorToggleButton,
+QToolButton#commandFindIconButton,
+QToolButton#commandFindTextButton,
+QToolButton#sessionQuickRestoreButton {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 5px;
+    color: #a7b4c7;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0px 8px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QToolButton#quickActionIconButton:hover,
+QToolButton#quickDangerIconButton:hover,
+QToolButton#autoResponseMenuButton:hover,
+QToolButton#autoResponseRuleButton:hover,
+QToolButton#commandSuggestionButton:hover,
+QToolButton#commandTabButton:hover,
+QToolButton#commandActionButton:hover,
+QToolButton#commandEnterModeButton:hover,
+QToolButton#commandCollapseButton:hover,
+QToolButton#inspectorToggleButton:hover,
+QToolButton#commandFindIconButton:hover,
+QToolButton#commandFindTextButton:hover,
+QToolButton#sessionQuickRestoreButton:hover {
+    background: #111c2f;
+    border-color: #60a5fa;
+    color: #f8fafc;
+}
+QToolButton#quickActionIconButton:pressed,
+QToolButton#quickDangerIconButton:pressed,
+QToolButton#autoResponseMenuButton:pressed,
+QToolButton#autoResponseRuleButton:pressed,
+QToolButton#commandSuggestionButton:pressed,
+QToolButton#commandTabButton:pressed,
+QToolButton#commandActionButton:pressed,
+QToolButton#commandEnterModeButton:pressed,
+QToolButton#commandCollapseButton:pressed,
+QToolButton#inspectorToggleButton:pressed,
+QToolButton#commandFindIconButton:pressed,
+QToolButton#commandFindTextButton:pressed,
+QToolButton#sessionQuickRestoreButton:pressed {
+    background: #0b1525;
+    border-color: #3b82f6;
+    color: #f8fafc;
+}
+QToolButton#autoResponseMenuButton:focus,
+QToolButton#autoResponseRuleButton:focus,
+QToolButton#commandSuggestionButton:focus,
+QToolButton#commandTabButton:focus,
+QToolButton#commandActionButton:focus,
+QToolButton#commandEnterModeButton:focus,
+QToolButton#commandCollapseButton:focus,
+QToolButton#inspectorToggleButton:focus,
+QToolButton#commandFindIconButton:focus,
+QToolButton#commandFindTextButton:focus,
+QToolButton#sessionQuickRestoreButton:focus {
+    border-color: #60a5fa;
+}
+QToolButton#quickActionIconButton,
+QToolButton#quickDangerIconButton,
+QToolButton#commandFindIconButton {
+    border-radius: 5px;
+    min-width: 22px;
+    max-width: 22px;
+    padding: 0px;
+}
+QToolButton#activityRailButton {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 7px;
+    color: #a7b4c7;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0px;
+}
+QToolButton#activityRailButton:hover {
+    background: #111c2f;
+    border-color: #60a5fa;
+    color: #f8fafc;
+}
+QToolButton#activityRailButton:pressed {
+    background: #0b1525;
+    border-color: #3b82f6;
+}
+QToolButton#activityRailButton:checked,
+QToolButton#autoResponseRuleButton:checked,
+QToolButton#commandEnterModeButton[enterSends="true"],
+QToolButton#commandTabButton[selected="true"] {
+    background: #163326;
+    border-color: #22c55e;
+    color: #d8fff0;
+}
+QToolButton#commandActionButton[buttonRole="primary"] {
+    background: #15803d;
+    border-color: #22c55e;
+    color: #f8fafc;
+}
+QToolButton#commandActionButton[buttonRole="primary"]:hover {
+    background: #16a34a;
+    border-color: #4ade80;
+    color: #ffffff;
+}
+QToolButton#commandActionButton[buttonRole="primary"]:pressed {
+    background: #166534;
+    border-color: #22c55e;
+}
+QToolButton#quickDangerIconButton,
+QToolButton#commandActionButton[buttonRole="danger"] {
+    background: #08101d;
+    border-color: #243244;
+    color: #a7b4c7;
+}
+QToolButton#quickDangerIconButton:hover,
+QToolButton#commandActionButton[buttonRole="danger"]:hover,
+QToolButton#commandTabCloseButton:hover,
+QToolButton#tabCloseButton:hover {
+    background: #2d1215;
+    border-color: #f87171;
+    color: #fecaca;
+}
+QToolButton#quickDangerIconButton:pressed,
+QToolButton#commandActionButton[buttonRole="danger"]:pressed {
+    background: #450a0a;
+    border-color: #ef4444;
+    color: #fee2e2;
+}
+QToolButton#commandTabCloseButton,
+QToolButton#tabCloseButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #718096;
+    padding: 0px;
+}
+QPushButton:disabled,
+QToolButton#activityRailButton:disabled,
+QToolButton#quickActionIconButton:disabled,
+QToolButton#quickDangerIconButton:disabled,
+QToolButton#autoResponseMenuButton:disabled,
+QToolButton#autoResponseRuleButton:disabled,
+QToolButton#commandSuggestionButton:disabled,
+QToolButton#commandTabButton:disabled,
+QToolButton#commandActionButton:disabled,
+QToolButton#commandEnterModeButton:disabled,
+QToolButton#commandCollapseButton:disabled,
+QToolButton#inspectorToggleButton:disabled,
+QToolButton#commandFindIconButton:disabled,
+QToolButton#commandFindTextButton:disabled,
+QToolButton#sessionQuickRestoreButton:disabled {
+    background: #08101d;
+    border-color: #172236;
+    color: #526176;
 }
 """

@@ -92,8 +92,8 @@ def test_simulated_session_supports_package_upgrade_success_path() -> None:
         await session.send_command("display startup")
         await session.send_command("dir flash:/")
         await session.send_command("ftp 192.0.2.10 2121")
-        await session.send_command("user")
-        await session.send_command("password")
+        await session.send_command("device")
+        await session.send_command("device")
         await session.send_command("binary")
         await session.send_command("get target.cc flash:/target.cc")
         await session.send_command("quit")
@@ -127,8 +127,9 @@ def test_simulated_session_can_inject_upgrade_failures() -> None:
         await session.connect()
         await session.send_command("sim upgrade fail-download on")
         await session.send_command("ftp 192.0.2.10 2121")
-        await session.send_command("user")
-        await session.send_command("password")
+        await session.send_command("device")
+        await session.send_command("device")
+        await session.send_command("binary")
         await session.send_command("get target.cc flash:/target.cc")
         await session.send_command("quit")
         await session.send_command("sim upgrade fail-space on")
@@ -138,6 +139,91 @@ def test_simulated_session_can_inject_upgrade_failures() -> None:
     asyncio.run(run())
 
     text = "".join(output)
-    assert "failed to download package" in text
+    assert "Failed to download file" in text
     assert "1 KB free" in text
     assert "old.cc" not in text[text.rfind("Directory of flash:/") :]
+
+
+def test_simulated_transfer_login_can_expire_while_waiting_for_input() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+    session.configure_transfer_input_timeout(0.01)
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command("ftp 192.0.2.10 2121")
+        await asyncio.sleep(0.03)
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    assert "421 Login input timeout." in "".join(output)
+
+
+def test_simulated_transfer_rejects_wrong_credentials() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command("ftp 192.0.2.10 2121")
+        await session.send_command("ftp 192.0.2.10")
+        await session.send_command("quit")
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    text = "".join(output)
+    assert "530 Login incorrect." in text
+    assert "230 User logged in." not in text
+    assert "200 OK." not in text
+
+
+def test_simulated_transfer_rejects_invalid_ftp_commands_without_creating_file() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+    session.configure_managed_transfer(
+        username="admin",
+        password="secret",
+        source_path="large.bin",
+        source_size=2_048,
+        destination_path="flash:/large.bin",
+    )
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command("ftp 192.0.2.10 2121")
+        await session.send_command("admin")
+        await session.send_command("secret")
+        await session.send_command("bin")
+        await session.send_command("put large.bin flash:/large.bin")
+        await session.send_command("dir flash:/")
+        await session.send_command("q")
+        await session.send_command("quit")
+        await session.send_command("dir flash:/large.bin")
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    text = "".join(output)
+    assert "500 Unknown FTP command: bin" in text
+    assert "502 PUT is not supported" in text
+    assert "500 Unknown FTP command: dir flash:/" in text
+    assert "500 Unknown FTP command: q" in text
+    assert "large.bin" not in text[text.rfind("Directory of flash:/") :]
+    assert "200 OK." not in text

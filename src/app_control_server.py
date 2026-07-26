@@ -82,11 +82,26 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
                 {"device_id": str(query.get("device_id", [""])[0])},
             )
             return
+        if path == "/v1/file-transfer/files":
+            query = parse_qs(parsed.query)
+            recursive_value = str(query.get("recursive", ["true"])[0]).casefold()
+            self._invoke(
+                "file_transfer_list",
+                {
+                    "path": str(query.get("path", [""])[0]),
+                    "recursive": recursive_value not in {"0", "false", "no", "off"},
+                    "limit": str(query.get("limit", ["200"])[0]),
+                },
+            )
+            return
         if path.startswith("/v1/approvals/"):
             self._invoke("approval_get", {"approval_id": path.rsplit("/", 1)[-1]})
             return
         if path.startswith("/v1/operations/"):
             self._invoke("operation_get", {"operation_id": path.rsplit("/", 1)[-1]})
+            return
+        if path.startswith("/v1/executions/"):
+            self._invoke("execution_get", {"execution_id": path.rsplit("/", 1)[-1]})
             return
         self._send_error(404, "not_found", "接口不存在。")
 
@@ -100,6 +115,11 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             "/v1/terminal/send": "terminal_send_command",
             "/v1/terminal/read": "terminal_read",
             "/v1/terminal/execute": "terminal_execute",
+            "/v1/terminal/execute-batch": "terminal_execute_batch",
+            "/v1/terminal/interact": "terminal_interact",
+            "/v1/executions/cancel": "execution_cancel",
+            "/v1/operations/cancel": "operation_cancel",
+            "/v1/file-transfer/start": "file_transfer_start",
             "/v1/package-upgrade/start": "package_upgrade_start",
         }
         tool = routes.get(urlparse(self.path).path)

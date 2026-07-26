@@ -1,10 +1,14 @@
 from pathlib import Path
 
 from src.package_upgrade import (
+    STANDBY_STORAGE_ABSENT,
+    STANDBY_STORAGE_AVAILABLE,
+    STANDBY_STORAGE_INDETERMINATE,
     PackageFileEntry,
     PackageUpgradeConfig,
     StartupInfo,
     build_cleanup_plan,
+    classify_standby_storage,
     dir_contains_package,
     find_upgrade_failure,
     generate_huawei_upgrade_plan,
@@ -13,6 +17,29 @@ from src.package_upgrade import (
     parse_free_space_bytes,
     startup_uses_package,
 )
+
+
+def test_classify_standby_storage_detects_readable_directory() -> None:
+    output = """
+    Directory of slave#flash:/
+    1,048,576 KB total (256,000 KB free)
+    """
+
+    assert classify_standby_storage(output) == STANDBY_STORAGE_AVAILABLE
+
+
+def test_classify_standby_storage_detects_absent_controller() -> None:
+    assert (
+        classify_standby_storage("Error: The storage device does not exist.")
+        == STANDBY_STORAGE_ABSENT
+    )
+
+
+def test_classify_standby_storage_does_not_hide_permission_errors() -> None:
+    assert (
+        classify_standby_storage("Error: Permission denied.")
+        == STANDBY_STORAGE_INDETERMINATE
+    )
 
 
 def test_parse_display_startup_extracts_current_and_next_system() -> None:
@@ -155,3 +182,18 @@ def test_huawei_upgrade_plan_includes_dual_controller_steps_and_cleanup() -> Non
     assert "ftp 192.0.2.10 2121" in script
     assert "copy flash:/S5735-V200R023C00.cc slave#flash:/S5735-V200R023C00.cc" in script
     assert "startup system-software flash:/S5735-V200R023C00.cc all" in script
+
+
+def test_huawei_upgrade_plan_omits_standby_steps_for_single_controller() -> None:
+    config = PackageUpgradeConfig(
+        package_path=Path("S5735-V200R023C00.cc"),
+        server_host="192.0.2.10",
+        include_slave=False,
+    )
+
+    script = "\n".join(generate_huawei_upgrade_plan(config).commands)
+
+    assert "slave#flash:/" not in script
+    assert " all" not in script
+    assert "slave-board" not in script
+    assert "startup system-software flash:/S5735-V200R023C00.cc" in script

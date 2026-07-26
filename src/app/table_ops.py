@@ -513,6 +513,7 @@ class TableOpsMixin:
     def render_device_table_row(self, row: int, device: Device, keyword: str, *, grouped: bool = False) -> None:
         self.device_table.setRowHeight(row, 26 if grouped else 30)
         board_type = self.device_table_board_type_text(device)
+        row_tooltip = self.device_table_row_tooltip(device)
         hidden_keyword_match = self.device_matches_hidden_keyword(
             device,
             keyword,
@@ -535,7 +536,7 @@ class TableOpsMixin:
             self.device_table_board_id_text(device, grouped=grouped),
             device.id,
             highlight=self.text_matches_keyword(device.board_id, keyword),
-            tooltip=device.board_id,
+            tooltip=row_tooltip,
         )
         self._set_table_item(
             self.device_table,
@@ -546,7 +547,7 @@ class TableOpsMixin:
             highlight=hidden_keyword_match
             or self.text_matches_keyword(device.name, keyword)
             or self.text_matches_keyword(self.device_table_subdomain_text(device), keyword),
-            tooltip=device.name if grouped else None,
+            tooltip=row_tooltip,
         )
         self._set_table_item(
             self.device_table,
@@ -555,6 +556,7 @@ class TableOpsMixin:
             board_type,
             device.id,
             highlight=self.text_matches_keyword(board_type, keyword),
+            tooltip=row_tooltip,
         )
         self._set_table_item(
             self.device_table,
@@ -563,6 +565,7 @@ class TableOpsMixin:
             device.cpu,
             device.id,
             highlight=self.text_matches_keyword(device.cpu, keyword),
+            tooltip=row_tooltip,
         )
         self._set_table_item(
             self.device_table,
@@ -571,6 +574,7 @@ class TableOpsMixin:
             device.slot_id,
             device.id,
             highlight=self.text_matches_keyword(device.slot_id, keyword),
+            tooltip=row_tooltip,
         )
         status_text = self.device_table_status_text(device)
         self._set_table_item(
@@ -582,7 +586,7 @@ class TableOpsMixin:
             color=status_color(device.status),
             highlight=self.text_matches_keyword(device.status, keyword)
             or self.text_matches_keyword(self.device_occupancy_duration_text(device), keyword),
-            tooltip=self.device_occupancy_tooltip(device),
+            tooltip=row_tooltip,
         )
 
     def device_table_model_rows(
@@ -600,6 +604,14 @@ class TableOpsMixin:
                     {
                         "kind": "group",
                         "height": 24,
+                        "group_title": self.device_table_name_text(name, subdomain),
+                        "group_count": f"{count} 块板",
+                        "group_tooltip": (
+                            f"{self.device_table_name_text(name, subdomain)}\n{count} 块板"
+                        ),
+                        "group_background": HTML_PANEL,
+                        "group_foreground": HTML_TEXT,
+                        "group_count_foreground": HTML_SOFT,
                         "cells": [
                             self.device_table_model_cell(
                                 self.device_table_name_text(name, subdomain),
@@ -629,6 +641,7 @@ class TableOpsMixin:
                 continue
             grouped = bool(row_data.get("grouped"))
             board_type = self.device_table_board_type_text(device)
+            row_tooltip = self.device_table_row_tooltip(device)
             hidden_keyword_match = self.device_matches_hidden_keyword(
                 device,
                 keyword,
@@ -654,7 +667,7 @@ class TableOpsMixin:
                             self.device_table_board_id_text(device, grouped=grouped),
                             device.id,
                             highlight=self.text_matches_keyword(device.board_id, keyword),
-                            tooltip=device.board_id,
+                            tooltip=row_tooltip,
                         ),
                         self.device_table_model_cell(
                             device.device_type if grouped else self.device_table_device_name_text(device),
@@ -662,22 +675,25 @@ class TableOpsMixin:
                             highlight=hidden_keyword_match
                             or self.text_matches_keyword(device.name, keyword)
                             or self.text_matches_keyword(self.device_table_subdomain_text(device), keyword),
-                            tooltip=device.name if grouped else None,
+                            tooltip=row_tooltip,
                         ),
                         self.device_table_model_cell(
                             board_type,
                             device.id,
                             highlight=self.text_matches_keyword(board_type, keyword),
+                            tooltip=row_tooltip,
                         ),
                         self.device_table_model_cell(
                             device.cpu,
                             device.id,
                             highlight=self.text_matches_keyword(device.cpu, keyword),
+                            tooltip=row_tooltip,
                         ),
                         self.device_table_model_cell(
                             device.slot_id,
                             device.id,
                             highlight=self.text_matches_keyword(device.slot_id, keyword),
+                            tooltip=row_tooltip,
                         ),
                         self.device_table_model_cell(
                             status_text,
@@ -685,7 +701,7 @@ class TableOpsMixin:
                             color=status_color(device.status),
                             highlight=self.text_matches_keyword(device.status, keyword)
                             or self.text_matches_keyword(self.device_occupancy_duration_text(device), keyword),
-                            tooltip=self.device_occupancy_tooltip(device),
+                            tooltip=row_tooltip,
                         ),
                     ],
                 }
@@ -757,6 +773,19 @@ class TableOpsMixin:
         if duration and device.status == STATUS_OCCUPIED:
             return f"{device.status} {duration}"
         return device.status
+
+    def device_table_row_tooltip(self, device: Device) -> str:
+        parts = [
+            f"设备: {self.temporary_device_display_name(device)}",
+            f"ID: {device.id}",
+            f"板类型: {self.device_table_board_type_text(device) or '-'}",
+            f"CPU: {device.cpu or '-'}",
+            f"Slot: {device.slot_id or '-'}",
+            f"状态: {self.device_table_status_text(device)}",
+        ]
+        occupancy_lines = self.device_occupancy_tooltip(device).splitlines()[1:]
+        parts.extend(occupancy_lines)
+        return "\n".join(parts)
 
     def device_status_kind(self, device: Device) -> str:
         if device.status == STATUS_IDLE:

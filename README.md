@@ -156,11 +156,18 @@ The MCP server exposes these tools:
 - `session_manage`
 - `session_open`
 - `terminal_execute`
+- `terminal_execute_batch`
+- `terminal_interact`
+- `file_transfer_list`
+- `file_transfer_start`
 - `terminal_send_command`
 - `terminal_read`
+- `execution_get`
+- `execution_cancel`
 - `package_upgrade_start`
 - `approval_get`
 - `operation_get`
+- `operation_cancel`
 
 For reliable daily commands, use `session_manage(action="open", ...)` and keep
 the returned `session_id`, then call `terminal_execute`. The result contains
@@ -168,6 +175,30 @@ only output produced after that command was sent and identifies whether it
 completed by matching a prompt, by the idle fallback, by timeout, or by
 disconnect. The older session and terminal tools remain available for
 compatibility.
+
+Use `terminal_execute_batch` for several ordinary commands. Device TUI sends
+the next command as soon as the previous device prompt appears, so the whole
+list needs only one MCP call.
+
+Use `terminal_interact` for prompt-driven work. A plan can send text, wait for
+prompt aliases, respond to intermediate prompts, and wait for connection
+state. The approved local references `transfer.username` and
+`transfer.password` resolve inside Device TUI; their values are not returned
+to the MCP client or written to command results. Long plans return an
+`execution_id` for `execution_get` and `execution_cancel`.
+
+For package upgrades, call `package_upgrade_start` instead of manually
+entering FTP or SFTP commands. The App holds the session for the full upgrade
+and performs transfer login locally from the package-upgrade configuration.
+
+For transfer-only requests, call `file_transfer_list` and then
+`file_transfer_start`. The source is a relative path returned from the App's
+file-transfer share, and the caller supplies the device destination path.
+Device TUI keeps the local root and credentials private, performs FTP/SFTP
+locally, and reports success only after the destination file's exact byte size
+matches. Existing destinations are refused unless `overwrite=true`. This
+workflow does not select startup software or reboot; use
+`package_upgrade_start` only for a complete package replacement.
 
 Device TUI executes external tool calls immediately by default, including
 configuration, reboot, file-changing, and package-upgrade actions. Risk

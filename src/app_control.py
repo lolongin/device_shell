@@ -23,6 +23,11 @@ from .ai_device_ops import (
     classify_command_risk,
 )
 from .terminal_execution import detect_terminal_prompt
+from .terminal_orchestration import (
+    TerminalPlanError,
+    build_batch_plan,
+    parse_terminal_plan,
+)
 
 
 MAX_COMMAND_CHARS = 16_384
@@ -33,6 +38,7 @@ APPROVAL_MODE_DISABLED = "disabled"
 APPROVAL_MODE_REQUIRED = "required"
 SESSION_ACTIONS = {"open", "status", "reconnect", "disconnect", "close"}
 SESSION_PROTOCOLS = {"auto", "telnet", "ssh", "serial", "simulated"}
+TERMINAL_PLAN_MODES = {"auto", "sync", "async"}
 TERMINAL_EXECUTE_IDLE_SECONDS = 0.8
 TERMINAL_EXECUTE_POLL_SECONDS = 0.05
 
@@ -487,6 +493,8 @@ class AppControlService:
             )
         if tool == "operation_get":
             return self._operation_get(params, request_id=request_id)
+        if tool == "operation_cancel":
+            return self._operation_cancel(params, request_id=request_id)
 
         action = self._build_action(tool, params)
         idempotency_key = str(params.get("idempotency_key") or "").strip()
@@ -514,8 +522,13 @@ class AppControlService:
                 return self._approval_response(request_id, record)
             self.approvals.consume(approval_token, action)
 
+        if idempotency_key and tool in {"terminal_execute_batch", "terminal_interact"}:
+            action.params["coordinator_idempotency_key"] = cache_key
+
         if tool == "terminal_execute":
             result = self._execute_terminal_command(action)
+        elif tool in {"terminal_execute_batch", "terminal_interact"}:
+            result = self._execute_terminal_plan(action)
         elif tool == "session_manage":
             result = self._execute_session_manage(action)
         else:
@@ -539,7 +552,19 @@ class AppControlService:
                 active,
             )
         if tool == "package_upgrade_start" and result.ok:
-            operation = self._create_operation(action, result)
+            operation = self._create_operation(
+                action,
+                result,
+                kind="package_upgrade",
+            )
+            response["data"]["operation_id"] = operation.id
+        if tool == "file_transfer_start" and result.ok:
+            operation = self._create_operation(
+                action,
+                result,
+                kind="managed_file_transfer",
+                operation_id=str(result.data.get("operation_id") or ""),
+            )
             response["data"]["operation_id"] = operation.id
         if idempotency_key:
             with self._lock:
@@ -555,6 +580,29 @@ class AppControlService:
             )
         if tool == "device_list":
             return AiDeviceAction("list_devices", "读取设备列表", RiskLevel.OBSERVE)
+        if tool == "file_transfer_list":
+            recursive = self._boolean(
+                params,
+                "recursive",
+                default=True,
+            )
+            limit = self._integer(
+                params,
+                "limit",
+                default=200,
+                minimum=1,
+                maximum=1_000,
+            )
+            return AiDeviceAction(
+                "list_managed_transfer_files",
+                "列出文件传输共享目录",
+                RiskLevel.OBSERVE,
+                params={
+                    "path": self._optional_text(params, "path", max_chars=1_024),
+                    "recursive": recursive,
+                    "limit": limit,
+                },
+            )
         if tool == "session_list":
             device_id = self._optional_text(params, "device_id", max_chars=200)
             return AiDeviceAction(
@@ -643,6 +691,158 @@ class AppControlService:
                     "max_output_chars": max_output_chars,
                 },
             )
+        if tool == "terminal_execute_batch":
+            raw_commands = params.get("commands")
+            if not isinstance(raw_commands, list):
+                raise AppControlError("invalid_request", "参数 commands 必须是数组。")
+            commands = [normalize_command(str(command)) for command in raw_commands]
+            command_timeout_seconds = self._integer(
+                params,
+                "command_timeout_seconds",
+                default=30,
+                minimum=1,
+                maximum=300,
+            )
+            max_output_chars = self._integer(
+                params,
+                "max_output_chars_per_step",
+                default=16_384,
+                minimum=1,
+                maximum=MAX_OUTPUT_CHARS,
+            )
+            requested_total = params.get("total_timeout_seconds")
+            total_timeout_seconds = (
+                self._integer(
+                    params,
+                    "total_timeout_seconds",
+                    default=60,
+                    minimum=1,
+                    maximum=3600,
+                )
+                if requested_total is not None
+                else None
+            )
+            try:
+                plan = build_batch_plan(
+                    commands,
+                    command_timeout_seconds=command_timeout_seconds,
+                    total_timeout_seconds=total_timeout_seconds,
+                    max_output_chars=max_output_chars,
+                )
+            except TerminalPlanError as exc:
+                raise AppControlError(exc.code, str(exc)) from exc
+            mode = self._choice(
+                params,
+                "mode",
+                TERMINAL_PLAN_MODES,
+                default="auto",
+            )
+            run_async = self._terminal_plan_runs_async(
+                mode,
+                plan.total_timeout_seconds,
+                has_state_wait=False,
+            )
+            device_id, session_id = self._terminal_target(params)
+            risk = max(
+                (classify_command_risk(command) for command in commands),
+                default=RiskLevel.LOW,
+            )
+            return AiDeviceAction(
+                "terminal_plan_start",
+                "批量执行终端命令",
+                risk,
+                device_id=device_id,
+                params={
+                    "plan_kind": "batch",
+                    "commands": commands,
+                    "session_id": session_id,
+                    "command_timeout_seconds": command_timeout_seconds,
+                    "total_timeout_seconds": plan.total_timeout_seconds,
+                    "max_output_chars_per_step": max_output_chars,
+                    "mode": mode,
+                    "run_async": run_async,
+                },
+            )
+        if tool == "terminal_interact":
+            raw_steps = params.get("steps")
+            if not isinstance(raw_steps, list):
+                raise AppControlError("invalid_request", "参数 steps 必须是数组。")
+            total_timeout_seconds = self._integer(
+                params,
+                "total_timeout_seconds",
+                default=60,
+                minimum=1,
+                maximum=3600,
+            )
+            try:
+                plan = parse_terminal_plan(
+                    raw_steps,
+                    total_timeout_seconds=total_timeout_seconds,
+                )
+            except TerminalPlanError as exc:
+                raise AppControlError(exc.code, str(exc)) from exc
+            mode = self._choice(
+                params,
+                "mode",
+                TERMINAL_PLAN_MODES,
+                default="auto",
+            )
+            has_state_wait = any(
+                str(step.get("type") or "").casefold() == "wait_state"
+                for step in raw_steps
+                if isinstance(step, dict)
+            )
+            run_async = self._terminal_plan_runs_async(
+                mode,
+                plan.total_timeout_seconds,
+                has_state_wait=has_state_wait,
+            )
+            device_id, session_id = self._terminal_target(params)
+            risk = RiskLevel.FLOW
+            for step in raw_steps:
+                if not isinstance(step, dict):
+                    continue
+                texts = [str(step.get("text") or "")]
+                responses = step.get("responses")
+                if isinstance(responses, list):
+                    texts.extend(
+                        str(response.get("text") or "")
+                        for response in responses
+                        if isinstance(response, dict)
+                    )
+                for text in texts:
+                    if text:
+                        risk = max(risk, classify_command_risk(text))
+            return AiDeviceAction(
+                "terminal_plan_start",
+                "执行交互式终端计划",
+                risk,
+                device_id=device_id,
+                params={
+                    "plan_kind": "interactive",
+                    "steps": raw_steps,
+                    "session_id": session_id,
+                    "total_timeout_seconds": plan.total_timeout_seconds,
+                    "mode": mode,
+                    "run_async": run_async,
+                },
+            )
+        if tool in {"execution_get", "execution_cancel"}:
+            execution_id = self._required_text(
+                params,
+                "execution_id",
+                max_chars=80,
+            )
+            return AiDeviceAction(
+                "terminal_execution_get"
+                if tool == "execution_get"
+                else "terminal_execution_cancel",
+                "读取终端执行状态"
+                if tool == "execution_get"
+                else "取消终端执行",
+                RiskLevel.OBSERVE if tool == "execution_get" else RiskLevel.LOW,
+                params={"execution_id": execution_id},
+            )
         device_id = self._required_text(params, "device_id", max_chars=200)
         if tool == "device_get":
             return AiDeviceAction(
@@ -700,6 +900,30 @@ class AppControlService:
                 "启动自动换包流程",
                 RiskLevel.FLOW,
                 device_id=device_id,
+            )
+        if tool == "file_transfer_start":
+            return AiDeviceAction(
+                "start_managed_file_transfer",
+                "启动托管文件传输",
+                RiskLevel.FLOW,
+                device_id=device_id,
+                params={
+                    "source_path": self._required_text(
+                        params,
+                        "source_path",
+                        max_chars=1_024,
+                    ),
+                    "destination_path": self._required_text(
+                        params,
+                        "destination_path",
+                        max_chars=1_024,
+                    ),
+                    "overwrite": self._boolean(
+                        params,
+                        "overwrite",
+                        default=False,
+                    ),
+                },
             )
         raise AppControlError("unknown_tool", f"未知工具: {tool}", status=404)
 
@@ -907,6 +1131,63 @@ class AppControlService:
             http_status=408,
         )
 
+    def _execute_terminal_plan(
+        self,
+        action: AiDeviceAction,
+    ) -> AiDeviceToolResult:
+        initial = self._dispatch_action(action)
+        if not initial.ok:
+            return initial
+        completion_event = initial.data.pop("_completion_event", None)
+        if bool(action.params.get("run_async")):
+            return initial
+        if not isinstance(completion_event, threading.Event):
+            return AiDeviceToolResult(
+                action,
+                ok=False,
+                message="App 未返回终端执行完成事件。",
+                error_code="invalid_backend_result",
+                http_status=500,
+            )
+        timeout_seconds = float(action.params.get("total_timeout_seconds", 60)) + 1
+        if not completion_event.wait(timeout_seconds):
+            return AiDeviceToolResult(
+                action,
+                ok=False,
+                message="等待终端执行结果超时。",
+                data=dict(initial.data),
+                error_code="execution_timeout",
+                http_status=408,
+            )
+        execution_id = str(initial.data.get("execution_id") or "")
+        result_action = AiDeviceAction(
+            "terminal_execution_get",
+            "读取终端执行结果",
+            RiskLevel.OBSERVE,
+            params={"execution_id": execution_id},
+        )
+        queried = self._dispatch_action(result_action)
+        if not queried.ok:
+            return queried
+        status = str(queried.data.get("status") or "")
+        if status == "completed":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="终端执行完成。",
+                data=dict(queried.data),
+            )
+        error_code = str(queried.data.get("error_code") or "terminal_execution_failed")
+        http_status = 408 if status == "timed_out" else 409
+        return AiDeviceToolResult(
+            action,
+            ok=False,
+            message=str(queried.data.get("message") or "终端执行未完成。"),
+            data=dict(queried.data),
+            error_code=error_code,
+            http_status=http_status,
+        )
+
     @staticmethod
     def _terminal_execution_result(
         action: AiDeviceAction,
@@ -952,10 +1233,13 @@ class AppControlService:
         self,
         action: AiDeviceAction,
         result: AiDeviceToolResult,
+        *,
+        kind: str,
+        operation_id: str = "",
     ) -> OperationRecord:
         operation = OperationRecord(
-            id=str(uuid4()),
-            kind="package_upgrade",
+            id=operation_id or str(uuid4()),
+            kind=kind,
             device_id=action.device_id,
             status="running",
             message=result.message,
@@ -998,11 +1282,110 @@ class AppControlService:
                 operation.message = result.message
                 operation.data.update(result.data)
                 operation.updated_at = utc_timestamp()
+        elif operation.kind == "managed_file_transfer":
+            action = AiDeviceAction(
+                "get_managed_file_transfer",
+                "读取托管文件传输状态",
+                RiskLevel.OBSERVE,
+                device_id=operation.device_id,
+                params={"operation_id": operation.id},
+            )
+            result = self.dispatcher(
+                lambda: self.backend.execute_ai_device_action(action),
+                self.call_timeout_seconds,
+            )
+            if isinstance(result, AiDeviceToolResult) and result.ok:
+                operation.status = str(result.data.get("status") or operation.status)
+                operation.message = result.message
+                operation.data.update(result.data)
+                operation.updated_at = utc_timestamp()
         return self._success(
             request_id,
             operation.message,
             {"operation": asdict(operation)},
         )
+
+    def _operation_cancel(
+        self,
+        params: dict[str, Any],
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        operation_id = self._required_text(params, "operation_id", max_chars=80)
+        with self._lock:
+            operation = self._operations.get(operation_id)
+        if operation is None:
+            raise AppControlError(
+                "operation_not_found",
+                f"未找到操作: {operation_id}",
+                status=404,
+            )
+        if operation.kind != "managed_file_transfer":
+            raise AppControlError(
+                "operation_not_cancellable",
+                f"操作类型 {operation.kind} 当前不支持取消。",
+                status=409,
+            )
+        action = AiDeviceAction(
+            "cancel_managed_file_transfer",
+            "取消托管文件传输",
+            RiskLevel.LOW,
+            device_id=operation.device_id,
+            params={"operation_id": operation.id},
+        )
+        result = self.dispatcher(
+            lambda: self.backend.execute_ai_device_action(action),
+            self.call_timeout_seconds,
+        )
+        if not isinstance(result, AiDeviceToolResult):
+            raise AppControlError(
+                "invalid_backend_result",
+                "App 动作层返回了无效结果。",
+                status=500,
+            )
+        if not result.ok:
+            raise AppControlError(
+                result.error_code or "operation_cancel_failed",
+                result.message,
+                status=result.http_status,
+            )
+        operation.status = str(result.data.get("status") or operation.status)
+        operation.message = result.message
+        operation.data.update(result.data)
+        operation.updated_at = utc_timestamp()
+        return self._success(
+            request_id,
+            operation.message,
+            {"operation": asdict(operation)},
+        )
+
+    def _terminal_target(self, params: dict[str, Any]) -> tuple[str, str]:
+        device_id = self._optional_text(params, "device_id", max_chars=200)
+        session_id = self._optional_text(params, "session_id", max_chars=240)
+        if not device_id and not session_id:
+            raise AppControlError(
+                "invalid_request",
+                "执行终端计划需要 session_id 或 device_id。",
+            )
+        return device_id, session_id
+
+    @staticmethod
+    def _terminal_plan_runs_async(
+        mode: str,
+        total_timeout_seconds: float,
+        *,
+        has_state_wait: bool,
+    ) -> bool:
+        if mode == "sync" and total_timeout_seconds > 60:
+            raise AppControlError(
+                "invalid_request",
+                "同步终端计划的总超时不能超过 60 秒，请使用 async 模式。",
+            )
+        if mode == "async":
+            return True
+        if mode == "sync":
+            return False
+        return total_timeout_seconds > 60 or has_state_wait
 
     @staticmethod
     def _required_text(
@@ -1072,6 +1455,21 @@ class AppControlService:
             raise AppControlError(
                 "invalid_request",
                 f"参数 {key} 必须在 {minimum} 到 {maximum} 之间。",
+            )
+        return value
+
+    @staticmethod
+    def _boolean(
+        params: dict[str, Any],
+        key: str,
+        *,
+        default: bool,
+    ) -> bool:
+        value = params.get(key, default)
+        if not isinstance(value, bool):
+            raise AppControlError(
+                "invalid_request",
+                f"参数 {key} 必须是布尔值。",
             )
         return value
 

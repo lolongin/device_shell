@@ -227,6 +227,10 @@ class TerminalCanvasWidget(QWidget):
     def set_confirm_multiline_paste(self, enabled: bool) -> None:
         self._confirm_multiline_paste = enabled
 
+    def scroll_to_live_input(self) -> None:
+        """Leave scrollback and reveal the live terminal cursor."""
+        self._scroll_to_live_input()
+
     def terminal_dimensions(self) -> tuple[int, int]:
         self._refresh_font_metrics()
         content_width = max(1, self.width() - self.PADDING_LEFT - self.PADDING_RIGHT - self.SCROLLBAR_WIDTH)
