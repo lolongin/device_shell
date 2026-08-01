@@ -71,6 +71,7 @@ class SendStep:
     secret_ref: str = ""
     append_enter: bool = True
     label: str = ""
+    name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,10 @@ class ExpectStep:
     case_sensitive: bool = False
     max_output_chars: int = 16_384
     label: str = ""
+    name: str = ""
+    on_match: str = ""
+    on_failure: str = ""
+    max_retries: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +95,10 @@ class WaitStateStep:
     state: str
     timeout_seconds: float = 60.0
     label: str = ""
+    name: str = ""
+    on_match: str = ""
+    on_failure: str = ""
+    max_retries: int = 0
 
 
 TerminalStep = SendStep | ExpectStep | WaitStateStep
@@ -168,6 +177,7 @@ def parse_terminal_plan(
                 "invalid_plan",
                 f"步骤 {index} 类型无效: {kind or '<empty>'}",
             )
+    _validate_plan_branches(parsed)
     return TerminalExecutionPlan(tuple(parsed), total_timeout)
 
 
@@ -264,6 +274,7 @@ class TerminalExecutionRunner:
         self._active_result: TerminalStepResult | None = None
         self._scan_buffer = ""
         self._response_counts: dict[int, int] = {}
+        self._branch_counts: dict[tuple[int, int, str], int] = {}
         self._known_secrets: list[str] = []
         self._step_token = 0
         self._last_output_monotonic = 0.0
@@ -314,17 +325,23 @@ class TerminalExecutionRunner:
                 case_sensitive=step.case_sensitive,
             )
             if failure is not None:
+                failed_step = step
                 self._finish_active_step_locked(
                     "failed",
                     matched=failure[0],
                     error_code="terminal_failure",
                     message=f"终端输出匹配失败条件: {failure[0]}",
                 )
-                self._finish_locked(
-                    "failed",
-                    error_code="terminal_failure",
-                    message=f"步骤 {self.current_step} 执行失败。",
-                )
+                if not self._take_branch_locked(
+                    failed_step,
+                    failed_step.on_failure,
+                    reason="failure",
+                ):
+                    self._finish_locked(
+                        "failed",
+                        error_code="terminal_failure",
+                        message=f"步骤 {self.current_step} 执行失败。",
+                    )
                 return
             self._apply_responses_locked(step)
             if self.status != "running":
@@ -336,8 +353,9 @@ class TerminalExecutionRunner:
             )
             if success is not None:
                 self._finish_active_step_locked("completed", matched=success[0])
-                self.current_step += 1
-                self._advance_locked()
+                if not self._take_branch_locked(step, step.on_match, reason="match"):
+                    self.current_step += 1
+                    self._advance_locked()
                 return
             if step.idle_seconds > 0:
                 token = self._step_token
@@ -354,8 +372,9 @@ class TerminalExecutionRunner:
             step = self._current_plan_step()
             if isinstance(step, WaitStateStep) and normalized == step.state:
                 self._finish_active_step_locked("completed", matched=normalized)
-                self.current_step += 1
-                self._advance_locked()
+                if not self._take_branch_locked(step, step.on_match, reason="match"):
+                    self.current_step += 1
+                    self._advance_locked()
                 return
             if normalized == "disconnected" and not (
                 isinstance(step, WaitStateStep) and step.state == "disconnected"
@@ -460,6 +479,49 @@ class TerminalExecutionRunner:
                 continue
             self._arm_wait_locked(step)
             return
+
+    def _take_branch_locked(
+        self,
+        step: ExpectStep | WaitStateStep,
+        target: str,
+        *,
+        reason: str,
+    ) -> bool:
+        if not target or target == "stop":
+            return False
+        source_index = self.current_step
+        if target == "retry":
+            target_index = source_index
+        else:
+            target_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(self.plan.steps)
+                    if candidate.name == target
+                ),
+                -1,
+            )
+        if target_index < 0:
+            self._finish_locked(
+                "failed",
+                error_code="invalid_branch",
+                message=f"执行时找不到分支步骤: {target}",
+            )
+            return True
+        if target_index <= source_index:
+            key = (source_index, target_index, reason)
+            count = self._branch_counts.get(key, 0) + 1
+            self._branch_counts[key] = count
+            if count > step.max_retries:
+                self._finish_locked(
+                    "failed",
+                    error_code="branch_limit_exceeded",
+                    message=f"步骤 {source_index} 的分支重试超过上限。",
+                )
+                return True
+        self.current_step = target_index
+        self._advance_locked()
+        return True
 
     def _run_send_locked(self, step: SendStep) -> bool:
         result = TerminalStepResult(
@@ -656,11 +718,21 @@ class TerminalExecutionRunner:
         with self._lock:
             if self.status != "running" or token != self._step_token:
                 return
+            step = self._current_plan_step()
             self._finish_active_step_locked(
                 "timed_out",
                 error_code="step_timeout",
                 message=f"步骤 {self.current_step} 等待超时。",
             )
+            if (
+                isinstance(step, (ExpectStep, WaitStateStep))
+                and self._take_branch_locked(
+                    step,
+                    step.on_failure,
+                    reason="timeout",
+                )
+            ):
+                return
             self._finish_locked(
                 "timed_out",
                 error_code="step_timeout",
@@ -679,8 +751,9 @@ class TerminalExecutionRunner:
             if self._active_result is None or not self._active_result.output:
                 return
             self._finish_active_step_locked("completed", matched="idle")
-            self.current_step += 1
-            self._advance_locked()
+            if not self._take_branch_locked(step, step.on_match, reason="match"):
+                self.current_step += 1
+                self._advance_locked()
 
     def _on_total_timeout(self, token: int) -> None:
         with self._lock:
@@ -865,6 +938,7 @@ def _parse_send_step(raw: dict[str, Any], index: int) -> SendStep:
         secret_ref=secret_ref,
         append_enter=bool(raw.get("append_enter", True)),
         label=str(raw.get("label") or text or control or secret_ref),
+        name=_step_name(raw, index),
     )
 
 
@@ -934,6 +1008,17 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
         case_sensitive=bool(raw.get("case_sensitive", False)),
         max_output_chars=output_limit,
         label=str(raw.get("label") or ""),
+        name=_step_name(raw, index),
+        on_match=str(raw.get("on_match") or "").strip(),
+        on_failure=str(raw.get("on_failure") or "").strip(),
+        max_retries=int(
+            _number(
+                raw.get("max_retries", 0),
+                "max_retries",
+                minimum=0,
+                maximum=100,
+            )
+        ),
     )
 
 
@@ -954,7 +1039,62 @@ def _parse_wait_state_step(raw: dict[str, Any], index: int) -> WaitStateStep:
         state=state,
         timeout_seconds=timeout,
         label=str(raw.get("label") or state),
+        name=_step_name(raw, index),
+        on_match=str(raw.get("on_match") or "").strip(),
+        on_failure=str(raw.get("on_failure") or "").strip(),
+        max_retries=int(
+            _number(
+                raw.get("max_retries", 0),
+                "max_retries",
+                minimum=0,
+                maximum=100,
+            )
+        ),
     )
+
+
+def _step_name(raw: dict[str, Any], index: int) -> str:
+    name = str(raw.get("name") or "").strip()
+    if name and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", name):
+        raise TerminalPlanError(
+            "invalid_plan",
+            f"步骤 {index} name 必须以字母开头，且只包含字母、数字、点、横线或下划线。",
+        )
+    return name
+
+
+def _validate_plan_branches(steps: list[TerminalStep]) -> None:
+    names: dict[str, int] = {}
+    for index, step in enumerate(steps):
+        name = step.name
+        if not name:
+            continue
+        if name in names:
+            raise TerminalPlanError("invalid_plan", f"步骤名称重复: {name}")
+        names[name] = index
+    for index, step in enumerate(steps):
+        if not isinstance(step, (ExpectStep, WaitStateStep)):
+            continue
+        for field_name, target in (
+            ("on_match", step.on_match),
+            ("on_failure", step.on_failure),
+        ):
+            if not target or (field_name == "on_failure" and target == "stop"):
+                continue
+            if field_name == "on_failure" and target == "retry":
+                target_index = index
+            else:
+                if target not in names:
+                    raise TerminalPlanError(
+                        "invalid_plan",
+                        f"步骤 {index} {field_name} 指向未知步骤: {target}",
+                    )
+                target_index = names[target]
+            if target_index <= index and step.max_retries < 1:
+                raise TerminalPlanError(
+                    "invalid_plan",
+                    f"步骤 {index} 的向后跳转必须设置 max_retries。",
+                )
 
 
 def _exclusive_input(

@@ -251,3 +251,78 @@ def test_external_workflow_lease_is_restored_after_child_interaction() -> None:
     assert coordinator.cancel_for_user_input("tab-1") == "package-upgrade-1"
     assert cancelled == [True]
     assert coordinator.active_execution_id("tab-1") == ""
+
+
+def test_interactive_plan_can_jump_to_cleanup_after_failure_match() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "name": "check", "text": "check package"},
+            {
+                "type": "expect",
+                "name": "check_result",
+                "success": ["OK"],
+                "failures": ["NO SPACE"],
+                "on_failure": "cleanup",
+            },
+            {"type": "send", "name": "normal", "text": "install package"},
+            {"type": "send", "name": "cleanup", "text": "delete temp package"},
+            {"type": "expect", "success": ["device_prompt"]},
+        ]
+    )
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=plan,
+    )
+
+    coordinator.on_output("tab-1", "NO SPACE")
+    coordinator.on_output("tab-1", "cleanup complete\n<sim> ")
+
+    assert [item[1].text for item in harness.sent] == [
+        "check package\r",
+        "delete temp package\r",
+    ]
+    assert runner.public_dict()["status"] == "completed"
+
+
+def test_interactive_plan_rejects_unbounded_backward_branch() -> None:
+    with pytest.raises(TerminalPlanError, match="max_retries"):
+        parse_terminal_plan(
+            [
+                {"type": "send", "name": "retry_send", "text": "probe"},
+                {
+                    "type": "expect",
+                    "success": ["device_prompt"],
+                    "on_match": "retry_send",
+                },
+            ]
+        )
+
+
+def test_interactive_backward_branch_stops_at_retry_limit() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "name": "retry_send", "text": "probe"},
+            {
+                "type": "expect",
+                "success": ["RETRY"],
+                "on_match": "retry_send",
+                "max_retries": 1,
+            },
+        ]
+    )
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=plan,
+    )
+
+    coordinator.on_output("tab-1", "RETRY")
+    coordinator.on_output("tab-1", "RETRY")
+
+    assert [item[1].text for item in harness.sent] == ["probe\r", "probe\r"]
+    assert runner.public_dict()["error_code"] == "branch_limit_exceeded"

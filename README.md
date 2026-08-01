@@ -155,6 +155,7 @@ The MCP server exposes these tools:
 - `session_list`
 - `session_manage`
 - `session_open`
+- `terminal_run`
 - `terminal_execute`
 - `terminal_execute_batch`
 - `terminal_interact`
@@ -167,14 +168,21 @@ The MCP server exposes these tools:
 - `package_upgrade_start`
 - `approval_get`
 - `operation_get`
+- `operation_wait`
 - `operation_cancel`
 
-For reliable daily commands, use `session_manage(action="open", ...)` and keep
-the returned `session_id`, then call `terminal_execute`. The result contains
-only output produced after that command was sent and identifies whether it
-completed by matching a prompt, by the idle fallback, by timeout, or by
-disconnect. The older session and terminal tools remain available for
-compatibility.
+For reliable daily commands, prefer `terminal_run`. It accepts one or more
+commands, reuses or prepares a session in the same call, and returns only the
+output produced by those commands. Known prompts complete through terminal
+output events instead of service polling. The older session and terminal
+tools remain available for compatibility.
+
+```text
+terminal_run(
+  device_id="SIM-TERMINAL",
+  commands=["display version", "dir flash:/"]
+)
+```
 
 Use `terminal_execute_batch` for several ordinary commands. Device TUI sends
 the next command as soon as the previous device prompt appears, so the whole
@@ -190,6 +198,8 @@ to the MCP client or written to command results. Long plans return an
 For package upgrades, call `package_upgrade_start` instead of manually
 entering FTP or SFTP commands. The App holds the session for the full upgrade
 and performs transfer login locally from the package-upgrade configuration.
+Use `operation_wait` with the returned operation ID to wait for a change or
+completion without repeated model-paced `operation_get` polling.
 
 For transfer-only requests, call `file_transfer_list` and then
 `file_transfer_start`. The source is a relative path returned from the App's
@@ -218,9 +228,13 @@ with `DEVICE_TUI_CONTROL_STATE` and `DEVICE_TUI_CONTROL_AUDIT`.
 ## Project Layout
 
 - `src/desktop_app.py`: PySide6 desktop GUI
-- `src/app_control_server.py`: local App Control HTTP server
-- `src/app_control_client.py`: reusable Tool Calling client
-- `src/mcp_server.py`: MCP tool facade
+- `src/device_mcp/server.py`: FastMCP entry point and tool registration
+- `src/device_mcp/tools/`: domain-oriented MCP tools
+- `src/device_mcp/gateway.py`: cached MCP-to-App gateway
+- `src/device_mcp/client.py`: keep-alive App Control client
+- `src/device_mcp/http_server.py`: local App Control HTTP server
+- `src/device_mcp/service.py`: application-control coordinator
+- `src/mcp_server.py` and `src/app_control*.py`: compatibility entry points
 - `src/data.py`: device model and sample/generated data
 - `src/repository.py`: sample and API-backed repositories
 - `src/api_client.py`: HTTP API client used by GUI API mode

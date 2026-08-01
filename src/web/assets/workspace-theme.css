@@ -14,6 +14,8 @@
   --warn: #fbbf24;
   --danger: #f87171;
   --selected: #24324a;
+  --text-selection-bg: #315f9f;
+  --text-selection-fg: #f8fafc;
   --input: #08101d;
   --input-quiet: #050b14;
   --success-soft: rgba(34, 197, 94, 0.14);
@@ -72,6 +74,11 @@ body {
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+::selection {
+  background: var(--text-selection-bg);
+  color: var(--text-selection-fg);
 }
 
 body.workspace-page,

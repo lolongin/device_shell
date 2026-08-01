@@ -17,8 +17,10 @@ except ModuleNotFoundError:  # pragma: no cover - dependency is declared for the
 
 try:
     from ..command_suggestions import infer_completed_command_from_terminal_line
+    from ..theme_tokens import WORKSPACE_TEXT_SELECTION_BG, WORKSPACE_TEXT_SELECTION_FG
 except ImportError:  # pragma: no cover - direct script execution fallback
     from command_suggestions import infer_completed_command_from_terminal_line
+    from theme_tokens import WORKSPACE_TEXT_SELECTION_BG, WORKSPACE_TEXT_SELECTION_FG
 
 
 class _TerminalTextCursor:
@@ -56,8 +58,8 @@ class TerminalCanvasWidget(QWidget):
     DEFAULT_BG = QColor("#020617")
     CURSOR_BG = QColor("#22c55e")
     CURSOR_FG = QColor("#020617")
-    SELECTION_BG = QColor("#334155")
-    SELECTION_FG = QColor("#f8fafc")
+    SELECTION_BG = QColor(WORKSPACE_TEXT_SELECTION_BG)
+    SELECTION_FG = QColor(WORKSPACE_TEXT_SELECTION_FG)
     WORD_RE = re.compile(r"[A-Za-z0-9_./:@%+=,\-]+")
 
     ANSI_COLORS = {

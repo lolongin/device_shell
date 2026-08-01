@@ -652,6 +652,53 @@ def test_terminal_execute_disconnect_preserves_partial_output() -> None:
     assert response["data"]["output"] == "rebooting now..."
 
 
+def test_terminal_run_uses_event_driven_plan_for_one_or_many_commands() -> None:
+    backend = OrchestrationBackend(actions=[])
+    service = AppControlService(backend)
+
+    status, response = service.invoke(
+        "terminal_run",
+        {
+            "session_id": "session-1",
+            "ensure_session": False,
+            "commands": ["display version", "display clock"],
+        },
+    )
+
+    assert status == 200
+    assert response["data"]["status"] == "completed"
+    assert response["data"]["session_id"] == "session-1"
+    assert response["data"]["timing"]["session_prepare_ms"] >= 0
+    assert [action.kind for action in backend.actions] == [
+        "terminal_plan_start",
+        "terminal_execution_get",
+    ]
+
+
+def test_operation_wait_returns_completed_package_workflow_without_client_polling() -> None:
+    service, _backend = make_service()
+    start_status, started = service.invoke(
+        "package_upgrade_start",
+        {"device_id": "SIM-TERMINAL"},
+    )
+    operation = started["data"]["operation"]
+
+    wait_status, waited = service.invoke(
+        "operation_wait",
+        {
+            "operation_id": operation["id"],
+            "since_revision": operation["revision"],
+            "timeout_seconds": 2,
+        },
+    )
+
+    assert start_status == 200
+    assert wait_status == 200
+    assert waited["data"]["operation"]["status"] == "completed"
+    assert waited["data"]["operation"]["revision"] > operation["revision"]
+    assert waited["data"]["wait_timed_out"] is False
+
+
 def test_terminal_execute_batch_waits_on_local_completion_event() -> None:
     backend = OrchestrationBackend(actions=[])
     service = AppControlService(backend)

@@ -1434,6 +1434,150 @@ class SessionOpsMixin:
 
     # ---- Session context menus ----
 
+    def ordered_device_tab_states(self) -> list[DeviceTabState]:
+        states: list[DeviceTabState] = []
+        for index in range(self.session_tab_widget.count()):
+            state = self._device_tab_for_page(self.session_tab_widget.widget(index))
+            if state is not None:
+                states.append(state)
+        return states
+
+    def device_tab_close_targets(
+        self,
+        reference: DeviceTabState,
+        mode: str,
+    ) -> list[DeviceTabState]:
+        states = self.ordered_device_tab_states()
+        try:
+            reference_index = states.index(reference)
+        except ValueError:
+            return []
+
+        if mode == "current":
+            return [reference]
+        if mode == "left":
+            return states[:reference_index]
+        if mode == "right":
+            return states[reference_index + 1 :]
+        if mode == "others":
+            return states[:reference_index] + states[reference_index + 1 :]
+        if mode == "all":
+            return states
+        raise ValueError(f"Unsupported device tab close mode: {mode}")
+
+    def device_tab_context_title(self, state: DeviceTabState) -> str:
+        device = self.get_device_by_id(state.device_id)
+        title = self.temporary_device_display_name(device) if device is not None else state.title
+        return f"{title[:29]}…" if len(title) > 30 else title
+
+    def build_device_tab_context_menu(
+        self,
+        state: DeviceTabState,
+        parent: QWidget,
+    ) -> tuple[QMenu, dict[str, QAction], dict[str, Any], Device | None]:
+        states = self.ordered_device_tab_states()
+        try:
+            reference_index = states.index(state)
+        except ValueError:
+            reference_index = -1
+
+        menu = self.new_workspace_menu(
+            parent,
+            self.device_tab_context_title(state),
+            "device-tab-menu",
+        )
+        actions = {
+            "current": menu.addAction("关闭当前页签"),
+        }
+        menu.addSeparator()
+        actions["left"] = menu.addAction("关闭左侧页签")
+        actions["right"] = menu.addAction("关闭右侧页签")
+        actions["others"] = menu.addAction("关闭其他页签")
+        menu.addSeparator()
+        actions["all"] = menu.addAction("关闭所有页签")
+        actions["all"].setIcon(self._quick_action_icon("close", "#f87171"))
+
+        tab_count = len(states)
+        actions["current"].setEnabled(reference_index >= 0)
+        actions["left"].setEnabled(reference_index > 0)
+        actions["right"].setEnabled(0 <= reference_index < tab_count - 1)
+        actions["others"].setEnabled(reference_index >= 0 and tab_count > 1)
+        actions["all"].setEnabled(tab_count > 0)
+
+        device = self.get_device_by_id(state.device_id)
+        device_actions: dict[str, Any] = {}
+        if device is not None:
+            menu.addSeparator()
+            device_menu = self.new_workspace_menu(menu, kind="device-tab-actions")
+            device_menu.setTitle("设备操作")
+            device_actions = self._add_device_quick_actions(device_menu)
+            self.update_device_quick_actions_for_device(device_actions, device)
+            menu.addMenu(device_menu)
+
+        return menu, actions, device_actions, device
+
+    def _exec_device_tab_context_menu(
+        self,
+        state: DeviceTabState,
+        parent: QWidget,
+        global_pos: QPoint,
+    ) -> None:
+        if self.session_tab_widget.indexOf(state.page) < 0:
+            return
+        menu, close_actions, device_actions, device = self.build_device_tab_context_menu(state, parent)
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        for mode, action in close_actions.items():
+            if chosen == action:
+                self.close_device_tabs_relative(state, mode)
+                return
+        if device is not None:
+            self._handle_device_quick_action(chosen, device_actions, device)
+
+    def show_device_tab_context_menu(self, pos: QPoint) -> None:
+        tab_bar = self.session_tab_widget.tabBar()
+        index = tab_bar.tabAt(pos)
+        if index < 0:
+            return
+        state = self._device_tab_for_page(self.session_tab_widget.widget(index))
+        if state is None:
+            return
+        self._exec_device_tab_context_menu(state, tab_bar, tab_bar.mapToGlobal(pos))
+
+    def show_device_tab_context_menu_for_widget(
+        self,
+        device_id: str,
+        widget: QWidget,
+        pos: QPoint,
+    ) -> None:
+        state = self.device_tabs_by_id.get(device_id)
+        if state is None:
+            return
+        self._exec_device_tab_context_menu(state, widget, widget.mapToGlobal(pos))
+
+    def close_device_tabs_relative(self, reference: DeviceTabState, mode: str) -> None:
+        targets = self.device_tab_close_targets(reference, mode)
+        if not targets:
+            self.set_status_message("没有符合条件的设备页签可关闭。")
+            return
+
+        if mode in {"left", "right", "others"}:
+            self.session_tab_widget.setCurrentWidget(reference.page)
+
+        for state in targets:
+            if self.device_tabs_by_id.get(state.device_id) is state:
+                self.close_device_tab_state(state)
+
+        labels = {
+            "current": "当前",
+            "left": "左侧",
+            "right": "右侧",
+            "others": "其他",
+            "all": "所有",
+        }
+        self.set_status_message(f"正在关闭{labels[mode]}设备页签，共 {len(targets)} 个。")
+
     def show_terminal_context_menu(self, tab_id: str, terminal: Any, pos: Any) -> None:
         state = self.session_tabs_by_id.get(tab_id)
         if state is None:
@@ -3759,7 +3903,7 @@ class SessionOpsMixin:
                 widget.setProperty("deviceTabId", device_id)
                 widget.installEventFilter(self)
                 widget.customContextMenuRequested.connect(
-                    lambda pos, widget=widget, device_id=device_id: self.show_device_quick_context_menu(
+                    lambda pos, widget=widget, device_id=device_id: self.show_device_tab_context_menu_for_widget(
                         device_id,
                         widget,
                         pos,
@@ -5317,7 +5461,7 @@ class SessionOpsMixin:
 
         def finalize_close(_result: object | None = None) -> None:
             current_device_tab = self.device_tabs_by_id.get(device_tab.device_id)
-            if current_device_tab is None:
+            if current_device_tab is not device_tab:
                 return
             for state in child_states:
                 self.write_session_log_line(state, "SYS", "Session closed")

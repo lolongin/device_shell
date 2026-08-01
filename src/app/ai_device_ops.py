@@ -46,14 +46,14 @@ from ..ai_device_ops import (
     SimpleAiDevicePlanner,
     classify_command_risk,
 )
-from ..app_control import (
+from ..device_mcp.service import (
     APPROVAL_MODE_REQUIRED,
     AppControlError,
     AppControlService,
     ApprovalRecord,
     AuditLogger,
 )
-from ..app_control_server import (
+from ..device_mcp.http_server import (
     AppControlHttpServer,
     default_audit_path,
 )

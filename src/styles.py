@@ -2683,19 +2683,19 @@ QMenu#workspaceContextMenu {
     background: #0f172a;
     border: 1px solid #334155;
     border-radius: 10px;
-    padding: 7px;
+    padding: 6px;
 }
 QMenu#workspaceContextMenu::item {
     min-width: 176px;
-    padding: 8px 30px 8px 12px;
+    padding: 7px 30px 7px 12px;
     border-radius: 7px;
 }
 QMenu#workspaceContextMenu::item:selected {
-    background: #163326;
-    color: #d8fff0;
+    background: #24324a;
+    color: #f8fafc;
 }
 QMenu#workspaceContextMenu::item:disabled {
-    color: #a7b4c7;
+    color: #718096;
 }
 QMenu#workspaceContextMenu::separator {
     height: 1px;
@@ -3235,5 +3235,16 @@ QToolButton#sessionQuickRestoreButton:disabled {
     background: #08101d;
     border-color: #172236;
     color: #526176;
+}
+
+/* Global text selection */
+QLineEdit,
+QTextEdit,
+QPlainTextEdit,
+QTextBrowser,
+QAbstractSpinBox,
+QComboBox {
+    selection-background-color: #315f9f;
+    selection-color: #f8fafc;
 }
 """

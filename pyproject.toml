@@ -17,7 +17,7 @@ dependencies = [
 [project.scripts]
 device-tui = "src.desktop_app:main"
 device-tui-desktop = "src.desktop_app:main"
-device-tui-mcp = "src.mcp_server:main"
+device-tui-mcp = "src.device_mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]

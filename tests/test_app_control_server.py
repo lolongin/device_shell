@@ -96,6 +96,48 @@ def test_http_server_state_discovery_and_device_list(
     assert backend.actions[0].kind == "list_devices"
 
 
+def test_http_client_reuses_loopback_keep_alive_connection(
+    running_control_server: tuple[
+        AppControlHttpServer,
+        AppControlService,
+        HttpFakeBackend,
+        Path,
+    ],
+) -> None:
+    _server, _service, _backend, state_path = running_control_server
+    client = AppControlClient.from_state_file(state_path)
+
+    client.health()
+    first_connection = client._pool._available[0]
+    client.device_list()
+
+    assert client._pool._available[0] is first_connection
+    client.close()
+
+
+def test_http_operation_wait_returns_timeout_snapshot_without_polling_client(
+    running_control_server: tuple[
+        AppControlHttpServer,
+        AppControlService,
+        HttpFakeBackend,
+        Path,
+    ],
+) -> None:
+    _server, _service, _backend, state_path = running_control_server
+    client = AppControlClient.from_state_file(state_path)
+    started = client.package_upgrade_start("SIM-TERMINAL")
+
+    waited = client.operation_wait(
+        started["data"]["operation_id"],
+        timeout_seconds=1,
+        since_revision=started["data"]["operation"]["revision"],
+    )
+
+    assert waited["data"]["wait_timed_out"] is True
+    assert waited["data"]["operation"]["status"] == "running"
+    client.close()
+
+
 def test_http_server_rejects_invalid_token(
     running_control_server: tuple[
         AppControlHttpServer,

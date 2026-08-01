@@ -3,7 +3,7 @@
 ## Goal
 
 Restructure the Device TUI MCP implementation into a maintainable
-`src/mcp/` package and reduce end-to-end command latency without breaking
+`src/device_mcp/` package and reduce end-to-end command latency without breaking
 existing MCP clients, Python imports, command names, approvals, audit logging,
 or guarded package-upgrade behavior.
 
@@ -31,7 +31,7 @@ implementations. New code imports from `src.mcp`.
 ## Package Architecture
 
 ```text
-src/mcp/
+src/device_mcp/
 |-- __init__.py
 |-- server.py
 |-- gateway.py
@@ -81,6 +81,11 @@ Responsibilities:
 Lower-level modules must not import tool-registration modules. This keeps the
 dependency direction one-way and prevents circular imports.
 
+The package is named `device_mcp` rather than `mcp` because this repository
+adds `src` to `sys.path` for tests and direct desktop execution. A local
+`src/mcp` directory would shadow the installed Python `mcp` SDK and break
+`mcp.server.fastmcp` imports.
+
 ## Gateway and Transport Performance
 
 The MCP process creates one `McpGateway` for its lifetime.
@@ -127,9 +132,10 @@ Behavior:
    bounded idle fallback only for unknown prompts.
 6. Return a consistent per-step result and timing breakdown.
 
-`terminal_execute` delegates to the same event-driven path with one command.
-`terminal_execute_batch` delegates with several commands. Their existing
-public behavior remains compatible. `terminal_send_command` and
+Calling `terminal_run` with one command uses the event-driven path just like a
+multi-command run. `terminal_execute` retains its exact legacy response and
+polling semantics for compatibility, while `terminal_execute_batch` keeps its
+existing coordinator path. `terminal_send_command` and
 `terminal_read` remain available for raw compatibility use, but MCP
 instructions identify `terminal_run` as the normal command tool.
 
@@ -203,8 +209,8 @@ Tests cover:
 - gateway state caching and removal of per-call health probes;
 - keep-alive reuse, stale-connection recovery, and safe retry rules;
 - one-call session preparation plus command execution;
-- single-command use of the event-driven coordinator with no 50 ms snapshot
-  polling loop;
+- single-command `terminal_run` use of the event-driven coordinator with no
+  50 ms snapshot polling loop;
 - multi-command ordering, prompt completion, idle fallback, disconnect,
   cancellation, leases, idempotency, and secret redaction;
 - valid and invalid `terminal_interact` branches;

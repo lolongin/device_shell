@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 
 from src.mcp_server import mcp
+from src.device_mcp.server import mcp as packaged_mcp
 
 
 def test_mcp_server_exposes_device_control_tools() -> None:
+    assert packaged_mcp is mcp
     tools = asyncio.run(mcp.list_tools())
     names = {tool.name for tool in tools}
 
@@ -19,6 +21,7 @@ def test_mcp_server_exposes_device_control_tools() -> None:
         "session_open",
         "terminal_execute",
         "terminal_execute_batch",
+        "terminal_run",
         "terminal_interact",
         "terminal_send_command",
         "terminal_read",
@@ -29,6 +32,7 @@ def test_mcp_server_exposes_device_control_tools() -> None:
         "package_upgrade_start",
         "approval_get",
         "operation_get",
+        "operation_wait",
         "operation_cancel",
     }
 
@@ -59,3 +63,12 @@ def test_mcp_server_exposes_device_control_tools() -> None:
         "destination_path",
     ]
     assert "overwrite" in transfer_tool.inputSchema["properties"]
+
+    run_tool = next(tool for tool in tools if tool.name == "terminal_run")
+    assert run_tool.inputSchema["required"] == ["commands"]
+    assert "ensure_session" in run_tool.inputSchema["properties"]
+    assert "session_id" in run_tool.inputSchema["properties"]
+
+    wait_tool = next(tool for tool in tools if tool.name == "operation_wait")
+    assert wait_tool.inputSchema["required"] == ["operation_id"]
+    assert "since_revision" in wait_tool.inputSchema["properties"]

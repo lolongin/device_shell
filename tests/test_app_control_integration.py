@@ -75,6 +75,17 @@ def test_running_app_control_server_executes_without_device_tui_approval(
         app,
         lambda: client.device_get("SIM-TERMINAL"),
     )
+    terminal_run = run_with_qt_events(
+        app,
+        lambda: client.terminal_run(
+            ["display version", "dir flash:/"],
+            device_id="SIM-TERMINAL",
+            ensure_session=True,
+            command_timeout_seconds=3,
+            total_timeout_seconds=10,
+        ),
+        timeout=15,
+    )
     managed = run_with_qt_events(
         app,
         lambda: client.session_manage(
@@ -136,6 +147,10 @@ def test_running_app_control_server_executes_without_device_tui_approval(
 
     assert status["data"]["approval_mode"] == APPROVAL_MODE_DISABLED
     assert details["data"]["device"]["protocols"] == ["simulated"]
+    assert terminal_run["data"]["status"] == "completed"
+    assert terminal_run["data"]["session_id"]
+    assert "SimOS V1.0" in terminal_run["data"]["steps"][1]["output"]
+    assert terminal_run["data"]["timing"]["total_ms"] >= 0
     assert managed["data"]["session"]["status"] == "connected"
     assert executed["data"]["completion_reason"] == "prompt"
     assert "SimOS V1.0" in executed["data"]["output"]

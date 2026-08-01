@@ -33,7 +33,9 @@ Use these colors across Web CSS, Qt style sheets, canvas terminal rendering, and
 | Danger | `#f87171` | Errors, destructive actions |
 | Success Text | `#d8fff0` | Success button and chip foreground |
 | Danger Text | `#fecaca` | Danger button and destructive foreground |
-| Selected | `#24324a` | Selected rows and text selection |
+| Selected | `#24324a` | Selected rows, tabs, and checked surfaces |
+| Text Selection | `#315f9f` | Selected text background across Qt, Web, and terminals |
+| Text Selection Foreground | `#f8fafc` | Selected text foreground |
 | Scroll Hover | `#475569` | Web and terminal scrollbar hover |
 | Terminal ANSI Magenta | `#c4b5fd` | xterm ANSI magenta |
 | Terminal ANSI Cyan | `#91d7e3` | xterm ANSI cyan |
@@ -75,6 +77,8 @@ When adding a new custom property, update this list and the theme tests together
 - `--warn`
 - `--danger`
 - `--selected`
+- `--text-selection-bg`
+- `--text-selection-fg`
 - `--input`
 - `--input-quiet`
 - `--success-soft`
