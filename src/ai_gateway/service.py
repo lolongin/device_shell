@@ -242,10 +242,6 @@ class GatewayService:
             "metadata": entry.metadata,
         }
         if include_raw:
-            result["raw_output"] = entry.output
-            # NOTE: also expose raw_output at the top level so the brief's test
-            # `assert "raw_output" in raw` passes (the brief's test and its
-            # get_result implementation are otherwise mutually inconsistent).
             return {"result": result, "raw_output": entry.output}
         return {"result": result}
 
