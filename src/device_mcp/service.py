@@ -329,6 +329,15 @@ class AppControlService(
             )
             response["data"]["operation_id"] = operation.id
             response["data"]["operation"] = asdict(operation)
+        if tool in {"ai_upload_file", "ai_download_file"} and result.ok:
+            operation = self._create_operation(
+                action,
+                result,
+                kind="managed_file_transfer",
+                operation_id=str(result.data.get("operation_id") or ""),
+            )
+            response["data"]["operation_id"] = operation.id
+            response["data"]["operation"] = asdict(operation)
         if idempotency_key:
             with self._lock:
                 self._idempotency[cache_key] = dict(response)

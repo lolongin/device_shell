@@ -227,3 +227,82 @@ def test_service_routes_ai_create_session_open_and_wait() -> None:
     assert status == 200
     assert body["data"]["session_id"] == "sess-1"
     assert body["data"]["connected"] is True
+
+
+def test_service_ai_execute_command_timeout_is_normal_outcome() -> None:
+    """A timed-out execution is a NORMAL outcome: summary.status="timeout",
+    partial output stays retrievable via ai_get_result (final-review Fix 1)."""
+    from src.device_mcp.service import AppControlService
+    from src.ai_gateway.service import GatewayService
+
+    class TimeoutBackend:
+        def __init__(self) -> None:
+            self.gateway = GatewayService()
+
+        def gateway_service(self):
+            return self.gateway
+
+        def gateway_script_style(self, device_id: str) -> str:
+            return "network"
+
+        def execute_ai_device_action(
+            self,
+            action: AiDeviceAction,
+            *,
+            approved: bool = False,
+        ) -> AiDeviceToolResult:
+            if action.kind == "terminal_plan_start":
+                return AiDeviceToolResult(
+                    action,
+                    ok=False,
+                    message="命令执行超过 30 秒。",
+                    data={
+                        "execution_id": "e-fake-timeout",
+                        "status": "timed_out",
+                        "steps": [{"output": "partial output before hang\n"}],
+                        "error_code": "command_timeout",
+                    },
+                    error_code="command_timeout",
+                    http_status=408,
+                )
+            if action.kind == "ai_gateway_get_result":
+                data = self.gateway.get_result(
+                    str(action.params.get("result_id") or ""),
+                    include_raw=bool(action.params.get("include_raw", False)),
+                )
+                if data is None:
+                    return AiDeviceToolResult(
+                        action,
+                        ok=False,
+                        message="未找到执行结果。",
+                        error_code="result_not_found",
+                        http_status=404,
+                    )
+                result = dict(data.get("result") or {})
+                if "raw_output" in data:
+                    result["raw_output"] = data["raw_output"]
+                return AiDeviceToolResult(
+                    action,
+                    ok=True,
+                    message="ok",
+                    data={"result": result},
+                )
+            return AiDeviceToolResult(action, ok=True, message="ok")
+
+    service = AppControlService(TimeoutBackend(), approval_mode="disabled")
+    status, body = service.invoke(
+        "ai_execute_command",
+        {"session_id": "sess-1", "command": "display version"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["data"]["summary"]["status"] == "timeout"
+    assert body["data"]["summary"]["exit_code"] == 1
+    # Partial output remains retrievable via ai_get_result.
+    result_id = body["data"]["result_id"]
+    status2, body2 = service.invoke(
+        "ai_get_result",
+        {"result_id": result_id, "include_raw": True},
+    )
+    assert status2 == 200
+    assert "partial output before hang" in body2["data"]["result"]["raw_output"]

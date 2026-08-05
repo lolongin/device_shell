@@ -118,6 +118,25 @@ class AiGatewayExecutionMixin:
             )
             result = self._execute_terminal_plan(plan_action)
             if not result.ok:
+                data = dict(result.data or {})
+                timeout = (
+                    result.http_status == 408
+                    or result.error_code
+                    in {"execution_timeout", "step_timeout", "command_timeout"}
+                )
+                if timeout:
+                    # A timeout is a NORMAL outcome per spec §Error Handling:
+                    # summary.status="timeout" and the partial output stays
+                    # retrievable via result_id. Do NOT raise.
+                    return {
+                        "status": "timeout",
+                        "output": "\n".join(
+                            str(step.get("output") or "")
+                            for step in data.get("steps", [])
+                            if isinstance(step, dict) and step.get("output")
+                        ),
+                        "exit_code": 1,
+                    }
                 raise AppControlError(
                     result.error_code or "execution_failed",
                     result.message,

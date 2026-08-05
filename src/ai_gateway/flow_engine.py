@@ -165,6 +165,7 @@ class FlowEngine:
         execute_step: Callable[[str, str, int], tuple[str, str]],
         wait_for_condition: Callable[[dict[str, Any], str, str], tuple[str, str]],
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> list[FlowStepResult]:
         results: list[FlowStepResult] = []
         completed: set[str] = set()
@@ -178,7 +179,7 @@ class FlowEngine:
             if missing:
                 results.append(FlowStepResult(step.id, "skipped", message="依赖步骤未完成。"))
                 continue
-            result = self._run_step(step, session_id, device_id, execute_step, wait_for_condition, clock)
+            result = self._run_step(step, session_id, device_id, execute_step, wait_for_condition, clock, sleep)
             results.append(result)
             if result.status == "success":
                 completed.add(step.id)
@@ -194,43 +195,48 @@ class FlowEngine:
         execute_step: Callable[[str, str, int], tuple[str, str]],
         wait_for_condition: Callable[[dict[str, Any], str, str], tuple[str, str]],
         clock: Callable[[], float],
+        sleep: Callable[[float], None],
     ) -> FlowStepResult:
         if step.wait_condition is not None:
-            attempts = 0
+            # Poll the condition up to max_attempts, sleeping interval_ms between
+            # attempts. `sleep` is injected (default time.sleep) so the engine is
+            # still testable with a fake. This enforces the configured interval
+            # in production — it is NOT decorative.
             max_attempts = int(step.wait_condition.get("max_attempts", 15))
-            interval_ms = int(step.wait_condition.get("interval_ms", 2000))
-            status, output = "", ""
-            while attempts < max_attempts:
-                attempts += 1
+            poll_interval_ms = int(step.wait_condition.get("interval_ms", 2000))
+            last_output = ""
+            status = "not_ready"
+            for _attempt in range(max_attempts):
                 status, output = wait_for_condition(step.wait_condition, session_id, device_id)
+                last_output = output
                 if status == "success":
                     break
-                if attempts < max_attempts and interval_ms > 0:
-                    clock()  # placeholder; real sleep is supplied by the coordinator
+                if poll_interval_ms > 0:
+                    sleep(poll_interval_ms / 1000.0)
             if status != "success":
                 return FlowStepResult(
                     step.id,
                     "failed",
-                    output=output,
+                    output=last_output,
                     error_code="condition_timeout",
                     message="等待条件超时。",
                 )
         attempts = 0
         max_retries = int((step.retry or {}).get("max", 0))
         interval_ms = int((step.retry or {}).get("interval_ms", 1000))
-        last_status, last_output, last_error, last_message = "failed", "", "", ""
-        while attempts <= max_retries:
+        last_output, last_error, last_message = "", "execution_failed", f"步骤 {step.id} 执行失败。"
+        while True:
             attempts += 1
             status, output = execute_step(step.command, session_id, step.timeout_seconds)
             if status == "success":
                 return FlowStepResult(step.id, "success", output=output, attempt_count=attempts)
-            last_status, last_output = status, output
-            last_error = "execution_failed"
-            last_message = f"步骤 {step.id} 执行失败。"
-            if attempts > max_retries:
+            last_output, last_error, last_message = output, "execution_failed", f"步骤 {step.id} 执行失败。"
+            # Retry ONLY on "failed" (spec §Flow Engine: retry.on_status="failed",
+            # timeouts are NOT retried). Any other non-success status is terminal.
+            if status != "failed" or attempts > max_retries:
                 break
             if interval_ms > 0:
-                clock()  # placeholder; real sleep uses the same schedule mechanism as executor
+                sleep(interval_ms / 1000.0)
         return FlowStepResult(
             step.id,
             "failed",
