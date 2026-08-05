@@ -751,12 +751,24 @@ class FlowEngine:
         clock: Callable[[], float],
     ) -> FlowStepResult:
         if step.wait_condition is not None:
-            status, output = wait_for_condition(step.wait_condition, session_id, device_id)
+            # Poll the condition up to max_attempts. The engine is pure: the
+            # real per-poll sleep is supplied by the executor in Task 4; here we
+            # only call clock() as the interval placeholder between attempts.
+            max_attempts = int((step.wait_condition or {}).get("max_attempts", 15))
+            poll_interval_ms = int((step.wait_condition or {}).get("interval_ms", 2000))
+            last_output = ""
+            for _attempt in range(max_attempts):
+                status, output = wait_for_condition(step.wait_condition, session_id, device_id)
+                last_output = output
+                if status == "success":
+                    break
+                if poll_interval_ms > 0:
+                    clock()
             if status != "success":
                 return FlowStepResult(
                     step.id,
                     "failed",
-                    output=output,
+                    output=last_output,
                     error_code="condition_timeout",
                     message="等待条件超时。",
                 )
