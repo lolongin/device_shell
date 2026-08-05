@@ -126,8 +126,9 @@ from ..widgets.terminal_canvas import TerminalCanvasWidget
 from ..widgets.terminal_widget import InteractiveTerminal
 
 try:
-    from ..widgets.xterm_web_widget import XtermWebWidget
+    from ..widgets.xterm_web_widget import DEFAULT_FONT_SIZE, XtermWebWidget
 except ImportError:
+    DEFAULT_FONT_SIZE = 14
     XtermWebWidget = None
 
 SESSION_TAB_MIME = "application/x-device-tui-session-tab"
@@ -2893,6 +2894,8 @@ class SessionOpsMixin:
             self.refresh_session_manager_tree()
         if hasattr(self, "refresh_session_breadcrumb"):
             self.refresh_session_breadcrumb()
+        if hasattr(self, "apply_font_size_to_all_terminals"):
+            self.apply_font_size_to_all_terminals()
 
     def refresh_session_jump_combo(self) -> None:
         if not hasattr(self, "session_jump_combo"):
@@ -3775,6 +3778,12 @@ class SessionOpsMixin:
             terminal = TerminalCanvasWidget()
         else:
             terminal = XtermWebWidget()
+        # Apply the persisted terminal font size to the new terminal if it
+        # differs from the xterm default (guard so this is safe before the
+        # SessionLayoutOpsMixin methods exist on the class).
+        font_size = int(getattr(self, "terminal_font_size", DEFAULT_FONT_SIZE))
+        if hasattr(self, "apply_font_size_to_terminal") and font_size != DEFAULT_FONT_SIZE:
+            self.apply_font_size_to_terminal(terminal, font_size)
         terminal.setContextMenuPolicy(Qt.CustomContextMenu)
         terminal.customContextMenuRequested.connect(
             lambda pos, tab_id=tab_id, terminal=terminal: self.show_terminal_context_menu(tab_id, terminal, pos)
