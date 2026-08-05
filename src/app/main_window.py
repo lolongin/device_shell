@@ -353,6 +353,12 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.transfer_username = "device"
             self.transfer_password = "device"
             self.transfer_writable = True
+            self.session_tab_layout = "top"
+            self.terminal_font_size = 14
+            self.session_manager_default_collapsed = False
+            self.session_manager_width = 260
+            self.session_manager_collapsed = False
+            self.collapsed_device_groups: list[str] = []
             self.transfer_service = None
             self.package_upgrade_send_interval_ms = 900
             self.left_sidebar_active_panel = "devices"

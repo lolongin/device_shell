@@ -34,7 +34,7 @@ from ..data import Device, SavedServer
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 13
+DESKTOP_STATE_VERSION = 14
 
 
 class DesktopStateMixin:
@@ -276,6 +276,34 @@ class DesktopStateMixin:
                 if len(remembered_terminal_sessions) >= 20:
                     break
         self.remembered_terminal_sessions = remembered_terminal_sessions
+        session_layout = payload.get("session_layout", {})
+        if isinstance(session_layout, dict):
+            raw_layout = str(session_layout.get("session_tab_layout") or "top").strip().lower()
+            if raw_layout in {"top", "side"}:
+                self.session_tab_layout = raw_layout
+            try:
+                loaded_font = int(session_layout.get("terminal_font_size", self.terminal_font_size))
+            except (TypeError, ValueError):
+                loaded_font = self.terminal_font_size
+            self.terminal_font_size = max(9, min(28, loaded_font))
+            self.session_manager_default_collapsed = bool(
+                session_layout.get("session_manager_default_collapsed", False)
+            )
+            try:
+                loaded_width = int(session_layout.get("session_manager_width", self.session_manager_width))
+            except (TypeError, ValueError):
+                loaded_width = self.session_manager_width
+            self.session_manager_width = max(200, min(480, loaded_width))
+            self.session_manager_collapsed = bool(
+                session_layout.get("session_manager_collapsed", False)
+            )
+            raw_collapsed = session_layout.get("collapsed_device_groups", [])
+            if isinstance(raw_collapsed, list):
+                self.collapsed_device_groups = [
+                    str(item or "").strip() for item in raw_collapsed if str(item or "").strip()
+                ]
+        if hasattr(self, "apply_session_layout_state"):
+            self.apply_session_layout_state()
         if hasattr(self, "rebuild_device_indexes"):
             self.rebuild_device_indexes()
 
@@ -347,6 +375,14 @@ class DesktopStateMixin:
                     for server in self.saved_servers
                 ],
                 "local_credential_overrides": self.local_credential_overrides,
+                "session_layout": {
+                    "session_tab_layout": self.session_tab_layout,
+                    "terminal_font_size": self.terminal_font_size,
+                    "session_manager_default_collapsed": self.session_manager_default_collapsed,
+                    "session_manager_width": self.session_manager_width,
+                    "session_manager_collapsed": self.session_manager_collapsed,
+                    "collapsed_device_groups": list(self.collapsed_device_groups),
+                },
                 "terminal_sessions": self.serialize_terminal_sessions()
                 if hasattr(self, "serialize_terminal_sessions")
                 else [],
