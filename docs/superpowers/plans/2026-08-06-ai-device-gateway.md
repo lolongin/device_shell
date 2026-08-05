@@ -40,7 +40,7 @@
 | `src/app/desktop_state.py` | version 15, `ai_gateway` config load/save |
 | `src/managed_file_transfer.py` | `build_managed_transfer_download_steps()` (`put` direction) |
 | `src/app/managed_file_transfer_ops.py` | `start_managed_transfer_download` direction support (if needed) |
-| `src/ai_gateway/skills/__init__.py` | empty, marks skills dir as package |
+| `src/ai_gateway/skills/` | data-only directory of JSON templates — NOT a package (a package would shadow the `skills.py` module; no `__init__.py`) |
 
 ---
 
@@ -817,8 +817,7 @@ git commit -m "feat(ai-gateway): add flow engine with dependency gating, wait co
 ### Task 3: Skill registry and parameter substitution
 
 **Files:**
-- Create: `src/ai_gateway/skills.py`
-- Create: `src/ai_gateway/skills/__init__.py`
+- Create: `src/ai_gateway/skills.py` (module — a `skills/` package would shadow it, so the dir must NOT get an `__init__.py`)
 - Create: `src/ai_gateway/skills/driver_reload.json`
 - Test: `tests/test_ai_gateway_skills.py`
 
@@ -990,16 +989,18 @@ class SkillRegistry:
     def load(self) -> None:
         with self._lock:
             self._skills = {}
-            directory = Path(self.skills_dir)
-            if not directory.is_dir():
-                return
-            for path in sorted(directory.glob("*.json")):
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                    self._register(data)
-                except (json.JSONDecodeError, ValueError, KeyError):
-                    # Corrupt or invalid skill files are skipped; the rest still load.
-                    continue
+            # Bundled skills always load first, then the custom dir overlays
+            # (dedup by name). This keeps driver_reload available even when a
+            # custom dir contains only corrupt files.
+            for directory in (Path(BUNDLED_SKILLS_DIR), Path(self.skills_dir)):
+                seen = set(directory.glob("*.json")) if directory.is_dir() else set()
+                for path in sorted(seen):
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8"))
+                        self._register(data)
+                    except (json.JSONDecodeError, ValueError, KeyError):
+                        # Corrupt or invalid skill files are skipped; the rest still load.
+                        continue
 
     def _register(self, data: dict[str, Any]) -> None:
         name = str(data.get("name") or "").strip()
