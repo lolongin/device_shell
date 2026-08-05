@@ -174,12 +174,12 @@ class SessionLayoutOpsMixin:
         self.session_manager_collapsed = bool(
             self.session_manager_collapse_button and self.session_manager_collapse_button.isChecked()
         )
-        # In `side` layout the right region is always present (full panel when
-        # expanded, narrow strip when collapsed — the strip retains the expand
-        # button so the manager can always be reopened). In `top` layout the
-        # whole right region stays hidden.
-        self._set_session_manager_stack_page(self.session_manager_collapsed)
-        self.set_session_manager_visible(self.session_tab_layout == "side")
+        # Re-run the full layout apply: this switches the stack page AND
+        # re-allocates the splitter so the right region gets the strip width
+        # (collapsed) or the remembered panel width (expanded). Without the
+        # re-allocation the splitter keeps the panel's old logical slot, leaving
+        # a wide gap next to the narrow strip.
+        self.apply_session_layout_state()
         self.schedule_desktop_state_save()
 
     def _session_manager_new_terminal(self) -> None:

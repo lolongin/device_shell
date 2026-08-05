@@ -27,6 +27,41 @@ def test_collapse_toggle_updates_state_and_persists(app: QApplication) -> None:
     window.close()
 
 
+def test_collapse_reallocates_splitter_to_strip_width(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.resize(1700, 1000)
+    window.session_manager_collapsed = False
+    window.session_manager_width = 300
+    window.set_session_tab_layout("side")
+    window.show()
+    app.processEvents()
+    splitter = window.main_splitter
+
+    # Expanded: the third slot holds the remembered panel width.
+    expanded = splitter.sizes()
+    assert expanded[2] == 300
+
+    # Collapse: the splitter must re-allocate the third slot to the strip
+    # width — otherwise a wide gap remains next to the narrow strip.
+    window.session_manager_collapse_button.setChecked(True)
+    window.toggle_session_manager_collapsed()
+    app.processEvents()
+
+    collapsed = splitter.sizes()
+    assert collapsed[2] == window.SESSION_MANAGER_STRIP_WIDTH
+    # The center panel absorbs the freed space.
+    assert collapsed[1] > expanded[1]
+
+    # Expand restores the remembered panel width.
+    window.session_manager_expand_button.click()
+    app.processEvents()
+    reexpanded = splitter.sizes()
+    assert reexpanded[2] == 300
+
+    window.close()
+
+
 def test_collapsed_panel_can_be_reopened_via_strip(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
