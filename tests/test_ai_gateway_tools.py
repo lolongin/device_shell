@@ -306,3 +306,83 @@ def test_service_ai_execute_command_timeout_is_normal_outcome() -> None:
     )
     assert status2 == 200
     assert "partial output before hang" in body2["data"]["result"]["raw_output"]
+
+
+def test_service_ai_execute_batch_command_failure_is_failed_summary() -> None:
+    """A command that fails on the device (terminal_failure) is a NORMAL
+    outcome: summary.status="failed" with a result_id, not a hard HTTP error.
+    The gateway result stays retrievable via ai_get_result."""
+    from src.device_mcp.service import AppControlService
+    from src.ai_gateway.service import GatewayService
+
+    class FailureBackend:
+        def __init__(self) -> None:
+            self.gateway = GatewayService()
+
+        def gateway_service(self):
+            return self.gateway
+
+        def gateway_script_style(self, device_id: str) -> str:
+            return "network"
+
+        def execute_ai_device_action(
+            self,
+            action: AiDeviceAction,
+            *,
+            approved: bool = False,
+        ) -> AiDeviceToolResult:
+            if action.kind == "terminal_plan_start":
+                return AiDeviceToolResult(
+                    action,
+                    ok=False,
+                    message="终端输出匹配失败条件: Unknown command",
+                    data={
+                        "execution_id": "e-fake-fail",
+                        "status": "failed",
+                        "steps": [{"output": "display version\nUnknown command: xyz\n"}],
+                        "error_code": "terminal_failure",
+                    },
+                    error_code="terminal_failure",
+                    http_status=409,
+                )
+            if action.kind == "ai_gateway_get_result":
+                data = self.gateway.get_result(
+                    str(action.params.get("result_id") or ""),
+                    include_raw=bool(action.params.get("include_raw", False)),
+                )
+                if data is None:
+                    return AiDeviceToolResult(
+                        action,
+                        ok=False,
+                        message="未找到执行结果。",
+                        error_code="result_not_found",
+                        http_status=404,
+                    )
+                result = dict(data.get("result") or {})
+                if "raw_output" in data:
+                    result["raw_output"] = data["raw_output"]
+                return AiDeviceToolResult(
+                    action,
+                    ok=True,
+                    message="ok",
+                    data={"result": result},
+                )
+            return AiDeviceToolResult(action, ok=True, message="ok")
+
+    service = AppControlService(FailureBackend(), approval_mode="disabled")
+    status, body = service.invoke(
+        "ai_execute_command",
+        {"session_id": "sess-1", "command": "bad-command-xyz"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["data"]["summary"]["status"] == "failed"
+    assert body["data"]["summary"]["exit_code"] == 1
+    # The failing command's output remains retrievable via ai_get_result.
+    result_id = body["data"]["result_id"]
+    status2, body2 = service.invoke(
+        "ai_get_result",
+        {"result_id": result_id, "include_raw": True},
+    )
+    assert status2 == 200
+    assert "Unknown command" in body2["data"]["result"]["raw_output"]

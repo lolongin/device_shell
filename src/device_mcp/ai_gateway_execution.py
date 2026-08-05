@@ -119,17 +119,26 @@ class AiGatewayExecutionMixin:
             result = self._execute_terminal_plan(plan_action)
             if not result.ok:
                 data = dict(result.data or {})
-                timeout = (
-                    result.http_status == 408
-                    or result.error_code
-                    in {"execution_timeout", "step_timeout", "command_timeout"}
-                )
-                if timeout:
-                    # A timeout is a NORMAL outcome per spec §Error Handling:
-                    # summary.status="timeout" and the partial output stays
-                    # retrievable via result_id. Do NOT raise.
+                error_code = str(result.error_code or "")
+                # Both a timeout and a command-execution failure are NORMAL
+                # outcomes per spec §Result Contract / §Error Handling: they
+                # return a summary (status "timeout"/"failed") and the partial
+                # output stays retrievable via result_id. Only raise for
+                # gateway-layer errors (bad session, busy lease, invalid plan)
+                # where there is no command output to summarize.
+                if error_code in {
+                    "execution_timeout",
+                    "step_timeout",
+                    "command_timeout",
+                    "terminal_failure",
+                } or result.http_status == 408:
+                    status = (
+                        "timeout"
+                        if error_code != "terminal_failure"
+                        else "failed"
+                    )
                     return {
-                        "status": "timeout",
+                        "status": status,
                         "output": "\n".join(
                             str(step.get("output") or "")
                             for step in data.get("steps", [])
@@ -138,7 +147,7 @@ class AiGatewayExecutionMixin:
                         "exit_code": 1,
                     }
                 raise AppControlError(
-                    result.error_code or "execution_failed",
+                    error_code or "execution_failed",
                     result.message,
                     status=result.http_status or 409,
                 )
