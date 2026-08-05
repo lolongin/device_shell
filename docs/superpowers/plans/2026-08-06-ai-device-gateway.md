@@ -213,10 +213,13 @@ class ResultStore:
         ttl_seconds: int = TTL_SECONDS,
         clock: Any = time.monotonic,
     ) -> None:
-        # Floor is 1 (not 50) so small test values exercise LRU eviction; the
-        # 50–5000 desktop-state clamp lives in Task 8's config layer.
+        # max_entries floor is 1 (not 50) so small test values exercise LRU
+        # eviction; the 50–5000 desktop-state clamp lives in Task 8's config
+        # layer. ttl_seconds is SECONDS everywhere (default TTL_SECONDS=86400 is
+        # 24h); the clamp is 1h..168h expressed in seconds. Do NOT reinterpret
+        # the parameter as hours — that made the default resolve to 7 days.
         self.max_entries = max(1, min(5000, int(max_entries)))
-        self.ttl_seconds = max(1, min(168, int(ttl_seconds))) * 3600
+        self.ttl_seconds = max(3600, min(604800, int(ttl_seconds)))
         self.clock = clock
         self._entries: dict[str, StoredResult] = {}
         self._order: list[str] = []
