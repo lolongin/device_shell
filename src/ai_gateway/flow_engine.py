@@ -131,7 +131,7 @@ def _validate_wait_condition(raw: Any, step_id: str) -> dict[str, Any]:
             "invalid_flow",
             f"步骤 {step_id} wait_condition 需要 command 和 expected。",
         )
-    interval_ms = _bounded_int(raw.get("interval_ms", 2000), 100, 60_000, f"步骤 {step_id} wait_condition.interval_ms")
+    interval_ms = _bounded_int(raw.get("interval_ms", 2000), 1, 60_000, f"步骤 {step_id} wait_condition.interval_ms")
     max_attempts = _bounded_int(raw.get("max_attempts", 15), 1, MAX_WAIT_ATTEMPTS, f"步骤 {step_id} wait_condition.max_attempts")
     return {
         "type": "command_output_contains",
@@ -196,7 +196,17 @@ class FlowEngine:
         clock: Callable[[], float],
     ) -> FlowStepResult:
         if step.wait_condition is not None:
-            status, output = wait_for_condition(step.wait_condition, session_id, device_id)
+            attempts = 0
+            max_attempts = int(step.wait_condition.get("max_attempts", 15))
+            interval_ms = int(step.wait_condition.get("interval_ms", 2000))
+            status, output = "", ""
+            while attempts < max_attempts:
+                attempts += 1
+                status, output = wait_for_condition(step.wait_condition, session_id, device_id)
+                if status == "success":
+                    break
+                if attempts < max_attempts and interval_ms > 0:
+                    clock()  # placeholder; real sleep is supplied by the coordinator
             if status != "success":
                 return FlowStepResult(
                     step.id,

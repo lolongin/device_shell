@@ -23,19 +23,21 @@ def _run(
     engine = FlowEngine()
     executed = []
 
-    def default_execute(command: str, session_id: str, timeout: int) -> tuple[str, str]:
-        executed.append(command)
-        return "success", f"output of {command}"
+    base_executor = executor or (
+        lambda command, session_id, timeout: ("success", f"output of {command}")
+    )
+    base_waiter = waiter or (lambda condition, session_id, device_id: ("success", "condition met"))
 
-    def default_wait(condition: dict, session_id: str, device_id: str) -> tuple[str, str]:
-        return "success", "condition met"
+    def record_executor(command: str, session_id: str, timeout: int) -> tuple[str, str]:
+        executed.append(command)
+        return base_executor(command, session_id, timeout)
 
     return engine.run(
         plan,
         session_id="sess-1",
         device_id="dev-1",
-        execute_step=executor or default_execute,
-        wait_for_condition=waiter or default_wait,
+        execute_step=record_executor,
+        wait_for_condition=base_waiter,
     ), executed
 
 
