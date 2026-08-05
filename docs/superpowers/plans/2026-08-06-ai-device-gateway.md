@@ -166,11 +166,14 @@ MAX_ENTRIES = 500
 TTL_SECONDS = 24 * 3600
 _MAX_IMPORTANT_LINES = 5
 _TAIL_LINES = 20
-# Error markers: "Error:", "%.../4/..." severity-4+ syslog lines.
+# Error markers: "Error:", "Failed", and severity-4+ syslog lines. A Huawei
+# syslog header is e.g. "%Aug  6 10:00:00 2026 HUAWEI %%01ERR/4/LOG: ..." — the
+# severity lives in "%%<module>/<severity>/", so match that (not the leading %,
+# which is followed by a spaced timestamp).
 _ERROR_PATTERNS = (
     re.compile(r"\bError\b", re.IGNORECASE),
     re.compile(r"\bFailed\b", re.IGNORECASE),
-    re.compile(r"^%\S+%%[A-Z0-9]+/([4-9])/", re.MULTILINE),
+    re.compile(r"%%[A-Za-z0-9]+/([4-9])/"),
 )
 
 
@@ -210,7 +213,9 @@ class ResultStore:
         ttl_seconds: int = TTL_SECONDS,
         clock: Any = time.monotonic,
     ) -> None:
-        self.max_entries = max(50, min(5000, int(max_entries)))
+        # Floor is 1 (not 50) so small test values exercise LRU eviction; the
+        # 50–5000 desktop-state clamp lives in Task 8's config layer.
+        self.max_entries = max(1, min(5000, int(max_entries)))
         self.ttl_seconds = max(1, min(168, int(ttl_seconds))) * 3600
         self.clock = clock
         self._entries: dict[str, StoredResult] = {}
