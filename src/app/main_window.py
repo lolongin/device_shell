@@ -224,6 +224,7 @@ except ImportError:
     )
 
 from .session_ops import SessionOpsMixin
+from .session_layout_ops import SessionLayoutOpsMixin
 from .occupancy_ops import OccupancyOpsMixin
 from .command_record_ops import CommandRecordOpsMixin
 from .desktop_state import DesktopStateMixin
@@ -248,6 +249,7 @@ if PYSIDE6_IMPORT_ERROR is None:
 
     class DeviceDesktopApp(
         SessionOpsMixin,
+        SessionLayoutOpsMixin,
         OccupancyOpsMixin,
         CommandRecordOpsMixin,
         DesktopStateMixin,
@@ -353,6 +355,15 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.transfer_username = "device"
             self.transfer_password = "device"
             self.transfer_writable = True
+            self.session_manager_panel = None
+            self.session_manager_tree = None
+            self.session_manager_search = None
+            self.session_manager_collapse_button = None
+            self.session_manager_count_label = None
+            self.session_breadcrumb = None
+            self.session_breadcrumb_device_label = None
+            self.session_breadcrumb_session_label = None
+            self.settings_button = None
             self.session_tab_layout = "top"
             self.terminal_font_size = 14
             self.session_manager_default_collapsed = False
@@ -472,6 +483,8 @@ if PYSIDE6_IMPORT_ERROR is None:
 
             splitter.addWidget(self._build_left_panel())
             splitter.addWidget(self._build_center_panel())
+            splitter.addWidget(self.build_session_manager_panel())
+            splitter.setStretchFactor(2, 0)
             splitter.setChildrenCollapsible(False)
             splitter.setSizes([520, 1080])
             splitter.setStretchFactor(0, 0)
@@ -480,6 +493,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter.drag_started.connect(self.handle_main_splitter_drag_started)
             splitter.drag_finished.connect(self.handle_main_splitter_drag_finished)
             self.apply_left_sidebar_state()
+            self.set_session_manager_visible(self.session_tab_layout == "side")
 
             self.setCentralWidget(root)
 
