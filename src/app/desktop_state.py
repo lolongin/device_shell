@@ -294,9 +294,15 @@ class DesktopStateMixin:
             except (TypeError, ValueError):
                 loaded_width = self.session_manager_width
             self.session_manager_width = max(200, min(480, loaded_width))
-            self.session_manager_collapsed = bool(
-                session_layout.get("session_manager_collapsed", False)
-            )
+            if "session_manager_collapsed" in session_layout:
+                self.session_manager_collapsed = bool(
+                    session_layout["session_manager_collapsed"]
+                )
+            else:
+                # No memorized collapse history yet — the default-collapse
+                # setting governs the first entry into `side`. Afterwards the
+                # memorized toggle value wins.
+                self.session_manager_collapsed = bool(self.session_manager_default_collapsed)
             raw_collapsed = session_layout.get("collapsed_device_groups", [])
             if isinstance(raw_collapsed, list):
                 self.collapsed_device_groups = [
