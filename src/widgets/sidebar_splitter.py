@@ -9,28 +9,40 @@ from PySide6.QtWidgets import QSplitter, QSplitterHandle, QWidget
 
 
 class SidebarSplitterHandle(QSplitterHandle):
-    """Splitter handle that reports when a user drag starts and finishes."""
+    """Splitter handle that reports when a user drag starts and finishes.
 
-    drag_started = Signal()
-    drag_finished = Signal(int)
+    The drag signals carry this handle's index so consumers can tell the left
+    sidebar boundary (handle index 1) apart from the right session-manager
+    boundary (handle index 2). A left-boundary drag drives the left-sidebar
+    sizing lifecycle; a right-boundary drag only updates the right panel width.
+    """
+
+    drag_started = Signal(int)  # handle index
+    drag_finished = Signal(int, int)  # (left panel width, handle index)
+
+    def handle_index(self) -> int:
+        splitter = self.splitter()
+        if splitter is None:
+            return 0
+        return splitter.handleIndex(self)
 
     def mousePressEvent(self, event: Any) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
-            self.drag_started.emit()
+            self.drag_started.emit(self.handle_index())
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
         super().mouseReleaseEvent(event)
         if event.button() == Qt.LeftButton:
             sizes = self.splitter().sizes()
-            self.drag_finished.emit(sizes[0] if sizes else 0)
+            self.drag_finished.emit(sizes[0] if sizes else 0, self.handle_index())
 
 
 class SidebarSplitter(QSplitter):
     """Horizontal splitter used by the activity rail and left workspace."""
 
-    drag_started = Signal()
-    drag_finished = Signal(int)
+    drag_started = Signal(int)  # handle index
+    drag_finished = Signal(int, int)  # (left panel width, handle index)
 
     def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
         super().__init__(orientation, parent)

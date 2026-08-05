@@ -264,7 +264,13 @@ class SessionLayoutOpsMixin:
         self.apply_session_layout_state()
         self.schedule_desktop_state_save()
 
-    def handle_session_manager_width_drag_finished(self, _width: int = 0) -> None:
+    def handle_session_manager_width_drag_finished(
+        self, _width: int = 0, handle_index: int = 2
+    ) -> None:
+        # Only the RIGHT boundary (handle index 2) is the session-manager width
+        # drag; the left boundary is the left-sidebar drag lifecycle.
+        if int(handle_index) != 2:
+            return
         # The drag_finished signal emits the LEFT panel width (sizes[0]), so the
         # passed width is ignored. Read the actual right-panel width from the
         # splitter directly — that is exactly what we want to persist.
@@ -283,6 +289,28 @@ class SessionLayoutOpsMixin:
         )
         self.session_manager_width = clamped
         self.schedule_desktop_state_save()
+
+    def _session_manager_panel_active(self) -> bool:
+        """Whether the right session-manager panel participates in splitter sizing."""
+        return (
+            getattr(self, "session_tab_layout", "top") == "side"
+            and not getattr(self, "session_manager_collapsed", False)
+        )
+
+    def session_manager_splitter_width(self, available: int) -> int:
+        """Clamped right-panel width to hand the splitter for a 3-child layout.
+
+        Keeps the user's persisted `session_manager_width` instead of letting
+        Qt snap the panel to its minimum when only two sizes are supplied.
+        """
+        preferred = int(
+            getattr(self, "session_manager_width", self.SESSION_MANAGER_DEFAULT_WIDTH)
+        )
+        right = max(
+            self.SESSION_MANAGER_MIN_WIDTH,
+            min(self.SESSION_MANAGER_MAX_WIDTH, preferred),
+        )
+        return max(0, min(right, max(0, int(available))))
 
     def apply_session_manager_collapsed_state(self) -> None:
         collapsed = self.session_manager_collapsed

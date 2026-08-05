@@ -2149,7 +2149,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.schedule_desktop_state_save()
 
         def handle_main_splitter_moved(self, pos: int, index: int) -> None:
-            del index
+            # Only the LEFT sidebar boundary (handle index 1) drives the
+            # collapse hint / density pause. The right session-manager
+            # boundary is handle index 2 and is handled by session_layout_ops.
+            if int(index) != 1:
+                return
             if getattr(self, "left_sidebar_programmatic_resize", False):
                 return
             if not getattr(self, "left_sidebar_user_dragging", False):
@@ -2164,7 +2168,11 @@ if PYSIDE6_IMPORT_ERROR is None:
                 if not collapse_hint and hasattr(table, "schedule_column_adapt"):
                     table.schedule_column_adapt()
 
-        def handle_main_splitter_drag_started(self) -> None:
+        def handle_main_splitter_drag_started(self, handle_index: int = 1) -> None:
+            # Only left-boundary (handle index 1) drags are the left-sidebar
+            # drag lifecycle; right-boundary drags belong to session_layout_ops.
+            if int(handle_index) != 1:
+                return
             if getattr(self, "left_sidebar_collapsed", False):
                 return
             self.left_sidebar_user_dragging = True
@@ -2177,7 +2185,11 @@ if PYSIDE6_IMPORT_ERROR is None:
             if content is not None:
                 content.setMinimumWidth(0)
 
-        def handle_main_splitter_drag_finished(self, released_width: int) -> None:
+        def handle_main_splitter_drag_finished(
+            self, released_width: int, handle_index: int = 1
+        ) -> None:
+            if int(handle_index) != 1:
+                return
             if not getattr(self, "left_sidebar_user_dragging", False):
                 return
             self.left_sidebar_user_dragging = False
@@ -2229,7 +2241,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             target = max(self.ACTIVITY_RAIL_WIDTH, min(int(width), total - 1))
             self.left_sidebar_programmatic_resize = True
             try:
-                splitter.setSizes([target, max(1, total - target)])
+                if len(sizes) >= 3 and self._session_manager_panel_active():
+                    # Preserve the right session-manager width; sizing it with
+                    # only two entries would let Qt snap the panel to its
+                    # minimum and discard the user's dragged/persisted width.
+                    right = self.session_manager_splitter_width(total - target)
+                    splitter.setSizes([target, max(1, total - target - right), right])
+                else:
+                    splitter.setSizes([target, max(1, total - target)])
             finally:
                 self.left_sidebar_programmatic_resize = False
 
