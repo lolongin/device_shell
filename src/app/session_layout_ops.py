@@ -264,7 +264,36 @@ class SessionLayoutOpsMixin:
         self.apply_session_layout_state()
         self.schedule_desktop_state_save()
 
+    def handle_session_manager_width_drag_finished(self, _width: int = 0) -> None:
+        # The drag_finished signal emits the LEFT panel width (sizes[0]), so the
+        # passed width is ignored. Read the actual right-panel width from the
+        # splitter directly — that is exactly what we want to persist.
+        splitter = getattr(self, "main_splitter", None)
+        if splitter is None:
+            return
+        sizes = splitter.sizes()
+        if len(sizes) < 3:
+            return
+        right_width = int(sizes[-1])
+        if right_width <= 0:
+            return
+        clamped = max(
+            self.SESSION_MANAGER_MIN_WIDTH,
+            min(self.SESSION_MANAGER_MAX_WIDTH, right_width),
+        )
+        self.session_manager_width = clamped
+        self.schedule_desktop_state_save()
+
+    def apply_session_manager_collapsed_state(self) -> None:
+        collapsed = self.session_manager_collapsed
+        if self.session_manager_collapse_button is not None:
+            self.session_manager_collapse_button.setChecked(collapsed)
+        if self.session_tab_layout == "side":
+            self.set_session_manager_visible(not collapsed)
+
     def apply_session_layout_state(self) -> None:
+        # Refined body (replaces Task 4 version): adds collapse handling and the
+        # width-restore block, keeping the pre-build guard.
         # Called from load_desktop_state BEFORE _build_layout builds the
         # widgets — guard against not-yet-created panels and tab widget.
         if not hasattr(self, "session_tab_widget") or self.session_manager_panel is None:
@@ -274,12 +303,25 @@ class SessionLayoutOpsMixin:
             if self.session_tab_widget.count() > 0:
                 self.show_terminal_workspace()
         self.set_session_tab_bars_visible(not side)
-        self.set_session_manager_visible(side)
+        collapsed = self.session_manager_collapsed
+        self.set_session_manager_visible(side and not collapsed)
         if getattr(self, "session_breadcrumb", None) is not None:
             self.session_breadcrumb.setVisible(side)
         if side:
             self.refresh_session_manager_tree()
             self.refresh_session_breadcrumb()
+            # Restore the remembered right-panel width onto the splitter.
+            self.session_manager_panel.setMinimumWidth(self.SESSION_MANAGER_MIN_WIDTH)
+            self.session_manager_panel.setMaximumWidth(self.SESSION_MANAGER_MAX_WIDTH)
+            target = max(
+                self.SESSION_MANAGER_MIN_WIDTH,
+                min(self.SESSION_MANAGER_MAX_WIDTH, self.session_manager_width),
+            )
+            sizes = self.main_splitter.sizes()
+            if len(sizes) >= 3 and sum(sizes) > 0:
+                self.main_splitter.setSizes(
+                    [sizes[0], max(1, sum(sizes) - sizes[0] - target), target]
+                )
 
     def refresh_session_breadcrumb(self) -> None:
         if (

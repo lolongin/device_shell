@@ -2889,6 +2889,10 @@ class SessionOpsMixin:
             self.refresh_device_navigation_web()
         if hasattr(self, "refresh_web_shell"):
             self.refresh_web_shell()
+        if hasattr(self, "refresh_session_manager_tree"):
+            self.refresh_session_manager_tree()
+        if hasattr(self, "refresh_session_breadcrumb"):
+            self.refresh_session_breadcrumb()
 
     def refresh_session_jump_combo(self) -> None:
         if not hasattr(self, "session_jump_combo"):

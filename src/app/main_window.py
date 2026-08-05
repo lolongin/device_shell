@@ -493,6 +493,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter.splitterMoved.connect(self.handle_main_splitter_moved)
             splitter.drag_started.connect(self.handle_main_splitter_drag_started)
             splitter.drag_finished.connect(self.handle_main_splitter_drag_finished)
+            splitter.drag_finished.connect(self.handle_session_manager_width_drag_finished)
             self.apply_left_sidebar_state()
             self.apply_session_layout_state()
 
