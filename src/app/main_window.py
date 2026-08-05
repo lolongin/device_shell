@@ -493,7 +493,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter.drag_started.connect(self.handle_main_splitter_drag_started)
             splitter.drag_finished.connect(self.handle_main_splitter_drag_finished)
             self.apply_left_sidebar_state()
-            self.set_session_manager_visible(self.session_tab_layout == "side")
+            self.apply_session_layout_state()
 
             self.setCentralWidget(root)
 
@@ -1427,6 +1427,8 @@ if PYSIDE6_IMPORT_ERROR is None:
             device_tab_bar.setContextMenuPolicy(Qt.CustomContextMenu)
             device_tab_bar.customContextMenuRequested.connect(self.show_device_tab_context_menu)
             self.session_tab_widget.setMinimumHeight(260)
+            self.build_session_breadcrumb()
+            self.center_stage_splitter.addWidget(self.session_breadcrumb)
             self.center_stage_splitter.addWidget(self.web_shell)
             self.center_stage_splitter.addWidget(self.session_tab_widget)
             quick_action_bar = QFrame()

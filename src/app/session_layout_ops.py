@@ -211,3 +211,77 @@ class SessionLayoutOpsMixin:
             self.jump_to_session(key)
         else:
             self.activate_device(key)
+
+    def build_session_breadcrumb(self) -> QWidget:
+        breadcrumb = QWidget()
+        breadcrumb.setObjectName("sessionBreadcrumb")
+        layout = QHBoxLayout(breadcrumb)
+        layout.setContentsMargins(10, 3, 10, 3)
+        layout.setSpacing(4)
+        home_label = QLabel("设备池")
+        home_label.setObjectName("breadcrumbHome")
+        home_label.setCursor(Qt.PointingHandCursor)
+        home_label.mousePressEvent = lambda _event: self._breadcrumb_goto_home()
+        self.session_breadcrumb_device_label = QLabel()
+        self.session_breadcrumb_device_label.setObjectName("breadcrumbDevice")
+        self.session_breadcrumb_device_label.setCursor(Qt.PointingHandCursor)
+        self.session_breadcrumb_session_label = QLabel()
+        self.session_breadcrumb_session_label.setObjectName("breadcrumbSession")
+        layout.addWidget(home_label)
+        layout.addWidget(QLabel("/"))
+        layout.addWidget(self.session_breadcrumb_device_label)
+        layout.addWidget(QLabel("/"))
+        layout.addWidget(self.session_breadcrumb_session_label)
+        layout.addStretch(1)
+        self.session_breadcrumb = breadcrumb
+        return breadcrumb
+
+    def _breadcrumb_goto_home(self) -> None:
+        self.center_stage_mode = "home"
+        self.update_center_stage_state()
+        self.apply_left_sidebar_state()
+
+    def set_session_tab_bars_visible(self, visible: bool) -> None:
+        """Show or hide the top device tab bar and all per-device session tab bars."""
+        self.session_tab_widget.tabBar().setVisible(visible)
+        for device_tab in self.device_tabs_by_id.values():
+            for tabs in self.session_tab_widgets_for_device(device_tab):
+                tabs.tabBar().setVisible(visible)
+
+    def set_session_tab_layout(self, mode: str) -> None:
+        mode = mode if mode in {"top", "side"} else "top"
+        self.session_tab_layout = mode
+        self.apply_session_layout_state()
+        self.schedule_desktop_state_save()
+
+    def apply_session_layout_state(self) -> None:
+        # Called from load_desktop_state BEFORE _build_layout builds the
+        # widgets — guard against not-yet-created panels and tab widget.
+        if not hasattr(self, "session_tab_widget") or self.session_manager_panel is None:
+            return
+        side = self.session_tab_layout == "side"
+        if side:
+            if self.session_tab_widget.count() > 0:
+                self.show_terminal_workspace()
+        self.set_session_tab_bars_visible(not side)
+        self.set_session_manager_visible(side)
+        if getattr(self, "session_breadcrumb", None) is not None:
+            self.session_breadcrumb.setVisible(side)
+        if side:
+            self.refresh_session_manager_tree()
+            self.refresh_session_breadcrumb()
+
+    def refresh_session_breadcrumb(self) -> None:
+        if (
+            getattr(self, "session_breadcrumb_device_label", None) is None
+            or getattr(self, "session_breadcrumb_session_label", None) is None
+        ):
+            return
+        state = self.current_session_state()
+        device_id = state.device_id if state is not None else ""
+        device = self.get_device_by_id(device_id) if device_id else None
+        device_name = device.name if device is not None else device_id
+        session_title = state.title if state is not None else ""
+        self.session_breadcrumb_device_label.setText(device_name)
+        self.session_breadcrumb_device_label.setProperty("deviceId", device_id)
+        self.session_breadcrumb_session_label.setText(session_title)
