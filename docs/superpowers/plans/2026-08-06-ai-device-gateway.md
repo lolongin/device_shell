@@ -227,21 +227,31 @@ class ResultStore:
         with self._lock:
             self._prune_expired_locked()
             result_id = "R" + uuid4().hex[:8]
+            meta = dict(metadata or {})
+            # The stored summary is computed here from the real status/exit_code/
+            # duration passed via metadata, plus the deterministic error scan of
+            # the output. This keeps `ai_get_result` returning the SAME summary
+            # the caller returned — no placeholder, no separate finalize step.
+            status = str(meta.get("status") or "success")
+            exit_code = int(meta.get("exit_code") or 0)
+            command_count = int(meta.get("command_count", 1))
+            duration_ms = int(meta.get("duration_ms", 0))
+            error_count, important_lines = summarize_output(output)
             summary = {
-                "status": "success",
-                "exit_code": 0,
-                "command_count": int((metadata or {}).get("command_count", 1)),
-                "error_count": 0,
-                "important_lines": [],
-                "duration_ms": int((metadata or {}).get("duration_ms", 0)),
+                "status": status,
+                "exit_code": exit_code,
+                "command_count": command_count,
+                "error_count": error_count,
+                "important_lines": important_lines,
+                "duration_ms": duration_ms,
             }
             entry = StoredResult(
                 result_id=result_id,
                 kind=kind,
-                status=summary["status"],
+                status=status,
                 output=output,
                 summary=summary,
-                metadata=dict(metadata or {}),
+                metadata=meta,
                 created_monotonic=self.clock(),
             )
             self._entries[result_id] = entry
@@ -285,7 +295,7 @@ class ResultStore:
             self._order.remove(rid)
 ```
 
-> **Note:** `summarize_output` returns `(error_count, important_lines)`. The `ResultStore.store` uses a placeholder summary (`status="success"`); Task 5's `GatewayService` will call `store(..., metadata={...})` with the real `status`/`exit_code`/`duration_ms` and then update `entry.summary` via a `finalize` method (add `finalize(result_id, *, status, exit_code, duration_ms)` to `ResultStore` — see Task 5).
+> **Note:** `store()` computes the full stored summary from `metadata` (`status`/`exit_code`/`command_count`/`duration_ms`) plus `summarize_output(output)`. The `metadata` dict is stored verbatim on `StoredResult.metadata`; the summary is stored separately. This guarantees `ai_get_result` returns the same summary the executing call returned.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1048,26 +1058,28 @@ git commit -m "feat(ai-gateway): add skill registry with JSON templates and para
 ### Task 4: GatewayService facade
 
 **Files:**
-- Modify: `src/ai_gateway/service.py` (new file)
+- Create: `src/ai_gateway/service.py`
 - Test: `tests/test_ai_gateway_service.py`
 
 **Interfaces:**
 - Consumes: `ResultStore` (Task 1), `FlowEngine` + `parse_flow` + `FlowPlanError` (Task 2), `SkillRegistry` + `SkillLoadError` (Task 3).
 - Produces:
-  - `class GatewayService` with constructor `__init__(self, *, result_store: ResultStore | None = None, flow_engine: FlowEngine | None = None, skill_registry: SkillRegistry | None = None, execute_command: Callable[[str, str, int], dict[str, Any]] | None = None)` where `execute_command(command, session_id, timeout_seconds) -> dict` returns `{"status", "output", "exit_code"}` (a synchronous command executor; defaults to a stub that raises `GatewayUnavailableError`).
-  - Methods:
-    - `execute_command(command, session_id, *, timeout_seconds=30, idempotency_key="") -> dict[str, Any]` returns `{"result_id", "summary"}`
-    - `execute_batch(commands, session_id, *, command_timeout_seconds=30) -> dict[str, Any]`
-    - `execute_script(script, session_id, *, shell=None, timeout_seconds=30, is_network_device=False) -> dict[str, Any]`
-    - `run_skill(skill_name, params, *, session_id="", timeout_seconds=60) -> dict[str, Any]`
-    - `get_result(result_id, *, include_raw=False) -> dict[str, Any] | None`
-    - `snapshot() -> dict[str, Any]`
-  - `class GatewayUnavailableError(ValueError)` with `.code = "gateway_unavailable"`
-  - `def summarize_runtime(summary: dict, *, status: str, exit_code: int, command_count: int, duration_ms: int) -> dict` module-level helper that fills the summary dict (used by all methods).
+  - `class GatewayService` with constructor `__init__(self, *, result_store: ResultStore | None = None, flow_engine: FlowEngine | None = None, skill_registry: SkillRegistry | None = None)`.
+  - Methods. Each high-level method takes an injectable `executor` — a **synchronous** command runner `executor(command: str, session_id: str, timeout_seconds: int) -> {"status", "output", "exit_code"}`; when omitted they raise `GatewayUnavailableError`:
+    - `execute_command(command, session_id, *, timeout_seconds=30, executor=None) -> {"result_id", "summary"}`
+    - `execute_batch(commands, session_id, *, command_timeout_seconds=30, executor=None) -> {"result_id", "summary"}`
+    - `execute_script(script, session_id, *, shell=None, timeout_seconds=30, is_network_device=False, executor=None) -> {"result_id", "summary"}`
+    - `run_skill(skill_name, params, *, session_id="", timeout_seconds=60, executor=None) -> {"result_id", "summary"}`
+    - `skill_flow(skill_name, params) -> dict` — the substituted flow dict (parseable by `parse_flow`); raises `SkillLoadError`.
+    - `get_result(result_id, *, include_raw=False) -> dict | None`
+    - `snapshot() -> dict`
+  - `class GatewayUnavailableError(ValueError)` with `.code = "gateway_unavailable"`.
+
+> **Threading contract (critical, do not violate):** `GatewayService`'s high-level methods are called from the **HTTP server thread** (service.py `_invoke`), never from a Qt-thread UI callback. The injected `executor` is supplied by service.py and internally does the start-on-Qt-thread + wait-on-HTTP-thread dance (Task 6), mirroring the existing `_execute_terminal_plan` pattern. A synchronous executor that blocks the Qt thread would deadlock the runner (output is injected on the Qt thread via `append_session_output`). `ResultStore`/`SkillRegistry` hold their own RLocks, so app-side `get_result`/`snapshot` are thread-safe.
 
 **Interfaces from later tasks:**
-- Task 5 (`AiDeviceOpsMixin` handlers) constructs a `GatewayService` and calls these methods.
-- Task 6 (`ai_get_result`) calls `get_result`.
+- Task 5 (app) constructs a `GatewayService` with **no executor** (so `get_result`/`snapshot` work app-side) and exposes it via a `gateway_service()` accessor.
+- Task 6 (service.py) injects an `executor` closure driving `_execute_terminal_plan` (start-Qt + wait-HTTP).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1085,7 +1097,6 @@ from src.ai_gateway.service import (
     GatewayService,
     GatewayUnavailableError,
 )
-from src.ai_gateway.flow_engine import FlowPlanError
 
 
 def _fake_executor(plan: dict[str, dict[str, str]] | None = None):
@@ -1103,8 +1114,8 @@ def _fake_executor(plan: dict[str, dict[str, str]] | None = None):
 
 def test_execute_command_returns_result_and_summary() -> None:
     executor, calls = _fake_executor()
-    service = GatewayService(execute_command=executor)
-    result = service.execute_command("display version", "sess-1")
+    service = GatewayService()
+    result = service.execute_command("display version", "sess-1", executor=executor)
     assert result["result_id"].startswith("R")
     assert result["summary"]["status"] == "success"
     assert calls == ["display version"]
@@ -1112,17 +1123,17 @@ def test_execute_command_returns_result_and_summary() -> None:
 
 def test_execute_batch_runs_all_commands() -> None:
     executor, calls = _fake_executor()
-    service = GatewayService(execute_command=executor)
-    result = service.execute_batch(["display version", "display cpu"], "sess-1")
+    service = GatewayService()
+    result = service.execute_batch(["display version", "display cpu"], "sess-1", executor=executor)
     assert calls == ["display version", "display cpu"]
     assert result["summary"]["command_count"] == 2
 
 
 def test_execute_script_linux_injects_whole_block() -> None:
     executor, calls = _fake_executor()
-    service = GatewayService(execute_command=executor)
+    service = GatewayService()
     script = "export FOO=bar\nls $FOO\n"
-    result = service.execute_script(script, "sess-1", is_network_device=False)
+    result = service.execute_script(script, "sess-1", is_network_device=False, executor=executor)
     # Linux: the whole block goes in one command (multi-line).
     assert len(calls) == 1
     assert calls[0] == script
@@ -1131,33 +1142,42 @@ def test_execute_script_linux_injects_whole_block() -> None:
 
 def test_execute_script_network_device_splits_lines() -> None:
     executor, calls = _fake_executor()
-    service = GatewayService(execute_command=executor)
+    service = GatewayService()
     script = "display version\ndisplay cpu\n"
-    result = service.execute_script(script, "sess-1", is_network_device=True)
+    result = service.execute_script(script, "sess-1", is_network_device=True, executor=executor)
     assert calls == ["display version", "display cpu"]
     assert result["summary"]["command_count"] == 2
 
 
 def test_get_result_round_trip() -> None:
-    service = GatewayService(execute_command=_fake_executor()[0])
-    created = service.execute_command("display version", "sess-1")
+    service = GatewayService()
+    created = service.execute_command("display version", "sess-1", executor=_fake_executor()[0])
     fetched = service.get_result(created["result_id"])
     assert fetched is not None
     assert fetched["result"]["summary"]["status"] == "success"
     raw = service.get_result(created["result_id"], include_raw=True)
     assert raw is not None
-    assert "output" in raw
+    assert "raw_output" in raw
 
 
 def test_run_skill_instantiates_flow() -> None:
-    service = GatewayService(execute_command=_fake_executor()[0])
+    executor, _ = _fake_executor()
+    service = GatewayService()
     result = service.run_skill(
         "driver_reload",
         {"device_id": "dev-1"},
         session_id="sess-1",
+        executor=executor,
     )
     assert result["result_id"].startswith("R")
     assert result["summary"]["command_count"] == 2  # both steps ran
+
+
+def test_skill_flow_returns_substituted_dict() -> None:
+    service = GatewayService()
+    flow = service.skill_flow("driver_reload", {"device_id": "dev-1"})
+    assert isinstance(flow, dict)
+    assert flow["steps"][0]["command"] == "display version"
 
 
 def test_gateway_unavailable_without_executor() -> None:
@@ -1183,7 +1203,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from .flow_engine import FlowEngine, FlowPlanError
+from .flow_engine import FlowEngine, parse_flow
 from .result_store import ResultStore, summarize_output
 from .skills import SkillRegistry
 
@@ -1194,21 +1214,6 @@ class GatewayUnavailableError(ValueError):
         self.code = "gateway_unavailable"
 
 
-def summarize_runtime(
-    summary: dict[str, Any],
-    *,
-    status: str,
-    exit_code: int,
-    command_count: int,
-    duration_ms: int,
-) -> dict[str, Any]:
-    summary["status"] = status
-    summary["exit_code"] = int(exit_code)
-    summary["command_count"] = int(command_count)
-    summary["duration_ms"] = int(duration_ms)
-    return summary
-
-
 class GatewayService:
     def __init__(
         self,
@@ -1216,18 +1221,22 @@ class GatewayService:
         result_store: ResultStore | None = None,
         flow_engine: FlowEngine | None = None,
         skill_registry: SkillRegistry | None = None,
-        execute_command: Callable[[str, str, int], dict[str, Any]] | None = None,
     ) -> None:
         self.result_store = result_store or ResultStore()
         self.flow_engine = flow_engine or FlowEngine()
         self.skill_registry = skill_registry or SkillRegistry()
-        self._execute_command = execute_command
         self._lock = threading.RLock()
 
-    def _run_command(self, command: str, session_id: str, timeout_seconds: int) -> dict[str, Any]:
-        if self._execute_command is None:
+    def _run_command(
+        self,
+        command: str,
+        session_id: str,
+        timeout_seconds: int,
+        executor: Callable[[str, str, int], dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        if executor is None:
             raise GatewayUnavailableError()
-        return self._execute_command(command, session_id, timeout_seconds)
+        return executor(command, session_id, timeout_seconds)
 
     def _store_summary(self, kind: str, output: str, *, status: str, exit_code: int, command_count: int, duration_ms: int, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         started = time.monotonic()
@@ -1263,9 +1272,10 @@ class GatewayService:
         session_id: str,
         *,
         timeout_seconds: int = 30,
+        executor: Callable[[str, str, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
-        raw = self._run_command(command, session_id, timeout_seconds)
+        raw = self._run_command(command, session_id, timeout_seconds, executor)
         status = str(raw.get("status") or "success")
         output = str(raw.get("output") or "")
         exit_code = int(raw.get("exit_code") or 0)
@@ -1284,13 +1294,14 @@ class GatewayService:
         session_id: str,
         *,
         command_timeout_seconds: int = 30,
+        executor: Callable[[str, str, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         outputs: list[str] = []
         last_status = "success"
         last_exit = 0
         for command in commands:
-            raw = self._run_command(command, session_id, command_timeout_seconds)
+            raw = self._run_command(command, session_id, command_timeout_seconds, executor)
             outputs.append(str(raw.get("output") or ""))
             last_status = str(raw.get("status") or "success")
             last_exit = int(raw.get("exit_code") or 0)
@@ -1313,6 +1324,7 @@ class GatewayService:
         shell: str | None = None,
         timeout_seconds: int = 30,
         is_network_device: bool = False,
+        executor: Callable[[str, str, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         lines = [line for line in script.splitlines() if line.strip()]
@@ -1321,8 +1333,9 @@ class GatewayService:
                 lines,
                 session_id,
                 command_timeout_seconds=timeout_seconds,
+                executor=executor,
             )
-        raw = self._run_command(script, session_id, timeout_seconds)
+        raw = self._run_command(script, session_id, timeout_seconds, executor)
         return self._store_summary(
             "script",
             str(raw.get("output") or ""),
@@ -1333,6 +1346,25 @@ class GatewayService:
             extra={"shell": shell},
         )
 
+    def skill_flow(self, skill_name: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Return the substituted skill flow dict, validated via parse_flow."""
+        plan = self.skill_registry.instantiate_flow(skill_name, params)
+        # Re-serialize from the parsed plan so service.py can re-parse without a
+        # registry reference. All fields round-trip through parse_flow.
+        return {
+            "steps": [
+                {
+                    "id": step.id,
+                    "command": step.command,
+                    "depends_on": step.depends_on,
+                    "retry": step.retry,
+                    "wait_condition": step.wait_condition,
+                    "timeout_seconds": step.timeout_seconds,
+                }
+                for step in plan.steps
+            ]
+        }
+
     def run_skill(
         self,
         skill_name: str,
@@ -1340,12 +1372,14 @@ class GatewayService:
         *,
         session_id: str = "",
         timeout_seconds: int = 60,
+        executor: Callable[[str, str, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
-        plan = self.skill_registry.instantiate_flow(skill_name, params)
-        # The flow engine's execute_step delegates to _run_command.
+        flow_data = self.skill_flow(skill_name, params)
+        plan = parse_flow(flow_data)
+
         def execute_step(command: str, session: str, timeout: int) -> tuple[str, str]:
-            raw = self._run_command(command, session, timeout)
+            raw = self._run_command(command, session, timeout, executor)
             return str(raw.get("status") or "success"), str(raw.get("output") or "")
 
         def wait_for_condition(
@@ -1353,7 +1387,7 @@ class GatewayService:
             session: str,
             device: str,
         ) -> tuple[str, str]:
-            raw = self._run_command(str(condition.get("command") or ""), session, 30)
+            raw = self._run_command(str(condition.get("command") or ""), session, 30, executor)
             output = str(raw.get("output") or "")
             expected = str(condition.get("expected") or "")
             if expected and expected in output:
@@ -1415,33 +1449,35 @@ git commit -m "feat(ai-gateway): add GatewayService facade"
 
 ---
 
-### Task 5: AiDeviceOpsMixin handlers and GatewayService wiring
+---
+### Task 5: App-side wiring — GatewayService instance and non-blocking handlers
 
 **Files:**
 - Modify: `src/app/ai_device_ops.py`
-- Modify: `src/app/main_window.py` (add `self.ai_gateway_service` init after `initialize_terminal_execution_coordinator()`)
+- Modify: `src/app/main_window.py` (add `initialize_ai_gateway_service()` after `initialize_terminal_execution_coordinator()`)
+- Modify: `src/device_mcp/core.py` (add `gateway_service()` and `gateway_script_style()` to `AppControlBackend` protocol)
 - Test: `tests/test_ai_gateway_handlers.py`
 
 **Interfaces:**
-- Consumes: `GatewayService` (Task 4), existing mixin helpers `_ai_resolve_session`, `_ai_failure`, `_ai_session_summary`, `terminal_execution_coordinator`, `send_session_text`, `_ai_device`.
-- Produces (handlers registered in the handler dict in `execute_ai_device_action`):
-  - `_execute_ai_gateway_command(action)` — runs `ai_execute_command`
-  - `_execute_ai_gateway_batch(action)` — runs `ai_execute_batch`
-  - `_execute_ai_gateway_script(action)` — runs `ai_execute_script`
-  - `_execute_ai_gateway_get_result(action)` — runs `ai_get_result`
-  - `_execute_ai_gateway_run_skill(action)` — runs `ai_run_skill`
-  - `_execute_ai_gateway_create_session(action)` — reuses `open_session` handler
-  - `_execute_ai_gateway_upload_file(action)` — reuses `start_managed_file_transfer`
-  - `_execute_ai_gateway_download_file(action)` — runs new `download` direction (Task 7)
+- Consumes: `GatewayService` (Task 4), existing mixin helpers `_ai_failure`, `_ai_device`, `_execute_ai_managed_transfer_start`.
+- Produces:
+  - `initialize_ai_gateway_service(self)` — creates `self.ai_gateway_service = GatewayService()` (**no executor**; the app side only does read/store operations).
+  - `gateway_service(self) -> GatewayService` — accessor for service.py (`_invoke` injects its own executor).
+  - `gateway_script_style(self, device_id: str) -> str` — `"linux"` (whole-block script) or `"network"` (line-by-line), for `ai_execute_script`.
+  - Handler-dict entries in `execute_ai_device_action` (non-blocking only — `ai_create_session` and the 4 executing tools are orchestrated in service.py, Task 6):
+    - `"ai_gateway_get_result"` → `_execute_ai_gateway_get_result`
+    - `"ai_gateway_upload_file"` → `_execute_ai_gateway_upload_file` (reuses `_execute_ai_managed_transfer_start`)
+    - `"ai_gateway_download_file"` → `_execute_ai_gateway_download_file` (Task 7)
+  - `_execute_ai_gateway_get_result(action)` — `ai_gateway_service.get_result(result_id, include_raw)`; 404 `result_not_found` if missing.
 
 **Behavior:**
-- The `GatewayService`'s `execute_command` callback resolves the session via `_ai_resolve_session(action, require_connected=True)`, then runs the command synchronously through `terminal_execution_coordinator` using `build_batch_plan([command])`, waits for completion, and returns `{"status", "output", "exit_code"}`.
-- For network devices (`is_network_device`), the script splits into lines. Determine device kind via `_ai_device(action.device_id)`'s `protocols`/`kind` attribute.
-- Result mapping: coordinator runner status `completed` → `success`; `timed_out` → `timeout`; `failed`/`cancelled`/`disconnected` → `failed`. `exit_code` derived from `error_code` presence.
+- The app NEVER blocks the Qt thread for gateway execution. All command/batch/script/run_skill orchestration lives in service.py, which runs on the HTTP thread and injects an executor driving `_execute_terminal_plan` (start-on-Qt + wait-on-HTTP). `ai_create_session` is likewise driven on the HTTP thread (open + wait for connected) by service.py. The app's `GatewayService` has no executor; calling `execute_command` on it without one raises `GatewayUnavailableError` by design.
+- `gateway_service()` lets service.py reach `ResultStore`/`SkillRegistry` through the facade.
+- `gateway_script_style()` lets service.py decide `is_network_device` for `ai_execute_script`: Linux/SSH devices get the whole block; network devices (including `SIM-TERMINAL`, kind `simulated`) get line-by-line.
 
 **Interfaces from later tasks:**
-- Task 6 (`AppControlService`) calls these handlers via the normal `_dispatch_action` path.
-- Task 7's `download_file` direction plugs into `_execute_ai_gateway_download_file`.
+- Task 6 (service.py) calls `self.backend.gateway_service()` and `self.backend.gateway_script_style()`; injects an executor.
+- Task 7's `download_file` plugs into `_execute_ai_gateway_download_file`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1452,6 +1488,8 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
 
 from PySide6.QtWidgets import QApplication
 
@@ -1464,54 +1502,28 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_ai_gateway_create_session_reuses_open(app: QApplication) -> None:
+def test_ai_gateway_service_is_initialized(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
-    result = window.execute_ai_device_action(
-        AiDeviceAction(
-            "ai_gateway_create_session",
-            "创建网关会话",
-            RiskLevel.LOW,
-            device_id="SIM-TERMINAL",
-        )
-    )
-    assert result.ok
-    assert result.data["session_id"]
+    assert hasattr(window, "ai_gateway_service")
+    assert window.ai_gateway_service is window.gateway_service()
 
 
-def test_ai_gateway_execute_command_on_simulated(app: QApplication) -> None:
+def test_ai_gateway_script_style_simulated_is_network(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
-    result = window.execute_ai_device_action(
-        AiDeviceAction(
-            "ai_gateway_execute_command",
-            "执行网关命令",
-            RiskLevel.LOW,
-            device_id="SIM-TERMINAL",
-            command="display version",
-            params={"session_id": ""},
-        )
-    )
-    assert result.ok
-    assert result.data["result_id"].startswith("R")
-    assert result.data["summary"]["command_count"] == 1
+    assert window.gateway_script_style("SIM-TERMINAL") == "network"
 
 
 def test_ai_gateway_get_result_round_trip(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
-    created = window.execute_ai_device_action(
-        AiDeviceAction(
-            "ai_gateway_execute_command",
-            "执行网关命令",
-            RiskLevel.LOW,
-            device_id="SIM-TERMINAL",
-            command="display version",
-            params={"session_id": ""},
-        )
+    # Seed the result store directly (execution itself is driven by service.py).
+    result_id = window.ai_gateway_service.result_store.store(
+        "command",
+        "display version\nVRP (R) software, Version 8.180\n",
+        metadata={"status": "success", "exit_code": 0, "command_count": 1, "duration_ms": 5},
     )
-    assert created.ok
-    result_id = created.data["result_id"]
     fetched = window.execute_ai_device_action(
         AiDeviceAction(
             "ai_gateway_get_result",
@@ -1525,174 +1537,99 @@ def test_ai_gateway_get_result_round_trip(app: QApplication) -> None:
     assert "raw_output" in fetched.data["result"]
 
 
-def test_ai_gateway_run_skill_on_simulated(app: QApplication) -> None:
+def test_ai_gateway_get_result_missing_is_404(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
     result = window.execute_ai_device_action(
         AiDeviceAction(
-            "ai_gateway_run_skill",
-            "运行网关 Skill",
-            RiskLevel.LOW,
-            device_id="SIM-TERMINAL",
-            params={"skill_name": "driver_reload", "session_id": ""},
+            "ai_gateway_get_result",
+            "读取网关结果",
+            RiskLevel.OBSERVE,
+            params={"result_id": "R-does-not-exist"},
         )
     )
-    assert result.ok
-    assert result.data["result_id"].startswith("R")
-    assert result.data["summary"]["command_count"] == 2
+    assert not result.ok
+    assert result.error_code == "result_not_found"
+    assert result.http_status == 404
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_ai_gateway_handlers.py -v`
-Expected: FAIL with `KeyError: 'ai_gateway_execute_command'` (handler not registered)
+Expected: FAIL with `AttributeError: 'DeviceDesktopApp' object has no attribute 'ai_gateway_service'`
 
-- [ ] **Step 3: Implement the mixin wiring**
+- [ ] **Step 3: Implement the app-side wiring**
 
-In `src/app/ai_device_ops.py`:
+In `src/device_mcp/core.py`, extend the `AppControlBackend` protocol:
 
-Add a constructor method (call it from `main_window.py` `__init__` right after `initialize_terminal_execution_coordinator()`):
+```python
+class AppControlBackend(Protocol):
+    def execute_ai_device_action(
+        self,
+        action: AiDeviceAction,
+        *,
+        approved: bool = False,
+    ) -> AiDeviceToolResult:
+        ...
+
+    def gateway_service(self) -> Any:
+        """Return the app's GatewayService facade (result store + skill registry)."""
+        ...
+
+    def gateway_script_style(self, device_id: str) -> str:
+        """Return 'linux' (whole-block script) or 'network' (line-by-line)."""
+        ...
+```
+
+In `src/app/ai_device_ops.py`, add the constructor method and accessors (call from `main_window.py` `__init__` right after `initialize_terminal_execution_coordinator()`):
 
 ```python
 def initialize_ai_gateway_service(self) -> None:
     from src.ai_gateway.service import GatewayService
 
-    def run_command(command: str, session_id: str, timeout_seconds: int) -> dict[str, Any]:
-        state = getattr(self, "session_tabs_by_id", {}).get(session_id)
-        if state is None:
-            raise GatewayUnavailableError(f"未找到终端会话: {session_id}")
-        if not bool(getattr(state.session, "is_connected", False)):
-            raise GatewayUnavailableError(f"会话未连接: {session_id}")
-        try:
-            plan = build_batch_plan(
-                [command],
-                command_timeout_seconds=float(timeout_seconds),
-                total_timeout_seconds=float(timeout_seconds) + 5,
-            )
-            runner = self.terminal_execution_coordinator.start(
-                session_id=session_id,
-                device_id=str(getattr(state, "device_id", "")),
-                plan=plan,
-            )
-        except TerminalPlanError as exc:
-            raise GatewayUnavailableError(str(exc)) from exc
-        runner.completion_event.wait(max(0, timeout_seconds + 5))
-        snapshot = runner.public_dict()
-        status_map = {
-            "completed": "success",
-            "timed_out": "timeout",
-            "failed": "failed",
-            "cancelled": "failed",
-            "disconnected": "failed",
-        }
-        status = status_map.get(str(snapshot.get("status") or ""), "failed")
-        return {
-            "status": status,
-            "output": str(snapshot.get("message") or ""),
-            "exit_code": 1 if snapshot.get("error_code") else 0,
-        }
+    # The app-side instance has NO executor: command/batch/script/run_skill are
+    # orchestrated by AppControlService (HTTP thread) which injects its own
+    # executor. This instance exists so get_result/snapshot work app-side and so
+    # service.py can reach the ResultStore/SkillRegistry through the facade.
+    self.ai_gateway_service = GatewayService()
 
-    self.ai_gateway_service = GatewayService(execute_command=run_command)
+def gateway_service(self) -> Any:
+    return getattr(self, "ai_gateway_service", None)
+
+def gateway_script_style(self, device_id: str) -> str:
+    device = self._ai_device(device_id)
+    kind = str(getattr(device, "kind", "") or "")
+    protocols = getattr(device, "protocols", None) or []
+    if kind == "linux" or "ssh" in protocols:
+        return "linux"
+    return "network"
 ```
 
-Add the handler-dict entries in `execute_ai_device_action`:
+Add the non-blocking handler-dict entries in `execute_ai_device_action`:
 
 ```python
-"ai_gateway_create_session": self._execute_ai_gateway_create_session,
-"ai_gateway_execute_command": self._execute_ai_gateway_command,
-"ai_gateway_execute_batch": self._execute_ai_gateway_batch,
-"ai_gateway_execute_script": self._execute_ai_gateway_script,
 "ai_gateway_get_result": self._execute_ai_gateway_get_result,
-"ai_gateway_run_skill": self._execute_ai_gateway_run_skill,
 "ai_gateway_upload_file": self._execute_ai_gateway_upload_file,
 "ai_gateway_download_file": self._execute_ai_gateway_download_file,
 ```
 
-Add the handler methods (following the existing `_execute_ai_*` pattern):
+> **Do NOT add** `ai_gateway_create_session`/`ai_gateway_execute_command/batch/script/run_skill` handlers here — they would run on the Qt thread and block it (deadlock). service.py handles them on the HTTP thread.
+
+Add the handler methods:
 
 ```python
-def _execute_ai_gateway_create_session(self, action: AiDeviceAction) -> AiDeviceToolResult:
-    # Reuse the existing open_session handler (session lifecycle reuse).
-    return self._execute_ai_open_session(action)
-
-def _execute_ai_gateway_execute_command(self, action: AiDeviceAction) -> AiDeviceToolResult:
-    session_id, failure = self._ai_gateway_resolve_session(action)
-    if failure is not None:
-        return failure
-    try:
-        data = self.ai_gateway_service.execute_command(
-            action.command,
-            session_id,
-            timeout_seconds=int(action.params.get("timeout_seconds", 30)),
-        )
-    except GatewayUnavailableError as exc:
-        return self._ai_failure(action, exc.code, str(exc), http_status=409)
-    return AiDeviceToolResult(action, ok=True, message="网关命令已执行。", data=data)
-
-def _execute_ai_gateway_execute_batch(self, action: AiDeviceAction) -> AiDeviceToolResult:
-    session_id, failure = self._ai_gateway_resolve_session(action)
-    if failure is not None:
-        return failure
-    commands = list(action.params.get("commands") or [])
-    try:
-        data = self.ai_gateway_service.execute_batch(
-            commands,
-            session_id,
-            command_timeout_seconds=int(action.params.get("command_timeout_seconds", 30)),
-        )
-    except GatewayUnavailableError as exc:
-        return self._ai_failure(action, exc.code, str(exc), http_status=409)
-    return AiDeviceToolResult(action, ok=True, message="网关批量命令已执行。", data=data)
-
-def _execute_ai_gateway_execute_script(self, action: AiDeviceAction) -> AiDeviceToolResult:
-    session_id, failure = self._ai_gateway_resolve_session(action)
-    if failure is not None:
-        return failure
-    script = str(action.params.get("script") or "")
-    device = self._ai_device(action.device_id)
-    kind = str(getattr(device, "kind", "") or "")
-    is_network = kind in {"device", "simulated"} and not bool(
-        getattr(device, "protocols", None) and "ssh" in getattr(device, "protocols", [])
-    )
-    try:
-        data = self.ai_gateway_service.execute_script(
-            script,
-            session_id,
-            shell=str(action.params.get("shell") or ""),
-            timeout_seconds=int(action.params.get("timeout_seconds", 30)),
-            is_network_device=is_network,
-        )
-    except GatewayUnavailableError as exc:
-        return self._ai_failure(action, exc.code, str(exc), http_status=409)
-    return AiDeviceToolResult(action, ok=True, message="网关脚本已执行。", data=data)
-
 def _execute_ai_gateway_get_result(self, action: AiDeviceAction) -> AiDeviceToolResult:
     result_id = str(action.params.get("result_id") or "")
     include_raw = bool(action.params.get("include_raw", False))
     data = self.ai_gateway_service.get_result(result_id, include_raw=include_raw)
     if data is None:
-        return self._ai_failure(action, "result_not_found", f"未找到执行结果: {result_id}", http_status=404)
-    return AiDeviceToolResult(action, ok=True, message="已读取网关执行结果。", data=data)
-
-def _execute_ai_gateway_run_skill(self, action: AiDeviceAction) -> AiDeviceToolResult:
-    session_id, failure = self._ai_gateway_resolve_session(action, required=False)
-    if failure is not None:
-        return failure
-    skill_name = str(action.params.get("skill_name") or "")
-    params = dict(action.params.get("params") or {})
-    params.setdefault("device_id", action.device_id)
-    try:
-        data = self.ai_gateway_service.run_skill(
-            skill_name,
-            params,
-            session_id=session_id or "",
-            timeout_seconds=int(action.params.get("timeout_seconds", 60)),
+        return self._ai_failure(
+            action,
+            "result_not_found",
+            f"未找到执行结果: {result_id}",
+            http_status=404,
         )
-    except SkillLoadError as exc:
-        return self._ai_failure(action, exc.code, str(exc), http_status=400)
-    except GatewayUnavailableError as exc:
-        return self._ai_failure(action, exc.code, str(exc), http_status=409)
-    return AiDeviceToolResult(action, ok=True, message=f"Skill 已执行: {skill_name}", data=data)
+    return AiDeviceToolResult(action, ok=True, message="已读取网关执行结果。", data=data)
 
 def _execute_ai_gateway_upload_file(self, action: AiDeviceAction) -> AiDeviceToolResult:
     # Reuse the existing managed transfer start (PC→device).
@@ -1701,44 +1638,6 @@ def _execute_ai_gateway_upload_file(self, action: AiDeviceAction) -> AiDeviceToo
 def _execute_ai_gateway_download_file(self, action: AiDeviceAction) -> AiDeviceToolResult:
     # Implemented in Task 7 (device→PC put direction).
     return self._ai_failure(action, "not_implemented", "设备下载方向尚未实现。", http_status=501)
-```
-
-Add helper:
-
-```python
-def _ai_gateway_resolve_session(
-    self,
-    action: AiDeviceAction,
-    *,
-    required: bool = True,
-) -> tuple[str, AiDeviceToolResult | None]:
-    session_id = str(action.params.get("session_id") or "")
-    if not session_id:
-        # Fall back to the device's first connected session, or require session_id.
-        states = list(getattr(self, "session_tabs_by_id", {}).values())
-        matches = [
-            state for state in states
-            if str(getattr(state, "device_id", "")) == action.device_id
-        ]
-        for state in matches:
-            if bool(getattr(state.session, "is_connected", False)):
-                session_id = state.tab_id
-                break
-    if not session_id:
-        if required:
-            return "", self._ai_failure(
-                action,
-                "session_not_found",
-                f"设备没有打开的终端: {action.device_id}",
-                http_status=404,
-            )
-        return "", None
-    state = getattr(self, "session_tabs_by_id", {}).get(session_id)
-    if state is None:
-        return "", self._ai_failure(
-            action, "session_not_found", f"未找到终端会话: {session_id}", http_status=404
-        )
-    return session_id, None
 ```
 
 In `src/app/main_window.py` `__init__`, right after `self.initialize_terminal_execution_coordinator()`:
@@ -1760,39 +1659,46 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/app/ai_device_ops.py src/app/main_window.py tests/test_ai_gateway_handlers.py
-git commit -m "feat(ai-gateway): wire GatewayService into AiDeviceOpsMixin handlers"
+git add src/app/ai_device_ops.py src/app/main_window.py src/device_mcp/core.py tests/test_ai_gateway_handlers.py
+git commit -m "feat(ai-gateway): wire app-side GatewayService instance and non-blocking handlers"
 ```
 
 ---
 
+---
 ### Task 6: MCP tools, service routing, and risk/audit integration
 
 **Files:**
-- Create: `src/device_mcp/tools/ai_gateway.py`
+- Create: `src/device_mcp/ai_gateway_execution.py` (new `AiGatewayExecutionMixin`)
+- Create: `src/device_mcp/tools/ai_gateway.py` (8 MCP tool functions)
 - Modify: `src/device_mcp/actions.py` (`_build_action` branches)
-- Modify: `src/device_mcp/service.py` (`_invoke` routing + audit sub-step manifest)
+- Modify: `src/device_mcp/service.py` (add `AiGatewayExecutionMixin` to class bases; add `_invoke` branch + audit sub-step manifest)
 - Modify: `src/device_mcp/tools/__init__.py` (register the new tool module)
-- Modify: `src/device_mcp/client.py` (optional: direct client methods — only if tools bypass the service; keep as thin `gateway.call` if routing covers it)
+- Modify: `src/device_mcp/client.py` (add 8 thin client methods)
+- Modify: `src/device_mcp/http_server.py` (add 8 `do_POST` route entries)
 - Test: `tests/test_ai_gateway_tools.py`
 
 **Interfaces:**
-- Consumes: existing `McpGateway.call`, `AppControlService._build_action`, `_invoke`, handler dict from Task 5.
-- Produces: 8 registered MCP tools (`ai_create_session`, `ai_execute_command`, `ai_execute_batch`, `ai_execute_script`, `ai_upload_file`, `ai_download_file`, `ai_get_result`, `ai_run_skill`).
+- Consumes: `McpGateway.call`, `AppControlService._build_action`/`_invoke`/`_execute_terminal_plan` (ExecutionMixin), `GatewayService` via `backend.gateway_service()` (Task 5), app handler dict (Task 5, non-blocking entries only).
+- Produces: 8 registered MCP tools; 8 HTTP routes; 8 client methods; `AiGatewayExecutionMixin._execute_ai_gateway_execute(action)` driving the 4 executing tools, and `_execute_ai_gateway_create_session(action)` driving `ai_create_session`.
+
+**Threading contract (why this lives in service.py):** the 4 executing tools AND `ai_create_session` must NOT run on the Qt thread. `AppControlService._invoke` runs on the HTTP server thread. It injects an `executor` into `GatewayService` that builds a `terminal_plan_start` action and calls the existing `_execute_terminal_plan` (start-on-Qt via `_dispatch_action`, wait-on-HTTP via `completion_event.wait`). `ai_create_session` reuses `_execute_session_manage` (open + poll-for-connected on the HTTP thread). This mirrors how `terminal_execute_batch` / `session_manage` already work and avoids deadlocking the Qt event loop.
 
 **Routing design:**
-- `_build_action` maps each `ai_*` tool to an action kind (the `ai_gateway_*` keys from Task 5), classifying risk:
-  - `ai_execute_command`: risk from `classify_command_risk(command)`; params `{session_id, timeout_seconds}`, `command=normalized`.
-  - `ai_execute_batch`: max risk over commands; params `{commands, session_id, command_timeout_seconds}`.
-  - `ai_execute_script`: risk from combined script text (max over all lines); params `{script, shell, session_id, timeout_seconds}`.
-  - `ai_upload_file`: `RiskLevel.FLOW` (reuses managed transfer), params `{source_path, destination_path, overwrite}`.
-  - `ai_download_file`: `RiskLevel.LOW`, params `{source_path, destination_path}`.
-  - `ai_get_result`: `RiskLevel.OBSERVE`, params `{result_id, include_raw}`.
-  - `ai_run_skill`: `RiskLevel.FLOW` (unknown flow), params `{skill_name, params, session_id, timeout_seconds}`.
-  - `ai_create_session`: `RiskLevel.LOW`, `device_id`.
-- `_invoke`: `ai_*` tools route through `_dispatch_action` (the default branch already handles `else` → `_dispatch_action`). The audit sub-step manifest: after `_build_action`, compute `command_count`/`step_count` from params and add to the audit record's `params` under a `sub_step_manifest` key.
-
-**idempotency:** `ai_execute_command/batch/script`, `ai_upload_file/download_file`, `ai_run_skill` include `idempotency_key` handling — the existing `_invoke` already caches on `idempotency_key`; ensure the tool modules pass it through.
+- `_build_action` maps each `ai_*` tool to an action kind, classifying risk (these actions carry the audit/approval record):
+  - `ai_create_session` → `ai_gateway_create_session`, `RiskLevel.LOW`, `device_id`.
+  - `ai_execute_command` → `ai_gateway_execute_command`, `classify_command_risk(command)`, `command=normalized`, params `{session_id, timeout_seconds}`.
+  - `ai_execute_batch` → `ai_gateway_execute_batch`, max risk over commands, params `{commands, session_id, command_timeout_seconds}`.
+  - `ai_execute_script` → `ai_gateway_execute_script`, max risk over lines, params `{script, shell, session_id, timeout_seconds}`.
+  - `ai_upload_file` → `ai_gateway_upload_file`, `RiskLevel.FLOW`, params `{source_path, destination_path, overwrite}`.
+  - `ai_download_file` → `ai_gateway_download_file`, `RiskLevel.LOW`, params `{source_path, destination_path}`.
+  - `ai_get_result` → `ai_gateway_get_result`, `RiskLevel.OBSERVE`, params `{result_id, include_raw}`.
+  - `ai_run_skill` → `ai_gateway_run_skill`, `RiskLevel.FLOW`, params `{skill_name, params, session_id, timeout_seconds}`.
+- `_invoke` adds:
+  - `elif tool == "ai_create_session": result = self._execute_ai_gateway_create_session(action)` (open + wait for connected, shaped to `{session_id, connected}`).
+  - `elif tool in {"ai_execute_command", "ai_execute_batch", "ai_execute_script", "ai_run_skill"}: result = self._execute_ai_gateway_execute(action)`.
+  - The remaining 3 tools (`ai_get_result`, `ai_upload_file`, `ai_download_file`) fall through to `_dispatch_action` → app handler dict (Task 5).
+- Idempotency: all 8 tools accept `idempotency_key`; the existing `_invoke` cache applies unchanged (the executor runs only on cache miss).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1801,11 +1707,14 @@ git commit -m "feat(ai-gateway): wire GatewayService into AiDeviceOpsMixin handl
 from __future__ import annotations
 
 import os
+import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
+
 from src.device_mcp.actions import ActionBuilderMixin
-from src.ai_device_ops import RiskLevel
+from src.ai_device_ops import AiDeviceAction, AiDeviceToolResult, RiskLevel
 
 
 class _Builder(ActionBuilderMixin):
@@ -1815,7 +1724,7 @@ class _Builder(ActionBuilderMixin):
 def test_build_action_ai_execute_command_risk() -> None:
     action = _Builder()._build_action(
         "ai_execute_command",
-        {"device_id": "SIM-TERMINAL", "command": "display version"},
+        {"session_id": "sess-1", "command": "display version"},
     )
     assert action.kind == "ai_gateway_execute_command"
     assert action.risk == RiskLevel.LOW
@@ -1825,7 +1734,7 @@ def test_build_action_ai_execute_command_risk() -> None:
 def test_build_action_ai_execute_batch_takes_max_risk() -> None:
     action = _Builder()._build_action(
         "ai_execute_batch",
-        {"device_id": "SIM-TERMINAL", "commands": ["display version", "reboot"]},
+        {"session_id": "sess-1", "commands": ["display version", "reboot"]},
     )
     assert action.kind == "ai_gateway_execute_batch"
     assert action.risk == RiskLevel.HIGH
@@ -1834,7 +1743,7 @@ def test_build_action_ai_execute_batch_takes_max_risk() -> None:
 def test_build_action_ai_run_skill_is_flow_risk() -> None:
     action = _Builder()._build_action(
         "ai_run_skill",
-        {"device_id": "SIM-TERMINAL", "skill_name": "driver_reload"},
+        {"session_id": "sess-1", "skill_name": "driver_reload", "params": {}},
     )
     assert action.kind == "ai_gateway_run_skill"
     assert action.risk == RiskLevel.FLOW
@@ -1860,6 +1769,146 @@ def test_build_action_ai_get_result_is_observe() -> None:
     )
     assert action.kind == "ai_gateway_get_result"
     assert action.risk == RiskLevel.OBSERVE
+
+
+def _service_with_fake_backend():
+    """Build an AppControlService whose backend simulates terminal_plan_start."""
+    from src.device_mcp.service import AppControlService
+    from src.ai_gateway.service import GatewayService
+
+    class FakeBackend:
+        def __init__(self) -> None:
+            self.gateway = GatewayService()
+
+        def gateway_service(self):
+            return self.gateway
+
+        def gateway_script_style(self, device_id: str) -> str:
+            return "network"
+
+        def execute_ai_device_action(
+            self,
+            action: AiDeviceAction,
+            *,
+            approved: bool = False,
+        ) -> AiDeviceToolResult:
+            if action.kind == "terminal_plan_start":
+                event = threading.Event()
+                event.set()
+                return AiDeviceToolResult(
+                    action,
+                    ok=True,
+                    message="started",
+                    data={
+                        "_completion_event": event,
+                        "execution_id": "e-fake",
+                        "status": "completed",
+                        "steps": [{"output": "display version\nVRP (R) software\n"}],
+                        "error_code": "",
+                    },
+                )
+            if action.kind == "terminal_execution_get":
+                return AiDeviceToolResult(
+                    action,
+                    ok=True,
+                    message="completed",
+                    data={
+                        "execution_id": "e-fake",
+                        "status": "completed",
+                        "steps": [{"output": "display version\nVRP (R) software\n"}],
+                        "error_code": "",
+                    },
+                )
+            return AiDeviceToolResult(action, ok=True, message="ok")
+
+    backend = FakeBackend()
+    service = AppControlService(backend, approval_mode="disabled")
+    return backend, service
+
+
+def test_service_routes_ai_execute_command_to_gateway() -> None:
+    backend, service = _service_with_fake_backend()
+    status, body = service.invoke(
+        "ai_execute_command",
+        {"session_id": "sess-1", "command": "display version"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["data"]["result_id"].startswith("R")
+    assert body["data"]["summary"]["command_count"] == 1
+
+
+def test_service_routes_ai_execute_batch_to_gateway() -> None:
+    _, service = _service_with_fake_backend()
+    status, body = service.invoke(
+        "ai_execute_batch",
+        {"session_id": "sess-1", "commands": ["display version", "display cpu"]},
+    )
+    assert status == 200
+    assert body["data"]["summary"]["command_count"] == 2
+
+
+def test_service_ai_get_result_routes_to_app_handler() -> None:
+    _, service = _service_with_fake_backend()
+    # Seed the store via the backend's gateway.
+    backend_gateway = service.backend.gateway_service()
+    result_id = backend_gateway.result_store.store(
+        "command",
+        "ok output",
+        metadata={"status": "success", "exit_code": 0, "command_count": 1, "duration_ms": 1},
+    )
+    status, body = service.invoke(
+        "ai_get_result",
+        {"result_id": result_id, "include_raw": True},
+    )
+    assert status == 200
+    assert body["data"]["result"]["result_id"] == result_id
+    assert "raw_output" in body["data"]["result"]
+
+
+def test_service_routes_ai_create_session_open_and_wait() -> None:
+    from src.device_mcp.service import AppControlService
+    from src.ai_gateway.service import GatewayService
+
+    class CreateBackend:
+        def __init__(self) -> None:
+            self.gateway = GatewayService()
+
+        def gateway_service(self):
+            return self.gateway
+
+        def gateway_script_style(self, device_id: str) -> str:
+            return "network"
+
+        def execute_ai_device_action(
+            self,
+            action: AiDeviceAction,
+            *,
+            approved: bool = False,
+        ) -> AiDeviceToolResult:
+            if action.kind == "session_manage":
+                return AiDeviceToolResult(
+                    action,
+                    ok=True,
+                    message="opened",
+                    data={
+                        "session": {
+                            "session_id": "sess-1",
+                            "device_id": action.device_id,
+                            "status": "connected",
+                        }
+                    },
+                )
+            return AiDeviceToolResult(action, ok=True, message="ok")
+
+    service = AppControlService(CreateBackend(), approval_mode="disabled")
+    status, body = service.invoke(
+        "ai_create_session",
+        {"device_id": "SIM-TERMINAL"},
+    )
+    assert status == 200
+    assert body["data"]["session_id"] == "sess-1"
+    assert body["data"]["connected"] is True
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1885,6 +1934,8 @@ if tool == "ai_execute_command":
     )
     device_id = self._optional_text(params, "device_id", max_chars=200)
     session_id = self._optional_text(params, "session_id", max_chars=240)
+    if not device_id and not session_id:
+        raise AppControlError("invalid_request", "执行网关命令需要 session_id 或 device_id。")
     return AiDeviceAction(
         "ai_gateway_execute_command",
         "执行网关命令",
@@ -1972,6 +2023,8 @@ if tool == "ai_get_result":
 if tool == "ai_run_skill":
     device_id = self._optional_text(params, "device_id", max_chars=200)
     session_id = self._optional_text(params, "session_id", max_chars=240)
+    if not device_id and not session_id:
+        raise AppControlError("invalid_request", "运行 Skill 需要 session_id 或 device_id。")
     return AiDeviceAction(
         "ai_gateway_run_skill",
         "运行网关 Skill",
@@ -1986,7 +2039,203 @@ if tool == "ai_run_skill":
     )
 ```
 
-- [ ] **Step 4: Add the MCP tool module**
+- [ ] **Step 4: Add the `AiGatewayExecutionMixin`**
+
+Create `src/device_mcp/ai_gateway_execution.py`:
+
+```python
+"""Gateway execution orchestration driven on the HTTP server thread."""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from ..ai_device_ops import AiDeviceAction, AiDeviceToolResult, RiskLevel
+from ..ai_gateway.service import GatewayUnavailableError
+from ..ai_gateway.skills import SkillLoadError
+from .core import AppControlError
+
+
+class AiGatewayExecutionMixin:
+    def _execute_ai_gateway_create_session(self, action: AiDeviceAction) -> AiDeviceToolResult:
+        """Open a device session and wait for connected (HTTP thread)."""
+        session_action = AiDeviceAction(
+            "session_manage",
+            "创建网关会话",
+            RiskLevel.LOW,
+            device_id=action.device_id,
+            params={
+                "action": "open",
+                "protocol": "auto",
+                "session_id": "",
+                "timeout_seconds": 15,
+            },
+        )
+        result = self._execute_session_manage(session_action)
+        if not result.ok:
+            return result
+        session = (
+            dict(result.data.get("session") or {})
+            if isinstance(result.data, dict)
+            else {}
+        )
+        session_id = str(session.get("session_id") or "")
+        connected = str(session.get("status") or "") == "connected"
+        return AiDeviceToolResult(
+            action,
+            ok=True,
+            message=f"网关会话就绪: {session_id}",
+            data={
+                "session_id": session_id,
+                "connected": connected,
+                "session": session,
+            },
+        )
+
+    def _execute_ai_gateway_execute(self, action: AiDeviceAction) -> AiDeviceToolResult:
+        """Drive ai_execute_command/batch/script/run_skill on the HTTP thread."""
+        gateway = getattr(self.backend, "gateway_service", lambda: None)()
+        if gateway is None:
+            raise AppControlError("gateway_unavailable", "网关服务未初始化。", status=409)
+        executor = self._gateway_executor(action)
+        session_id = str(action.params.get("session_id") or "")
+        try:
+            if action.kind == "ai_gateway_execute_command":
+                data = gateway.execute_command(
+                    action.command,
+                    session_id,
+                    timeout_seconds=int(action.params.get("timeout_seconds", 30)),
+                    executor=executor,
+                )
+            elif action.kind == "ai_gateway_execute_batch":
+                data = gateway.execute_batch(
+                    list(action.params.get("commands") or []),
+                    session_id,
+                    command_timeout_seconds=int(action.params.get("command_timeout_seconds", 30)),
+                    executor=executor,
+                )
+            elif action.kind == "ai_gateway_execute_script":
+                style = getattr(self.backend, "gateway_script_style", lambda _d: "network")(action.device_id)
+                data = gateway.execute_script(
+                    str(action.params.get("script") or ""),
+                    session_id,
+                    shell=str(action.params.get("shell") or ""),
+                    timeout_seconds=int(action.params.get("timeout_seconds", 30)),
+                    is_network_device=(style != "linux"),
+                    executor=executor,
+                )
+            elif action.kind == "ai_gateway_run_skill":
+                data = gateway.run_skill(
+                    str(action.params.get("skill_name") or ""),
+                    dict(action.params.get("params") or {}),
+                    session_id=session_id,
+                    timeout_seconds=int(action.params.get("timeout_seconds", 60)),
+                    executor=executor,
+                )
+            else:
+                raise AppControlError("unknown_tool", f"未知网关动作: {action.kind}", status=404)
+        except GatewayUnavailableError as exc:
+            raise AppControlError(exc.code, str(exc), status=409) from exc
+        except SkillLoadError as exc:
+            raise AppControlError(exc.code, str(exc), status=400) from exc
+        return AiDeviceToolResult(action, ok=True, message="网关执行完成。", data=data)
+
+    def _gateway_executor(
+        self,
+        action: AiDeviceAction,
+    ) -> Callable[[str, str, int], dict[str, Any]]:
+        """Build the synchronous command executor: start-on-Qt + wait-on-HTTP."""
+        def run(command: str, session_id: str, timeout_seconds: int) -> dict[str, Any]:
+            plan_action = AiDeviceAction(
+                "terminal_plan_start",
+                f"网关执行: {command[:80]}",
+                RiskLevel.LOW,  # actual risk already gated on the outer action
+                device_id=action.device_id,
+                params={
+                    "plan_kind": "batch",
+                    "commands": [command],
+                    "session_id": session_id,
+                    "command_timeout_seconds": int(timeout_seconds),
+                    "total_timeout_seconds": int(timeout_seconds) + 5,
+                    "max_output_chars_per_step": 16_384,
+                    "mode": "auto",
+                    "run_async": False,
+                },
+            )
+            result = self._execute_terminal_plan(plan_action)
+            if not result.ok:
+                raise AppControlError(
+                    result.error_code or "execution_failed",
+                    result.message,
+                    status=result.http_status or 409,
+                )
+            data = dict(result.data or {})
+            status_map = {
+                "completed": "success",
+                "timed_out": "timeout",
+                "failed": "failed",
+                "cancelled": "failed",
+                "disconnected": "failed",
+            }
+            status = status_map.get(str(data.get("status") or ""), "failed")
+            output = "\n".join(
+                str(step.get("output") or "")
+                for step in data.get("steps", [])
+                if isinstance(step, dict) and step.get("output")
+            )
+            return {
+                "status": status,
+                "output": output,
+                "exit_code": 1 if data.get("error_code") else 0,
+            }
+        return run
+```
+
+In `src/device_mcp/service.py`, add the import and the mixin to the class bases:
+
+```python
+from .ai_gateway_execution import AiGatewayExecutionMixin
+
+class AppControlService(
+    ActionBuilderMixin,
+    ExecutionMixin,
+    AiGatewayExecutionMixin,
+    OperationMixin,
+    RequestValidationMixin,
+):
+```
+
+- [ ] **Step 5: Add the `_invoke` branch + audit sub-step manifest**
+
+In `src/device_mcp/service.py` `_invoke`, after `action = self._build_action(tool, params)` and the idempotency check, add:
+
+```python
+# Audit sub-step manifest: how many device operations one gateway call expands
+# to. Mutate params IN PLACE so the audit writer in invoke() sees it.
+if tool in {"ai_execute_batch", "ai_execute_script", "ai_run_skill", "ai_download_file"}:
+    raw_commands = params.get("commands") or params.get("script")
+    command_count = 1
+    if isinstance(raw_commands, list):
+        command_count = len(raw_commands)
+    elif isinstance(raw_commands, str):
+        command_count = len([line for line in raw_commands.splitlines() if line.strip()])
+    params["sub_step_manifest"] = {
+        "tool": tool,
+        "command_count": command_count,
+        "step_count": 0,  # skills expand later; the manifest documents intent
+    }
+```
+
+In the same `_invoke`, extend the dispatch chain (before the final `else: result = self._dispatch_action(action)`):
+
+```python
+elif tool == "ai_create_session":
+    result = self._execute_ai_gateway_create_session(action)
+elif tool in {"ai_execute_command", "ai_execute_batch", "ai_execute_script", "ai_run_skill"}:
+    result = self._execute_ai_gateway_execute(action)
+```
+
+- [ ] **Step 6: Add the MCP tool module**
 
 Create `src/device_mcp/tools/ai_gateway.py`:
 
@@ -2030,7 +2279,7 @@ def register_ai_gateway_tools(mcp: Any, gateway: McpGateway) -> None:
         command_timeout_seconds: int = 30,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Execute multiple commands in order on a device. Pass session_id (preferred) or device_id."""
+        """Execute multiple commands in order. Pass session_id (preferred) or device_id."""
         return gateway.call(
             "ai_execute_batch",
             commands=commands,
@@ -2049,7 +2298,7 @@ def register_ai_gateway_tools(mcp: Any, gateway: McpGateway) -> None:
         timeout_seconds: int = 30,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Execute a script block. Linux: whole block; network devices: line-by-line. Pass session_id (preferred) or device_id."""
+        """Execute a script. Linux: whole block; network devices: line-by-line. Pass session_id (preferred) or device_id."""
         return gateway.call(
             "ai_execute_script",
             script=script,
@@ -2107,70 +2356,116 @@ def register_ai_gateway_tools(mcp: Any, gateway: McpGateway) -> None:
     def ai_run_skill(
         skill_name: str,
         params: dict[str, Any],
+        session_id: str | None = None,
+        device_id: str | None = None,
         timeout_seconds: int = 60,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Run a parameterized skill (a reusable flow) on a device."""
+        """Run a parameterized skill (a reusable flow) on a device. Pass session_id (preferred) or device_id."""
         return gateway.call(
             "ai_run_skill",
             skill_name=skill_name,
             params=params,
+            session_id=session_id,
+            device_id=device_id,
             timeout_seconds=timeout_seconds,
             idempotency_key=idempotency_key,
         )
 ```
 
-Register it in `src/device_mcp/tools/__init__.py` by adding the import and a call alongside the existing tool module registrations (follow the existing `register_*_tools(mcp, gateway)` pattern).
+Register it in `src/device_mcp/tools/__init__.py`: add the import and call alongside the existing tool module registrations (follow the existing `register_*_tools(mcp, gateway)` pattern).
 
-- [ ] **Step 5: Add audit sub-step manifest to `_invoke`**
+- [ ] **Step 7: Add client methods + HTTP routes**
 
-In `src/device_mcp/service.py`, `_invoke`, after `action = self._build_action(tool, params)`:
+The `gateway.call(method, ...)` does `getattr(client, method)(...)`. So each `ai_*` tool needs a matching `AppControlClient` method that POSTs to a route, and each route maps to the same tool name in `http_server.do_POST`'s `routes` dict. Mirror `terminal_execute_batch` exactly.
 
-```python
-# Audit sub-step manifest: how many device operations one gateway call expands to.
-if tool in {"ai_execute_batch", "ai_execute_script", "ai_run_skill", "ai_download_file"}:
-    raw_commands = params.get("commands") or params.get("script")
-    command_count = (
-        len(raw_commands)
-        if isinstance(raw_commands, list)
-        else (len([l for l in str(raw_commands or "").splitlines() if l.strip()]) if raw_commands else 1)
-    )
-    params = dict(params)
-    params["sub_step_manifest"] = {
-        "tool": tool,
-        "command_count": command_count,
-        "step_count": action.params.get("step_count", 0),
-    }
-```
-
-> Note: `command_count` for `ai_run_skill` is unknown at the action layer (skills expand later). Keep `step_count: 0` and let the handler enrich it; the manifest documents the intent.
-
-- [ ] **Step 6: Add client methods (if routing bypasses service)**
-
-If `gateway.call("ai_execute_command", ...)` resolves to a missing `AppControlClient` method (the gateway calls `getattr(client, method)`), add thin client methods in `src/device_mcp/client.py`:
+In `src/device_mcp/http_server.py` `do_POST`, add to `routes`:
 
 ```python
-def ai_execute_command(self, *, session_id, command, timeout_seconds=30, idempotency_key=None):
-    return self._request("POST", "/v1/ai/execute-command", {...})
-# ... one per tool, or route through the generic _request with tool/params.
+"/v1/ai/create-session": "ai_create_session",
+"/v1/ai/execute-command": "ai_execute_command",
+"/v1/ai/execute-batch": "ai_execute_batch",
+"/v1/ai/execute-script": "ai_execute_script",
+"/v1/ai/upload-file": "ai_upload_file",
+"/v1/ai/download-file": "ai_download_file",
+"/v1/ai/get-result": "ai_get_result",
+"/v1/ai/run-skill": "ai_run_skill",
 ```
 
-> **Preference:** the existing `gateway.call` pattern forwards to `AppControlClient` methods. To avoid duplicating an HTTP endpoint per tool, add a **single generic** `ai_call(tool, **params)` client method that POSTs `{"tool": tool, "params": params}` to `/v1/ai/call`, and point all 8 tool functions at `gateway.call("ai_call", tool=..., **params)` — OR add 8 explicit client methods. The implementer should pick the pattern already used by the most similar existing tool (e.g. `terminal_execute_batch` uses explicit methods). Match the existing codebase's convention; do not introduce a new pattern without reason.
+In `src/device_mcp/client.py`, add eight thin methods (mirroring `terminal_execute_batch`, which is at `client.py` line ~249):
 
-- [ ] **Step 7: Run tests to verify they pass**
+```python
+def ai_create_session(self, device_id: str) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/create-session", {"device_id": device_id})
+
+def ai_execute_command(self, *, session_id: str = "", device_id: str = "", command: str = "", timeout_seconds: int = 30, idempotency_key: str | None = None) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/execute-command", {
+        "session_id": session_id, "device_id": device_id, "command": command,
+        "timeout_seconds": timeout_seconds, "idempotency_key": idempotency_key,
+    })
+
+def ai_execute_batch(self, *, commands: list[str], session_id: str = "", device_id: str = "", command_timeout_seconds: int = 30, idempotency_key: str | None = None) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/execute-batch", {
+        "commands": commands, "session_id": session_id, "device_id": device_id,
+        "command_timeout_seconds": command_timeout_seconds, "idempotency_key": idempotency_key,
+    })
+
+def ai_execute_script(self, *, script: str, session_id: str = "", device_id: str = "", shell: str = "", timeout_seconds: int = 30, idempotency_key: str | None = None) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/execute-script", {
+        "script": script, "session_id": session_id, "device_id": device_id,
+        "shell": shell, "timeout_seconds": timeout_seconds, "idempotency_key": idempotency_key,
+    })
+
+def ai_upload_file(self, device_id: str, source_path: str, destination_path: str, *, overwrite: bool = False, idempotency_key: str | None = None) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/upload-file", {
+        "device_id": device_id, "source_path": source_path, "destination_path": destination_path,
+        "overwrite": overwrite, "idempotency_key": idempotency_key,
+    })
+
+def ai_download_file(self, device_id: str, source_path: str, destination_path: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/download-file", {
+        "device_id": device_id, "source_path": source_path, "destination_path": destination_path,
+        "idempotency_key": idempotency_key,
+    })
+
+def ai_get_result(self, *, result_id: str, include_raw: bool = False) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/get-result", {"result_id": result_id, "include_raw": include_raw})
+
+def ai_run_skill(self, *, skill_name: str, params: dict[str, Any], session_id: str = "", device_id: str = "", timeout_seconds: int = 60, idempotency_key: str | None = None) -> dict[str, Any]:
+    return self._request("POST", "/v1/ai/run-skill", {
+        "skill_name": skill_name, "params": params, "session_id": session_id,
+        "device_id": device_id, "timeout_seconds": timeout_seconds, "idempotency_key": idempotency_key,
+    })
+```
+
+> **Note on `idempotency_key`:** `service._invoke` reads `params.get("idempotency_key")` for the cache key, so passing it through the body works exactly like `file_transfer_start` does.
+
+> **`gateway_script_style` is already on the backend from Task 5** (protocol method + app impl). No action needed here.
+
+- [ ] **Step 8: Run tests to verify they pass**
 
 Run: `pytest tests/test_ai_gateway_tools.py -v`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Run the full suite so far**
+
+Run:
+```bash
+python -m py_compile src\*.py src\app\*.py src\device_mcp\*.py src\widgets\*.py
+pytest tests/test_ai_device_ops.py tests/test_ai_gateway_*.py -x
+```
+Expected: PASS
+
+- [ ] **Step 10: Commit**
 
 ```bash
-git add src/device_mcp/tools/ai_gateway.py src/device_mcp/actions.py src/device_mcp/service.py src/device_mcp/tools/__init__.py tests/test_ai_gateway_tools.py
-git commit -m "feat(ai-gateway): register MCP tools and service routing"
+git add src/device_mcp/ai_gateway_execution.py src/device_mcp/tools/ai_gateway.py src/device_mcp/actions.py src/device_mcp/service.py src/device_mcp/tools/__init__.py src/device_mcp/client.py src/device_mcp/http_server.py tests/test_ai_gateway_tools.py
+git commit -m "feat(ai-gateway): register MCP tools, HTTP routes, and service routing"
 ```
 
 ---
 
+---
 ### Task 7: Device→PC download (put direction)
 
 **Files:**
@@ -2443,7 +2738,8 @@ git commit -m "feat(ai-gateway): persist result store config in desktop state v1
 - Consumes: all of Task 1–8.
 
 **Behavior:**
-- Drive `ai_create_session` → `ai_execute_command` → `ai_get_result` through the full stack on the simulated device (`SIM-TERMINAL`).
+- Start the app control server; drive `ai_create_session` → `ai_execute_command` → `ai_get_result` through the **full HTTP + MCP stack** on the simulated device (`SIM-TERMINAL`).
+- Gateway execution blocks the HTTP thread while the runner advances on the Qt thread, so each HTTP call must run in a worker thread while the test pumps `app.processEvents()` — the exact `run_with_qt_events` helper from `tests/test_app_control_integration.py`.
 - Verify the summary shape, `result_id` reuse, and raw retrieval.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2453,12 +2749,17 @@ git commit -m "feat(ai-gateway): persist result store config in desktop state v1
 from __future__ import annotations
 
 import os
+import queue
+import threading
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
+
 from PySide6.QtWidgets import QApplication
 
-from src.ai_device_ops import AiDeviceAction, RiskLevel
+from src.device_mcp.client import AppControlClient
 from src.app.main_window import DeviceDesktopApp
 
 
@@ -2467,52 +2768,84 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_e2e_create_session_execute_and_get_result(app: QApplication) -> None:
+def run_with_qt_events(
+    app: QApplication,
+    callback,
+    *,
+    timeout: float = 15.0,
+):
+    """Run a blocking callback on a worker thread while pumping Qt events.
+
+    The gateway executor blocks the HTTP thread (completion_event.wait); the
+    simulated session advances on the Qt thread via ui_timer, so the test
+    thread must keep pumping processEvents for the runner to make progress.
+    """
+    results: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            results.put((True, callback()))
+        except Exception as exc:  # noqa: BLE001
+            results.put((False, exc))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + timeout
+    while thread.is_alive() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    thread.join(timeout=0.2)
+    assert not thread.is_alive(), "gateway request did not finish"
+    ok, value = results.get_nowait()
+    if not ok:
+        raise value  # type: ignore[misc]
+    return value
+
+
+def test_e2e_create_session_execute_and_get_result(
+    app: QApplication,
+    tmp_path: pytest.TempPathFactory,
+) -> None:
     _ = app
     window = DeviceDesktopApp()
+    state_path = tmp_path / "app-control.json"
+    assert window.start_app_control_server(state_path=state_path)
+    client = AppControlClient.from_state_file(state_path)
 
-    created = window.execute_ai_device_action(
-        AiDeviceAction(
-            "ai_gateway_create_session",
-            "创建网关会话",
-            RiskLevel.LOW,
-            device_id="SIM-TERMINAL",
-        )
+    created = run_with_qt_events(
+        app,
+        lambda: client.ai_create_session("SIM-TERMINAL"),
     )
-    assert created.ok
-    session_id = created.data["session_id"]
+    assert created["ok"]
+    session_id = created["data"]["session_id"]
+    assert session_id
 
-    executed = window.execute_ai_device_action(
-        AiDeviceAction(
-            "ai_gateway_execute_command",
-            "执行网关命令",
-            RiskLevel.LOW,
-            device_id="SIM-TERMINAL",
+    executed = run_with_qt_events(
+        app,
+        lambda: client.ai_execute_command(
+            session_id=session_id,
             command="display version",
-            params={"session_id": session_id},
-        )
+            timeout_seconds=5,
+        ),
+        timeout=20,
     )
-    assert executed.ok
-    assert executed.data["summary"]["status"] == "success"
-    result_id = executed.data["result_id"]
+    assert executed["ok"]
+    assert executed["data"]["summary"]["status"] == "success"
+    result_id = executed["data"]["result_id"]
 
-    fetched = window.execute_ai_device_action(
-        AiDeviceAction(
-            "ai_gateway_get_result",
-            "读取网关结果",
-            RiskLevel.OBSERVE,
-            params={"result_id": result_id, "include_raw": True},
-        )
+    fetched = run_with_qt_events(
+        app,
+        lambda: client.ai_get_result(result_id=result_id, include_raw=True),
     )
-    assert fetched.ok
-    assert fetched.data["result"]["result_id"] == result_id
-    assert "raw_output" in fetched.data["result"]
+    assert fetched["ok"]
+    assert fetched["data"]["result"]["result_id"] == result_id
+    assert "raw_output" in fetched["data"]["result"]
 ```
 
 - [ ] **Step 2: Run tests and fix gaps**
 
 Run: `pytest tests/test_ai_gateway_e2e.py -v`
-Expected: PASS. If it surfaces a gap (e.g. the simulated session's `display version` output doesn't match the runner's expectations, or the command executor blocks on the completion event), fix the source gap — this is the first integration check across Tasks 1–8.
+Expected: PASS. If it surfaces a gap (e.g. the simulated session's `display version` output doesn't match the runner's expectations, or the simulated session must be selected first via `client.device_select("SIM-TERMINAL")` before `ai_create_session`), fix the source gap — this is the first integration check across Tasks 1–8. If the simulated device must be selected first, add `run_with_qt_events(app, lambda: client.device_select("SIM-TERMINAL"))` before `ai_create_session` (mirror `test_app_control_integration.py`).
 
 - [ ] **Step 3: Run the full suite**
 
@@ -2536,29 +2869,30 @@ git commit -m "test(ai-gateway): add end-to-end gateway integration test"
 ## Self-Review
 
 **Spec coverage check:**
-- `ai_create_session`/`ai_execute_command`/`ai_execute_batch`/`ai_execute_script`/`ai_upload_file`/`ai_download_file`/`ai_get_result`/`ai_run_skill` → Tasks 5–7 (handlers + tools + routing).
-- Result contract (`summary` + `result_id`) → Tasks 1, 4, 5.
-- `ai_get_result` TTL/LRU → Task 1.
+- All 8 `ai_*` tools → Task 6 (MCP tools + HTTP routes + client methods) + Task 6 routing + Task 5 (app handlers for get_result/upload/download) + Task 7 (download).
+- Result contract (`summary` + `result_id`) → Tasks 1, 4.
+- `ai_get_result` TTL/LRU → Task 1; `ai_get_result` handler → Task 5.
 - Flow engine (dependencies/wait/retry) → Task 2.
 - Skill reuse (`run_skill`, JSON templates, `driver_reload`) → Task 3.
-- Approval/audit/idempotency integration + sub-step manifest → Task 6.
-- `ai_execute_script` Linux vs network device → Task 4 (`is_network_device`) + Task 5 (kind detection).
+- Approval/audit/idempotency integration + sub-step manifest → Task 6 (`_build_action` risk, `_invoke` approval, in-place manifest).
+- `ai_execute_script` Linux vs network device → Task 4 (`is_network_device`) + Task 5 (`gateway_script_style`).
 - Device→PC download → Task 7.
 - Desktop state v15 + config-only persistence → Task 8.
-- E2E on simulated device → Task 9.
+- E2E on simulated device → Task 9 (full HTTP stack + `run_with_qt_events`).
 
-**Placeholder scan:** All step bodies contain concrete code. The two `> Note:` blocks flag deliberate design decisions (ResultStore `finalize` deferral, retry-sleep placeholder, client-method pattern choice, test-helper adaptation) — each names the deciding task and is not a TODO.
+**Threading correctness (pre-flight fix):** the plan originally put `run_command` (with `completion_event.wait`) inside the app handler, which runs on the Qt thread via `call_on_ui_thread` → deadlock (the runner advances only on the Qt thread via `append_session_output`). Corrected: the 4 executing tools + `ai_create_session` are driven from `AiGatewayExecutionMixin` on the HTTP thread, reusing `_execute_terminal_plan` (start-Qt + wait-HTTP) and `_execute_session_manage` (open + poll). App-side handlers are non-blocking only.
+
+**Placeholder scan:** All step bodies contain concrete code. Remaining `> Note:` blocks flag deliberate design decisions (threading contract, audit `step_count: 0` for skills, script-style on backend) — each names the deciding task and is not a TODO.
 
 **Type consistency check:**
-- `GatewayService.execute_command(command, session_id, *, timeout_seconds)` matches Task 5's `run_command(command, session_id, timeout_seconds)` callback signature. ✓
+- `GatewayService.execute_command(command, session_id, *, timeout_seconds, executor)` — Task 6's mixin injects `executor(command, session_id, timeout_seconds)`. ✓
 - `ResultStore(max_entries=..., ttl_seconds=...)` used in Task 8 matches Task 1's constructor. ✓
-- `parse_flow(data) -> FlowPlan`, `FlowEngine.run(plan, *, session_id, device_id, execute_step, wait_for_condition, clock)` — Task 3 `instantiate_flow` returns `FlowPlan`, Task 4 passes `execute_step`/`wait_for_condition` matching the callback signatures. ✓
-- `_execute_ai_gateway_*` handler keys match the `_build_action` kinds (`ai_gateway_execute_command` etc.) and the test asserts on those exact strings. ✓
-- `skill_registry.instantiate_flow(name, params)` raises `SkillLoadError` — Task 5 imports it from `src.ai_gateway.skills`. ✓
-- Task 5 `run_command` catches `GatewayUnavailableError` and `TerminalPlanError`; `GatewayUnavailableError` is defined in `service.py` (Task 4). ✓
+- `skill_flow(name, params) -> dict`, `parse_flow(dict) -> FlowPlan`, `FlowEngine.run(plan, *, session_id, device_id, execute_step, wait_for_condition, clock)` — Task 4 `run_skill` parses the dict and drives `FlowEngine`; callback signatures match. ✓
+- `_build_action` kinds (`ai_gateway_execute_command` etc.) match the `_invoke` branch dispatch on `action.kind`, and the tests assert those exact strings. ✓
+- `GatewayUnavailableError`/`SkillLoadError` imported by Task 6's mixin from `src.ai_gateway.*`. ✓
 
 **Global constraint adherence:**
-- No modifications to `TerminalExecutionCoordinator`/`build_batch_plan`/`parse_terminal_plan`/existing `terminal_*` tools. Task 5's `run_command` uses `coordinator.start()` + `build_batch_plan` — read-only use. ✓
+- No modifications to `TerminalExecutionCoordinator`/`build_batch_plan`/`parse_terminal_plan`/existing `terminal_*` tools. Task 6's executor only *builds* `terminal_plan_start` actions consumed by the existing `_execute_terminal_plan`. ✓
 - All `ai_*` flow through `_build_action` (risk) + `_invoke` (approval/idempotency/audit). ✓
 - Deterministic summaries, no LLM. ✓
 - `result_id` = `R`+hex. ✓
