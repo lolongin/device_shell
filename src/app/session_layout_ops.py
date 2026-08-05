@@ -74,6 +74,9 @@ class SessionLayoutOpsMixin:
 
         self.session_manager_tree = QTreeWidget()
         self.session_manager_tree.setObjectName("sessionManagerTree")
+        self.session_manager_tree.customContextMenuRequested.connect(
+            self.session_manager_custom_context_menu
+        )
         self.session_manager_tree.setHeaderHidden(True)
         self.session_manager_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.session_manager_tree.itemClicked.connect(self.session_manager_jump_from_item)
@@ -285,3 +288,53 @@ class SessionLayoutOpsMixin:
         self.session_breadcrumb_device_label.setText(device_name)
         self.session_breadcrumb_device_label.setProperty("deviceId", device_id)
         self.session_breadcrumb_session_label.setText(session_title)
+
+    def apply_font_size_to_terminal(self, terminal: object, size: int) -> None:
+        if hasattr(terminal, "set_font_size"):
+            terminal.set_font_size(int(size))
+
+    def apply_font_size_to_all_terminals(self) -> None:
+        for state in self.session_tabs_by_id.values():
+            self.apply_font_size_to_terminal(state.terminal, self.terminal_font_size)
+
+    def session_manager_custom_context_menu(self, pos: object) -> None:
+        if pos is None:
+            return
+        if self.session_manager_tree is None:
+            return
+        item = self.session_manager_tree.itemAt(pos)
+        if item is None:
+            return
+        key = item.data(0, Qt.UserRole)
+        if key in self.session_tabs_by_id:
+            state = self.session_tabs_by_id[key]
+            menu = self.new_workspace_menu(self.session_manager_tree, state.title, "session-manager")
+            close_this = menu.addAction("关闭当前会话")
+            close_others = menu.addAction("关闭其他会话")
+            close_all = menu.addAction("关闭全部会话")
+            chosen = menu.exec(self.session_manager_tree.viewport().mapToGlobal(pos))
+            if chosen is None:
+                return
+            if chosen == close_this:
+                self.close_session_tab(state.tab_id)
+            elif chosen == close_others:
+                for other in list(self.session_tabs_by_id.values()):
+                    if other.device_id == state.device_id and other.tab_id != state.tab_id:
+                        self.close_session_tab(other.tab_id)
+            elif chosen == close_all:
+                for other in list(self.session_tabs_by_id.values()):
+                    if other.device_id == state.device_id:
+                        self.close_session_tab(other.tab_id)
+            return
+        device_tab = self.device_tabs_by_id.get(key)
+        if device_tab is not None:
+            menu, close_actions, _device_actions, _device = self.build_device_tab_context_menu(
+                device_tab, self.session_manager_tree
+            )
+            chosen = menu.exec(self.session_manager_tree.viewport().mapToGlobal(pos))
+            if chosen is None:
+                return
+            for mode, action in close_actions.items():
+                if chosen == action:
+                    self.close_device_tabs_relative(device_tab, mode)
+                    return
