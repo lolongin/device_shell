@@ -459,6 +459,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             status_bar = QStatusBar(self)
             self.setStatusBar(status_bar)
             status_bar.showMessage("准备就绪")
+            status_bar.addPermanentWidget(self.build_settings_button())
 
         def new_workspace_menu(self, parent: QWidget | None, title: str = "", kind: str = "context") -> QMenu:
             menu = QMenu(parent)

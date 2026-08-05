@@ -230,6 +230,13 @@ class SessionLayoutOpsMixin:
         self.session_breadcrumb_device_label.setCursor(Qt.PointingHandCursor)
         self.session_breadcrumb_session_label = QLabel()
         self.session_breadcrumb_session_label.setObjectName("breadcrumbSession")
+        self.session_breadcrumb_session_label.mousePressEvent = (
+            lambda _event: self.jump_to_session(
+                (self.current_session_state() or object()).tab_id
+            )
+            if self.current_session_state() is not None
+            else None
+        )
         layout.addWidget(home_label)
         layout.addWidget(QLabel("/"))
         layout.addWidget(self.session_breadcrumb_device_label)
@@ -296,6 +303,81 @@ class SessionLayoutOpsMixin:
     def apply_font_size_to_all_terminals(self) -> None:
         for state in self.session_tabs_by_id.values():
             self.apply_font_size_to_terminal(state.terminal, self.terminal_font_size)
+
+    def build_settings_button(self) -> QToolButton:
+        from PySide6.QtWidgets import QToolButton
+
+        button = QToolButton()
+        button.setObjectName("sessionSettingsButton")
+        button.setText("⚙")
+        button.setToolTip("工作台设置")
+        button.setPopupMode(QToolButton.InstantPopup)
+        menu = self.new_workspace_menu(button, "工作台设置", "settings")
+        menu.setObjectName("workspaceContextMenu")
+        panel = self.build_settings_panel()
+        from PySide6.QtWidgets import QWidgetAction
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(panel)
+        menu.addAction(action)
+        button.setMenu(menu)
+        self.settings_button = button
+        return button
+
+    def build_settings_panel(self) -> QWidget:
+        from PySide6.QtWidgets import (
+            QCheckBox,
+            QComboBox,
+            QFormLayout,
+            QLabel,
+            QSpinBox,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(6)
+
+        self.settings_layout_combo = QComboBox()
+        self.settings_layout_combo.addItems(["顶部", "右侧"])
+        self.settings_layout_combo.setCurrentText("右侧" if self.session_tab_layout == "side" else "顶部")
+        self.settings_layout_combo.currentTextChanged.connect(self._settings_layout_changed)
+
+        self.settings_font_spin = QSpinBox()
+        self.settings_font_spin.setRange(9, 28)
+        self.settings_font_spin.setValue(self.terminal_font_size)
+        self.settings_font_spin.valueChanged.connect(self._settings_font_changed)
+
+        self.settings_default_collapsed_check = QCheckBox()
+        self.settings_default_collapsed_check.setChecked(self.session_manager_default_collapsed)
+        self.settings_default_collapsed_check.toggled.connect(self._settings_default_collapsed_changed)
+
+        form.addRow("会话页签布局", self.settings_layout_combo)
+        form.addRow("终端字体大小", self.settings_font_spin)
+        form.addRow("默认折叠", self.settings_default_collapsed_check)
+        layout.addLayout(form)
+        hint = QLabel("「默认折叠」仅决定首次进入右侧布局的状态，之后跟随操作记忆。")
+        hint.setObjectName("settingsHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        return panel
+
+    def _settings_layout_changed(self, text: str) -> None:
+        self.set_session_tab_layout("side" if text == "右侧" else "top")
+
+    def _settings_font_changed(self, value: int) -> None:
+        self.terminal_font_size = int(value)
+        self.apply_font_size_to_all_terminals()
+        self.schedule_desktop_state_save()
+
+    def _settings_default_collapsed_changed(self, checked: bool) -> None:
+        self.session_manager_default_collapsed = bool(checked)
+        self.schedule_desktop_state_save()
 
     def session_manager_custom_context_menu(self, pos: object) -> None:
         if pos is None:
