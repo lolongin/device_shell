@@ -369,19 +369,24 @@ def _run(
     engine = FlowEngine()
     executed = []
 
-    def default_execute(command: str, session_id: str, timeout: int) -> tuple[str, str]:
-        executed.append(command)
-        return "success", f"output of {command}"
+    base_executor = executor or (
+        lambda command, session_id, timeout: ("success", f"output of {command}")
+    )
+    base_waiter = waiter or (lambda condition, session_id, device_id: ("success", "condition met"))
 
-    def default_wait(condition: dict, session_id: str, device_id: str) -> tuple[str, str]:
-        return "success", "condition met"
+    def record_executor(command: str, session_id: str, timeout: int) -> tuple[str, str]:
+        # Wrap ANY executor (not just the default) so `executed` records calls
+        # even when a test supplies a custom executor (e.g. the dependency-gating
+        # test asserts which commands actually ran).
+        executed.append(command)
+        return base_executor(command, session_id, timeout)
 
     return engine.run(
         plan,
         session_id="sess-1",
         device_id="dev-1",
-        execute_step=executor or default_execute,
-        wait_for_condition=waiter or default_wait,
+        execute_step=record_executor,
+        wait_for_condition=base_waiter,
     ), executed
 
 
@@ -681,7 +686,7 @@ def _validate_wait_condition(raw: Any, step_id: str) -> dict[str, Any]:
             "invalid_flow",
             f"步骤 {step_id} wait_condition 需要 command 和 expected。",
         )
-    interval_ms = _bounded_int(raw.get("interval_ms", 2000), 100, 60_000, f"步骤 {step_id} wait_condition.interval_ms")
+    interval_ms = _bounded_int(raw.get("interval_ms", 2000), 1, 60_000, f"步骤 {step_id} wait_condition.interval_ms")
     max_attempts = _bounded_int(raw.get("max_attempts", 15), 1, MAX_WAIT_ATTEMPTS, f"步骤 {step_id} wait_condition.max_attempts")
     return {
         "type": "command_output_contains",
