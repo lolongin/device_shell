@@ -1643,11 +1643,18 @@ def gateway_service(self) -> Any:
 
 def gateway_script_style(self, device_id: str) -> str:
     device = self._ai_device(device_id)
-    kind = str(getattr(device, "kind", "") or "")
-    protocols = getattr(device, "protocols", None) or []
-    if kind == "linux" or "ssh" in protocols:
-        return "linux"
-    return "network"
+    if device is None:
+        return "network"
+    # Device (@dataclass(slots=True)) has NO kind/protocols field — derive the
+    # script style from connection params. The simulated device is a
+    # network-device simulator → "network". A Linux host connects via SSH and
+    # has no Telnet address → "linux". Anything else (network switches with
+    # Telnet) → "network" (line-by-line).
+    if getattr(self, "is_simulated_device", lambda _d: False)(device):
+        return "network"
+    ssh = str(getattr(device, "ssh_ip", "") or "").strip()
+    telnet = str(getattr(device, "telnet_ip", "") or "").strip()
+    return "linux" if ssh and not telnet else "network"
 ```
 
 Add the non-blocking handler-dict entries in `execute_ai_device_action`:
