@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from command_suggestions import infer_completed_command_from_terminal_line
 
 
+DEFAULT_FONT_SIZE = 14
+MIN_FONT_SIZE = 9
+MAX_FONT_SIZE = 28
+
+
 class _XtermTextCursor:
     def hasSelection(self) -> bool:  # noqa: N802 - Qt compatibility shim
         return False
@@ -95,6 +100,7 @@ class XtermWebWidget(QWidget):
         self._columns = self.DEFAULT_COLUMNS
         self._lines = self.DEFAULT_LINES
         self._local_echo = os.getenv("DEVICE_TUI_XTERM_LOCAL_ECHO", "").lower() in {"1", "true", "yes", "on"}
+        self._font_size = DEFAULT_FONT_SIZE
 
         self.setObjectName("terminalLog")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -246,6 +252,8 @@ class XtermWebWidget(QWidget):
         self._ready = True
         self._stack.setCurrentWidget(self._view)
         self._placeholder.hide()
+        if getattr(self, "_font_size", None) is not None:
+            self._run_terminal_js(f"setFontSize({self._font_size})")
         if self._pending_output:
             pending = "".join(self._pending_output)
             self._pending_output.clear()
@@ -393,6 +401,13 @@ class XtermWebWidget(QWidget):
         if self._view is None:
             return
         self._view.page().runJavaScript(script)
+
+    def set_font_size(self, size: int) -> None:
+        """Apply a terminal font size; store it and reapply once the engine is ready."""
+        clamped = int(size)
+        clamped = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, clamped))
+        self._font_size = clamped
+        self._run_terminal_js(f"setFontSize({clamped})")
 
 
 def prewarm_xterm_webengine(parent: QObject | None = None) -> QWebEnginePage:
