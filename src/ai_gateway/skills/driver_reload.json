@@ -1,0 +1,14 @@
+{
+  "name": "driver_reload",
+  "description": "重载设备驱动（用于变更验证）",
+  "params": [
+    {"name": "device_id", "type": "string", "required": true},
+    {"name": "timeout_seconds", "type": "integer", "required": false}
+  ],
+  "flow": {
+    "steps": [
+      {"id": "s1", "command": "display version", "timeout_seconds": 30},
+      {"id": "s2", "command": "reset slot-configuration active", "timeout_seconds": 30}
+    ]
+  }
+}
