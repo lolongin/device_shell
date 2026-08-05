@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from src.ai_device_ops import AiDeviceAction, RiskLevel
 from src.app.main_window import DeviceDesktopApp
+from src.data import Device
 
 
 @pytest.fixture(scope="module")
@@ -28,6 +29,32 @@ def test_ai_gateway_script_style_simulated_is_network(app: QApplication) -> None
     _ = app
     window = DeviceDesktopApp()
     assert window.gateway_script_style("SIM-TERMINAL") == "network"
+
+
+def test_ai_gateway_script_style_linux_device_is_linux(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    # SSH-only Linux host: ssh_ip set, telnet_ip empty → whole-block script.
+    window.device_by_id["linux-1"] = Device(
+        id="linux-1",
+        name="Linux 主机",
+        domain="测试",
+        device_type="服务器",
+        cpu="x86_64",
+        status="空闲",
+        owner=None,
+        ssh_ip="10.0.0.1",
+        telnet_ip="",
+        username="root",
+        password="",
+        vendor="Linux",
+        model="Ubuntu",
+        site="本机",
+        rack="-",
+        version="22.04",
+        notes="SSH-only Linux host.",
+    )
+    assert window.gateway_script_style("linux-1") == "linux"
 
 
 def test_ai_gateway_get_result_round_trip(app: QApplication) -> None:
