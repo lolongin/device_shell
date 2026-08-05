@@ -422,6 +422,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._build_window()
             self._build_layout()
             self.initialize_terminal_execution_coordinator()
+            self.initialize_ai_gateway_service()
             self.apply_always_on_top_state()
             self._wire_events()
             self.update_controls()

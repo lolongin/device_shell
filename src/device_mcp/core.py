@@ -49,6 +49,14 @@ class AppControlBackend(Protocol):
     ) -> AiDeviceToolResult:
         ...
 
+    def gateway_service(self) -> Any:
+        """Return the app's GatewayService facade (result store + skill registry)."""
+        ...
+
+    def gateway_script_style(self, device_id: str) -> str:
+        """Return 'linux' (whole-block script) or 'network' (line-by-line)."""
+        ...
+
 class AppControlError(RuntimeError):
     def __init__(
         self,

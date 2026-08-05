@@ -84,6 +84,26 @@ class AiDeviceOpsMixin:
             schedule=schedule,
         )
 
+    def initialize_ai_gateway_service(self) -> None:
+        from src.ai_gateway.service import GatewayService
+
+        # The app-side instance has NO executor: command/batch/script/run_skill are
+        # orchestrated by AppControlService (HTTP thread) which injects its own
+        # executor. This instance exists so get_result/snapshot work app-side and so
+        # service.py can reach the ResultStore/SkillRegistry through the facade.
+        self.ai_gateway_service = GatewayService()
+
+    def gateway_service(self) -> Any:
+        return getattr(self, "ai_gateway_service", None)
+
+    def gateway_script_style(self, device_id: str) -> str:
+        device = self._ai_device(device_id)
+        kind = str(getattr(device, "kind", "") or "")
+        protocols = getattr(device, "protocols", None) or []
+        if kind == "linux" or "ssh" in protocols:
+            return "linux"
+        return "network"
+
     def _send_terminal_execution_input(
         self,
         session_id: str,
@@ -519,6 +539,9 @@ class AiDeviceOpsMixin:
             "start_managed_file_transfer": self._execute_ai_managed_transfer_start,
             "get_managed_file_transfer": self._execute_ai_managed_transfer_get,
             "cancel_managed_file_transfer": self._execute_ai_managed_transfer_cancel,
+            "ai_gateway_get_result": self._execute_ai_gateway_get_result,
+            "ai_gateway_upload_file": self._execute_ai_gateway_upload_file,
+            "ai_gateway_download_file": self._execute_ai_gateway_download_file,
         }
         handler = handlers.get(guarded_action.kind)
         if handler is None:
@@ -1019,6 +1042,27 @@ class AiDeviceOpsMixin:
             message=str(data.get("message") or "文件传输已取消。"),
             data=data,
         )
+
+    def _execute_ai_gateway_get_result(self, action: AiDeviceAction) -> AiDeviceToolResult:
+        result_id = str(action.params.get("result_id") or "")
+        include_raw = bool(action.params.get("include_raw", False))
+        data = self.ai_gateway_service.get_result(result_id, include_raw=include_raw)
+        if data is None:
+            return self._ai_failure(
+                action,
+                "result_not_found",
+                f"未找到执行结果: {result_id}",
+                http_status=404,
+            )
+        return AiDeviceToolResult(action, ok=True, message="已读取网关执行结果。", data=data)
+
+    def _execute_ai_gateway_upload_file(self, action: AiDeviceAction) -> AiDeviceToolResult:
+        # Reuse the existing managed transfer start (PC→device).
+        return self._execute_ai_managed_transfer_start(action)
+
+    def _execute_ai_gateway_download_file(self, action: AiDeviceAction) -> AiDeviceToolResult:
+        # Implemented in Task 7 (device→PC put direction).
+        return self._ai_failure(action, "not_implemented", "设备下载方向尚未实现。", http_status=501)
 
     def _ai_device(self, device_id: str) -> Any | None:
         device = self.get_device_by_id(device_id)
