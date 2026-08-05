@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -76,3 +75,73 @@ def test_session_layout_round_trip(
         assert reloaded.session_manager_default_collapsed is False
     finally:
         reloaded.close()
+
+
+def test_session_manager_default_collapsed_seeds_first_load(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _ = app
+    # A payload with NO `session_manager_collapsed` key (no memorized history):
+    # the default-collapse setting governs the first entry into `side`.
+    state_file = tmp_path / "desktop_state.json"
+    monkeypatch.setattr(
+        DeviceDesktopApp,
+        "desktop_state_path",
+        staticmethod(lambda: state_file),
+    )
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": 14,
+                "session_layout": {
+                    "session_tab_layout": "side",
+                    "session_manager_default_collapsed": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    window = DeviceDesktopApp()
+    try:
+        assert window.session_manager_collapsed is True
+        # The collapse button is synced from the loaded value, not left unchecked.
+        assert window.session_manager_collapse_button.isChecked() is True
+    finally:
+        window.close()
+
+
+def test_session_manager_memorized_collapse_wins_over_default(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _ = app
+    # A payload WITH a memorized `session_manager_collapsed` key overrides the
+    # default-collapse setting.
+    state_file = tmp_path / "desktop_state.json"
+    monkeypatch.setattr(
+        DeviceDesktopApp,
+        "desktop_state_path",
+        staticmethod(lambda: state_file),
+    )
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": 14,
+                "session_layout": {
+                    "session_tab_layout": "side",
+                    "session_manager_default_collapsed": True,
+                    "session_manager_collapsed": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    window = DeviceDesktopApp()
+    try:
+        assert window.session_manager_collapsed is False
+        assert window.session_manager_collapse_button.isChecked() is False
+    finally:
+        window.close()

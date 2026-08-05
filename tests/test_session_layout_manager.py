@@ -66,3 +66,47 @@ def test_tree_populates_with_device_and_session_items(
     assert tree.topLevelItemCount() == len(states)
     assert window.session_manager_count_label.text().startswith("共")
     window.close()
+
+
+def test_tree_items_have_status_dot_icons(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    _device_tabs(window, count=1)
+    monkeypatch.setattr(window, "connect_session_tab", lambda tab_id: None)
+    device = window.devices[0]
+    window.ensure_session_tab(
+        kind="simulated",
+        device=device,
+        host=device.ssh_ip or "10.0.0.1",
+        port=device.ssh_port or 22,
+        username="admin",
+        password="secret",
+        title="SSH 状态点",
+        suppress_initial_error=True,
+    )
+    window.refresh_session_manager_tree()
+    tree: QTreeWidget = window.session_manager_tree
+
+    assert tree.topLevelItemCount() == 1
+    parent = tree.topLevelItem(0)
+    assert parent is not None
+    assert not parent.icon(0).isNull()
+    child = parent.child(0)
+    assert child is not None
+    assert not child.icon(0).isNull()
+    window.close()
+
+
+def test_collapsed_device_groups_pruned_to_existing_tabs(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    _device_tabs(window, count=1)
+    window.collapsed_device_groups = ["layout-device-0", "stale-device-9"]
+
+    window.refresh_session_manager_tree()
+
+    assert window.collapsed_device_groups == ["layout-device-0"]
+    window.close()

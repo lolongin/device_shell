@@ -16,6 +16,29 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def test_breadcrumb_device_label_click_activates_device(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    calls: list[str] = []
+    monkeypatch.setattr(window, "activate_device", lambda device_id: calls.append(device_id))
+    window.session_breadcrumb_device_label.setProperty("deviceId", "crumb-device-0")
+    window.session_breadcrumb_device_label.mousePressEvent(None)
+    assert calls == ["crumb-device-0"]
+    window.close()
+
+
+def test_breadcrumb_session_label_has_clickable_cursor(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    from PySide6.QtCore import Qt
+
+    assert window.session_breadcrumb_device_label.cursor().shape() == Qt.PointingHandCursor
+    assert window.session_breadcrumb_session_label.cursor().shape() == Qt.PointingHandCursor
+    window.close()
+
+
 def _device_tabs(window: DeviceDesktopApp):
     devices = sample_devices()[:2]
     for index, device in enumerate(devices):
