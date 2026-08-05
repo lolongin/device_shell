@@ -720,6 +720,7 @@ class FlowEngine:
         execute_step: Callable[[str, str, int], tuple[str, str]],
         wait_for_condition: Callable[[dict[str, Any], str, str], tuple[str, str]],
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> list[FlowStepResult]:
         results: list[FlowStepResult] = []
         completed: set[str] = set()
@@ -733,7 +734,7 @@ class FlowEngine:
             if missing:
                 results.append(FlowStepResult(step.id, "skipped", message="依赖步骤未完成。"))
                 continue
-            result = self._run_step(step, session_id, device_id, execute_step, wait_for_condition, clock)
+            result = self._run_step(step, session_id, device_id, execute_step, wait_for_condition, clock, sleep)
             results.append(result)
             if result.status == "success":
                 completed.add(step.id)
@@ -749,21 +750,24 @@ class FlowEngine:
         execute_step: Callable[[str, str, int], tuple[str, str]],
         wait_for_condition: Callable[[dict[str, Any], str, str], tuple[str, str]],
         clock: Callable[[], float],
+        sleep: Callable[[float], None],
     ) -> FlowStepResult:
         if step.wait_condition is not None:
-            # Poll the condition up to max_attempts. The engine is pure: the
-            # real per-poll sleep is supplied by the executor in Task 4; here we
-            # only call clock() as the interval placeholder between attempts.
+            # Poll the condition up to max_attempts, sleeping interval_ms between
+            # attempts. `sleep` is injected (default time.sleep) so the engine is
+            # still testable with a fake. This enforces the configured interval
+            # in production — it is NOT decorative.
             max_attempts = int((step.wait_condition or {}).get("max_attempts", 15))
             poll_interval_ms = int((step.wait_condition or {}).get("interval_ms", 2000))
             last_output = ""
+            status = "not_ready"
             for _attempt in range(max_attempts):
                 status, output = wait_for_condition(step.wait_condition, session_id, device_id)
                 last_output = output
                 if status == "success":
                     break
                 if poll_interval_ms > 0:
-                    clock()
+                    sleep(poll_interval_ms / 1000.0)
             if status != "success":
                 return FlowStepResult(
                     step.id,
@@ -775,19 +779,19 @@ class FlowEngine:
         attempts = 0
         max_retries = int((step.retry or {}).get("max", 0))
         interval_ms = int((step.retry or {}).get("interval_ms", 1000))
-        last_status, last_output, last_error, last_message = "failed", "", "", ""
-        while attempts <= max_retries:
+        last_output, last_error, last_message = "", "execution_failed", f"步骤 {step.id} 执行失败。"
+        while True:
             attempts += 1
             status, output = execute_step(step.command, session_id, step.timeout_seconds)
             if status == "success":
                 return FlowStepResult(step.id, "success", output=output, attempt_count=attempts)
-            last_status, last_output = status, output
-            last_error = "execution_failed"
-            last_message = f"步骤 {step.id} 执行失败。"
-            if attempts > max_retries:
+            last_output, last_error, last_message = output, "execution_failed", f"步骤 {step.id} 执行失败。"
+            # Retry ONLY on "failed" (spec §Flow Engine: retry.on_status="failed",
+            # timeouts are NOT retried). Any other non-success status is terminal.
+            if status != "failed" or attempts > max_retries:
                 break
             if interval_ms > 0:
-                clock()  # placeholder; real sleep uses the same schedule mechanism as executor
+                sleep(interval_ms / 1000.0)
         return FlowStepResult(
             step.id,
             "failed",
@@ -798,7 +802,7 @@ class FlowEngine:
         )
 ```
 
-> **Note on retry interval:** `_run_step` currently records `clock()` as a placeholder for the sleep. In the real `GatewayService` (Task 5), the executor callback supplies the sleep — the flow engine stays pure. Tests use `interval_ms: 1` and a fake clock; the placeholder does not block.
+> **Note on retry/poll interval:** `FlowEngine.run` takes an injected `sleep: Callable[[float], None]` (default `time.sleep`). `_run_step` sleeps `interval_ms/1000` between retry attempts and between wait-condition polls, so the configured interval is enforced in production. Tests use `interval_ms: 1` (≈1ms sleeps, negligible). The engine stays pure — `sleep` is injected, not hard-coded.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2216,6 +2220,24 @@ class AiGatewayExecutionMixin:
             )
             result = self._execute_terminal_plan(plan_action)
             if not result.ok:
+                data = dict(result.data or {})
+                timeout = (
+                    result.http_status == 408
+                    or result.error_code in {"execution_timeout", "step_timeout", "command_timeout"}
+                )
+                if timeout:
+                    # A timeout is a NORMAL outcome per spec §Error Handling:
+                    # summary.status="timeout" and the partial output stays
+                    # retrievable via result_id. Do NOT raise.
+                    return {
+                        "status": "timeout",
+                        "output": "\n".join(
+                            str(step.get("output") or "")
+                            for step in data.get("steps", [])
+                            if isinstance(step, dict) and step.get("output")
+                        ),
+                        "exit_code": 1,
+                    }
                 raise AppControlError(
                     result.error_code or "execution_failed",
                     result.message,
@@ -2285,6 +2307,20 @@ elif tool == "ai_create_session":
     result = self._execute_ai_gateway_create_session(action)
 elif tool in {"ai_execute_command", "ai_execute_batch", "ai_execute_script", "ai_run_skill"}:
     result = self._execute_ai_gateway_execute(action)
+```
+
+After the dispatch chain, register async `ai_upload_file`/`ai_download_file` as operations so they are observable/awaitable via `operation_wait`/`operation_cancel` — mirror the existing `file_transfer_start` branch exactly (a managed transfer runs async on the Qt thread):
+
+```python
+if tool in {"ai_upload_file", "ai_download_file"} and result.ok:
+    operation = self._create_operation(
+        action,
+        result,
+        kind="managed_file_transfer",
+        operation_id=str(result.data.get("operation_id") or ""),
+    )
+    response["data"]["operation_id"] = operation.id
+    response["data"]["operation"] = asdict(operation)
 ```
 
 - [ ] **Step 6: Add the MCP tool module**
