@@ -27,6 +27,37 @@ def test_collapse_toggle_updates_state_and_persists(app: QApplication) -> None:
     window.close()
 
 
+def test_collapsed_panel_can_be_reopened_via_strip(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.set_session_tab_layout("side")
+    window.show()
+    app.processEvents()
+
+    # Collapse the panel — this is the bug scenario: the panel hides entirely.
+    window.session_manager_collapse_button.setChecked(True)
+    window.toggle_session_manager_collapsed()
+    app.processEvents()
+
+    assert window.session_manager_collapsed is True
+    assert not window.session_manager_panel.isVisible()
+
+    # A visible reopen affordance must exist outside the hidden panel.
+    strip = window.session_manager_collapsed_strip
+    assert strip is not None
+    assert strip.isVisible()
+
+    # Clicking the strip's expand button re-expands the panel.
+    strip_button = window.session_manager_expand_button
+    strip_button.click()
+    app.processEvents()
+
+    assert window.session_manager_collapsed is False
+    assert window.session_manager_panel.isVisible()
+
+    window.close()
+
+
 def test_width_drag_finished_clamps_and_persists(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
@@ -46,6 +77,27 @@ def test_width_drag_finished_clamps_and_persists(app: QApplication) -> None:
     window.main_splitter.setSizes([520, 1080, 10])
     window.handle_session_manager_width_drag_finished(10)
     assert window.session_manager_width == window.SESSION_MANAGER_MIN_WIDTH
+    window.close()
+
+
+def test_width_drag_finished_ignored_when_collapsed(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    window.set_session_tab_layout("side")
+    window.show()
+    app.processEvents()
+    # A persisted panel width to protect.
+    window.session_manager_width = 340
+    # Collapse the panel — the right region becomes the 28px strip.
+    window.session_manager_collapse_button.setChecked(True)
+    window.toggle_session_manager_collapsed()
+    app.processEvents()
+    window.main_splitter.setSizes([420, 800, 28])
+
+    # Dragging the boundary while collapsed must NOT overwrite the remembered
+    # panel width with the strip's tiny width.
+    window.handle_session_manager_width_drag_finished(28)
+    assert window.session_manager_width == 340
     window.close()
 
 

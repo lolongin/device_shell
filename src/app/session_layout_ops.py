@@ -9,6 +9,7 @@ try:
         QLabel,
         QLineEdit,
         QPushButton,
+        QStackedLayout,
         QToolButton,
         QTreeWidget,
         QTreeWidgetItem,
@@ -25,6 +26,7 @@ except ModuleNotFoundError:
     QLabel = None
     QLineEdit = None
     QPushButton = None
+    QStackedLayout = None
     QToolButton = None
     QTreeWidget = None
     QTreeWidgetItem = None
@@ -38,6 +40,7 @@ class SessionLayoutOpsMixin:
     SESSION_MANAGER_MIN_WIDTH = 200
     SESSION_MANAGER_MAX_WIDTH = 480
     SESSION_MANAGER_DEFAULT_WIDTH = 260
+    SESSION_MANAGER_STRIP_WIDTH = 28
 
     # Tree status-dot colors (green = connected, amber = connecting, gray = offline).
     SESSION_MANAGER_DOT_CONNECTED = "#22c55e"
@@ -108,7 +111,52 @@ class SessionLayoutOpsMixin:
         panel.setMinimumWidth(self.SESSION_MANAGER_MIN_WIDTH)
         panel.setMaximumWidth(self.SESSION_MANAGER_MAX_WIDTH)
         self.session_manager_panel = panel
-        return panel
+        return self._wrap_session_manager_stack(panel)
+
+    def _build_session_manager_strip(self) -> QWidget:
+        """Narrow vertical strip shown when the panel is collapsed.
+
+        The strip is a sibling of the full panel inside the same stack, so it
+        remains visible when the panel hides — giving the user an always-present
+        affordance to re-expand the collapsed manager.
+        """
+        strip = QWidget()
+        strip.setObjectName("sessionManagerStrip")
+        strip.setFixedWidth(self.SESSION_MANAGER_STRIP_WIDTH)
+        strip_layout = QVBoxLayout(strip)
+        strip_layout.setContentsMargins(2, 4, 2, 4)
+        strip_layout.setSpacing(0)
+
+        self.session_manager_expand_button = QToolButton()
+        self.session_manager_expand_button.setObjectName("sessionManagerExpand")
+        self.session_manager_expand_button.setText("▶")
+        self.session_manager_expand_button.setToolTip("展开会话管理器")
+        self.session_manager_expand_button.setFocusPolicy(Qt.NoFocus)
+        self.session_manager_expand_button.clicked.connect(self.expand_session_manager)
+        strip_layout.addWidget(self.session_manager_expand_button)
+        strip_layout.addStretch(1)
+
+        self.session_manager_collapsed_strip = strip
+        return strip
+
+    def _wrap_session_manager_stack(self, panel: QWidget) -> QWidget:
+        """Wrap the full panel and the collapsed strip in a stacked container.
+
+        The container occupies the splitter's third slot. The splitter sizing
+        math (`set_main_splitter_width`) sees one widget, so the 3-child
+        layout is preserved; the panel/strip swap happens entirely inside.
+        """
+        container = QWidget()
+        container.setObjectName("sessionManagerStack")
+        stack = QStackedLayout(container)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        # Index 0: full panel; index 1: collapsed strip.
+        stack.addWidget(panel)
+        stack.addWidget(self._build_session_manager_strip())
+        self.session_manager_stack = stack
+        self.session_manager_container = container
+        return container
 
     def _remember_group_collapse(self, item: QTreeWidgetItem, collapsed: bool) -> None:
         key = item.data(0, Qt.UserRole)
@@ -126,10 +174,12 @@ class SessionLayoutOpsMixin:
         self.session_manager_collapsed = bool(
             self.session_manager_collapse_button and self.session_manager_collapse_button.isChecked()
         )
-        # Collapsing hides the panel; in `top` layout it stays hidden regardless.
-        self.set_session_manager_visible(
-            self.session_tab_layout == "side" and not self.session_manager_collapsed
-        )
+        # In `side` layout the right region is always present (full panel when
+        # expanded, narrow strip when collapsed — the strip retains the expand
+        # button so the manager can always be reopened). In `top` layout the
+        # whole right region stays hidden.
+        self._set_session_manager_stack_page(self.session_manager_collapsed)
+        self.set_session_manager_visible(self.session_tab_layout == "side")
         self.schedule_desktop_state_save()
 
     def _session_manager_new_terminal(self) -> None:
@@ -264,8 +314,45 @@ class SessionLayoutOpsMixin:
         return QIcon(pixmap)
 
     def set_session_manager_visible(self, visible: bool) -> None:
-        if self.session_manager_panel is not None:
+        """Show/hide the right session-manager region (full panel or strip).
+
+        The visibility decision belongs to ``apply_session_manager_collapsed_state``
+        / ``toggle_session_manager_collapsed`` via the stack: when collapsed, the
+        strip is shown (so the user can always re-expand); when expanded, the full
+        panel is shown. ``visible=False`` here hides the whole region.
+        """
+        container = getattr(self, "session_manager_container", None)
+        if container is not None:
+            container.setVisible(visible)
+        elif self.session_manager_panel is not None:
+            # Fallback for the legacy path before the stack wrapper exists.
             self.session_manager_panel.setVisible(visible)
+
+    def _set_session_manager_stack_page(self, collapsed: bool) -> None:
+        """Switch the stack between full panel (expanded) and strip (collapsed)."""
+        stack = getattr(self, "session_manager_stack", None)
+        if stack is None:
+            return
+        stack.setCurrentIndex(1 if collapsed else 0)
+        # The stack container is the splitter's third child; keep its size policy
+        # fixed so the splitter doesn't animate the strip to the panel width.
+        container = getattr(self, "session_manager_container", None)
+        if container is not None:
+            if collapsed:
+                container.setMinimumWidth(self.SESSION_MANAGER_STRIP_WIDTH)
+                container.setMaximumWidth(self.SESSION_MANAGER_STRIP_WIDTH)
+            else:
+                container.setMinimumWidth(self.SESSION_MANAGER_MIN_WIDTH)
+                container.setMaximumWidth(self.SESSION_MANAGER_MAX_WIDTH)
+
+    def expand_session_manager(self) -> None:
+        """Re-expand the collapsed right panel (from the strip's expand button)."""
+        self.session_manager_collapsed = False
+        if self.session_manager_collapse_button is not None:
+            self.session_manager_collapse_button.setChecked(False)
+        self._set_session_manager_stack_page(False)
+        self.apply_session_layout_state()
+        self.schedule_desktop_state_save()
 
     def session_manager_jump_from_item(self, item: QTreeWidgetItem, _column: int = 0) -> None:
         key = item.data(0, Qt.UserRole)
@@ -344,7 +431,11 @@ class SessionLayoutOpsMixin:
             return
         # The drag_finished signal emits the LEFT panel width (sizes[0]), so the
         # passed width is ignored. Read the actual right-panel width from the
-        # splitter directly — that is exactly what we want to persist.
+        # splitter directly — that is exactly what we want to persist. Only
+        # persist when the full panel is expanded; the collapsed strip's 28px
+        # width must not overwrite the user's remembered panel width.
+        if not self._session_manager_panel_active():
+            return
         splitter = getattr(self, "main_splitter", None)
         if splitter is None:
             return
@@ -387,9 +478,10 @@ class SessionLayoutOpsMixin:
         collapsed = self.session_manager_collapsed
         if self.session_manager_collapse_button is not None:
             self.session_manager_collapse_button.setChecked(collapsed)
-        self.set_session_manager_visible(
-            self.session_tab_layout == "side" and not collapsed
-        )
+        self._set_session_manager_stack_page(collapsed)
+        # In `side` layout the right region is always visible (strip when
+        # collapsed, panel when expanded); in `top` layout it stays hidden.
+        self.set_session_manager_visible(self.session_tab_layout == "side")
 
     def apply_session_layout_state(self) -> None:
         # Refined body (replaces Task 4 version): adds collapse handling and the
@@ -409,13 +501,17 @@ class SessionLayoutOpsMixin:
         if side:
             self.refresh_session_manager_tree()
             self.refresh_session_breadcrumb()
-            # Restore the remembered right-panel width onto the splitter.
-            self.session_manager_panel.setMinimumWidth(self.SESSION_MANAGER_MIN_WIDTH)
-            self.session_manager_panel.setMaximumWidth(self.SESSION_MANAGER_MAX_WIDTH)
-            target = max(
-                self.SESSION_MANAGER_MIN_WIDTH,
-                min(self.SESSION_MANAGER_MAX_WIDTH, self.session_manager_width),
-            )
+            # Restore the remembered right-region width onto the splitter:
+            # the strip (collapsed) or the panel's persisted width (expanded).
+            if self.session_manager_collapsed:
+                target = self.SESSION_MANAGER_STRIP_WIDTH
+            else:
+                self.session_manager_panel.setMinimumWidth(self.SESSION_MANAGER_MIN_WIDTH)
+                self.session_manager_panel.setMaximumWidth(self.SESSION_MANAGER_MAX_WIDTH)
+                target = max(
+                    self.SESSION_MANAGER_MIN_WIDTH,
+                    min(self.SESSION_MANAGER_MAX_WIDTH, self.session_manager_width),
+                )
             sizes = self.main_splitter.sizes()
             if len(sizes) >= 3 and sum(sizes) > 0:
                 self.main_splitter.setSizes(
