@@ -17,7 +17,7 @@ _TAIL_LINES = 20
 _ERROR_PATTERNS = (
     re.compile(r"\bError\b", re.IGNORECASE),
     re.compile(r"\bFailed\b", re.IGNORECASE),
-    re.compile(r"^%\S+%%[A-Z0-9]+/([4-9])/", re.MULTILINE),
+    re.compile(r"%%[A-Za-z0-9]+/([4-9])/"),
 )
 
 
@@ -57,7 +57,7 @@ class ResultStore:
         ttl_seconds: int = TTL_SECONDS,
         clock: Any = time.monotonic,
     ) -> None:
-        self.max_entries = max(50, min(5000, int(max_entries)))
+        self.max_entries = max(1, min(5000, int(max_entries)))
         self.ttl_seconds = max(1, min(168, int(ttl_seconds))) * 3600
         self.clock = clock
         self._entries: dict[str, StoredResult] = {}
