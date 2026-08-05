@@ -8,6 +8,7 @@ from ..gateway import McpGateway
 
 
 def register_all_tools(mcp: Any, gateway: McpGateway) -> None:
+    from .ai_gateway import register_ai_gateway_tools
     from .devices import register_device_tools
     from .operations import register_operation_tools
     from .sessions import register_session_tools
@@ -21,6 +22,7 @@ def register_all_tools(mcp: Any, gateway: McpGateway) -> None:
     register_terminal_tools(mcp, gateway)
     register_transfer_tools(mcp, gateway)
     register_operation_tools(mcp, gateway)
+    register_ai_gateway_tools(mcp, gateway)
 
 
 __all__ = ["register_all_tools"]

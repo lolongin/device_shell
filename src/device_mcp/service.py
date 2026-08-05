@@ -45,6 +45,7 @@ from .core import (
     utc_timestamp,
 )
 from .actions import ActionBuilderMixin
+from .ai_gateway_execution import AiGatewayExecutionMixin
 from .execution import ExecutionMixin
 from .operations import OperationMixin
 from .validation import RequestValidationMixin
@@ -54,6 +55,7 @@ from .models import OperationRecord
 class AppControlService(
     ActionBuilderMixin,
     ExecutionMixin,
+    AiGatewayExecutionMixin,
     OperationMixin,
     RequestValidationMixin,
 ):
@@ -243,6 +245,21 @@ class AppControlService(
             if cached is not None:
                 return dict(cached)
 
+        # Audit sub-step manifest: how many device operations one gateway call expands
+        # to. Mutate params IN PLACE so the audit writer in invoke() sees it.
+        if tool in {"ai_execute_batch", "ai_execute_script", "ai_run_skill", "ai_download_file"}:
+            raw_commands = params.get("commands") or params.get("script")
+            command_count = 1
+            if isinstance(raw_commands, list):
+                command_count = len(raw_commands)
+            elif isinstance(raw_commands, str):
+                command_count = len([line for line in raw_commands.splitlines() if line.strip()])
+            params["sub_step_manifest"] = {
+                "tool": tool,
+                "command_count": command_count,
+                "step_count": 0,  # skills expand later; the manifest documents intent
+            }
+
         approval_token = str(params.get("approval_token") or "")
         if action.requires_confirmation and self.requires_device_approval:
             if not approval_token:
@@ -271,6 +288,10 @@ class AppControlService(
             result = self._execute_terminal_plan(action)
         elif tool == "session_manage":
             result = self._execute_session_manage(action)
+        elif tool == "ai_create_session":
+            result = self._execute_ai_gateway_create_session(action)
+        elif tool in {"ai_execute_command", "ai_execute_batch", "ai_execute_script", "ai_run_skill"}:
+            result = self._execute_ai_gateway_execute(action)
         else:
             result = self._dispatch_action(action)
         if not isinstance(result, AiDeviceToolResult):

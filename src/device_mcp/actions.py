@@ -370,6 +370,122 @@ class ActionBuilderMixin:
                 RiskLevel.OBSERVE if tool == "execution_get" else RiskLevel.LOW,
                 params={"execution_id": execution_id},
             )
+        if tool == "ai_create_session":
+            return AiDeviceAction(
+                "ai_gateway_create_session",
+                "创建网关会话",
+                RiskLevel.LOW,
+                device_id=self._required_text(params, "device_id", max_chars=200),
+            )
+        if tool == "ai_execute_command":
+            command = normalize_command(
+                self._required_text(params, "command", max_chars=MAX_COMMAND_CHARS)
+            )
+            device_id = self._optional_text(params, "device_id", max_chars=200)
+            session_id = self._optional_text(params, "session_id", max_chars=240)
+            if not device_id and not session_id:
+                raise AppControlError("invalid_request", "执行网关命令需要 session_id 或 device_id。")
+            return AiDeviceAction(
+                "ai_gateway_execute_command",
+                "执行网关命令",
+                classify_command_risk(command),
+                device_id=device_id,
+                command=command,
+                params={
+                    "session_id": session_id,
+                    "timeout_seconds": self._integer(params, "timeout_seconds", default=30, minimum=1, maximum=300),
+                },
+            )
+        if tool == "ai_execute_batch":
+            raw_commands = params.get("commands")
+            if not isinstance(raw_commands, list):
+                raise AppControlError("invalid_request", "参数 commands 必须是数组。")
+            commands = [normalize_command(str(command)) for command in raw_commands]
+            device_id = self._optional_text(params, "device_id", max_chars=200)
+            session_id = self._optional_text(params, "session_id", max_chars=240)
+            if not device_id and not session_id:
+                raise AppControlError("invalid_request", "执行网关批量命令需要 session_id 或 device_id。")
+            risk = max((classify_command_risk(command) for command in commands), default=RiskLevel.LOW)
+            return AiDeviceAction(
+                "ai_gateway_execute_batch",
+                "批量执行网关命令",
+                risk,
+                device_id=device_id,
+                params={
+                    "commands": commands,
+                    "session_id": session_id,
+                    "command_timeout_seconds": self._integer(params, "command_timeout_seconds", default=30, minimum=1, maximum=300),
+                },
+            )
+        if tool == "ai_execute_script":
+            script = self._required_text(params, "script", max_chars=MAX_COMMAND_CHARS * 8)
+            device_id = self._optional_text(params, "device_id", max_chars=200)
+            session_id = self._optional_text(params, "session_id", max_chars=240)
+            if not device_id and not session_id:
+                raise AppControlError("invalid_request", "执行网关脚本需要 session_id 或 device_id。")
+            risk = max((classify_command_risk(line) for line in script.splitlines() if line.strip()), default=RiskLevel.LOW)
+            return AiDeviceAction(
+                "ai_gateway_execute_script",
+                "执行网关脚本",
+                risk,
+                device_id=device_id,
+                params={
+                    "script": script,
+                    "shell": self._optional_text(params, "shell", max_chars=100),
+                    "session_id": session_id,
+                    "timeout_seconds": self._integer(params, "timeout_seconds", default=30, minimum=1, maximum=300),
+                },
+            )
+        if tool == "ai_upload_file":
+            return AiDeviceAction(
+                "ai_gateway_upload_file",
+                "上传文件到设备",
+                RiskLevel.FLOW,
+                device_id=self._required_text(params, "device_id", max_chars=200),
+                params={
+                    "source_path": self._required_text(params, "source_path", max_chars=1_024),
+                    "destination_path": self._required_text(params, "destination_path", max_chars=1_024),
+                    "overwrite": self._boolean(params, "overwrite", default=False),
+                },
+            )
+        if tool == "ai_download_file":
+            return AiDeviceAction(
+                "ai_gateway_download_file",
+                "从设备下载文件",
+                RiskLevel.LOW,
+                device_id=self._required_text(params, "device_id", max_chars=200),
+                params={
+                    "source_path": self._required_text(params, "source_path", max_chars=1_024),
+                    "destination_path": self._required_text(params, "destination_path", max_chars=1_024),
+                },
+            )
+        if tool == "ai_get_result":
+            return AiDeviceAction(
+                "ai_gateway_get_result",
+                "读取网关执行结果",
+                RiskLevel.OBSERVE,
+                params={
+                    "result_id": self._required_text(params, "result_id", max_chars=80),
+                    "include_raw": self._boolean(params, "include_raw", default=False),
+                },
+            )
+        if tool == "ai_run_skill":
+            device_id = self._optional_text(params, "device_id", max_chars=200)
+            session_id = self._optional_text(params, "session_id", max_chars=240)
+            if not device_id and not session_id:
+                raise AppControlError("invalid_request", "运行 Skill 需要 session_id 或 device_id。")
+            return AiDeviceAction(
+                "ai_gateway_run_skill",
+                "运行网关 Skill",
+                RiskLevel.FLOW,
+                device_id=device_id,
+                params={
+                    "skill_name": self._required_text(params, "skill_name", max_chars=200),
+                    "params": dict(params.get("params") or {}),
+                    "session_id": session_id,
+                    "timeout_seconds": self._integer(params, "timeout_seconds", default=60, minimum=1, maximum=3600),
+                },
+            )
         device_id = self._required_text(params, "device_id", max_chars=200)
         if tool == "device_get":
             return AiDeviceAction(

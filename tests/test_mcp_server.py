@@ -12,6 +12,14 @@ def test_mcp_server_exposes_device_control_tools() -> None:
     names = {tool.name for tool in tools}
 
     assert names == {
+        "ai_create_session",
+        "ai_download_file",
+        "ai_execute_batch",
+        "ai_execute_command",
+        "ai_execute_script",
+        "ai_get_result",
+        "ai_run_skill",
+        "ai_upload_file",
         "system_status",
         "device_list",
         "device_get",

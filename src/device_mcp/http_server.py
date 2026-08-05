@@ -104,6 +104,14 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             "/v1/operations/cancel": "operation_cancel",
             "/v1/file-transfer/start": "file_transfer_start",
             "/v1/package-upgrade/start": "package_upgrade_start",
+            "/v1/ai/create-session": "ai_create_session",
+            "/v1/ai/execute-command": "ai_execute_command",
+            "/v1/ai/execute-batch": "ai_execute_batch",
+            "/v1/ai/execute-script": "ai_execute_script",
+            "/v1/ai/upload-file": "ai_upload_file",
+            "/v1/ai/download-file": "ai_download_file",
+            "/v1/ai/get-result": "ai_get_result",
+            "/v1/ai/run-skill": "ai_run_skill",
         }
         tool = routes.get(urlparse(self.path).path)
         if tool is None:

@@ -331,6 +331,48 @@ class AppControlClient:
             },
         )
 
+    def ai_create_session(self, device_id: str) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/create-session", {"device_id": device_id})
+
+    def ai_execute_command(self, *, session_id: str = "", device_id: str = "", command: str = "", timeout_seconds: int = 30, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/execute-command", {
+            "session_id": session_id, "device_id": device_id, "command": command,
+            "timeout_seconds": timeout_seconds, "idempotency_key": idempotency_key,
+        })
+
+    def ai_execute_batch(self, *, commands: list[str], session_id: str = "", device_id: str = "", command_timeout_seconds: int = 30, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/execute-batch", {
+            "commands": commands, "session_id": session_id, "device_id": device_id,
+            "command_timeout_seconds": command_timeout_seconds, "idempotency_key": idempotency_key,
+        })
+
+    def ai_execute_script(self, *, script: str, session_id: str = "", device_id: str = "", shell: str = "", timeout_seconds: int = 30, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/execute-script", {
+            "script": script, "session_id": session_id, "device_id": device_id,
+            "shell": shell, "timeout_seconds": timeout_seconds, "idempotency_key": idempotency_key,
+        })
+
+    def ai_upload_file(self, device_id: str, source_path: str, destination_path: str, *, overwrite: bool = False, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/upload-file", {
+            "device_id": device_id, "source_path": source_path, "destination_path": destination_path,
+            "overwrite": overwrite, "idempotency_key": idempotency_key,
+        })
+
+    def ai_download_file(self, device_id: str, source_path: str, destination_path: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/download-file", {
+            "device_id": device_id, "source_path": source_path, "destination_path": destination_path,
+            "idempotency_key": idempotency_key,
+        })
+
+    def ai_get_result(self, *, result_id: str, include_raw: bool = False) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/get-result", {"result_id": result_id, "include_raw": include_raw})
+
+    def ai_run_skill(self, *, skill_name: str, params: dict[str, Any], session_id: str = "", device_id: str = "", timeout_seconds: int = 60, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/run-skill", {
+            "skill_name": skill_name, "params": params, "session_id": session_id,
+            "device_id": device_id, "timeout_seconds": timeout_seconds, "idempotency_key": idempotency_key,
+        })
+
     def approval_get(self, approval_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/approvals/{quote(approval_id, safe='')}")
 
