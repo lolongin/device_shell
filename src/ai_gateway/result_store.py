@@ -58,7 +58,10 @@ class ResultStore:
         clock: Any = time.monotonic,
     ) -> None:
         self.max_entries = max(1, min(5000, int(max_entries)))
-        self.ttl_seconds = max(1, min(168, int(ttl_seconds))) * 3600
+        # `ttl_seconds` is already SECONDS (the default TTL_SECONDS = 24 * 3600);
+        # clamp to 1h..168h expressed in seconds. It must NOT be reinterpreted as
+        # hours (the old `min(168, ...) * 3600` turned the 86400s default into 7 days).
+        self.ttl_seconds = max(3600, min(604800, int(ttl_seconds)))
         self.clock = clock
         self._entries: dict[str, StoredResult] = {}
         self._order: list[str] = []
