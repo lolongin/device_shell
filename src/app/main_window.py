@@ -423,6 +423,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             self._build_layout()
             self.initialize_terminal_execution_coordinator()
             self.initialize_ai_gateway_service()
+            config = getattr(self, "ai_gateway_result_store_config", None)
+            if config is not None and hasattr(self, "ai_gateway_service"):
+                from src.ai_gateway.result_store import ResultStore
+
+                self.ai_gateway_service.result_store = ResultStore(
+                    max_entries=config["max_entries"],
+                    ttl_seconds=config["ttl_hours"] * 3600,
+                )
             self.apply_always_on_top_state()
             self._wire_events()
             self.update_controls()

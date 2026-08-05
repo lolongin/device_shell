@@ -55,7 +55,7 @@ def test_session_layout_round_trip(
     window.save_desktop_state()
 
     saved = json.loads(_state_path(window).read_text(encoding="utf-8"))
-    assert saved["version"] == 14
+    assert saved["version"] == 15
     assert saved["session_layout"]["session_tab_layout"] == "side"
     assert saved["session_layout"]["terminal_font_size"] == 18
     assert saved["session_layout"]["session_manager_width"] == 340

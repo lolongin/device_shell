@@ -34,7 +34,15 @@ from ..data import Device, SavedServer
 from ..temporary_devices import deserialize_temporary_device, serialize_temporary_device
 from ..widgets.terminal_widget import ANSI_ESCAPE_RE
 
-DESKTOP_STATE_VERSION = 14
+DESKTOP_STATE_VERSION = 15
+
+
+def _clamp_int(value: object, low: int, high: int, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return min(max(parsed, low), high)
 
 
 class DesktopStateMixin:
@@ -308,6 +316,20 @@ class DesktopStateMixin:
                 self.collapsed_device_groups = [
                     str(item or "").strip() for item in raw_collapsed if str(item or "").strip()
                 ]
+        if state_version >= 15:
+            ai_gateway = payload.get("ai_gateway")
+            if not isinstance(ai_gateway, dict):
+                ai_gateway = {}
+        else:
+            # Pre-v15 states have no AI gateway config — use defaults.
+            ai_gateway = {}
+        result_store = ai_gateway.get("result_store")
+        if not isinstance(result_store, dict):
+            result_store = {}
+        self.ai_gateway_result_store_config = {
+            "max_entries": _clamp_int(result_store.get("max_entries", 500), 50, 5000, 500),
+            "ttl_hours": _clamp_int(result_store.get("ttl_hours", 24), 1, 168, 24),
+        }
         if hasattr(self, "apply_session_layout_state"):
             self.apply_session_layout_state()
         if hasattr(self, "rebuild_device_indexes"):
@@ -392,6 +414,18 @@ class DesktopStateMixin:
                 "terminal_sessions": self.serialize_terminal_sessions()
                 if hasattr(self, "serialize_terminal_sessions")
                 else [],
+                "ai_gateway": {
+                    "result_store": {
+                        "max_entries": self.ai_gateway_service.result_store.max_entries
+                        if hasattr(self, "ai_gateway_service")
+                        and hasattr(self.ai_gateway_service, "result_store")
+                        else 500,
+                        "ttl_hours": self.ai_gateway_service.result_store.ttl_seconds // 3600
+                        if hasattr(self, "ai_gateway_service")
+                        and hasattr(self.ai_gateway_service, "result_store")
+                        else 24,
+                    },
+                },
             }
             serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             if serialized == self._last_desktop_state_payload:
