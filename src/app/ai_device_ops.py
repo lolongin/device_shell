@@ -1068,8 +1068,23 @@ class AiDeviceOpsMixin:
         return self._execute_ai_managed_transfer_start(action)
 
     def _execute_ai_gateway_download_file(self, action: AiDeviceAction) -> AiDeviceToolResult:
-        # Implemented in Task 7 (device→PC put direction).
-        return self._ai_failure(action, "not_implemented", "设备下载方向尚未实现。", http_status=501)
+        try:
+            data = self.start_managed_transfer_download(
+                device_id=action.device_id,
+                source_path=str(action.params.get("source_path") or ""),
+                destination_path=str(action.params.get("destination_path") or ""),
+            )
+        except ManagedTransferError as exc:
+            return self._ai_failure(action, exc.code, str(exc), http_status=404)
+        ok = data.get("status") != "failed"
+        return AiDeviceToolResult(
+            action,
+            ok=ok,
+            message=str(data.get("message") or "设备文件下载已启动。"),
+            data=data,
+            error_code=str(data.get("error_code") or "") if not ok else "",
+            http_status=409,
+        )
 
     def _ai_device(self, device_id: str) -> Any | None:
         device = self.get_device_by_id(device_id)

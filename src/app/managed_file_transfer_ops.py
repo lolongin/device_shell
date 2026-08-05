@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import shutil
 import time
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,8 @@ from ..ai_device_ops import AiDeviceAction, RiskLevel
 from ..file_transfer_service import TransferServiceConfig, TransferServiceController
 from ..managed_file_transfer import (
     ManagedTransferError,
+    _validate_relative_path,
+    build_managed_transfer_download_steps,
     build_managed_transfer_steps,
     destination_entry,
     destination_matches,
@@ -93,6 +96,75 @@ class ManagedFileTransferOpsMixin:
             "updated_monotonic": started,
             "source_absolute": source,
             "source_fingerprint": source_fingerprint(source),
+            "session_id": "",
+            "lease_owner_id": f"managed-transfer:{operation_id}",
+            "execution_id": "",
+            "lease_acquired": False,
+            "error_code": "",
+        }
+        open_action = AiDeviceAction(
+            "session_manage",
+            "为托管文件传输打开终端",
+            RiskLevel.LOW,
+            device_id=device_id,
+            params={"action": "open", "protocol": "auto"},
+        )
+        opened = self._ai_open_managed_session(open_action)
+        if not opened.ok:
+            self._managed_transfer_fail(
+                operation_id,
+                opened.error_code or "session_open_failed",
+                opened.message,
+            )
+            return self.managed_transfer_status_snapshot(operation_id)
+        session = opened.data.get("session")
+        session_id = str(session.get("session_id") if isinstance(session, dict) else "")
+        runs[operation_id]["session_id"] = session_id
+        self._wait_for_managed_transfer_session(operation_id, 0)
+        return self.managed_transfer_status_snapshot(operation_id)
+
+    def start_managed_transfer_download(
+        self,
+        *,
+        device_id: str,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Start a managed device->PC transfer (device `put` to the PC server)."""
+        config = self._managed_transfer_config()
+        source = validate_destination_path(source_path)
+        destination = _validate_relative_path(
+            destination_path,
+            label="destination_path",
+        ).as_posix()
+        device = self._ai_device(device_id)
+        if device is None:
+            raise ManagedTransferError(
+                "device_not_found",
+                f"未找到设备: {device_id}",
+            )
+        operation_id = str(uuid4())
+        started = time.monotonic()
+        runs = self._managed_transfer_runs()
+        runs[operation_id] = {
+            "operation_id": operation_id,
+            "kind": "managed_file_transfer",
+            "direction": "download",
+            "device_id": device_id,
+            "source_path": source,
+            "source_name": PurePosixPath(source).name,
+            "source_size": 0,
+            "destination_path": destination,
+            "overwrite": bool(overwrite),
+            "status": "running",
+            "stage": "opening_session",
+            "message": "正在打开或复用设备终端会话。",
+            "created_monotonic": started,
+            "updated_monotonic": started,
+            "source_absolute": "",
+            "source_fingerprint": (),
+            "root": config.root,
             "session_id": "",
             "lease_owner_id": f"managed-transfer:{operation_id}",
             "execution_id": "",
@@ -317,13 +389,17 @@ class ManagedFileTransferOpsMixin:
         self._managed_transfer_update(
             operation,
             stage="prechecking",
-            message="正在检查设备目标文件和可用空间。",
+            message="正在检查设备源文件和 PC 共享目录空间。"
+            if operation.get("direction") == "download"
+            else "正在检查设备目标文件和可用空间。",
         )
         steps = [
             {
                 "type": "send",
-                "text": f"dir {operation['destination_path']}",
-                "label": "读取目标文件状态",
+                "text": f"dir {self._managed_transfer_device_path(operation)}",
+                "label": "读取设备源文件状态"
+                if operation.get("direction") == "download"
+                else "读取目标文件状态",
             },
             {
                 "type": "expect",
@@ -354,6 +430,13 @@ class ManagedFileTransferOpsMixin:
             self._managed_transfer_plan_failed(operation_id, result, "prechecking")
             return
         output = self._managed_transfer_plan_output(result)
+        if operation.get("direction") == "download":
+            self._finish_managed_transfer_precheck_download(
+                operation_id,
+                operation,
+                output,
+            )
+            return
         existing = destination_entry(output, str(operation["destination_path"]))
         if existing is not None and not operation["overwrite"]:
             self._managed_transfer_fail(
@@ -383,6 +466,61 @@ class ManagedFileTransferOpsMixin:
             return
         self._start_managed_transfer_download(operation_id)
 
+    def _finish_managed_transfer_precheck_download(
+        self,
+        operation_id: str,
+        operation: dict[str, Any],
+        output: str,
+    ) -> None:
+        # For the device->PC direction the `dir` output describes the device-side
+        # SOURCE file; capture its size to drive the transfer timeout and use it as
+        # the verification oracle. The PC-side destination must stay inside the
+        # transfer share (already validated) and be free/overwritable.
+        entry = destination_entry(output, str(operation["source_path"]))
+        if entry is None:
+            self._managed_transfer_fail(
+                operation_id,
+                "transfer_source_not_found",
+                f"设备端源文件不存在: {operation['source_path']}",
+            )
+            return
+        operation["source_size"] = entry.size_bytes
+        root = Path(str(operation.get("root") or ""))
+        existing = self._managed_transfer_shared_entry(
+            root,
+            str(operation["destination_path"]),
+        )
+        if existing is not None and not operation["overwrite"]:
+            self._managed_transfer_fail(
+                operation_id,
+                "destination_exists",
+                f"PC 共享目录目标文件已存在，大小为 {existing.size_bytes} 字节；"
+                "如需覆盖请显式设置 overwrite=true。",
+            )
+            return
+        required_bytes = max(
+            0,
+            int(operation["source_size"]) - (existing.size_bytes if existing else 0),
+        )
+        try:
+            free_bytes = shutil.disk_usage(root).free
+        except OSError as exc:
+            self._managed_transfer_fail(
+                operation_id,
+                "transfer_root_unavailable",
+                f"无法读取 PC 共享目录磁盘空间: {exc}",
+            )
+            return
+        if required_bytes > free_bytes:
+            self._managed_transfer_fail(
+                operation_id,
+                "insufficient_space",
+                f"PC 共享目录可用空间不足，需要 {required_bytes} 字节，"
+                f"可用 {free_bytes} 字节。",
+            )
+            return
+        self._start_managed_transfer_download(operation_id)
+
     def _start_managed_transfer_download(self, operation_id: str) -> None:
         operation = self._managed_transfer_runs().get(operation_id)
         if not self._managed_transfer_is_active(operation):
@@ -400,22 +538,38 @@ class ManagedFileTransferOpsMixin:
                     source_size=int(operation["source_size"]),
                     destination_path=str(operation["destination_path"]),
                 )
-            steps, total_timeout = build_managed_transfer_steps(
-                protocol=config.protocol,
-                host=host,
-                port=getattr(self.transfer_service, "bound_port", 0) or config.port,
-                source_path=str(operation["source_path"]),
-                destination_path=str(operation["destination_path"]),
-                source_size=int(operation["source_size"]),
-            )
+            if operation.get("direction") == "download":
+                steps, total_timeout = build_managed_transfer_download_steps(
+                    protocol=config.protocol,
+                    host=host,
+                    port=getattr(self.transfer_service, "bound_port", 0)
+                    or config.port,
+                    source_path=str(operation["source_path"]),
+                    destination_path=str(operation["destination_path"]),
+                    source_size=int(operation["source_size"]),
+                )
+            else:
+                steps, total_timeout = build_managed_transfer_steps(
+                    protocol=config.protocol,
+                    host=host,
+                    port=getattr(self.transfer_service, "bound_port", 0)
+                    or config.port,
+                    source_path=str(operation["source_path"]),
+                    destination_path=str(operation["destination_path"]),
+                    source_size=int(operation["source_size"]),
+                )
         except (ManagedTransferError, RuntimeError) as exc:
             code = getattr(exc, "code", "service_start_failed")
             self._managed_transfer_fail(operation_id, code, str(exc))
             return
+        direction_word = "上传" if operation.get("direction") == "download" else "下载"
         self._managed_transfer_update(
             operation,
             stage="transferring",
-            message=f"正在通过 {config.protocol.upper()} 下载 {operation['source_path']}。",
+            message=(
+                f"正在通过 {config.protocol.upper()} {direction_word} "
+                f"{operation['source_path']}。"
+            ),
         )
         self._start_managed_transfer_plan(
             operation_id,
@@ -435,6 +589,9 @@ class ManagedFileTransferOpsMixin:
         assert operation is not None
         if result.get("status") != "completed":
             self._managed_transfer_plan_failed(operation_id, result, "transferring")
+            return
+        if operation.get("direction") == "download":
+            self._finish_managed_transfer_download_verify(operation_id)
             return
         if not self._managed_transfer_source_unchanged(operation):
             self._managed_transfer_fail(
@@ -469,6 +626,41 @@ class ManagedFileTransferOpsMixin:
             total_timeout_seconds=45,
             on_done=self._finish_managed_transfer_verification,
         )
+
+    def _finish_managed_transfer_download_verify(self, operation_id: str) -> None:
+        operation = self._managed_transfer_runs().get(operation_id)
+        if not self._managed_transfer_is_active(operation):
+            return
+        assert operation is not None
+        self._managed_transfer_update(
+            operation,
+            stage="verifying",
+            message="正在核对 PC 共享目录文件名和精确字节数。",
+        )
+        root = Path(str(operation.get("root") or ""))
+        info = self._managed_transfer_shared_entry(
+            root,
+            str(operation["destination_path"]),
+        )
+        if info is None or info.size_bytes != int(operation["source_size"]):
+            self._managed_transfer_fail(
+                operation_id,
+                "transfer_verification_failed",
+                "PC 共享目录中目标文件不存在，或字节数与设备端源文件不一致。",
+            )
+            return
+        self._managed_transfer_update(
+            operation,
+            status="completed",
+            stage="completed",
+            message=(
+                f"文件已从 {operation['source_path']} 下载到共享目录 "
+                f"{operation['destination_path']}，"
+                f"并确认 {info.size_bytes} 字节完全匹配。"
+            ),
+            error_code="",
+        )
+        self._release_managed_transfer_lease(operation)
 
     def _finish_managed_transfer_verification(
         self,
@@ -642,7 +834,31 @@ class ManagedFileTransferOpsMixin:
         )
 
     @staticmethod
+    def _managed_transfer_device_path(operation: dict[str, Any]) -> str:
+        # For downloads the device-side path queried via `dir` is the SOURCE;
+        # for uploads it is the destination.
+        if operation.get("direction") == "download":
+            return str(operation["source_path"])
+        return str(operation["destination_path"])
+
+    @staticmethod
+    def _managed_transfer_shared_entry(
+        root: Path,
+        relative_path: str,
+    ) -> Any | None:
+        try:
+            _resolved, info = resolve_shared_file(root, relative_path)
+            return info
+        except ManagedTransferError:
+            return None
+
+    @staticmethod
     def _managed_transfer_source_unchanged(operation: dict[str, Any]) -> bool:
+        if operation.get("direction") == "download":
+            # The source is the device-side file: its size is captured during
+            # precheck and re-verified against the transferred PC file, so skip
+            # the PC-source drift check used by the upload path.
+            return True
         try:
             return source_fingerprint(Path(operation["source_absolute"])) == tuple(
                 operation["source_fingerprint"]

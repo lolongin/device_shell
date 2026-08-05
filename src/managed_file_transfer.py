@@ -229,6 +229,73 @@ def quote_transfer_argument(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _managed_transfer_connect_steps(
+    protocol: str,
+    host: str,
+    port: int,
+    responses: list[dict[str, Any]],
+    timeout_seconds: int,
+) -> list[dict[str, Any]]:
+    """Shared connect/login/binary-mode steps for App-managed FTP/SCP transfers."""
+    normalized_protocol = protocol.strip().casefold()
+    prompt = "sftp_prompt" if normalized_protocol == "sftp" else "ftp_prompt"
+    protocol_steps: list[dict[str, Any]] = []
+    if normalized_protocol == "ftp":
+        protocol_steps = [
+            {"type": "send", "text": "binary", "label": "切换二进制模式"},
+            {
+                "type": "expect",
+                "success": ["ftp_prompt"],
+                "failures": ["500 ", "502 ", "Unknown FTP command", "Error:"],
+                "timeout_seconds": 30,
+                "label": "确认二进制模式",
+            },
+        ]
+    return [
+        {
+            "type": "send",
+            "text": f"{normalized_protocol} {host} {port}",
+            "label": f"连接 {normalized_protocol.upper()} 服务",
+        },
+        {
+            "type": "expect",
+            "success": [prompt, "ftp_prompt"],
+            "responses": responses,
+            "failures": [
+                "Login incorrect",
+                "Authentication failed",
+                "Permission denied",
+                "Host key verification failed",
+                "530 ",
+                "421 ",
+            ],
+            "timeout_seconds": timeout_seconds,
+            "label": "本地自动登录文件服务",
+        },
+        *protocol_steps,
+    ]
+
+
+def _managed_transfer_login_responses() -> list[dict[str, Any]]:
+    return [
+        {
+            "match": "host_key_prompt",
+            "text": "yes",
+            "max_matches": 1,
+        },
+        {
+            "match": "username_prompt",
+            "secret_ref": "file_transfer.username",
+            "max_matches": 1,
+        },
+        {
+            "match": "password_prompt",
+            "secret_ref": "file_transfer.password",
+            "max_matches": 2,
+        },
+    ]
+
+
 def build_managed_transfer_steps(
     *,
     protocol: str,
@@ -249,60 +316,16 @@ def build_managed_transfer_steps(
         max(120, int(source_size / (1024 * 1024)) * 2),
     )
     prompt = "sftp_prompt" if normalized_protocol == "sftp" else "ftp_prompt"
-    login_success = [prompt, "ftp_prompt"]
-    responses: list[dict[str, Any]] = [
-        {
-            "match": "host_key_prompt",
-            "text": "yes",
-            "max_matches": 1,
-        },
-        {
-            "match": "username_prompt",
-            "secret_ref": "file_transfer.username",
-            "max_matches": 1,
-        },
-        {
-            "match": "password_prompt",
-            "secret_ref": "file_transfer.password",
-            "max_matches": 2,
-        },
-    ]
-    protocol_steps: list[dict[str, Any]] = []
-    if normalized_protocol == "ftp":
-        protocol_steps = [
-            {"type": "send", "text": "binary", "label": "切换二进制模式"},
-            {
-                "type": "expect",
-                "success": ["ftp_prompt"],
-                "failures": ["500 ", "502 ", "Unknown FTP command", "Error:"],
-                "timeout_seconds": 30,
-                "label": "确认二进制模式",
-            },
-        ]
     source = quote_transfer_argument(source_path)
     destination = quote_transfer_argument(destination_path)
     steps: list[dict[str, Any]] = [
-        {
-            "type": "send",
-            "text": f"{normalized_protocol} {host} {port}",
-            "label": f"连接 {normalized_protocol.upper()} 服务",
-        },
-        {
-            "type": "expect",
-            "success": login_success,
-            "responses": responses,
-            "failures": [
-                "Login incorrect",
-                "Authentication failed",
-                "Permission denied",
-                "Host key verification failed",
-                "530 ",
-                "421 ",
-            ],
-            "timeout_seconds": 45,
-            "label": "本地自动登录文件服务",
-        },
-        *protocol_steps,
+        *_managed_transfer_connect_steps(
+            normalized_protocol,
+            host,
+            port,
+            _managed_transfer_login_responses(),
+            timeout_seconds=45,
+        ),
         {
             "type": "send",
             "text": f"get {source} {destination}",
@@ -324,6 +347,72 @@ def build_managed_transfer_steps(
             ],
             "timeout_seconds": transfer_timeout,
             "label": "等待文件下载完成",
+            "max_output_chars": 32_768,
+        },
+        {"type": "send", "text": "quit", "label": "退出文件客户端"},
+        {
+            "type": "expect",
+            "success": ["device_prompt"],
+            "failures": ["Error:", "500 ", "502 ", "550 "],
+            "timeout_seconds": 30,
+            "label": "返回设备命令行",
+        },
+    ]
+    return steps, min(3_600, transfer_timeout + 120)
+
+
+def build_managed_transfer_download_steps(
+    *,
+    protocol: str,
+    host: str,
+    port: int,
+    source_path: str,
+    destination_path: str,
+    source_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Build FTP/SCP steps for a device->PC transfer (device 'put' to PC server)."""
+    normalized_protocol = protocol.strip().casefold()
+    if normalized_protocol not in {"ftp", "sftp"}:
+        raise ManagedTransferError(
+            "invalid_request",
+            f"不支持的文件传输协议: {protocol}",
+        )
+    transfer_timeout = min(
+        3_500,
+        max(120, int(source_size / (1024 * 1024)) * 2),
+    )
+    prompt = "sftp_prompt" if normalized_protocol == "sftp" else "ftp_prompt"
+    source = quote_transfer_argument(source_path)
+    destination = quote_transfer_argument(destination_path)
+    steps: list[dict[str, Any]] = [
+        *_managed_transfer_connect_steps(
+            normalized_protocol,
+            host,
+            port,
+            _managed_transfer_login_responses(),
+            timeout_seconds=45,
+        ),
+        {
+            "type": "send",
+            "text": f"put {source} {destination}",
+            "label": f"上传 {source_path}",
+        },
+        {
+            "type": "expect",
+            "success": [prompt, "ftp_prompt"],
+            "failures": [
+                "Error:",
+                "failed",
+                "No such file",
+                "not found",
+                "timed out",
+                "Connection closed",
+                "500 ",
+                "502 ",
+                "550 ",
+            ],
+            "timeout_seconds": transfer_timeout,
+            "label": "等待文件上传完成",
             "max_output_chars": 32_768,
         },
         {"type": "send", "text": "quit", "label": "退出文件客户端"},
