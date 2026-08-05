@@ -1437,7 +1437,21 @@ class GatewayService:
             exit_code=1 if failed else 0,
             command_count=len(plan.steps),
             duration_ms=round((time.monotonic() - started) * 1000, 2),
-            extra={"skill_name": skill_name, "step_results": [r.__dict__ for r in results]},
+            extra={
+                "skill_name": skill_name,
+                # FlowStepResult is @dataclass(slots=True) — it has no __dict__.
+                "step_results": [
+                    {
+                        "id": r.id,
+                        "status": r.status,
+                        "output": r.output,
+                        "error_code": r.error_code,
+                        "message": r.message,
+                        "attempt_count": r.attempt_count,
+                    }
+                    for r in results
+                ],
+            },
         )
 
     def get_result(self, result_id: str, *, include_raw: bool = False) -> dict[str, Any] | None:
@@ -1451,7 +1465,11 @@ class GatewayService:
             "metadata": entry.metadata,
         }
         if include_raw:
-            result["raw_output"] = entry.output
+            # Contract: `ai_get_result` returns {result, raw_output} with
+            # raw_output at the TOP level (per spec). Do not nest it inside
+            # `result` — the facade unit test and the app handler test both
+            # assert the top-level key.
+            return {"result": result, "raw_output": entry.output}
         return {"result": result}
 
     def snapshot(self) -> dict[str, Any]:
@@ -1560,7 +1578,8 @@ def test_ai_gateway_get_result_round_trip(app: QApplication) -> None:
     )
     assert fetched.ok
     assert fetched.data["result"]["result_id"] == result_id
-    assert "raw_output" in fetched.data["result"]
+    # raw_output is a TOP-LEVEL key of the result payload (spec contract).
+    assert "raw_output" in fetched.data
 
 
 def test_ai_gateway_get_result_missing_is_404(app: QApplication) -> None:
@@ -2865,7 +2884,7 @@ def test_e2e_create_session_execute_and_get_result(
     )
     assert fetched["ok"]
     assert fetched["data"]["result"]["result_id"] == result_id
-    assert "raw_output" in fetched["data"]["result"]
+    assert "raw_output" in fetched["data"]
 ```
 
 - [ ] **Step 2: Run tests and fix gaps**
