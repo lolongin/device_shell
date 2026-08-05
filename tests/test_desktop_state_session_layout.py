@@ -34,8 +34,19 @@ def test_session_layout_defaults(app: QApplication) -> None:
     window.close()
 
 
-def test_session_layout_round_trip(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_session_layout_round_trip(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     _ = app
+    state_file = tmp_path / "desktop_state.json"
+    monkeypatch.setattr(
+        DeviceDesktopApp,
+        "desktop_state_path",
+        staticmethod(lambda: state_file),
+    )
+
     window = DeviceDesktopApp()
     window.session_tab_layout = "side"
     window.terminal_font_size = 18
@@ -51,5 +62,17 @@ def test_session_layout_round_trip(app: QApplication, monkeypatch: pytest.Monkey
     assert saved["session_layout"]["session_manager_width"] == 340
     assert saved["session_layout"]["session_manager_collapsed"] is True
     assert saved["session_layout"]["collapsed_device_groups"] == ["R1-核心"]
+    assert saved["session_layout"]["session_manager_default_collapsed"] is False
 
     window.close()
+
+    reloaded = DeviceDesktopApp()
+    try:
+        assert reloaded.session_tab_layout == "side"
+        assert reloaded.terminal_font_size == 18
+        assert reloaded.session_manager_width == 340
+        assert reloaded.session_manager_collapsed is True
+        assert reloaded.collapsed_device_groups == ["R1-核心"]
+        assert reloaded.session_manager_default_collapsed is False
+    finally:
+        reloaded.close()
