@@ -1,10 +1,9 @@
 """Right-side hierarchical session manager and layout switching."""
 from __future__ import annotations
 
-import os
-
 try:
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
     from PySide6.QtWidgets import (
         QHBoxLayout,
         QLabel,
@@ -18,6 +17,10 @@ try:
     )
 except ModuleNotFoundError:
     Qt = None
+    QColor = None
+    QIcon = None
+    QPainter = None
+    QPixmap = None
     QHBoxLayout = None
     QLabel = None
     QLineEdit = None
@@ -35,6 +38,11 @@ class SessionLayoutOpsMixin:
     SESSION_MANAGER_MIN_WIDTH = 200
     SESSION_MANAGER_MAX_WIDTH = 480
     SESSION_MANAGER_DEFAULT_WIDTH = 260
+
+    # Tree status-dot colors (green = connected, amber = connecting, gray = offline).
+    SESSION_MANAGER_DOT_CONNECTED = "#22c55e"
+    SESSION_MANAGER_DOT_CONNECTING = "#f59e0b"
+    SESSION_MANAGER_DOT_OFFLINE = "#6b7280"
 
     # NOTE: No `__init__` here — mixins in this codebase do not define
     # `__init__`. All instance state defaults live in `DeviceDesktopApp.__init__`
@@ -160,6 +168,15 @@ class SessionLayoutOpsMixin:
     def refresh_session_manager_tree(self) -> None:
         if self.session_manager_tree is None:
             return
+        # Prune memorized collapsed groups to device tabs that still exist. Only
+        # run when there is at least one open device tab: at startup the tree can
+        # refresh before remembered sessions are restored (empty tab set), and
+        # pruning then would destroy the user's collapse memory.
+        if self.collapsed_device_groups and self.device_tabs_by_id:
+            current_ids = set(self.device_tabs_by_id)
+            pruned = [key for key in self.collapsed_device_groups if key in current_ids]
+            if pruned != self.collapsed_device_groups:
+                self.collapsed_device_groups = pruned
         self.session_manager_tree.clear()
         query = self._session_manager_filter_query()
         total = 0
@@ -179,6 +196,9 @@ class SessionLayoutOpsMixin:
             label = (device.name if device is not None else device_tab.title) or device_id
             parent.setText(0, f"{label} ({len(states)})")
             parent.setData(0, Qt.UserRole, group_key)
+            parent_icon = self._session_manager_parent_icon(states)
+            if parent_icon is not None:
+                parent.setIcon(0, parent_icon)
             total += len(states)
             group_visible = self._session_manager_group_matches(query, device)
             for state in states:
@@ -189,6 +209,9 @@ class SessionLayoutOpsMixin:
                 child = QTreeWidgetItem(parent)
                 child.setText(0, state.title)
                 child.setData(0, Qt.UserRole, state.tab_id)
+                child_icon = self._session_manager_session_icon(state)
+                if child_icon is not None:
+                    child.setIcon(0, child_icon)
                 if state.tab_id == current_tab_id:
                     font = child.font(0)
                     font.setBold(True)
@@ -201,6 +224,44 @@ class SessionLayoutOpsMixin:
                 )
         if self.session_manager_count_label is not None:
             self.session_manager_count_label.setText(f"共 {total}")
+
+    def _session_manager_session_icon(self, state: object) -> QIcon | None:
+        """Colored status dot for a session child (green/amber/gray)."""
+        if hasattr(self, "_tab_connection_state"):
+            conn = self._tab_connection_state(state)
+        else:
+            conn = "connected"
+        if conn == "connecting":
+            color = self.SESSION_MANAGER_DOT_CONNECTING
+        elif conn == "connected":
+            color = self.SESSION_MANAGER_DOT_CONNECTED
+        else:
+            color = self.SESSION_MANAGER_DOT_OFFLINE
+        return self._session_manager_dot_icon(color)
+
+    def _session_manager_parent_icon(self, states: list[object]) -> QIcon | None:
+        """Aggregate status dot for a device parent (green if any child connected)."""
+        connected = False
+        if hasattr(self, "_tab_connection_state"):
+            connected = any(
+                self._tab_connection_state(state) == "connected" for state in states
+            )
+        return self._session_manager_dot_icon(
+            self.SESSION_MANAGER_DOT_CONNECTED if connected else self.SESSION_MANAGER_DOT_OFFLINE
+        )
+
+    def _session_manager_dot_icon(self, color: str) -> QIcon | None:
+        if QPixmap is None or QPainter is None or QColor is None:
+            return None
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawEllipse(2, 2, 8, 8)
+        painter.end()
+        return QIcon(pixmap)
 
     def set_session_manager_visible(self, visible: bool) -> None:
         if self.session_manager_panel is not None:
@@ -228,8 +289,10 @@ class SessionLayoutOpsMixin:
         self.session_breadcrumb_device_label = QLabel()
         self.session_breadcrumb_device_label.setObjectName("breadcrumbDevice")
         self.session_breadcrumb_device_label.setCursor(Qt.PointingHandCursor)
+        self.session_breadcrumb_device_label.mousePressEvent = self._breadcrumb_device_click
         self.session_breadcrumb_session_label = QLabel()
         self.session_breadcrumb_session_label.setObjectName("breadcrumbSession")
+        self.session_breadcrumb_session_label.setCursor(Qt.PointingHandCursor)
         self.session_breadcrumb_session_label.mousePressEvent = (
             lambda _event: self.jump_to_session(
                 (self.current_session_state() or object()).tab_id
@@ -250,6 +313,14 @@ class SessionLayoutOpsMixin:
         self.center_stage_mode = "home"
         self.update_center_stage_state()
         self.apply_left_sidebar_state()
+
+    def _breadcrumb_device_click(self, _event: object = None) -> None:
+        label = getattr(self, "session_breadcrumb_device_label", None)
+        if label is None:
+            return
+        device_id = str(label.property("deviceId") or "")
+        if device_id:
+            self.activate_device(device_id)
 
     def set_session_tab_bars_visible(self, visible: bool) -> None:
         """Show or hide the top device tab bar and all per-device session tab bars."""
@@ -316,8 +387,9 @@ class SessionLayoutOpsMixin:
         collapsed = self.session_manager_collapsed
         if self.session_manager_collapse_button is not None:
             self.session_manager_collapse_button.setChecked(collapsed)
-        if self.session_tab_layout == "side":
-            self.set_session_manager_visible(not collapsed)
+        self.set_session_manager_visible(
+            self.session_tab_layout == "side" and not collapsed
+        )
 
     def apply_session_layout_state(self) -> None:
         # Refined body (replaces Task 4 version): adds collapse handling and the
@@ -331,8 +403,7 @@ class SessionLayoutOpsMixin:
             if self.session_tab_widget.count() > 0:
                 self.show_terminal_workspace()
         self.set_session_tab_bars_visible(not side)
-        collapsed = self.session_manager_collapsed
-        self.set_session_manager_visible(side and not collapsed)
+        self.apply_session_manager_collapsed_state()
         if getattr(self, "session_breadcrumb", None) is not None:
             self.session_breadcrumb.setVisible(side)
         if side:
