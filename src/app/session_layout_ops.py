@@ -471,11 +471,21 @@ class SessionLayoutOpsMixin:
             self.activate_device(device_id)
 
     def set_session_tab_bars_visible(self, visible: bool) -> None:
-        """Show or hide the top device tab bar and all per-device session tab bars."""
-        self.session_tab_widget.tabBar().setVisible(visible)
+        """Show/hide the top device tab bar and per-device session tab bars.
+
+        In the side layout the device-level bar is hidden (cross-device
+        navigation lives in the right session manager), but the ACTIVE device's
+        session tabs stay visible so the operator can switch between that
+        device's sessions at the top. In the top layout everything follows
+        ``visible``.
+        """
+        side = getattr(self, "session_tab_layout", "top") == "side"
+        self.session_tab_widget.tabBar().setVisible(visible and not side)
+        active = self.current_device_tab_state() if side else None
         for device_tab in self.device_tabs_by_id.values():
+            is_active = device_tab is active
             for tabs in self.session_tab_widgets_for_device(device_tab):
-                tabs.tabBar().setVisible(visible)
+                tabs.tabBar().setVisible(visible and (not side or is_active))
 
     def set_session_tab_layout(self, mode: str) -> None:
         mode = mode if mode in {"top", "side"} else "top"
@@ -555,7 +565,7 @@ class SessionLayoutOpsMixin:
         if side:
             if self.session_tab_widget.count() > 0:
                 self.show_terminal_workspace()
-        self.set_session_tab_bars_visible(not side)
+        self.set_session_tab_bars_visible(True)
         self.apply_session_manager_collapsed_state()
         if getattr(self, "session_breadcrumb", None) is not None:
             self.session_breadcrumb.setVisible(side)
