@@ -15,11 +15,13 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_settings_button_created_and_attached_to_status_bar(app: QApplication) -> None:
+def test_settings_button_sits_at_activity_rail_bottom(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()
     assert window.settings_button is not None
-    assert window.settings_button.parent() is window.statusBar()
+    assert window.settings_button.objectName() == "activityRailButton"
+    assert window.settings_button.parent() is window.activity_rail
+    assert not window.settings_button.isCheckable()
     window.close()
 
 

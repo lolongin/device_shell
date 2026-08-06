@@ -541,19 +541,14 @@ class SessionLayoutOpsMixin:
         for state in self.session_tabs_by_id.values():
             self.apply_font_size_to_terminal(state.terminal, self.terminal_font_size)
 
-    def build_settings_button(self) -> QToolButton:
-        from PySide6.QtWidgets import QToolButton
+    def attach_settings_menu(self, button: QToolButton) -> QToolButton:
+        from PySide6.QtWidgets import QWidgetAction
 
-        button = QToolButton()
-        button.setObjectName("sessionSettingsButton")
-        button.setText("⚙")
         button.setToolTip("工作台设置")
         button.setPopupMode(QToolButton.InstantPopup)
         menu = self.new_workspace_menu(button, "工作台设置", "settings")
         menu.setObjectName("workspaceContextMenu")
         panel = self.build_settings_panel()
-        from PySide6.QtWidgets import QWidgetAction
-
         action = QWidgetAction(menu)
         action.setDefaultWidget(panel)
         menu.addAction(action)

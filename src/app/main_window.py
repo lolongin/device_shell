@@ -468,7 +468,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             status_bar = QStatusBar(self)
             self.setStatusBar(status_bar)
             status_bar.showMessage("准备就绪")
-            status_bar.addPermanentWidget(self.build_settings_button())
 
         def new_workspace_menu(self, parent: QWidget | None, title: str = "", kind: str = "context") -> QMenu:
             menu = QMenu(parent)
@@ -718,6 +717,7 @@ if PYSIDE6_IMPORT_ERROR is None:
         def _build_activity_rail(self) -> QWidget:
             rail = QFrame()
             rail.setObjectName("activityRail")
+            self.activity_rail = rail
             rail.setFixedWidth(self.ACTIVITY_RAIL_WIDTH)
             layout = QVBoxLayout(rail)
             layout.setContentsMargins(5, 8, 5, 8)
@@ -756,6 +756,14 @@ if PYSIDE6_IMPORT_ERROR is None:
             layout.addWidget(self.activity_ai_device_button)
             layout.addStretch(1)
 
+            self.settings_button = self._new_activity_button(
+                "settings",
+                "工作台设置",
+                checkable=False,
+            )
+            self.attach_settings_menu(self.settings_button)
+            layout.addWidget(self.settings_button)
+
             self.activity_home_button.clicked.connect(self.show_web_home)
             self.activity_temporary_button.clicked.connect(
                 lambda: self.toggle_tool_sidebar_panel("temporary")
@@ -774,7 +782,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             )
             return rail
 
-        def _new_activity_button(self, icon_name: str, tooltip: str, *, checked: bool = False) -> QToolButton:
+        def _new_activity_button(self, icon_name: str, tooltip: str, *, checked: bool = False, checkable: bool = True) -> QToolButton:
             button = QToolButton()
             button.setObjectName("activityRailButton")
             button.setToolTip(tooltip)
@@ -782,7 +790,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             button.setIcon(self._activity_icon(icon_name, "#f8fafc" if checked else "#718096"))
             button.setIconSize(QSize(22, 22))
             button.setFixedSize(34, 34)
-            button.setCheckable(True)
+            button.setCheckable(checkable)
             button.setChecked(checked)
             button.setAutoRaise(False)
             button.setFocusPolicy(Qt.NoFocus)
@@ -864,6 +872,20 @@ if PYSIDE6_IMPORT_ERROR is None:
                 painter.drawLine(9, 15, 15, 15)
                 painter.drawLine(12, 3, 12, 5)
                 painter.drawLine(12, 19, 12, 21)
+            elif kind == "settings":
+                import math
+
+                center = 12.0
+                painter.drawEllipse(9, 9, 6, 6)
+                for i in range(8):
+                    angle = math.pi * 0.25 * i
+                    cos_a, sin_a = math.cos(angle), math.sin(angle)
+                    painter.drawLine(
+                        center + 5.5 * cos_a,
+                        center + 5.5 * sin_a,
+                        center + 8.5 * cos_a,
+                        center + 8.5 * sin_a,
+                    )
             else:
                 painter.drawEllipse(7, 7, 10, 10)
             painter.end()
