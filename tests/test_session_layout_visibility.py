@@ -126,3 +126,47 @@ def test_side_layout_hides_inactive_device_without_sessions(app: QApplication) -
         assert not tabs_a.tabBar().isVisible()
     finally:
         window.close()
+
+
+def test_side_layout_shows_bar_after_opening_session_while_already_side(app: QApplication) -> None:
+    """Opening a new session while already in side layout must surface the
+    active device's session tab bar (the prior code kept it hidden)."""
+    _ = app
+    window = DeviceDesktopApp()
+    devices = _setup_devices(window, count=2)
+    window.session_tab_layout = "side"
+    window.apply_session_layout_state()
+    window.show()
+    QApplication.processEvents()
+    _open_session(window, devices[1], "会话 B")  # B becomes active
+    tabs_b = _session_tabs_for(window, devices[1].id)
+    try:
+        assert tabs_b.tabBar().isVisible()
+    finally:
+        window.close()
+
+
+def test_side_layout_switching_device_updates_visible_bar(app: QApplication) -> None:
+    """Switching the active device in side layout must move the visible session
+    bar to the newly-activated device."""
+    _ = app
+    window = DeviceDesktopApp()
+    devices = _setup_devices(window, count=2)
+    _open_session(window, devices[0], "会话 A")
+    _open_session(window, devices[1], "会话 B")  # B active
+    window.session_tab_layout = "side"
+    window.apply_session_layout_state()
+    window.show()
+    QApplication.processEvents()
+    # Switch back to device A via the session tab widget.
+    tabs_a = _session_tabs_for(window, devices[0].id)
+    tabs_b = _session_tabs_for(window, devices[1].id)
+    try:
+        assert tabs_b.tabBar().isVisible()
+        assert not tabs_a.tabBar().isVisible()
+        window.session_tab_widget.setCurrentWidget(window.device_tabs_by_id[devices[0].id].page)
+        QApplication.processEvents()
+        assert tabs_a.tabBar().isVisible()
+        assert not tabs_b.tabBar().isVisible()
+    finally:
+        window.close()

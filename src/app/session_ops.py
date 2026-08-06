@@ -3021,6 +3021,8 @@ class SessionOpsMixin:
         self.refresh_workspace_context()
         self._refresh_tab_header_styles()
         self.update_controls()
+        if hasattr(self, "set_session_tab_bars_visible"):
+            self.set_session_tab_bars_visible(True)
         state = self.current_session_state()
         if state is not None:
             self.focus_current_terminal()
