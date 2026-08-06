@@ -92,6 +92,8 @@ class SessionLayoutOpsMixin:
         # at a fixed width.
         self.session_manager_tree.header().setStretchLastSection(True)
         self.session_manager_tree.header().resizeSection(0, 180)
+        # Compact child indent so session rows sit close to their device group.
+        self.session_manager_tree.setIndentation(10)
         self.session_manager_tree.customContextMenuRequested.connect(
             self.session_manager_custom_context_menu
         )
