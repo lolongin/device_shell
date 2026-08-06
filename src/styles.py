@@ -3333,7 +3333,6 @@ QTreeWidget#sessionManagerTree::item {
     padding: 2px 4px;
     border: none;
     border-radius: 6px;
-    color: #e5edf6;
 }
 QTreeWidget#sessionManagerTree::item:hover {
     background: #111c2f;

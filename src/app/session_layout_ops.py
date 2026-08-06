@@ -254,6 +254,7 @@ class SessionLayoutOpsMixin:
             parent.setText(0, label)
             parent.setText(1, str(len(states)))
             parent.setForeground(1, QColor("#a7b4c7"))
+            parent.setForeground(0, QColor("#e5edf6"))
             parent.setData(0, Qt.UserRole, group_key)
             parent_icon = self._session_manager_parent_icon(states)
             if parent_icon is not None:
@@ -269,6 +270,7 @@ class SessionLayoutOpsMixin:
                 child.setText(0, state.title)
                 child.setText(1, self._session_manager_metadata(state))
                 child.setForeground(1, QColor("#a7b4c7"))
+                child.setForeground(0, QColor("#e5edf6"))
                 child.setData(0, Qt.UserRole, state.tab_id)
                 child_icon = self._session_manager_session_icon(state)
                 if child_icon is not None:
