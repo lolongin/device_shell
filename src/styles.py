@@ -3237,6 +3237,44 @@ QToolButton#sessionQuickRestoreButton:disabled {
     color: #526176;
 }
 
+/* Unified component system */
+QSpinBox,
+QAbstractSpinBox {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 8px;
+    color: #f8fafc;
+    padding: 5px 8px;
+    selection-background-color: #315f9f;
+    selection-color: #f8fafc;
+    min-height: 22px;
+}
+QSpinBox:focus,
+QAbstractSpinBox:focus {
+    border-color: #60a5fa;
+}
+QSpinBox::up-button,
+QSpinBox::down-button {
+    background: transparent;
+    border: none;
+    width: 18px;
+}
+QFrame#serverCard,
+QFrame#serverGroupHeader {
+    border-radius: 12px;
+}
+QLineEdit#detailValueInput,
+QLineEdit#commandFindInput,
+QLineEdit#commandReplaceInput {
+    border-radius: 8px;
+}
+QLabel#settingsHint {
+    background: transparent;
+    color: #a7b4c7;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
 /* Global text selection */
 QLineEdit,
 QTextEdit,
