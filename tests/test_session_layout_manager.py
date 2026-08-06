@@ -177,6 +177,7 @@ def test_device_parent_column1_shows_session_count(
 
     parent = tree.topLevelItem(0)
     assert parent is not None
+    assert parent.text(0) == device.name
     assert not parent.icon(0).isNull()
     assert parent.text(1) == "2"
     assert parent.childCount() == 2

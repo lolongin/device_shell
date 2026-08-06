@@ -87,6 +87,11 @@ class SessionLayoutOpsMixin:
         self.session_manager_tree = QTreeWidget()
         self.session_manager_tree.setObjectName("sessionManagerTree")
         self.session_manager_tree.setColumnCount(2)
+        # Column width policy lives on the QHeaderView even though the header is
+        # hidden: the last (count) column stretches while the name column stays
+        # at a fixed width.
+        self.session_manager_tree.header().setStretchLastSection(True)
+        self.session_manager_tree.header().resizeSection(0, 180)
         self.session_manager_tree.customContextMenuRequested.connect(
             self.session_manager_custom_context_menu
         )
@@ -248,6 +253,7 @@ class SessionLayoutOpsMixin:
             label = (device.name if device is not None else device_tab.title) or device_id
             parent.setText(0, label)
             parent.setText(1, str(len(states)))
+            parent.setForeground(1, QColor("#a7b4c7"))
             parent.setData(0, Qt.UserRole, group_key)
             parent_icon = self._session_manager_parent_icon(states)
             if parent_icon is not None:
@@ -262,6 +268,7 @@ class SessionLayoutOpsMixin:
                 child = QTreeWidgetItem(parent)
                 child.setText(0, state.title)
                 child.setText(1, self._session_manager_metadata(state))
+                child.setForeground(1, QColor("#a7b4c7"))
                 child.setData(0, Qt.UserRole, state.tab_id)
                 child_icon = self._session_manager_session_icon(state)
                 if child_icon is not None:

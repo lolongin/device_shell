@@ -3275,6 +3275,85 @@ QLabel#settingsHint {
     line-height: 1.4;
 }
 
+/* Session manager panel */
+QWidget#sessionManagerPanel {
+    background: transparent;
+}
+QLabel#sessionManagerTitle {
+    background: transparent;
+    color: #f8fafc;
+    font-weight: 700;
+    font-size: 13px;
+}
+QLabel#sessionManagerCount {
+    background: transparent;
+    color: #a7b4c7;
+    font-size: 11px;
+    font-weight: 700;
+}
+QToolButton#sessionManagerCollapse,
+QToolButton#sessionManagerExpand {
+    background: #08101d;
+    border: 1px solid #243244;
+    border-radius: 6px;
+    color: #a7b4c7;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0px;
+    font-size: 11px;
+}
+QToolButton#sessionManagerCollapse:hover,
+QToolButton#sessionManagerExpand:hover {
+    background: #111c2f;
+    border-color: #60a5fa;
+    color: #f8fafc;
+}
+QToolButton#sessionManagerCollapse:checked {
+    background: #163326;
+    border-color: #22c55e;
+    color: #d8fff0;
+}
+QWidget#sessionManagerStrip {
+    background: #0f172a;
+    border: 1px solid #243244;
+    border-radius: 8px;
+}
+QTreeWidget#sessionManagerTree {
+    background: #020617;
+    border: none;
+    border-radius: 10px;
+    alternate-background-color: #020617;
+    outline: none;
+    show-decoration-selected: 0;
+}
+QTreeWidget#sessionManagerTree::item {
+    min-height: 26px;
+    padding: 2px 4px;
+    border: none;
+    border-radius: 6px;
+    color: #e5edf6;
+}
+QTreeWidget#sessionManagerTree::item:hover {
+    background: #111c2f;
+}
+QTreeWidget#sessionManagerTree::item:selected {
+    background: #24324a;
+    color: #f8fafc;
+}
+QTreeWidget#sessionManagerTree::item:selected:active {
+    background: #24324a;
+}
+QTreeWidget#sessionManagerTree QHeaderView::section {
+    background: transparent;
+    border: none;
+    color: #a7b4c7;
+}
+QTreeWidget#sessionManagerTree QTreeView::branch {
+    background: transparent;
+}
+
 /* Global text selection */
 QLineEdit,
 QTextEdit,
