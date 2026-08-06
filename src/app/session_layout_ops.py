@@ -3,7 +3,7 @@ from __future__ import annotations
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QHBoxLayout,
         QLabel,
@@ -21,6 +21,7 @@ except ModuleNotFoundError:
     QColor = None
     QIcon = None
     QPainter = None
+    QPen = None
     QPixmap = None
     QHBoxLayout = None
     QLabel = None
@@ -85,6 +86,7 @@ class SessionLayoutOpsMixin:
 
         self.session_manager_tree = QTreeWidget()
         self.session_manager_tree.setObjectName("sessionManagerTree")
+        self.session_manager_tree.setColumnCount(2)
         self.session_manager_tree.customContextMenuRequested.connect(
             self.session_manager_custom_context_menu
         )
@@ -244,7 +246,8 @@ class SessionLayoutOpsMixin:
             parent = QTreeWidgetItem(self.session_manager_tree)
             group_key = device_id
             label = (device.name if device is not None else device_tab.title) or device_id
-            parent.setText(0, f"{label} ({len(states)})")
+            parent.setText(0, label)
+            parent.setText(1, str(len(states)))
             parent.setData(0, Qt.UserRole, group_key)
             parent_icon = self._session_manager_parent_icon(states)
             if parent_icon is not None:
@@ -258,6 +261,7 @@ class SessionLayoutOpsMixin:
                     continue
                 child = QTreeWidgetItem(parent)
                 child.setText(0, state.title)
+                child.setText(1, self._session_manager_metadata(state))
                 child.setData(0, Qt.UserRole, state.tab_id)
                 child_icon = self._session_manager_session_icon(state)
                 if child_icon is not None:
@@ -290,15 +294,26 @@ class SessionLayoutOpsMixin:
         return self._session_manager_dot_icon(color)
 
     def _session_manager_parent_icon(self, states: list[object]) -> QIcon | None:
-        """Aggregate status dot for a device parent (green if any child connected)."""
-        connected = False
+        """Device icon tinted by aggregate connection state (green/amber/gray)."""
+        kind = states[0].kind if states else "device"
         if hasattr(self, "_tab_connection_state"):
-            connected = any(
-                self._tab_connection_state(state) == "connected" for state in states
-            )
-        return self._session_manager_dot_icon(
-            self.SESSION_MANAGER_DOT_CONNECTED if connected else self.SESSION_MANAGER_DOT_OFFLINE
-        )
+            conns = [self._tab_connection_state(state) for state in states]
+            if any(c == "connected" for c in conns):
+                color = self.SESSION_MANAGER_DOT_CONNECTED
+            elif any(c == "connecting" for c in conns):
+                color = self.SESSION_MANAGER_DOT_CONNECTING
+            else:
+                color = self.SESSION_MANAGER_DOT_OFFLINE
+        else:
+            color = self.SESSION_MANAGER_DOT_CONNECTED if states else self.SESSION_MANAGER_DOT_OFFLINE
+        return self._session_manager_device_icon(kind, color)
+
+    def _session_manager_metadata(self, state: object) -> str:
+        """Muted `协议 · host:port` line for a session child (col 1)."""
+        kind = self.session_kind_label(state.kind)
+        host = getattr(state, "host", "") or ""
+        port = getattr(state, "port", 0)
+        return f"{kind} · {host}:{port}"
 
     def _session_manager_dot_icon(self, color: str) -> QIcon | None:
         if QPixmap is None or QPainter is None or QColor is None:
@@ -310,6 +325,41 @@ class SessionLayoutOpsMixin:
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(color))
         painter.drawEllipse(2, 2, 8, 8)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _session_manager_device_icon(self, kind: str, color: str) -> QIcon | None:
+        """16x16 device glyph (server/laptop/serial/sim), tinted by connection state."""
+        if QPixmap is None or QPainter is None or QColor is None:
+            return None
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(color), 1.5)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        if kind == "linux":
+            painter.drawRoundedRect(2, 2, 12, 10, 2, 2)  # laptop body
+            painter.drawLine(5, 13, 11, 13)
+            painter.drawLine(4, 15, 12, 15)
+        elif kind == "serial":
+            painter.drawRoundedRect(2, 5, 12, 6, 2, 2)   # DB9-style port
+            painter.drawLine(4, 5, 4, 11)
+            painter.drawLine(6, 5, 6, 11)
+            painter.drawLine(8, 5, 8, 11)
+            painter.drawLine(10, 5, 10, 11)
+        elif kind == "simulated":
+            painter.drawEllipse(3, 3, 10, 10)            # cloud/ball
+            painter.drawLine(8, 3, 8, 13)
+            painter.drawLine(3, 8, 13, 8)
+        else:                                            # device (telnet) = server
+            painter.drawRoundedRect(2, 3, 12, 10, 2, 2)
+            painter.drawLine(5, 5, 11, 5)
+            painter.drawLine(5, 8, 11, 8)
+            painter.drawLine(5, 11, 11, 11)
         painter.end()
         return QIcon(pixmap)
 

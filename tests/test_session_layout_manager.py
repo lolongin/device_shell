@@ -110,3 +110,74 @@ def test_collapsed_device_groups_pruned_to_existing_tabs(app: QApplication) -> N
 
     assert window.collapsed_device_groups == ["layout-device-0"]
     window.close()
+
+
+def test_tree_has_two_columns_with_session_metadata(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    _device_tabs(window, count=1)
+    monkeypatch.setattr(window, "connect_session_tab", lambda tab_id: None)
+    device = window.devices[0]
+    window.ensure_session_tab(
+        kind="simulated",
+        device=device,
+        host=device.ssh_ip or "10.0.0.1",
+        port=device.ssh_port or 22,
+        username="admin",
+        password="secret",
+        title="SSH 双列",
+        suppress_initial_error=True,
+    )
+    window.refresh_session_manager_tree()
+    tree: QTreeWidget = window.session_manager_tree
+
+    assert tree.columnCount() == 2
+    child = tree.topLevelItem(0).child(0)
+    assert child is not None
+    assert not child.icon(0).isNull()
+    assert "SSH 双列" in child.text(0)
+    assert "模拟" in child.text(1)
+    assert (device.ssh_ip or "10.0.0.1") in child.text(1)
+    assert str(device.ssh_port or 22) in child.text(1)
+    window.close()
+
+
+def test_device_parent_column1_shows_session_count(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    _device_tabs(window, count=1)
+    monkeypatch.setattr(window, "connect_session_tab", lambda tab_id: None)
+    device = window.devices[0]
+    window.ensure_session_tab(
+        kind="simulated",
+        device=device,
+        host=device.ssh_ip or "10.0.0.1",
+        port=device.ssh_port or 22,
+        username="admin",
+        password="secret",
+        title="SSH 计数",
+        suppress_initial_error=True,
+    )
+    window.ensure_session_tab(
+        kind="simulated",
+        device=device,
+        host=device.ssh_ip or "10.0.0.1",
+        port=device.ssh_port or 23,
+        username="admin",
+        password="secret",
+        title="SSH 计数 2",
+        suppress_initial_error=True,
+    )
+    window.refresh_session_manager_tree()
+    tree: QTreeWidget = window.session_manager_tree
+
+    parent = tree.topLevelItem(0)
+    assert parent is not None
+    assert not parent.icon(0).isNull()
+    assert parent.text(1) == "2"
+    assert parent.childCount() == 2
+    window.close()
