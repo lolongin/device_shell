@@ -3696,6 +3696,13 @@ class SessionOpsMixin:
         child_tabs.setMovable(True)
         child_tabs.tabBar().setExpanding(False)
         child_tabs.tabBar().setUsesScrollButtons(True)
+        # A freshly created split tab widget must honor the current layout: in
+        # the side (right) layout the top tab bar is replaced by the right
+        # session manager, so the new tab bar starts hidden instead of popping
+        # in above the terminal until the next layout apply.
+        child_tabs.tabBar().setVisible(
+            getattr(self, "session_tab_layout", "top") != "side"
+        )
         child_tabs.currentChanged.connect(
             lambda _index, device_id=device_id, tabs=child_tabs: self.handle_split_session_tab_changed(
                 device_id,
