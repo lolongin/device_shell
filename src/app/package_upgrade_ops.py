@@ -9,7 +9,8 @@ import time
 from typing import Any
 
 try:
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import QPointF, Qt, QTimer
+    from PySide6.QtGui import QColor, QPainter, QPen
     from PySide6.QtWidgets import (
         QFileDialog,
         QCheckBox,
@@ -64,6 +65,31 @@ from ..package_upgrade import (
     startup_uses_package,
 )
 from ..terminal_orchestration import TerminalPlanError, parse_terminal_plan
+
+
+class _ArrowComboBox(QComboBox):
+    """QComboBox that paints a visible dropdown chevron.
+
+    Qt's QSS ``QComboBox { background }`` suppresses the built-in ``::down-arrow``
+    image, so the dropdown affordance can be invisible on dark surfaces. This
+    subclass repaints a small chevron over the drop-down region after the base
+    combo paints.
+    """
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#a7b4c7"), 1.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        dd_width = 22
+        cx = self.width() - dd_width / 2
+        cy = self.height() / 2
+        painter.drawLine(QPointF(cx - 4, cy - 1), QPointF(cx, cy + 2))
+        painter.drawLine(QPointF(cx + 4, cy - 1), QPointF(cx, cy + 2))
+        painter.end()
 
 
 class PackageUpgradeOpsMixin:
@@ -157,7 +183,7 @@ class PackageUpgradeOpsMixin:
         package_row.addWidget(self.package_upgrade_browse_button)
         form_layout.addRow("系统包", package_row)
 
-        self.package_upgrade_server_host_combo = QComboBox()
+        self.package_upgrade_server_host_combo = _ArrowComboBox()
         self.package_upgrade_server_host_combo.setEditable(True)
         remembered_host = str(getattr(self, "package_upgrade_server_host", "")).strip()
         local_addrs = self._list_local_ipv4()
