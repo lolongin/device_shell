@@ -82,3 +82,20 @@ def test_web_pages_expose_set_workspace_theme() -> None:
     for page_name in ("web_shell.html", "device_navigation.html", "xterm_terminal.html", "auto_response_editor.html"):
         page = (_web_root() / page_name).read_text(encoding="utf-8")
         assert "window.setWorkspaceTheme" in page
+
+
+def test_apply_theme_reaches_session_terminals(app: QApplication) -> None:
+    _ = app
+    window = DeviceDesktopApp()
+    calls: list[str] = []
+    fake = type("F", (), {"set_theme": lambda self, mode: calls.append(mode)})()
+    original = window.session_tabs_by_id
+    window.session_tabs_by_id = {"t1": type("S", (), {"terminal": fake})()}
+    try:
+        window.apply_theme("light")
+        assert calls == ["light"]
+    finally:
+        # Restore the real (empty) session registry before closing so the
+        # closeEvent log-flush path never touches the minimal fake state.
+        window.session_tabs_by_id = original
+        window.close()

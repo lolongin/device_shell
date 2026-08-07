@@ -78,6 +78,7 @@ class WebShellWidget(QWidget):
         self._pending_payload: dict[str, Any] | None = None
         self._pending_payload_json = ""
         self._last_applied_payload_json = ""
+        self._pending_theme: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -125,13 +126,20 @@ class WebShellWidget(QWidget):
         self._loaded = ok
         if ok and self._pending_payload is not None:
             self._apply_payload_json(self._pending_payload_json)
+        if ok and self._pending_theme is not None:
+            self._apply_theme(self._pending_theme)
 
     def set_theme(self, mode: str) -> None:
-        """Push the active theme to the loaded page via window.setWorkspaceTheme."""
+        """Store the active theme and push it to the loaded page."""
+        mode = "light" if mode == "light" else "dark"
+        self._pending_theme = mode
+        if self._loaded:
+            self._apply_theme(mode)
+
+    def _apply_theme(self, mode: str) -> None:
         view = self.view if hasattr(self, "view") else getattr(self, "_view", None)
         if view is None:
             return
-        mode = "light" if mode == "light" else "dark"
         view.page().runJavaScript(f"window.setWorkspaceTheme('{mode}')")
 
     def _handle_filters_changed(self, payload: str) -> None:

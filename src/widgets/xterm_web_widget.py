@@ -101,6 +101,7 @@ class XtermWebWidget(QWidget):
         self._lines = self.DEFAULT_LINES
         self._local_echo = os.getenv("DEVICE_TUI_XTERM_LOCAL_ECHO", "").lower() in {"1", "true", "yes", "on"}
         self._font_size = DEFAULT_FONT_SIZE
+        self._pending_theme: str | None = None
 
         self.setObjectName("terminalLog")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -163,11 +164,16 @@ class XtermWebWidget(QWidget):
         return self._view.page()
 
     def set_theme(self, mode: str) -> None:
-        """Push the active theme to the loaded page via window.setWorkspaceTheme."""
+        """Store the active theme and push it to the loaded page."""
+        mode = "light" if mode == "light" else "dark"
+        self._pending_theme = mode
+        if self._ready:
+            self._apply_theme(mode)
+
+    def _apply_theme(self, mode: str) -> None:
         view = self._view if hasattr(self, "_view") else None
         if view is None:
             return
-        mode = "light" if mode == "light" else "dark"
         view.page().runJavaScript(f"window.setWorkspaceTheme('{mode}')")
         # Match the WebView chrome background to the page so the frame
         # doesn't flash the dark default in light mode.
@@ -270,6 +276,8 @@ class XtermWebWidget(QWidget):
             pending = "".join(self._pending_output)
             self._pending_output.clear()
             self._queue_write(pending)
+        if self._pending_theme is not None:
+            self._apply_theme(self._pending_theme)
         self._schedule_fit()
 
     def _schedule_fit(self) -> None:

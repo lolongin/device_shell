@@ -706,11 +706,20 @@ class SessionLayoutOpsMixin:
         # Canvas terminals re-read their palette from the app's palette switch.
         if hasattr(self, "apply_canvas_theme"):
             self.apply_canvas_theme(mode)
-        # Web widgets push new :root variables (Task 4 wires these methods).
-        for attr in ("web_shell", "device_navigation_web", "session_web_views"):
+        # Web widgets push new :root variables.
+        for attr in ("web_shell", "device_navigation_web"):
             widget = getattr(self, attr, None)
             if widget is not None and hasattr(widget, "set_theme"):
                 widget.set_theme(mode)
+        # Per-session terminals (xterm/canvas) apply the theme too.
+        for state in list(getattr(self, "session_tabs_by_id", {}).values()):
+            terminal = getattr(state, "terminal", None)
+            if terminal is None:
+                continue
+            if hasattr(terminal, "set_theme"):
+                terminal.set_theme(mode)
+            elif hasattr(terminal, "apply_canvas_theme"):
+                terminal.apply_canvas_theme(mode)
         self.schedule_desktop_state_save()
 
     def session_manager_custom_context_menu(self, pos: object) -> None:
