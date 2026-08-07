@@ -440,8 +440,8 @@ class SessionLayoutOpsMixin:
         breadcrumb = QWidget()
         breadcrumb.setObjectName("sessionBreadcrumb")
         layout = QHBoxLayout(breadcrumb)
-        layout.setContentsMargins(10, 3, 10, 3)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 5, 14, 5)
+        layout.setSpacing(6)
         home_label = QLabel("设备池")
         home_label.setObjectName("breadcrumbHome")
         home_label.setCursor(Qt.PointingHandCursor)
@@ -460,10 +460,16 @@ class SessionLayoutOpsMixin:
             if self.current_session_state() is not None
             else None
         )
+
+        def separator() -> QLabel:
+            sep = QLabel("›")
+            sep.setObjectName("breadcrumbSeparator")
+            return sep
+
         layout.addWidget(home_label)
-        layout.addWidget(QLabel("/"))
+        layout.addWidget(separator())
         layout.addWidget(self.session_breadcrumb_device_label)
-        layout.addWidget(QLabel("/"))
+        layout.addWidget(separator())
         layout.addWidget(self.session_breadcrumb_session_label)
         layout.addStretch(1)
         self.session_breadcrumb = breadcrumb

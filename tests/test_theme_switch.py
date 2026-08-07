@@ -258,3 +258,22 @@ def test_light_theme_primary_button_uses_white_text() -> None:
     light = APP_STYLE_LIGHT[APP_STYLE_LIGHT.index("QPushButton#primaryButton,") :]
     # The light override appended after generation forces white text.
     assert "color: #ffffff;" in light
+
+
+def test_breadcrumb_has_polished_style() -> None:
+    """The session breadcrumb must have a styled container and separators, not
+    bare labels."""
+    from src.styles import APP_STYLE
+
+    assert "QWidget#sessionBreadcrumb {" in APP_STYLE
+    assert "QLabel#breadcrumbSeparator {" in APP_STYLE
+    assert "QLabel#breadcrumbHome {" in APP_STYLE
+    assert "border-radius: 10px;" in APP_STYLE
+
+
+def test_breadcrumb_hover_blue_mapped_to_light() -> None:
+    """The breadcrumb hover blue rgba must be covered by the light mapping so
+    it doesn't stay dark in the light theme."""
+    from src.theme_tokens import DARK_TO_LIGHT
+
+    assert "rgba(96, 165, 250, 0.14)" in DARK_TO_LIGHT
