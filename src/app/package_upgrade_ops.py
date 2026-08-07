@@ -1067,6 +1067,7 @@ class PackageUpgradeOpsMixin:
             {
                 "type": "expect",
                 "success": [transfer_prompt, "ftp_prompt"],
+                "success_markers": ["Transfer complete", "226 "],
                 "failures": [
                     "Error:",
                     "failed",

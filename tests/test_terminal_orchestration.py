@@ -364,3 +364,37 @@ def test_failure_word_on_confirmation_line_answers_instead_of_aborting() -> None
     assert any(item[1].text.rstrip("\r") == "y" for item in harness.sent)
     coordinator.on_output("tab-1", "\n<sim> ")
     assert runner.public_dict()["status"] == "completed"
+
+
+def test_success_marker_wins_over_failure_word() -> None:
+    """A step with explicit success markers completes when a success marker is
+    present, even if a failure-looking word also appears in the output. This
+    lets a download that finishes ('Transfer complete') succeed despite a
+    benign 'error' mention."""
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "get target.cc flash:/target.cc"},
+            {
+                "type": "expect",
+                "name": "download",
+                "success": ["ftp_prompt"],
+                "success_markers": ["Transfer complete"],
+                "failures": ["error"],
+            },
+        ]
+    )
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=plan,
+    )
+
+    # The FTP output mentions 'error' in a benign line but the transfer
+    # completes — success marker must win.
+    coordinator.on_output("tab-1", "550 error on a stale line\n")
+    coordinator.on_output("tab-1", "226 Transfer complete.\nftp> ")
+
+    result = runner.public_dict()
+    assert result["status"] == "completed", f"expected completed, got {result['status']}"

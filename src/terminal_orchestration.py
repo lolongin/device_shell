@@ -79,6 +79,7 @@ class ExpectStep:
     success: tuple[str, ...]
     responses: tuple[ResponseRule, ...] = ()
     failures: tuple[str, ...] = ()
+    success_markers: tuple[str, ...] = ()
     timeout_seconds: float = 30.0
     idle_seconds: float = 0.0
     case_sensitive: bool = False
@@ -329,8 +330,32 @@ class TerminalExecutionRunner:
             if self.status != "running":
                 return
             responded = self._response_counts != response_counts_before
+            # Explicit success markers take priority over failure words: if the
+            # output contains a marker that proves the step succeeded (e.g.
+            # "Transfer complete", "Succeeded in setting"), the step completes
+            # even if a benign failure-looking word also appears. Failure words
+            # only matter when no success marker matched and no interaction
+            # response was triggered.
+            success_marker = _first_match(
+                self._scan_buffer,
+                step.success_markers,
+                case_sensitive=step.case_sensitive,
+            )
+            if success_marker is not None:
+                self._finish_active_step_locked(
+                    "completed",
+                    matched=success_marker[0],
+                )
+                if not self._take_branch_locked(step, step.on_match, reason="match"):
+                    self.current_step += 1
+                    self._advance_locked()
+                return
             failure = None
-            if not responded:
+            # A step with explicit success markers is judged by those markers
+            # (and its timeout), not by failure words — a benign failure-looking
+            # word in partial output must not abort it before the success marker
+            # arrives.
+            if not responded and not step.success_markers:
                 failure = _first_match(
                     self._scan_buffer,
                     step.failures,
@@ -956,6 +981,10 @@ def _parse_send_step(raw: dict[str, Any], index: int) -> SendStep:
 def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
     success = _match_list(raw.get("success"), f"步骤 {index} success", required=True)
     failures = _match_list(raw.get("failures", []), f"步骤 {index} failures")
+    success_markers = _match_list(
+        raw.get("success_markers", []),
+        f"步骤 {index} success_markers",
+    )
     raw_responses = raw.get("responses", [])
     if not isinstance(raw_responses, list):
         raise TerminalPlanError("invalid_plan", f"步骤 {index} responses 必须是数组。")
@@ -1014,6 +1043,7 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
         success=success,
         responses=tuple(responses),
         failures=failures,
+        success_markers=success_markers,
         timeout_seconds=timeout,
         idle_seconds=idle,
         case_sensitive=bool(raw.get("case_sensitive", False)),
