@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ._sample_data import STATUS_IDLE, STATUS_OCCUPIED, STATUS_OTHER, STATUS_PIPELINE
 
 
@@ -3414,13 +3416,16 @@ QComboBox {
 
 
 def _apply_light_mapping(style: str) -> str:
-    """Replace every dark literal in ``style`` with its light counterpart."""
+    """Replace every dark literal in ``style`` with its light counterpart.
+
+    Single-pass: build one alternation of all dark keys and map each match once,
+    so a generated light value (e.g. ``#ffffff``) is never re-processed by a
+    later rule that also keys on it.
+    """
     from .theme_tokens import DARK_TO_LIGHT
 
-    out = style
-    for dark, light in DARK_TO_LIGHT.items():
-        out = out.replace(dark, light)
-    return out
+    pattern = re.compile("|".join(re.escape(k) for k in DARK_TO_LIGHT))
+    return pattern.sub(lambda m: DARK_TO_LIGHT[m.group(0)], style)
 
 
 APP_STYLE_LIGHT = _apply_light_mapping(APP_STYLE)

@@ -32,3 +32,12 @@ def test_app_style_light_has_light_base_and_no_dark_base() -> None:
 
 def test_app_style_light_has_light_primary_button() -> None:
     assert "background: #15803d" not in APP_STYLE_LIGHT
+
+
+def test_app_style_light_panels_stay_white() -> None:
+    """Panels (#0f172a) must map to white and must NOT be clobbered back to
+    near-black by the later #ffffff→#1c2128 rule (single-pass replacement)."""
+    assert "background: #ffffff" in APP_STYLE_LIGHT
+    # No residual dark panels: count #1c2128 occurrences should be reasonable
+    # (it's the mapped text color), but the dark panel #0f172a is gone.
+    assert "#0f172a" not in APP_STYLE_LIGHT
