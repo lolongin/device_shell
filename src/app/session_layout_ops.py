@@ -704,6 +704,11 @@ class SessionLayoutOpsMixin:
         command_input = getattr(self, "command_record_input", None)
         if command_input is not None and hasattr(command_input, "set_theme"):
             command_input.set_theme(mode)
+        # Re-populate the session-manager tree so its setForeground brushes pick
+        # up the new theme (they are set at fill time; without this the existing
+        # items keep the old theme's colors until a click re-populates them).
+        if getattr(self, "session_manager_tree", None) is not None:
+            self.refresh_session_manager_tree()
         self.schedule_desktop_state_save()
 
     def session_manager_custom_context_menu(self, pos: object) -> None:

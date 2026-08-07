@@ -285,3 +285,46 @@ def test_breadcrumb_hover_blue_mapped_to_light() -> None:
     from src.theme_tokens import DARK_TO_LIGHT
 
     assert "rgba(96, 165, 250, 0.14)" in DARK_TO_LIGHT
+
+
+def test_theme_switch_refreshes_session_manager_tree_foreground(
+    app: QApplication,
+) -> None:
+    """Switching theme must refresh the session-manager tree so its setForeground
+    brushes pick up the new theme (regression: they stayed the old theme's color
+    until the tree was re-populated by a click)."""
+    from src._sample_data import sample_devices
+
+    _ = app
+    window = DeviceDesktopApp()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(window, "connect_session_tab", lambda tab_id: None)
+    try:
+        devices = sample_devices()[:1]
+        device = devices[0]
+        device.id = "theme-refresh-device"
+        device.name = "主题树"
+        window.devices = devices
+        window.rebuild_device_indexes()
+        window.theme_mode = "dark"
+        window.ensure_session_tab(
+            kind="simulated", device=device, host="10.0.0.1", port=22,
+            username="admin", password="secret", title="会话", suppress_initial_error=True,
+        )
+        window.refresh_session_manager_tree()
+        tree = window.session_manager_tree
+        parent = tree.topLevelItem(0)
+        assert parent is not None
+        # Switch to light — the tree must re-populate with dark text.
+        window.apply_theme("light")
+        parent = tree.topLevelItem(0)
+        assert parent is not None
+        assert parent.foreground(0).color().name() == "#1c2128"
+        assert parent.foreground(1).color().name() == "#5a6470"
+        # And back to dark.
+        window.apply_theme("dark")
+        parent = tree.topLevelItem(0)
+        assert parent.foreground(0).color().name() == "#e5edf6"
+    finally:
+        monkeypatch.undo()
+        window.close()
