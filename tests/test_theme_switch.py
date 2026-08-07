@@ -248,3 +248,13 @@ def test_apply_theme_updates_command_record_line_area(app: QApplication) -> None
     window.apply_theme("dark")
     assert window.command_record_input._theme_mode == "dark"
     window.close()
+
+
+def test_light_theme_primary_button_uses_white_text() -> None:
+    """In the light theme the primary (green) button must keep white text, not
+    the mapped near-black green that reads poorly on the deep-green fill."""
+    from src.styles import APP_STYLE_LIGHT
+
+    light = APP_STYLE_LIGHT[APP_STYLE_LIGHT.index("QPushButton#primaryButton,") :]
+    # The light override appended after generation forces white text.
+    assert "color: #ffffff;" in light

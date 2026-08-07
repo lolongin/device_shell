@@ -3429,3 +3429,19 @@ def _apply_light_mapping(style: str) -> str:
 
 
 APP_STYLE_LIGHT = _apply_light_mapping(APP_STYLE)
+# Light-theme override: primary/connection buttons keep WHITE text on the deep
+# green fill. The dark-to-light mapping turns the dark button text (#22c55e ->
+# #1f8a4c) into a near-black green that reads poorly on the deep green button.
+APP_STYLE_LIGHT += """
+QPushButton#primaryButton,
+QPushButton[connectionAction="primary"] {
+    color: #ffffff;
+}
+QPushButton#primaryButton:hover,
+QPushButton[connectionAction="primary"]:hover {
+    color: #ffffff;
+}
+QFrame#serverCard QPushButton#primaryButton {
+    color: #ffffff;
+}
+"""
