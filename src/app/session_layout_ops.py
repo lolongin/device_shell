@@ -70,6 +70,12 @@ class SessionLayoutOpsMixin:
         title.setObjectName("sessionManagerTitle")
         self.session_manager_count_label = QLabel("共 0")
         self.session_manager_count_label.setObjectName("sessionManagerCount")
+        self.session_manager_expand_all_button = QToolButton()
+        self.session_manager_expand_all_button.setObjectName("sessionManagerExpandAll")
+        self.session_manager_expand_all_button.setText("⏵")
+        self.session_manager_expand_all_button.setToolTip("展开/收起所有设备分组")
+        self.session_manager_expand_all_button.setCheckable(True)
+        self.session_manager_expand_all_button.clicked.connect(self.toggle_all_session_groups_expanded)
         self.session_manager_collapse_button = QToolButton()
         self.session_manager_collapse_button.setObjectName("sessionManagerCollapse")
         self.session_manager_collapse_button.setText("⏴")
@@ -78,6 +84,7 @@ class SessionLayoutOpsMixin:
         self.session_manager_collapse_button.clicked.connect(self.toggle_session_manager_collapsed)
         header_layout.addWidget(title, 1)
         header_layout.addWidget(self.session_manager_count_label)
+        header_layout.addWidget(self.session_manager_expand_all_button)
         header_layout.addWidget(self.session_manager_collapse_button)
         layout.addWidget(header)
 
@@ -112,15 +119,6 @@ class SessionLayoutOpsMixin:
             lambda item: self._remember_group_collapse(item, False)
         )
         layout.addWidget(self.session_manager_tree, 1)
-
-        footer = QWidget()
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(0, 0, 0, 0)
-        new_button = QPushButton("＋ 新建终端")
-        new_button.setObjectName("compactGhostButton")
-        new_button.clicked.connect(self._session_manager_new_terminal)
-        footer_layout.addWidget(new_button, 1)
-        layout.addWidget(footer)
 
         panel.setMinimumWidth(self.SESSION_MANAGER_MIN_WIDTH)
         panel.setMaximumWidth(self.SESSION_MANAGER_MAX_WIDTH)
@@ -196,15 +194,24 @@ class SessionLayoutOpsMixin:
         self.apply_session_layout_state()
         self.schedule_desktop_state_save()
 
-    def _session_manager_new_terminal(self) -> None:
-        current = self.current_session_state()
-        if current is None:
-            self.set_status_message("请先选择一个设备。")
+    def toggle_all_session_groups_expanded(self) -> None:
+        """Expand or collapse every device group in the session-manager tree."""
+        tree = getattr(self, "session_manager_tree", None)
+        button = getattr(self, "session_manager_expand_all_button", None)
+        if tree is None:
             return
-        device = self.get_device_by_id(current.device_id)
-        if device is None:
-            return
-        self.open_device_session(device)
+        expanded = not bool(button and button.isChecked())
+        all_collapsed = self.collapsed_device_groups == list(self.device_tabs_by_id)
+        if expanded and all_collapsed:
+            # Button toggles checked = collapse; expand everything instead.
+            expanded = True
+        for index in range(tree.topLevelItemCount()):
+            tree.topLevelItem(index).setExpanded(expanded)
+        if expanded:
+            self.collapsed_device_groups = []
+        else:
+            self.collapsed_device_groups = sorted(self.device_tabs_by_id)
+        self.schedule_desktop_state_save()
 
     def _session_manager_filter_query(self) -> str:
         if self.session_manager_search is None:

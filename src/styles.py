@@ -3294,7 +3294,8 @@ QLabel#sessionManagerCount {
     font-weight: 700;
 }
 QToolButton#sessionManagerCollapse,
-QToolButton#sessionManagerExpand {
+QToolButton#sessionManagerExpand,
+QToolButton#sessionManagerExpandAll {
     background: #08101d;
     border: 1px solid #243244;
     border-radius: 6px;
@@ -3307,12 +3308,14 @@ QToolButton#sessionManagerExpand {
     font-size: 11px;
 }
 QToolButton#sessionManagerCollapse:hover,
-QToolButton#sessionManagerExpand:hover {
+QToolButton#sessionManagerExpand:hover,
+QToolButton#sessionManagerExpandAll:hover {
     background: #111c2f;
     border-color: #60a5fa;
     color: #f8fafc;
 }
-QToolButton#sessionManagerCollapse:checked {
+QToolButton#sessionManagerCollapse:checked,
+QToolButton#sessionManagerExpandAll:checked {
     background: #163326;
     border-color: #22c55e;
     color: #d8fff0;

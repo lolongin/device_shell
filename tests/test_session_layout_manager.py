@@ -196,3 +196,53 @@ def test_device_parent_column1_shows_session_count(
     assert parent.text(1) == "2"
     assert parent.childCount() == 2
     window.close()
+
+
+def test_new_terminal_button_removed(app: QApplication) -> None:
+    """The '＋ 新建终端' footer button was removed from the session-manager
+    panel (sessions are opened from the device pool / terminal, not here)."""
+    _ = app
+    window = DeviceDesktopApp()
+    assert not hasattr(window, "_session_manager_new_terminal")
+    # No footer "新建终端" button should exist under the panel.
+    from PySide6.QtWidgets import QPushButton
+
+    buttons = window.session_manager_panel.findChildren(QPushButton)
+    labels = [b.text() for b in buttons]
+    assert not any("新建终端" in t for t in labels), f"new-terminal button still present: {labels}"
+    window.close()
+
+
+def test_toggle_all_session_groups_expands_and_collapses(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The expand/collapse-all button toggles every device group in the tree."""
+    _ = app
+    window = DeviceDesktopApp()
+    monkeypatch.setattr(window, "connect_session_tab", lambda tab_id: None)
+    devices = sample_devices()[:2]
+    for index, device in enumerate(devices):
+        device.id = f"expand-all-{index}"
+        device.name = f"展开设备 {index + 1}"
+    window.devices = devices
+    window.rebuild_device_indexes()
+    for index, device in enumerate(devices):
+        window.ensure_session_tab(
+            kind="simulated", device=device, host="10.0.0.1", port=22,
+            username="admin", password="secret", title=f"会话 {index}",
+            suppress_initial_error=True,
+        )
+    window.refresh_session_manager_tree()
+    tree = window.session_manager_tree
+    assert tree.topLevelItemCount() == 2
+    # Collapse all.
+    window.session_manager_expand_all_button.setChecked(True)
+    window.toggle_all_session_groups_expanded()
+    assert all(not tree.topLevelItem(i).isExpanded() for i in range(2))
+    assert window.collapsed_device_groups == sorted(device.id for device in devices)
+    # Expand all.
+    window.session_manager_expand_all_button.setChecked(False)
+    window.toggle_all_session_groups_expanded()
+    assert all(tree.topLevelItem(i).isExpanded() for i in range(2))
+    assert window.collapsed_device_groups == []
+    window.close()
