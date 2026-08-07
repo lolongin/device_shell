@@ -54,33 +54,67 @@ class TerminalCanvasWidget(QWidget):
     PADDING_BOTTOM = 14
     SCROLLBAR_WIDTH = 14
 
-    DEFAULT_FG = QColor("#f8fafc")
-    DEFAULT_BG = QColor("#020617")
-    CURSOR_BG = QColor("#22c55e")
-    CURSOR_FG = QColor("#020617")
+    # Dark palette (current values). Applied by default in __init__ and re-applied
+    # by apply_canvas_theme("dark"). Kept as class constants so both palettes are
+    # introspectable without an instance; the LIVE colors live on the instance
+    # (DEFAULT_BG / DEFAULT_FG / CURSOR_BG / CURSOR_FG / ANSI_COLORS) so a theme
+    # switch mutates exactly one widget.
+    DARK_PALETTE = {
+        "DEFAULT_BG": QColor("#020617"),
+        "DEFAULT_FG": QColor("#f8fafc"),
+        "CURSOR_BG": QColor("#22c55e"),
+        "CURSOR_FG": QColor("#020617"),
+        "ANSI": {  # current ANSI_COLORS values
+            "black": QColor("#64748b"),
+            "red": QColor("#f87171"),
+            "green": QColor("#5eead4"),
+            "yellow": QColor("#fbbf24"),
+            "brown": QColor("#fbbf24"),
+            "blue": QColor("#7dd3fc"),
+            "magenta": QColor("#c4b5fd"),
+            "cyan": QColor("#67e8f9"),
+            "white": QColor("#f8fafc"),
+            "brightblack": QColor("#94a3b8"),
+            "brightred": QColor("#fca5a5"),
+            "brightgreen": QColor("#99f6e4"),
+            "brightyellow": QColor("#fde68a"),
+            "brightblue": QColor("#bae6fd"),
+            "brightmagenta": QColor("#ddd6fe"),
+            "brightcyan": QColor("#a5f3fc"),
+            "brightwhite": QColor("#f8fafc"),
+        },
+    }
+
+    # Light palette (晨光): dark text on light background, deeper ANSI for contrast.
+    LIGHT_PALETTE = {
+        "DEFAULT_BG": QColor("#f2f4f6"),
+        "DEFAULT_FG": QColor("#1c2128"),
+        "CURSOR_BG": QColor("#1f8a4c"),
+        "CURSOR_FG": QColor("#f2f4f6"),
+        "ANSI": {
+            "black": QColor("#3a424b"),
+            "red": QColor("#c74a4a"),
+            "green": QColor("#1f8a4c"),
+            "yellow": QColor("#b7791f"),
+            "brown": QColor("#b7791f"),
+            "blue": QColor("#3a7ecf"),
+            "magenta": QColor("#8b5cf6"),
+            "cyan": QColor("#0e7490"),
+            "white": QColor("#1c2128"),
+            "brightblack": QColor("#6a737e"),
+            "brightred": QColor("#c74a4a"),
+            "brightgreen": QColor("#1f8a4c"),
+            "brightyellow": QColor("#b7791f"),
+            "brightblue": QColor("#3a7ecf"),
+            "brightmagenta": QColor("#8b5cf6"),
+            "brightcyan": QColor("#0e7490"),
+            "brightwhite": QColor("#111827"),
+        },
+    }
+
     SELECTION_BG = QColor(WORKSPACE_TEXT_SELECTION_BG)
     SELECTION_FG = QColor(WORKSPACE_TEXT_SELECTION_FG)
     WORD_RE = re.compile(r"[A-Za-z0-9_./:@%+=,\-]+")
-
-    ANSI_COLORS = {
-        "black": QColor("#64748b"),
-        "red": QColor("#f87171"),
-        "green": QColor("#5eead4"),
-        "yellow": QColor("#fbbf24"),
-        "brown": QColor("#fbbf24"),
-        "blue": QColor("#7dd3fc"),
-        "magenta": QColor("#c4b5fd"),
-        "cyan": QColor("#67e8f9"),
-        "white": QColor("#f8fafc"),
-        "brightblack": QColor("#94a3b8"),
-        "brightred": QColor("#fca5a5"),
-        "brightgreen": QColor("#99f6e4"),
-        "brightyellow": QColor("#fde68a"),
-        "brightblue": QColor("#bae6fd"),
-        "brightmagenta": QColor("#ddd6fe"),
-        "brightcyan": QColor("#a5f3fc"),
-        "brightwhite": QColor("#f8fafc"),
-    }
     SPECIAL_KEY_SEQUENCES = {
         Qt.Key_Delete: "\x1b[3~",
         Qt.Key_Left: "\x1b[D",
@@ -95,6 +129,7 @@ class TerminalCanvasWidget(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._apply_palette(self.DARK_PALETTE)
         self._raw_sender: Callable[[str], None] | None = None
         self._command_recorder: Callable[[str], None] | None = None
         self._enter_reconnect_handler: Callable[[], bool] | None = None
@@ -146,6 +181,19 @@ class TerminalCanvasWidget(QWidget):
 
         self._refresh_font_metrics()
         self._init_terminal_backend()
+
+    def _apply_palette(self, palette: dict) -> None:
+        """Copy one palette's colors onto this instance's live canvas colors."""
+        self.DEFAULT_BG = palette["DEFAULT_BG"]
+        self.DEFAULT_FG = palette["DEFAULT_FG"]
+        self.CURSOR_BG = palette["CURSOR_BG"]
+        self.CURSOR_FG = palette["CURSOR_FG"]
+        self.ANSI_COLORS = palette["ANSI"]
+
+    def apply_canvas_theme(self, mode: str) -> None:
+        """Swap the ANSI/foreground/background palette and repaint the canvas."""
+        self._apply_palette(self.LIGHT_PALETTE if mode == "light" else self.DARK_PALETTE)
+        self.viewport().update()
 
     def viewport(self) -> "TerminalCanvasWidget":
         """Return self for compatibility with QPlainTextEdit call sites."""

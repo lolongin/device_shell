@@ -2040,9 +2040,11 @@ def test_terminal_render_surfaces_share_workspace_palette() -> None:
     canvas = (root / "src" / "widgets" / "terminal_canvas.py").read_text(encoding="utf-8")
     legacy = (root / "src" / "widgets" / "terminal_widget.py").read_text(encoding="utf-8")
 
-    assert "DEFAULT_BG = QColor(\"#020617\")" in canvas
-    assert "DEFAULT_FG = QColor(\"#f8fafc\")" in canvas
-    assert "CURSOR_BG = QColor(\"#22c55e\")" in canvas
+    # Canvas palette lives in the DARK_PALETTE dict since the light/dark switch
+    # (the live colors are instance attrs populated from it).
+    assert '"DEFAULT_BG": QColor("#020617")' in canvas
+    assert '"DEFAULT_FG": QColor("#f8fafc")' in canvas
+    assert '"CURSOR_BG": QColor("#22c55e")' in canvas
     assert '"white": QColor("#f8fafc")' in canvas
     assert '"white": "#f8fafc"' in legacy
     assert 'self._file_format = self._format("#f8fafc")' in legacy

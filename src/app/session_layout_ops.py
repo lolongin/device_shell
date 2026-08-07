@@ -703,15 +703,14 @@ class SessionLayoutOpsMixin:
         from src.styles import APP_STYLE, APP_STYLE_LIGHT
 
         self.setStyleSheet(APP_STYLE_LIGHT if mode == "light" else APP_STYLE)
-        # Canvas terminals re-read their palette from the app's palette switch.
-        if hasattr(self, "apply_canvas_theme"):
-            self.apply_canvas_theme(mode)
         # Web widgets push new :root variables.
         for attr in ("web_shell", "device_navigation_web"):
             widget = getattr(self, attr, None)
             if widget is not None and hasattr(widget, "set_theme"):
                 widget.set_theme(mode)
-        # Per-session terminals (xterm/canvas) apply the theme too.
+        # Per-session terminals (xterm/canvas) are the sole source of truth for
+        # canvas theme application — every canvas terminal lives in
+        # session_tabs_by_id, so this loop applies the canvas palette exactly once.
         for state in list(getattr(self, "session_tabs_by_id", {}).values()):
             terminal = getattr(state, "terminal", None)
             if terminal is None:

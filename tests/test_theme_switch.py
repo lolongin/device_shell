@@ -128,3 +128,18 @@ def test_apply_theme_reaches_session_terminals(app: QApplication) -> None:
         # closeEvent log-flush path never touches the minimal fake state.
         window.session_tabs_by_id = original
         window.close()
+
+
+from src.widgets.terminal_canvas import TerminalCanvasWidget
+
+
+def test_canvas_terminal_has_theme_switch(app: QApplication) -> None:
+    _ = app
+    w = TerminalCanvasWidget()
+    assert hasattr(w, "apply_canvas_theme")
+    w.apply_canvas_theme("light")
+    # Canvas bg color changes from dark #020617 to light #f2f4f6.
+    assert w.DEFAULT_BG.name().lower() == "#f2f4f6"
+    w.apply_canvas_theme("dark")
+    assert w.DEFAULT_BG.name().lower() == "#020617"
+    w.close()
