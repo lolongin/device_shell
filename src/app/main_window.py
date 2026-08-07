@@ -507,6 +507,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             splitter.drag_finished.connect(self.handle_session_manager_width_drag_finished)
             self.apply_left_sidebar_state()
             self.apply_session_layout_state()
+            # Deliver the persisted theme to the now-built Web widgets (the
+            # earlier apply_theme calls ran before they existed).
+            self.apply_theme(getattr(self, "theme_mode", "dark"))
 
             self.setCentralWidget(root)
 

@@ -74,6 +74,35 @@ def test_persisted_light_theme_applied_after_build(
         window.close()
 
 
+def test_persisted_light_theme_applied_to_web_widgets_after_build(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persisted light theme must reach the web widgets once they exist."""
+    import json
+    import tempfile
+
+    from pathlib import Path
+
+    _ = app
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setenv("DEVICE_TUI_DESKTOP_STATE_PATH", str(Path(td) / "state.json"))
+        # Seed a persisted light theme.
+        (Path(td) / "state.json").write_text(
+            json.dumps({"theme_mode": "light"}), encoding="utf-8"
+        )
+        window = DeviceDesktopApp()
+        try:
+            # The post-build apply in _build_layout must have delivered the
+            # persisted theme into the web widgets' pending-theme slot.
+            assert window.theme_mode == "light"
+            for attr in ("web_shell", "device_navigation_web"):
+                widget = getattr(window, attr, None)
+                assert widget is not None
+                assert widget._pending_theme == "light"
+        finally:
+            window.close()
+
+
 def _web_root() -> Path:
     return Path(__file__).resolve().parents[1] / "src" / "web"
 
