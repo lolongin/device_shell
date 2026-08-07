@@ -319,6 +319,17 @@ class DesktopStateMixin:
         raw_theme = str(payload.get("theme_mode") or "dark").strip().lower()
         if raw_theme in {"light", "dark"}:
             self.theme_mode = raw_theme
+        package_upgrade = payload.get("package_upgrade")
+        if isinstance(package_upgrade, dict):
+            self.package_upgrade_server_host = str(
+                package_upgrade.get("server_host") or self.package_upgrade_server_host
+            )
+            self.package_upgrade_package_dir = str(
+                package_upgrade.get("package_dir") or self.package_upgrade_package_dir
+            )
+            self.package_upgrade_package_file = str(
+                package_upgrade.get("package_file") or self.package_upgrade_package_file
+            )
         if state_version >= 15:
             ai_gateway = payload.get("ai_gateway")
             if not isinstance(ai_gateway, dict):
@@ -417,6 +428,11 @@ class DesktopStateMixin:
                     "collapsed_device_groups": list(self.collapsed_device_groups),
                 },
                 "theme_mode": getattr(self, "theme_mode", "dark"),
+                "package_upgrade": {
+                    "server_host": getattr(self, "package_upgrade_server_host", ""),
+                    "package_dir": getattr(self, "package_upgrade_package_dir", ""),
+                    "package_file": getattr(self, "package_upgrade_package_file", ""),
+                },
                 "terminal_sessions": self.serialize_terminal_sessions()
                 if hasattr(self, "serialize_terminal_sessions")
                 else [],

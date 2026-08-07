@@ -54,7 +54,7 @@ def test_package_upgrade_panel_generates_dual_controller_cleanup_script(
     package.write_bytes(b"0" * 1024)
     window = DeviceDesktopApp()
     window.package_upgrade_file_input.setText(str(package))
-    window.package_upgrade_server_host_input.setText("192.0.2.10")
+    window.package_upgrade_server_host_combo.setCurrentText("192.0.2.10")
     window.package_upgrade_port_input.setText("2121")
     window.package_upgrade_startup_output.setPlainText(
         """
@@ -107,7 +107,7 @@ def test_package_upgrade_safety_report_blocks_unconfirmed_space(
     package.write_bytes(b"0" * 1024)
     window = DeviceDesktopApp()
     window.package_upgrade_file_input.setText(str(package))
-    window.package_upgrade_server_host_input.setText("192.0.2.10")
+    window.package_upgrade_server_host_combo.setCurrentText("192.0.2.10")
     window.package_upgrade_master_dir_output.setPlainText("Directory of flash:/\n")
     window.package_upgrade_slave_dir_output.setPlainText("Directory of slave#flash:/\n")
     config = window.package_upgrade_config()
@@ -174,3 +174,60 @@ def test_one_click_precheck_downgrades_absent_standby_to_single_controller(
     assert captured["tab_id"] == tab_id
     assert "未检测到备控，按单主控执行" in window.package_upgrade_status_label.text()
     assert "slave#flash:/" not in window.package_upgrade_script_output.toPlainText()
+
+
+def test_package_upgrade_host_is_selectable_combo(app: QApplication) -> None:
+    """The local host address is a selectable (editable) combo listing IPv4
+    addresses, so the operator can pick a VPN/LAN address."""
+    _ = app
+    window = DeviceDesktopApp()
+    window.show_left_sidebar_panel("package_upgrade")
+    combo = window.package_upgrade_server_host_combo
+    assert combo is not None
+    assert combo.isEditable()
+    # Should contain at least the loopback-free IPv4 addresses of this host.
+    assert combo.count() >= 1
+    assert combo.currentText() != ""
+    window.close()
+
+
+def test_package_upgrade_dir_input_exists(app: QApplication) -> None:
+    """The package-directory selector row exists alongside the file picker."""
+    _ = app
+    window = DeviceDesktopApp()
+    window.show_left_sidebar_panel("package_upgrade")
+    assert window.package_upgrade_dir_input is not None
+    assert window.package_upgrade_dir_browse_button is not None
+    assert window.package_upgrade_dir_browse_button.text() == "浏览"
+    window.close()
+
+
+def test_package_upgrade_selections_persist(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Host / dir / file selections are remembered and restored."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    _ = app
+    with tempfile.TemporaryDirectory() as td:
+        state_path = Path(td) / "state.json"
+        monkeypatch.setenv("DEVICE_TUI_DESKTOP_STATE_PATH", str(state_path))
+        window = DeviceDesktopApp()
+        window.show_left_sidebar_panel("package_upgrade")
+        window.package_upgrade_server_host_combo.setCurrentText("10.9.8.7")
+        window.package_upgrade_dir_input.setText("/tmp/pkgs")
+        window.package_upgrade_file_input.setText("/tmp/pkgs/upgrade.cc")
+        window._remember_package_upgrade_values()
+        assert window.package_upgrade_server_host == "10.9.8.7"
+        assert window.package_upgrade_package_dir == "/tmp/pkgs"
+        assert window.package_upgrade_package_file == "/tmp/pkgs/upgrade.cc"
+        window.close()
+
+        # A fresh instance restores the remembered values.
+        second = DeviceDesktopApp()
+        assert second.package_upgrade_server_host == "10.9.8.7"
+        assert second.package_upgrade_package_dir == "/tmp/pkgs"
+        assert second.package_upgrade_package_file == "/tmp/pkgs/upgrade.cc"
+        second.close()

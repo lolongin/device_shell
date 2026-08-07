@@ -355,6 +355,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.transfer_username = "device"
             self.transfer_password = "device"
             self.transfer_writable = True
+            self.package_upgrade_server_host = ""
+            self.package_upgrade_package_dir = ""
+            self.package_upgrade_package_file = ""
             self.session_manager_panel = None
             self.session_manager_tree = None
             self.session_manager_search = None

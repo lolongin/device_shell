@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import socket
 import time
 from typing import Any
 
@@ -80,6 +81,27 @@ class PackageUpgradeOpsMixin:
     PACKAGE_UPGRADE_COMMAND_TIMEOUT_MS = 45_000
     PACKAGE_UPGRADE_QUIET_MS = 1_100
 
+    @staticmethod
+    def _list_local_ipv4() -> list[str]:
+        """Enumerate this host's IPv4 addresses (including VPN interfaces).
+
+        ``socket.gethostbyname_ex`` lists the addresses the OS binds for the
+        hostname, which covers wired/LAN and VPN adapters. Dedupe and drop
+        loopback; fall back gracefully when the OS cannot resolve the hostname.
+        """
+        try:
+            addrs = socket.gethostbyname_ex(socket.gethostname())[2]
+        except (OSError, socket.gaierror):
+            return []
+        seen: list[str] = []
+        for addr in addrs:
+            addr = addr.strip()
+            if not addr or addr.startswith("127."):
+                continue
+            if addr not in seen:
+                seen.append(addr)
+        return seen
+
     def _build_package_upgrade_panel(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("leftRail")
@@ -111,10 +133,23 @@ class PackageUpgradeOpsMixin:
         if Qt is not None:
             form_layout.setLabelAlignment(Qt.AlignRight)
 
+        package_dir_row = QHBoxLayout()
+        package_dir_row.setSpacing(6)
+        self.package_upgrade_dir_input = QLineEdit()
+        self.package_upgrade_dir_input.setPlaceholderText("包所在目录")
+        self.package_upgrade_dir_input.setText(getattr(self, "package_upgrade_package_dir", ""))
+        self.package_upgrade_dir_browse_button = QPushButton("浏览")
+        self.package_upgrade_dir_browse_button.setObjectName("compactGhostButton")
+        self.package_upgrade_dir_browse_button.setFixedWidth(58)
+        package_dir_row.addWidget(self.package_upgrade_dir_input, 1)
+        package_dir_row.addWidget(self.package_upgrade_dir_browse_button)
+        form_layout.addRow("包目录", package_dir_row)
+
         package_row = QHBoxLayout()
         package_row.setSpacing(6)
         self.package_upgrade_file_input = QLineEdit()
         self.package_upgrade_file_input.setPlaceholderText("选择 .cc 系统包")
+        self.package_upgrade_file_input.setText(getattr(self, "package_upgrade_package_file", ""))
         self.package_upgrade_browse_button = QPushButton("选择")
         self.package_upgrade_browse_button.setObjectName("compactGhostButton")
         self.package_upgrade_browse_button.setFixedWidth(58)
@@ -122,9 +157,29 @@ class PackageUpgradeOpsMixin:
         package_row.addWidget(self.package_upgrade_browse_button)
         form_layout.addRow("系统包", package_row)
 
-        self.package_upgrade_server_host_input = QLineEdit("192.168.1.10")
-        self.package_upgrade_server_host_input.setPlaceholderText("设备可访问的本机 IP")
-        form_layout.addRow("本机地址", self.package_upgrade_server_host_input)
+        self.package_upgrade_server_host_combo = QComboBox()
+        self.package_upgrade_server_host_combo.setEditable(True)
+        remembered_host = str(getattr(self, "package_upgrade_server_host", "")).strip()
+        local_addrs = self._list_local_ipv4()
+        for addr in local_addrs:
+            self.package_upgrade_server_host_combo.addItem(addr)
+        if remembered_host and remembered_host not in local_addrs:
+            self.package_upgrade_server_host_combo.addItem(remembered_host)
+        self.package_upgrade_server_host_combo.setCurrentText(
+            remembered_host or (local_addrs[0] if local_addrs else "")
+        )
+        self.package_upgrade_server_host_combo.setPlaceholderText("设备可访问的本机 IP")
+        form_layout.addRow("本机地址", self.package_upgrade_server_host_combo)
+        if hasattr(self, "schedule_desktop_state_save"):
+            self.package_upgrade_server_host_combo.currentTextChanged.connect(
+                lambda text: self._remember_package_upgrade_values()
+            )
+            self.package_upgrade_dir_input.textChanged.connect(
+                lambda text: self._remember_package_upgrade_values()
+            )
+            self.package_upgrade_file_input.textChanged.connect(
+                lambda text: self._remember_package_upgrade_values()
+            )
 
         group_layout.addWidget(form_frame)
 
@@ -240,6 +295,7 @@ class PackageUpgradeOpsMixin:
         return editor
 
     def wire_package_upgrade_events(self) -> None:
+        self.package_upgrade_dir_browse_button.clicked.connect(self.choose_package_upgrade_dir)
         self.package_upgrade_browse_button.clicked.connect(self.choose_package_upgrade_file)
         self.package_upgrade_one_click_button.clicked.connect(self.run_package_upgrade_one_click)
         self.package_upgrade_generate_button.clicked.connect(self.generate_package_upgrade_script)
@@ -350,15 +406,44 @@ class PackageUpgradeOpsMixin:
         }
         return operation
 
+    def choose_package_upgrade_dir(self) -> None:
+        """Pick the local directory that holds the .cc packages."""
+        current_dir = self.package_upgrade_dir_input.text().strip()
+        start = current_dir if current_dir and Path(current_dir).is_dir() else str(Path.home())
+        selected = QFileDialog.getExistingDirectory(self, "选择包目录", start)
+        if selected:
+            self.package_upgrade_dir_input.setText(selected)
+            self._remember_package_upgrade_values()
+
+    def _remember_package_upgrade_values(self) -> None:
+        """Persist the package-upgrade host / dir / file selections."""
+        combo = getattr(self, "package_upgrade_server_host_combo", None)
+        if combo is not None:
+            self.package_upgrade_server_host = combo.currentText().strip()
+        dir_input = getattr(self, "package_upgrade_dir_input", None)
+        if dir_input is not None:
+            self.package_upgrade_package_dir = dir_input.text().strip()
+        file_input = getattr(self, "package_upgrade_file_input", None)
+        if file_input is not None:
+            self.package_upgrade_package_file = file_input.text().strip()
+        if hasattr(self, "schedule_desktop_state_save"):
+            self.schedule_desktop_state_save()
+
     def choose_package_upgrade_file(self) -> None:
+        start_dir = self.package_upgrade_dir_input.text().strip()
+        if not start_dir or not Path(start_dir).is_dir():
+            start_dir = str(Path.home())
         selected, _filter = QFileDialog.getOpenFileName(
             self,
             "选择系统包",
-            str(Path.home()),
+            start_dir,
             "System package (*.cc);;All files (*.*)",
         )
         if selected:
             self.package_upgrade_file_input.setText(selected)
+            parent = str(Path(selected).parent)
+            self.package_upgrade_dir_input.setText(parent)
+            self.schedule_desktop_state_save()
             self.generate_package_upgrade_script()
 
     def update_package_upgrade_default_port(self, protocol: str) -> None:
@@ -796,7 +881,7 @@ class PackageUpgradeOpsMixin:
             return None
         if package_path.suffix.lower() != ".cc":
             self.show_warning("系统包通常应为 .cc 文件。")
-        server_host = self.package_upgrade_server_host_input.text().strip()
+        server_host = self.package_upgrade_server_host_combo.currentText().strip()
         if not server_host:
             self.show_warning("请填写设备可访问的本机 IP。")
             return None
