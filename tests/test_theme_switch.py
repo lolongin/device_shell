@@ -143,3 +143,47 @@ def test_canvas_terminal_has_theme_switch(app: QApplication) -> None:
     w.apply_canvas_theme("dark")
     assert w.DEFAULT_BG.name().lower() == "#020617"
     w.close()
+
+
+def test_apply_theme_to_new_terminal(app: QApplication) -> None:
+    """A session terminal created in light mode must be themed to light."""
+    _ = app
+    window = DeviceDesktopApp()
+    window.theme_mode = "light"
+    calls: list[str] = []
+    fake = type("F", (), {"set_theme": lambda self, mode: calls.append(mode)})()
+    window._apply_theme_to_terminal(fake)
+    assert calls == ["light"]
+    window.close()
+
+
+def test_apply_theme_to_new_canvas_terminal(app: QApplication) -> None:
+    """A canvas terminal created in light mode must switch to the light palette."""
+    _ = app
+    window = DeviceDesktopApp()
+    window.theme_mode = "light"
+    terminal = TerminalCanvasWidget()
+    try:
+        window._apply_theme_to_terminal(terminal)
+        assert terminal.DEFAULT_BG.name().lower() == "#f2f4f6"
+    finally:
+        terminal.close()
+        window.close()
+
+
+def test_web_shell_light_map_overrides_surfaces() -> None:
+    """web_shell light theme must lighten the surfaces used by headings/cards."""
+    page = (_web_root() / "web_shell.html").read_text(encoding="utf-8")
+    assert "--surface-top" in page
+    assert "--surface-filter" in page
+    assert "--surface-card" in page
+
+
+def test_auto_response_editor_dialog_wires_theme() -> None:
+    """The editor dialog must push the active theme into its page on load."""
+    session_ops = (Path(__file__).resolve().parents[1] / "src" / "app" / "session_ops.py").read_text(
+        encoding="utf-8"
+    )
+    assert "window.setWorkspaceTheme" in session_ops
+    assert "self.web_view.loadFinished.connect" in session_ops
+    assert "self._theme_mode" in session_ops

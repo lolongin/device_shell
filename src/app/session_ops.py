@@ -784,6 +784,9 @@ if QDialog is not None:
             self.resize(1280, 860)
 
             self._payload = self.payload_from_rule(rule, parent)
+            # Capture the app's active theme so the editor page matches it once
+            # it loads (the page defaults to dark otherwise).
+            self._theme_mode = "light" if getattr(parent, "theme_mode", "dark") == "light" else "dark"
             self._preview_dialog: AutoResponseRulePreviewDialog | None = None
             self._bridge = AutoResponseRuleWebBridge(self._payload, self)
             self._bridge.payload_changed.connect(self._set_payload_from_json)
@@ -808,6 +811,13 @@ if QDialog is not None:
 
             editor_path = Path(__file__).resolve().parents[1] / "web" / "auto_response_editor.html"
             self.web_view.load(QUrl.fromLocalFile(str(editor_path)))
+            # Deliver the active theme to the page once it finishes loading so
+            # the editor matches the app instead of staying dark in light mode.
+            self.web_view.loadFinished.connect(
+                lambda _ok, mode=self._theme_mode: self.web_view.page().runJavaScript(
+                    f"window.setWorkspaceTheme('{mode}')"
+                )
+            )
 
         def _set_payload_from_json(self, payload: str) -> None:
             try:
@@ -3763,6 +3773,19 @@ class SessionOpsMixin:
         self.next_session_sequence += 1
         return tab_id
 
+    def _apply_theme_to_terminal(self, terminal: object) -> None:
+        """Apply the active app theme to a freshly created terminal widget.
+
+        New terminals default to the dark palette (canvas __init__, xterm dark
+        CSS), so any terminal built while the app is in light mode must be
+        themed right away to match.
+        """
+        theme_mode = getattr(self, "theme_mode", "dark")
+        if hasattr(terminal, "set_theme"):
+            terminal.set_theme(theme_mode)
+        elif hasattr(terminal, "apply_canvas_theme"):
+            terminal.apply_canvas_theme(theme_mode)
+
     def _create_session_tab(
         self,
         tab_id: str,
@@ -3787,6 +3810,8 @@ class SessionOpsMixin:
             terminal = TerminalCanvasWidget()
         else:
             terminal = XtermWebWidget()
+        # Apply the active theme to the new terminal so it matches the app.
+        self._apply_theme_to_terminal(terminal)
         # Apply the persisted terminal font size to the new terminal if it
         # differs from the xterm default (guard so this is safe before the
         # SessionLayoutOpsMixin methods exist on the class).
