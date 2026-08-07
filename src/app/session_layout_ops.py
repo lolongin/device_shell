@@ -446,25 +446,8 @@ class SessionLayoutOpsMixin:
         self.session_breadcrumb_device_label.setObjectName("breadcrumbDevice")
         self.session_breadcrumb_device_label.setCursor(Qt.PointingHandCursor)
         self.session_breadcrumb_device_label.mousePressEvent = self._breadcrumb_device_click
-        self.session_breadcrumb_session_label = QLabel()
-        self.session_breadcrumb_session_label.setObjectName("breadcrumbSession")
-        self.session_breadcrumb_session_label.setCursor(Qt.PointingHandCursor)
-        self.session_breadcrumb_session_label.mousePressEvent = (
-            lambda _event: self.jump_to_session(
-                (self.current_session_state() or object()).tab_id
-            )
-            if self.current_session_state() is not None
-            else None
-        )
-
-        def separator() -> QLabel:
-            sep = QLabel("›")
-            sep.setObjectName("breadcrumbSeparator")
-            return sep
 
         layout.addWidget(self.session_breadcrumb_device_label)
-        layout.addWidget(separator())
-        layout.addWidget(self.session_breadcrumb_session_label)
         layout.addStretch(1)
         self.session_breadcrumb = breadcrumb
         return breadcrumb
@@ -597,19 +580,14 @@ class SessionLayoutOpsMixin:
                 )
 
     def refresh_session_breadcrumb(self) -> None:
-        if (
-            getattr(self, "session_breadcrumb_device_label", None) is None
-            or getattr(self, "session_breadcrumb_session_label", None) is None
-        ):
+        if getattr(self, "session_breadcrumb_device_label", None) is None:
             return
         state = self.current_session_state()
         device_id = state.device_id if state is not None else ""
         device = self.get_device_by_id(device_id) if device_id else None
         device_name = device.name if device is not None else device_id
-        session_title = state.title if state is not None else ""
         self.session_breadcrumb_device_label.setText(device_name)
         self.session_breadcrumb_device_label.setProperty("deviceId", device_id)
-        self.session_breadcrumb_session_label.setText(session_title)
 
     def apply_font_size_to_terminal(self, terminal: object, size: int) -> None:
         if hasattr(terminal, "set_font_size"):

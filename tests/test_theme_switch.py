@@ -261,21 +261,22 @@ def test_light_theme_primary_button_uses_white_text() -> None:
 
 
 def test_breadcrumb_has_polished_style() -> None:
-    """The session breadcrumb must have a styled container and separators, not
-    bare labels."""
+    """The session breadcrumb must have a styled container, not bare labels."""
     from src.styles import APP_STYLE
 
     assert "QWidget#sessionBreadcrumb {" in APP_STYLE
-    assert "QLabel#breadcrumbSeparator {" in APP_STYLE
     assert "QLabel#breadcrumbDevice {" in APP_STYLE
     assert "border-radius: 10px;" in APP_STYLE
 
 
-def test_breadcrumb_drops_home_crumb() -> None:
-    """The breadcrumb should no longer show a leading '设备池' home crumb."""
+def test_breadcrumb_shows_only_device_name() -> None:
+    """The breadcrumb shows only the device name — no home crumb, no session
+    crumb, no separator."""
     from src.styles import APP_STYLE
 
     assert "breadcrumbHome" not in APP_STYLE
+    assert "breadcrumbSession" not in APP_STYLE
+    assert "breadcrumbSeparator" not in APP_STYLE
 
 
 def test_breadcrumb_hover_blue_mapped_to_light() -> None:

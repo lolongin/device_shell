@@ -362,7 +362,6 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_manager_count_label = None
             self.session_breadcrumb = None
             self.session_breadcrumb_device_label = None
-            self.session_breadcrumb_session_label = None
             self.settings_button = None
             self.session_tab_layout = "top"
             self.terminal_font_size = 14

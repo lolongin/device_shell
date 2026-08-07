@@ -29,13 +29,14 @@ def test_breadcrumb_device_label_click_activates_device(
     window.close()
 
 
-def test_breadcrumb_session_label_has_clickable_cursor(app: QApplication) -> None:
+def test_breadcrumb_device_label_has_clickable_cursor(app: QApplication) -> None:
+    """The breadcrumb shows only the device name, which must be clickable."""
     _ = app
     window = DeviceDesktopApp()
     from PySide6.QtCore import Qt
 
     assert window.session_breadcrumb_device_label.cursor().shape() == Qt.PointingHandCursor
-    assert window.session_breadcrumb_session_label.cursor().shape() == Qt.PointingHandCursor
+    assert not hasattr(window, "session_breadcrumb_session_label")
     window.close()
 
 

@@ -3410,13 +3410,10 @@ QWidget#sessionBreadcrumb {
     min-height: 30px;
     max-height: 30px;
 }
-QLabel#breadcrumbDevice,
-QLabel#breadcrumbSession {
+QLabel#breadcrumbDevice {
     background: transparent;
     border-radius: 6px;
     padding: 3px 8px;
-}
-QLabel#breadcrumbDevice {
     color: #a7b4c7;
     font-size: 12px;
     font-weight: 600;
@@ -3424,20 +3421,6 @@ QLabel#breadcrumbDevice {
 QLabel#breadcrumbDevice:hover {
     background: rgba(96, 165, 250, 0.14);
     color: #f8fafc;
-}
-QLabel#breadcrumbSession {
-    color: #f8fafc;
-    font-size: 12px;
-    font-weight: 700;
-}
-QLabel#breadcrumbSession:hover {
-    background: rgba(96, 165, 250, 0.14);
-}
-QLabel#breadcrumbSeparator {
-    background: transparent;
-    color: #475569;
-    font-size: 13px;
-    padding: 0 1px;
 }
 
 /* Global text selection */
