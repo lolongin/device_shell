@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+import re
+
+from src.styles import APP_STYLE
+from src.theme_tokens import DARK_TO_LIGHT
+
+
+def test_dark_to_light_covers_all_app_style_hex_colors() -> None:
+    """Every 6-digit hex in APP_STYLE must have a light mapping, or the light
+    stylesheet would keep stray dark literals."""
+    hexes = set(re.findall(r"#[0-9a-fA-F]{6}", APP_STYLE))
+    unmapped = {h for h in hexes if h.lower() not in {k.lower() for k in DARK_TO_LIGHT}}
+    assert not unmapped, f"Unmapped APP_STYLE colors: {sorted(unmapped)}"
+
+
+def test_dark_to_light_has_no_identity_mapping() -> None:
+    for dark, light in DARK_TO_LIGHT.items():
+        assert dark != light, f"Identity mapping for {dark}"
