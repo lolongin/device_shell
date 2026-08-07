@@ -70,12 +70,6 @@ class SessionLayoutOpsMixin:
         title.setObjectName("sessionManagerTitle")
         self.session_manager_count_label = QLabel("共 0")
         self.session_manager_count_label.setObjectName("sessionManagerCount")
-        self.session_manager_expand_all_button = QToolButton()
-        self.session_manager_expand_all_button.setObjectName("sessionManagerExpandAll")
-        self.session_manager_expand_all_button.setText("⏵")
-        self.session_manager_expand_all_button.setToolTip("展开/收起所有设备分组")
-        self.session_manager_expand_all_button.setCheckable(True)
-        self.session_manager_expand_all_button.clicked.connect(self.toggle_all_session_groups_expanded)
         self.session_manager_collapse_button = QToolButton()
         self.session_manager_collapse_button.setObjectName("sessionManagerCollapse")
         self.session_manager_collapse_button.setText("⏴")
@@ -84,14 +78,24 @@ class SessionLayoutOpsMixin:
         self.session_manager_collapse_button.clicked.connect(self.toggle_session_manager_collapsed)
         header_layout.addWidget(title, 1)
         header_layout.addWidget(self.session_manager_count_label)
-        header_layout.addWidget(self.session_manager_expand_all_button)
         header_layout.addWidget(self.session_manager_collapse_button)
         layout.addWidget(header)
 
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(4)
         self.session_manager_search = QLineEdit()
         self.session_manager_search.setPlaceholderText("搜索设备、会话")
         self.session_manager_search.textChanged.connect(lambda _text: self.refresh_session_manager_tree())
-        layout.addWidget(self.session_manager_search)
+        search_row.addWidget(self.session_manager_search, 1)
+        self.session_manager_expand_all_button = QToolButton()
+        self.session_manager_expand_all_button.setObjectName("sessionManagerExpandAll")
+        self.session_manager_expand_all_button.setText("−")
+        self.session_manager_expand_all_button.setToolTip("全部展开 / 收起所有设备分组")
+        self.session_manager_expand_all_button.setCheckable(True)
+        self.session_manager_expand_all_button.clicked.connect(self.toggle_all_session_groups_expanded)
+        search_row.addWidget(self.session_manager_expand_all_button)
+        layout.addLayout(search_row)
 
         self.session_manager_tree = QTreeWidget()
         self.session_manager_tree.setObjectName("sessionManagerTree")
@@ -195,22 +199,25 @@ class SessionLayoutOpsMixin:
         self.schedule_desktop_state_save()
 
     def toggle_all_session_groups_expanded(self) -> None:
-        """Expand or collapse every device group in the session-manager tree."""
+        """Expand or collapse every device group in the session-manager tree.
+
+        The button icon mirrors the state: ``+`` (expand all) when groups are
+        collapsed, ``−`` (collapse all) when groups are expanded.
+        """
         tree = getattr(self, "session_manager_tree", None)
         button = getattr(self, "session_manager_expand_all_button", None)
         if tree is None:
             return
         expanded = not bool(button and button.isChecked())
-        all_collapsed = self.collapsed_device_groups == list(self.device_tabs_by_id)
-        if expanded and all_collapsed:
-            # Button toggles checked = collapse; expand everything instead.
-            expanded = True
         for index in range(tree.topLevelItemCount()):
             tree.topLevelItem(index).setExpanded(expanded)
         if expanded:
             self.collapsed_device_groups = []
         else:
             self.collapsed_device_groups = sorted(self.device_tabs_by_id)
+        if button is not None:
+            button.setText("−" if expanded else "+")
+            button.setToolTip("全部收起" if expanded else "全部展开")
         self.schedule_desktop_state_save()
 
     def _session_manager_filter_query(self) -> str:

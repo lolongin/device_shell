@@ -235,14 +235,17 @@ def test_toggle_all_session_groups_expands_and_collapses(
     window.refresh_session_manager_tree()
     tree = window.session_manager_tree
     assert tree.topLevelItemCount() == 2
+    button = window.session_manager_expand_all_button
     # Collapse all.
-    window.session_manager_expand_all_button.setChecked(True)
+    button.setChecked(True)
     window.toggle_all_session_groups_expanded()
     assert all(not tree.topLevelItem(i).isExpanded() for i in range(2))
     assert window.collapsed_device_groups == sorted(device.id for device in devices)
+    assert button.text() == "+", "collapsed state should show expand (+) icon"
     # Expand all.
-    window.session_manager_expand_all_button.setChecked(False)
+    button.setChecked(False)
     window.toggle_all_session_groups_expanded()
     assert all(tree.topLevelItem(i).isExpanded() for i in range(2))
     assert window.collapsed_device_groups == []
+    assert button.text() == "−", "expanded state should show collapse (−) icon"
     window.close()
