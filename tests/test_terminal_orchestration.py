@@ -326,3 +326,41 @@ def test_interactive_backward_branch_stops_at_retry_limit() -> None:
 
     assert [item[1].text for item in harness.sent] == ["probe\r", "probe\r"]
     assert runner.public_dict()["error_code"] == "branch_limit_exceeded"
+
+
+def test_failure_word_on_confirmation_line_answers_instead_of_aborting() -> None:
+    """A confirmation prompt that mentions a failure word on the same line (e.g.
+    "…error… Continue? [Y/N]") must be answered, not aborted. Regression:
+    failures were matched before responses, so the 'error' word killed the step
+    before the 'y' confirmation could be sent."""
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "name": "check", "text": "check package"},
+            {
+                "type": "expect",
+                "name": "confirm",
+                "success": ["device_prompt"],
+                "responses": [{"match": "confirmation_prompt", "text": "y"}],
+                "failures": ["error"],
+            },
+        ]
+    )
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=plan,
+    )
+
+    # The device output mentions 'error' on the confirmation line, and needs a
+    # 'y' — this must not abort.
+    coordinator.on_output("tab-1", "checking package (error 0) Continue? [Y/N]: ")
+
+    assert runner.public_dict()["status"] == "running", (
+        "confirm step must stay running to accept the 'y' response"
+    )
+    # The response 'y' is sent for the confirmation prompt.
+    assert any(item[1].text.rstrip("\r") == "y" for item in harness.sent)
+    coordinator.on_output("tab-1", "\n<sim> ")
+    assert runner.public_dict()["status"] == "completed"

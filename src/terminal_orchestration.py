@@ -319,11 +319,23 @@ class TerminalExecutionRunner:
             self._scan_buffer = (
                 self._scan_buffer + strip_terminal_ansi(message)
             )[-step.max_output_chars :]
-            failure = _first_match(
-                self._scan_buffer,
-                step.failures,
-                case_sensitive=step.case_sensitive,
-            )
+            # Interaction takes priority over failure matching: a confirmation
+            # prompt that itself contains a failure-looking word (e.g. an
+            # "error" mention on a "Continue? [Y/N]" line) must still be
+            # answered, not aborted. Apply responses first; only when no
+            # response was triggered do we treat a failure word as fatal.
+            response_counts_before = dict(self._response_counts)
+            self._apply_responses_locked(step)
+            if self.status != "running":
+                return
+            responded = self._response_counts != response_counts_before
+            failure = None
+            if not responded:
+                failure = _first_match(
+                    self._scan_buffer,
+                    step.failures,
+                    case_sensitive=step.case_sensitive,
+                )
             if failure is not None:
                 failed_step = step
                 self._finish_active_step_locked(
@@ -343,7 +355,6 @@ class TerminalExecutionRunner:
                         message=f"步骤 {self.current_step} 执行失败。",
                     )
                 return
-            self._apply_responses_locked(step)
             if self.status != "running":
                 return
             success = _first_match(
