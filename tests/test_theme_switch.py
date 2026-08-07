@@ -328,3 +328,44 @@ def test_theme_switch_refreshes_session_manager_tree_foreground(
     finally:
         monkeypatch.undo()
         window.close()
+
+
+def test_connection_failure_does_not_popup(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opening a device terminal that fails to connect must NOT show an error
+    dialog — the failure is reported inline in the terminal and the status bar."""
+    from src._sample_data import sample_devices
+
+    _ = app
+    window = DeviceDesktopApp()
+    error_calls: list[str] = []
+    monkeypatch.setattr(window, "show_error", lambda message: error_calls.append(message))
+
+    devices = sample_devices()[:1]
+    device = devices[0]
+    device.id = "conn-fail-device"
+    device.name = "连接失败设备"
+    window.devices = devices
+    window.rebuild_device_indexes()
+    state = window.ensure_session_tab(
+        kind="simulated", device=device, host="10.0.0.1", port=22,
+        username="admin", password="secret", title="会话",
+    )
+    assert state is not None
+    assert state.suppress_next_connection_error is False
+    try:
+        # Capture the on_error callback from run_coro and invoke it with a
+        # connection error; assert no error dialog is raised.
+        captured: dict[str, object] = {}
+
+        def _run_coro(coro, on_success=None, on_error=None):
+            captured["on_error"] = on_error
+
+        monkeypatch.setattr(window, "run_coro", _run_coro)
+        window.connect_session_tab(state.tab_id)
+        on_error = captured.get("on_error")
+        assert callable(on_error), "run_coro should have been reached with an on_error handler"
+        on_error(OSError("Connection refused"))
+        assert error_calls == [], "connection failure must not pop up an error dialog"
+    finally:
+        monkeypatch.undo()
+        window.close()

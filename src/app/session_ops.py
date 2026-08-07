@@ -4354,21 +4354,20 @@ class SessionOpsMixin:
             current_state = self.session_tabs_by_id.get(tab_id)
             if current_state is None:
                 return
-            suppress_error_dialog = current_state.suppress_next_connection_error
             current_state.suppress_next_connection_error = False
             current_state.connecting = False
             self.set_session_status(tab_id, "Disconnected")
             self.write_session_log_line(current_state, "SYS", f"Connection failed: {exc}")
             if isinstance(exc, (OSError, asyncio.TimeoutError, TelnetSessionError, SessionUnavailableError)):
+                # Report connection failures inline (terminal + status bar), not
+                # as a modal dialog — an operator opening a terminal wants to see
+                # the failure in the terminal, not a popup.
                 self.append_session_output(tab_id, self.format_terminal_system_message(f"连接失败: {exc}"))
                 self.append_reconnect_hint(tab_id)
                 if self.is_connection_timeout(exc):
                     self.set_status_message(f"连接超时: {current_state.title}")
-                    self.update_controls()
-                    return
-                if not suppress_error_dialog:
-                    self.show_error(str(exc))
-                self.set_status_message(f"连接失败: {exc}")
+                else:
+                    self.set_status_message(f"连接失败: {exc}")
                 self.update_controls()
                 return
             self.handle_background_error(exc)
