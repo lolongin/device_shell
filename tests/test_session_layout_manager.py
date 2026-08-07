@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QTreeWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QTreeWidget
 
 from src._sample_data import sample_devices
 from src.app.main_window import DeviceDesktopApp
@@ -109,6 +109,20 @@ def test_collapsed_device_groups_pruned_to_existing_tabs(app: QApplication) -> N
     window.refresh_session_manager_tree()
 
     assert window.collapsed_device_groups == ["layout-device-0"]
+    window.close()
+
+
+def test_tree_columns_stretch_proportionally(app: QApplication) -> None:
+    """Both session-manager tree columns use Stretch mode so the metadata column
+    (count / protocol·host:port) shares width with the name column instead of the
+    last column absorbing all leftover space."""
+    _ = app
+    window = DeviceDesktopApp()
+    tree: QTreeWidget = window.session_manager_tree
+    header = tree.header()
+    assert header.stretchLastSection() is False
+    assert header.sectionResizeMode(0) == QHeaderView.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.Stretch
     window.close()
 
 

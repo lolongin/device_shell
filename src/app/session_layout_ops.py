@@ -6,6 +6,7 @@ try:
     from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QLineEdit,
         QPushButton,
@@ -24,6 +25,7 @@ except ModuleNotFoundError:
     QPen = None
     QPixmap = None
     QHBoxLayout = None
+    QHeaderView = None
     QLabel = None
     QLineEdit = None
     QPushButton = None
@@ -88,10 +90,13 @@ class SessionLayoutOpsMixin:
         self.session_manager_tree.setObjectName("sessionManagerTree")
         self.session_manager_tree.setColumnCount(2)
         # Column width policy lives on the QHeaderView even though the header is
-        # hidden: the last (count) column stretches while the name column stays
-        # at a fixed width.
-        self.session_manager_tree.header().setStretchLastSection(True)
-        self.session_manager_tree.header().resizeSection(0, 180)
+        # hidden: both columns stretch proportionally so the metadata column
+        # (count / protocol·host:port) shares width with the name column instead
+        # of the last column absorbing all leftover space.
+        header = self.session_manager_tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
         # Compact child indent so session rows sit close to their device group.
         self.session_manager_tree.setIndentation(10)
         self.session_manager_tree.customContextMenuRequested.connect(
