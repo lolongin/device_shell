@@ -187,3 +187,51 @@ def test_auto_response_editor_dialog_wires_theme() -> None:
     assert "window.setWorkspaceTheme" in session_ops
     assert "self.web_view.loadFinished.connect" in session_ops
     assert "self._theme_mode" in session_ops
+
+
+def test_tree_foreground_uses_dark_text_in_light_theme(app: QApplication) -> None:
+    """In light theme the session-manager tree must use dark text for its
+    setForeground brushes (regression: it hardcoded light #e5edf6/#a7b4c7,
+    making tree text invisible on the light background)."""
+    from src._sample_data import sample_devices
+
+    _ = app
+    window = DeviceDesktopApp()
+    window.theme_mode = "light"
+    devices = sample_devices()[:1]
+    device = devices[0]
+    device.id = "theme-tree-device"
+    device.name = "主题树设备"
+    window.devices = devices
+    window.rebuild_device_indexes()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(window, "connect_session_tab", lambda tab_id: None)
+    try:
+        window.ensure_session_tab(
+            kind="simulated", device=device, host="10.0.0.1", port=22,
+            username="admin", password="secret", title="浅色会话", suppress_initial_error=True,
+        )
+        window.refresh_session_manager_tree()
+        tree = window.session_manager_tree
+        parent = tree.topLevelItem(0)
+        assert parent is not None
+        fg0 = parent.foreground(0).color().name()
+        assert fg0 != "#e5edf6", "tree col0 must not stay light in light theme"
+        child = parent.child(0)
+        assert child is not None
+        fg1 = child.foreground(1).color().name()
+        assert fg1 != "#a7b4c7", "tree col1 must not stay light in light theme"
+    finally:
+        monkeypatch.undo()
+        window.close()
+
+
+def test_xterm_light_map_includes_scrollbar_tokens() -> None:
+    """xterm's light theme must override the scrollbar tokens (--input,
+    --line-strong, --scroll-hover) in its lightVars map, or the scrollbar
+    stays dark on a light terminal."""
+    page = (_web_root() / "xterm_terminal.html").read_text(encoding="utf-8")
+    light = page[page.index("const lightVars") : page.index("const root")]
+    assert "'--input':" in light
+    assert "'--line-strong':" in light
+    assert "'--scroll-hover':" in light

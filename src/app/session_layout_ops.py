@@ -248,6 +248,13 @@ class SessionLayoutOpsMixin:
         current_state = self.current_session_state()
         current_tab_id = current_state.tab_id if current_state is not None else None
 
+        # Theme-aware foreground: dark theme uses light text on dark surfaces;
+        # light theme uses dark text on light surfaces (otherwise the tree text
+        # becomes invisible on the light background).
+        light = getattr(self, "theme_mode", "dark") == "light"
+        fg_primary = QColor("#1c2128") if light else QColor("#e5edf6")
+        fg_secondary = QColor("#5a6470") if light else QColor("#a7b4c7")
+
         # One parent per OPEN device (devices that have a device tab). A device
         # with no open tabs is not shown. Temporary devices appear as well.
         for device_id, device_tab in self.device_tabs_by_id.items():
@@ -260,8 +267,8 @@ class SessionLayoutOpsMixin:
             label = (device.name if device is not None else device_tab.title) or device_id
             parent.setText(0, label)
             parent.setText(1, str(len(states)))
-            parent.setForeground(1, QColor("#a7b4c7"))
-            parent.setForeground(0, QColor("#e5edf6"))
+            parent.setForeground(1, fg_secondary)
+            parent.setForeground(0, fg_primary)
             parent.setData(0, Qt.UserRole, group_key)
             parent_icon = self._session_manager_parent_icon(states)
             if parent_icon is not None:
@@ -276,8 +283,8 @@ class SessionLayoutOpsMixin:
                 child = QTreeWidgetItem(parent)
                 child.setText(0, state.title)
                 child.setText(1, self._session_manager_metadata(state))
-                child.setForeground(1, QColor("#a7b4c7"))
-                child.setForeground(0, QColor("#e5edf6"))
+                child.setForeground(1, fg_secondary)
+                child.setForeground(0, fg_primary)
                 child.setData(0, Qt.UserRole, state.tab_id)
                 child_icon = self._session_manager_session_icon(state)
                 if child_icon is not None:
