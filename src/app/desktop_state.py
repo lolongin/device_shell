@@ -316,6 +316,9 @@ class DesktopStateMixin:
                 self.collapsed_device_groups = [
                     str(item or "").strip() for item in raw_collapsed if str(item or "").strip()
                 ]
+        raw_theme = str(payload.get("theme_mode") or "dark").strip().lower()
+        if raw_theme in {"light", "dark"}:
+            self.theme_mode = raw_theme
         if state_version >= 15:
             ai_gateway = payload.get("ai_gateway")
             if not isinstance(ai_gateway, dict):
@@ -332,6 +335,8 @@ class DesktopStateMixin:
         }
         if hasattr(self, "apply_session_layout_state"):
             self.apply_session_layout_state()
+        if hasattr(self, "apply_theme"):
+            self.apply_theme(getattr(self, "theme_mode", "dark"))
         if hasattr(self, "rebuild_device_indexes"):
             self.rebuild_device_indexes()
 
@@ -411,6 +416,7 @@ class DesktopStateMixin:
                     "session_manager_collapsed": self.session_manager_collapsed,
                     "collapsed_device_groups": list(self.collapsed_device_groups),
                 },
+                "theme_mode": getattr(self, "theme_mode", "dark"),
                 "terminal_sessions": self.serialize_terminal_sessions()
                 if hasattr(self, "serialize_terminal_sessions")
                 else [],

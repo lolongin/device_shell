@@ -665,9 +665,15 @@ class SessionLayoutOpsMixin:
         self.settings_default_collapsed_check.setChecked(self.session_manager_default_collapsed)
         self.settings_default_collapsed_check.toggled.connect(self._settings_default_collapsed_changed)
 
+        self.settings_theme_combo = QComboBox()
+        self.settings_theme_combo.addItems(["深色", "浅色"])
+        self.settings_theme_combo.setCurrentText("浅色" if getattr(self, "theme_mode", "dark") == "light" else "深色")
+        self.settings_theme_combo.currentTextChanged.connect(self._settings_theme_changed)
+
         form.addRow("会话页签布局", self.settings_layout_combo)
         form.addRow("终端字体大小", self.settings_font_spin)
         form.addRow("默认折叠", self.settings_default_collapsed_check)
+        form.addRow("主题", self.settings_theme_combo)
         layout.addLayout(form)
         hint = QLabel("「默认折叠」仅决定首次进入右侧布局的状态，之后跟随操作记忆。")
         hint.setObjectName("settingsHint")
@@ -678,6 +684,9 @@ class SessionLayoutOpsMixin:
     def _settings_layout_changed(self, text: str) -> None:
         self.set_session_tab_layout("side" if text == "右侧" else "top")
 
+    def _settings_theme_changed(self, text: str) -> None:
+        self.apply_theme("light" if text == "浅色" else "dark")
+
     def _settings_font_changed(self, value: int) -> None:
         self.terminal_font_size = int(value)
         self.apply_font_size_to_all_terminals()
@@ -685,6 +694,23 @@ class SessionLayoutOpsMixin:
 
     def _settings_default_collapsed_changed(self, checked: bool) -> None:
         self.session_manager_default_collapsed = bool(checked)
+        self.schedule_desktop_state_save()
+
+    def apply_theme(self, mode: str) -> None:
+        """Apply the dark or light theme across native, canvas, and Web surfaces."""
+        mode = "light" if mode == "light" else "dark"
+        self.theme_mode = mode
+        from src.styles import APP_STYLE, APP_STYLE_LIGHT
+
+        self.setStyleSheet(APP_STYLE_LIGHT if mode == "light" else APP_STYLE)
+        # Canvas terminals re-read their palette from the app's palette switch.
+        if hasattr(self, "apply_canvas_theme"):
+            self.apply_canvas_theme(mode)
+        # Web widgets push new :root variables (Task 4 wires these methods).
+        for attr in ("web_shell", "device_navigation_web", "session_web_views"):
+            widget = getattr(self, attr, None)
+            if widget is not None and hasattr(widget, "set_theme"):
+                widget.set_theme(mode)
         self.schedule_desktop_state_save()
 
     def session_manager_custom_context_menu(self, pos: object) -> None:

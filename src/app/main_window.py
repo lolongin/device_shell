@@ -367,6 +367,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.session_tab_layout = "top"
             self.terminal_font_size = 14
             self.session_manager_default_collapsed = False
+            self.theme_mode = "dark"
             self.session_manager_width = 260
             self.session_manager_collapsed = False
             self.collapsed_device_groups: list[str] = []
@@ -463,7 +464,9 @@ if PYSIDE6_IMPORT_ERROR is None:
             if base_font.pointSize() <= 0:
                 base_font.setPixelSize(13)
                 self.setFont(base_font)
-            self.setStyleSheet(APP_STYLE)
+            # Apply the loaded theme (defaults to dark) instead of unconditionally
+            # resetting to APP_STYLE, so a persisted light theme survives startup.
+            self.apply_theme(getattr(self, "theme_mode", "dark"))
 
             status_bar = QStatusBar(self)
             self.setStatusBar(status_bar)
