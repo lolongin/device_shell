@@ -24,7 +24,10 @@ class SidebarSplitterHandle(QSplitterHandle):
         splitter = self.splitter()
         if splitter is None:
             return 0
-        return splitter.handleIndex(self)
+        # QSplitter has no handleIndex(); indexOf(handle) returns the handle's
+        # position, which matches the handle-index contract used elsewhere
+        # (handle 1 = left sidebar boundary, handle 2 = session-manager width).
+        return splitter.indexOf(self)
 
     def mousePressEvent(self, event: Any) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
