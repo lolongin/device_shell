@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from src.styles import APP_STYLE
+from src.styles import APP_STYLE, APP_STYLE_LIGHT
 from src.theme_tokens import DARK_TO_LIGHT
 
 
@@ -17,3 +17,18 @@ def test_dark_to_light_covers_all_app_style_hex_colors() -> None:
 def test_dark_to_light_has_no_identity_mapping() -> None:
     for dark, light in DARK_TO_LIGHT.items():
         assert dark != light, f"Identity mapping for {dark}"
+
+
+def test_app_style_unchanged() -> None:
+    """APP_STYLE must remain the dark original (tests guard its values)."""
+    assert "#020617" in APP_STYLE
+    assert "background: #15803d" in APP_STYLE  # primary button dark green
+
+
+def test_app_style_light_has_light_base_and_no_dark_base() -> None:
+    assert "#f2f4f6" in APP_STYLE_LIGHT  # light bg
+    assert "#020617" not in APP_STYLE_LIGHT  # dark bg gone
+
+
+def test_app_style_light_has_light_primary_button() -> None:
+    assert "background: #15803d" not in APP_STYLE_LIGHT

@@ -3411,3 +3411,16 @@ QComboBox {
     selection-color: #f8fafc;
 }
 """
+
+
+def _apply_light_mapping(style: str) -> str:
+    """Replace every dark literal in ``style`` with its light counterpart."""
+    from .theme_tokens import DARK_TO_LIGHT
+
+    out = style
+    for dark, light in DARK_TO_LIGHT.items():
+        out = out.replace(dark, light)
+    return out
+
+
+APP_STYLE_LIGHT = _apply_light_mapping(APP_STYLE)
