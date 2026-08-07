@@ -126,6 +126,14 @@ class WebShellWidget(QWidget):
         if ok and self._pending_payload is not None:
             self._apply_payload_json(self._pending_payload_json)
 
+    def set_theme(self, mode: str) -> None:
+        """Push the active theme to the loaded page via window.setWorkspaceTheme."""
+        view = self.view if hasattr(self, "view") else getattr(self, "_view", None)
+        if view is None:
+            return
+        mode = "light" if mode == "light" else "dark"
+        view.page().runJavaScript(f"window.setWorkspaceTheme('{mode}')")
+
     def _handle_filters_changed(self, payload: str) -> None:
         try:
             data = json.loads(payload)

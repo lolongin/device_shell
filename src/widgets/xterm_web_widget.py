@@ -162,6 +162,18 @@ class XtermWebWidget(QWidget):
             self.start_terminal_engine()
         return self._view.page()
 
+    def set_theme(self, mode: str) -> None:
+        """Push the active theme to the loaded page via window.setWorkspaceTheme."""
+        view = self._view if hasattr(self, "_view") else None
+        if view is None:
+            return
+        mode = "light" if mode == "light" else "dark"
+        view.page().runJavaScript(f"window.setWorkspaceTheme('{mode}')")
+        # Match the WebView chrome background to the page so the frame
+        # doesn't flash the dark default in light mode.
+        bg = QColor("#f2f4f6") if mode == "light" else QColor(WORKSPACE_BG)
+        view.page().setBackgroundColor(bg)
+
     def textCursor(self) -> _XtermTextCursor:  # noqa: N802 - Qt compatibility shim
         return _XtermTextCursor()
 

@@ -493,6 +493,39 @@
   </main>
 
   <script>
+    // Pushes the active workspace theme (dark/light) onto the :root CSS
+    // variables. Only base tokens this page actually uses are overridden;
+    // light = inline overrides, dark = revert to workspace-theme.css :root.
+    window.setWorkspaceTheme = function setWorkspaceTheme(theme) {
+      const isLight = theme === 'light';
+      const lightVars = {
+        '--bg': '#f2f4f6',
+        '--panel-2': '#e8ebef',
+        '--line': '#d5dae1',
+        '--line-strong': '#c0c7d1',
+        '--text': '#1c2128',
+        '--muted': '#5a6470',
+        '--soft': '#87919d',
+        '--accent': '#1f8a4c',
+        '--accent-2': '#3a7ecf',
+        '--blue': '#3a7ecf',
+        '--warn': '#b7791f',
+        '--danger': '#c74a4a',
+        '--selected': '#dbe6f2',
+        '--input': '#fafbfc',
+        '--text-selection-bg': '#3a7ecf',
+        '--scroll-hover': '#aeb6c2'
+      };
+      const root = document.documentElement;
+      for (const key in lightVars) {
+        if (isLight) {
+          root.style.setProperty(key, lightVars[key]);
+        } else {
+          root.style.removeProperty(key);
+        }
+      }
+    };
+
     let bridge = null;
     let state = null;
     let applying = false;

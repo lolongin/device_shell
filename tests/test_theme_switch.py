@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -71,3 +72,13 @@ def test_persisted_light_theme_applied_after_build(
         assert "background: #020617" not in window.styleSheet()
     finally:
         window.close()
+
+
+def _web_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "src" / "web"
+
+
+def test_web_pages_expose_set_workspace_theme() -> None:
+    for page_name in ("web_shell.html", "device_navigation.html", "xterm_terminal.html", "auto_response_editor.html"):
+        page = (_web_root() / page_name).read_text(encoding="utf-8")
+        assert "window.setWorkspaceTheme" in page

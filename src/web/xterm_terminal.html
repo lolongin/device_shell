@@ -108,6 +108,48 @@
       'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js'
     ];
 
+    // Pushes the active workspace theme (dark/light) onto the :root CSS
+    // variables. Only base tokens are overridden — the terminal ANSI tokens
+    // (--terminal-ansi-*) must stay dark. In light mode the xterm theme is
+    // rebuilt from the updated variables; dark mode reverts to the CSS :root.
+    window.setWorkspaceTheme = function setWorkspaceTheme(theme) {
+      const isLight = theme === 'light';
+      const lightVars = {
+        '--bg': '#f2f4f6',
+        '--text': '#1c2128',
+        '--accent': '#1f8a4c',
+        '--muted': '#5a6470',
+        '--danger': '#c74a4a',
+        '--warn': '#b7791f',
+        '--blue': '#3a7ecf',
+        '--text-selection-bg': '#3a7ecf'
+      };
+      const root = document.documentElement;
+      for (const key in lightVars) {
+        if (isLight) {
+          root.style.setProperty(key, lightVars[key]);
+        } else {
+          root.style.removeProperty(key);
+        }
+      }
+      // Rebuild the xterm theme from the (possibly updated) CSS variables.
+      if (window.term) {
+        window.term.options.theme = Object.assign({}, window.term.options.theme, {
+          background: cssVar('--bg'),
+          foreground: cssVar('--text'),
+          cursor: cssVar('--accent'),
+          cursorAccent: cssVar('--bg'),
+          selectionBackground: cssVar('--text-selection-bg'),
+          selectionForeground: cssVar('--text-selection-fg'),
+          red: cssVar('--danger'),
+          green: cssVar('--accent'),
+          yellow: cssVar('--warn'),
+          blue: cssVar('--blue')
+        });
+        window.term.refresh(0, window.term.rows - 1);
+      }
+    };
+
     function loadScript(src) {
       return new Promise((resolve, reject) => {
         const script = document.createElement('script');
@@ -210,6 +252,9 @@
         term.loadAddon(fitAddon);
       }
       term.open(terminalElement);
+      // Expose the terminal instance so window.setWorkspaceTheme can rebuild
+      // its theme and re-render when the workspace theme switches.
+      window.term = term;
 
       let bridge = null;
       let ready = false;
