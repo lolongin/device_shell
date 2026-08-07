@@ -3353,6 +3353,50 @@ QTreeWidget#sessionManagerTree QTreeView::branch {
     background: transparent;
 }
 
+/* Tool panel label transparency */
+QGroupBox#navShell QLabel,
+QFrame#temporaryFormCard QLabel,
+QFrame#temporaryProtocolCard QLabel,
+QFrame#temporaryDeviceCard QLabel,
+QFrame#transferConfigCard QLabel,
+QFrame#transferStatusCard QLabel {
+    background: transparent;
+}
+
+/* Tool panel translucent surfaces */
+QGroupBox#navShell,
+QGroupBox#deviceDetailCard,
+QGroupBox#quickActionCard,
+QGroupBox#authCard {
+    background: rgba(15, 23, 42, 0.66);
+}
+QFrame#temporaryFormCard,
+QFrame#transferConfigCard,
+QFrame#transferStatusCard {
+    background: rgba(8, 16, 29, 0.72);
+}
+QFrame#temporaryProtocolCard {
+    background: rgba(8, 16, 29, 0.78);
+}
+QFrame#temporaryProtocolCard:hover {
+    background: rgba(15, 23, 42, 0.78);
+}
+QFrame#temporaryDeviceCard {
+    background: rgba(15, 23, 42, 0.72);
+}
+QFrame#temporaryDeviceCard:hover {
+    background: rgba(17, 28, 47, 0.78);
+}
+QFrame#serverCard:hover {
+    background: rgba(15, 23, 42, 0.78);
+}
+QFrame#serverGroupHeader {
+    background: rgba(15, 23, 42, 0.72);
+}
+QFrame#serverGroupHeader:hover {
+    background: rgba(17, 28, 47, 0.78);
+}
+
 /* Global text selection */
 QLineEdit,
 QTextEdit,
