@@ -235,3 +235,16 @@ def test_xterm_light_map_includes_scrollbar_tokens() -> None:
     assert "'--input':" in light
     assert "'--line-strong':" in light
     assert "'--scroll-hover':" in light
+
+
+def test_apply_theme_updates_command_record_line_area(app: QApplication) -> None:
+    """Switching theme must update the command-record editor's theme so its
+    line-number gutter (QPainter-drawn, bypasses QSS) matches the theme."""
+    _ = app
+    window = DeviceDesktopApp()
+    assert hasattr(window, "command_record_input")
+    window.apply_theme("light")
+    assert window.command_record_input._theme_mode == "light"
+    window.apply_theme("dark")
+    assert window.command_record_input._theme_mode == "dark"
+    window.close()

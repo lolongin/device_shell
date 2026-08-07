@@ -726,6 +726,11 @@ class SessionLayoutOpsMixin:
                 terminal.set_theme(mode)
             elif hasattr(terminal, "apply_canvas_theme"):
                 terminal.apply_canvas_theme(mode)
+        # Command-record editor draws its line-number gutter with QPainter, which
+        # bypasses QSS — re-theme it explicitly.
+        command_input = getattr(self, "command_record_input", None)
+        if command_input is not None and hasattr(command_input, "set_theme"):
+            command_input.set_theme(mode)
         self.schedule_desktop_state_save()
 
     def session_manager_custom_context_menu(self, pos: object) -> None:

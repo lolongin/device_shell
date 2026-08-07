@@ -29,6 +29,7 @@ class CommandRecordInput(QPlainTextEdit):
         self._submit_handler: Callable[[str], None] | None = None
         self._suggestion_accept_handler: Callable[[], bool] | None = None
         self._enter_sends = False
+        self._theme_mode = "dark"
         self.setObjectName("commandRecordEditor")
         self.setMinimumHeight(72)
         self.setMaximumHeight(16777215)
@@ -41,6 +42,13 @@ class CommandRecordInput(QPlainTextEdit):
         self.updateRequest.connect(self.update_line_number_area)
         self.cursorPositionChanged.connect(self.highlight_current_line)
         self.update_line_number_area_width()
+        self.highlight_current_line()
+
+    def set_theme(self, mode: str) -> None:
+        """Record the active theme so the line-number gutter and current-line
+        highlight pick matching colors."""
+        self._theme_mode = "light" if mode == "light" else "dark"
+        self._line_number_area.update()
         self.highlight_current_line()
 
     def set_submit_handler(self, handler: Callable[[str], None]) -> None:
@@ -86,15 +94,20 @@ class CommandRecordInput(QPlainTextEdit):
 
     def highlight_current_line(self) -> None:
         selection = QTextEdit.ExtraSelection()
-        selection.format.setBackground(QColor("#111c2f"))
+        line_bg = QColor("#e8ebef") if self._theme_mode == "light" else QColor("#111c2f")
+        selection.format.setBackground(line_bg)
         selection.format.setProperty(QTextFormat.FullWidthSelection, True)
         selection.cursor = self.textCursor()
         selection.cursor.clearSelection()
         self.setExtraSelections([selection])
 
     def line_number_area_paint_event(self, event: object) -> None:
+        light = self._theme_mode == "light"
+        area_bg = QColor("#eef0f3") if light else QColor("#08101d")
+        current_fg = QColor("#1c2128") if light else QColor("#f8fafc")
+        normal_fg = QColor("#5a6470") if light else QColor("#718096")
         painter = QPainter(self._line_number_area)
-        painter.fillRect(event.rect(), QColor("#08101d"))
+        painter.fillRect(event.rect(), area_bg)
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
         top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
@@ -106,7 +119,7 @@ class CommandRecordInput(QPlainTextEdit):
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 is_current = block_number == current_block
-                painter.setPen(QColor("#f8fafc" if is_current else "#718096"))
+                painter.setPen(current_fg if is_current else normal_fg)
                 painter.drawText(0, top, width, height, Qt.AlignRight, str(block_number + 1))
             block = block.next()
             top = bottom
