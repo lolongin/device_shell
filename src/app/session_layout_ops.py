@@ -713,7 +713,7 @@ class SessionLayoutOpsMixin:
             return
         device_tab = self.device_tabs_by_id.get(key)
         if device_tab is not None:
-            menu, close_actions, _device_actions, _device = self.build_device_tab_context_menu(
+            menu, close_actions, device_actions, device = self.build_device_tab_context_menu(
                 device_tab, self.session_manager_tree
             )
             chosen = menu.exec(self.session_manager_tree.viewport().mapToGlobal(pos))
@@ -723,3 +723,6 @@ class SessionLayoutOpsMixin:
                 if chosen == action:
                     self.close_device_tabs_relative(device_tab, mode)
                     return
+            if device is not None:
+                self._handle_device_quick_action(chosen, device_actions, device)
+                return
