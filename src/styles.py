@@ -3362,6 +3362,9 @@ QFrame#transferConfigCard QLabel,
 QFrame#transferStatusCard QLabel {
     background: transparent;
 }
+QFrame#temporaryDeviceCard QLabel#temporaryProtocolPill {
+    background: #102019;
+}
 
 /* Tool panel translucent surfaces */
 QGroupBox#navShell,
