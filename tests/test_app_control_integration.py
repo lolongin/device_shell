@@ -222,7 +222,7 @@ def test_package_upgrade_uses_local_ftp_interaction(
     window = DeviceDesktopApp()
     window.package_upgrade_file_input.setText(str(package))
     window.package_upgrade_server_host_combo.setCurrentText("127.0.0.1")
-    window.package_upgrade_port_input.setText(str(port))
+    window.transfer_port = int(port)
     window.package_upgrade_include_slave_checkbox.setChecked(False)
     window.package_upgrade_reboot_checkbox.setChecked(False)
     state_path = tmp_path / "upgrade-app-control.json"

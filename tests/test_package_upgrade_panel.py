@@ -55,7 +55,7 @@ def test_package_upgrade_panel_generates_dual_controller_cleanup_script(
     window = DeviceDesktopApp()
     window.package_upgrade_file_input.setText(str(package))
     window.package_upgrade_server_host_combo.setCurrentText("192.0.2.10")
-    window.package_upgrade_port_input.setText("2121")
+    window.transfer_port = 2121
     window.package_upgrade_startup_output.setPlainText(
         """
         Current startup system software: flash:/current.cc

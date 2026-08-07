@@ -209,17 +209,6 @@ class PackageUpgradeOpsMixin:
 
         group_layout.addWidget(form_frame)
 
-        protocol_row = QHBoxLayout()
-        protocol_row.setSpacing(6)
-        self.package_upgrade_protocol_combo = QComboBox()
-        self.package_upgrade_protocol_combo.addItems(["FTP", "SFTP"])
-        self.package_upgrade_protocol_combo.setCurrentText(str(getattr(self, "transfer_protocol", "ftp")).upper())
-        self.package_upgrade_port_input = QLineEdit(str(getattr(self, "transfer_port", 2121)))
-        self.package_upgrade_port_input.setMaximumWidth(76)
-        protocol_row.addWidget(self.package_upgrade_protocol_combo, 1)
-        protocol_row.addWidget(self.package_upgrade_port_input)
-        form_layout.addRow("传输", protocol_row)
-
         self.package_upgrade_include_slave_checkbox = QCheckBox("自动探测双主控并同步备控")
         self.package_upgrade_include_slave_checkbox.setChecked(True)
         form_layout.addRow("", self.package_upgrade_include_slave_checkbox)
@@ -314,7 +303,6 @@ class PackageUpgradeOpsMixin:
         self.package_upgrade_copy_button.clicked.connect(self.copy_package_upgrade_script)
         self.package_upgrade_read_terminal_button.clicked.connect(self.read_package_upgrade_precheck_from_terminal)
         self.package_upgrade_start_transfer_button.clicked.connect(self.start_package_upgrade_transfer_service)
-        self.package_upgrade_protocol_combo.currentTextChanged.connect(self.update_package_upgrade_default_port)
 
     def reset_package_upgrade_pipeline(self) -> None:
         if not hasattr(self, "package_upgrade_pipeline_labels"):
@@ -456,11 +444,6 @@ class PackageUpgradeOpsMixin:
             self.package_upgrade_dir_input.setText(parent)
             self.schedule_desktop_state_save()
             self.generate_package_upgrade_script()
-
-    def update_package_upgrade_default_port(self, protocol: str) -> None:
-        current = self.package_upgrade_port_input.text().strip()
-        if current in {"21", "22", "2121", "2222", ""}:
-            self.package_upgrade_port_input.setText("2121" if protocol.upper() == "FTP" else "2222")
 
     def read_package_upgrade_precheck_from_terminal(self) -> None:
         state = self.current_session_state()
@@ -851,12 +834,8 @@ class PackageUpgradeOpsMixin:
         if not package_path.exists() or not package_path.is_file():
             self.show_warning("请先选择存在的 .cc 系统包。")
             return None
-        protocol = self.package_upgrade_protocol_combo.currentText().strip().lower() or "ftp"
-        try:
-            port = int(self.package_upgrade_port_input.text().strip())
-        except ValueError:
-            self.show_warning("传输端口必须是数字。")
-            return None
+        protocol = str(getattr(self, "transfer_protocol", "ftp")).lower() or "ftp"
+        port = int(getattr(self, "transfer_port", 2121))
         username = str(getattr(self, "transfer_username", "device")).strip()
         password = str(getattr(self, "transfer_password", "device"))
         if not username or not password:
@@ -896,16 +875,11 @@ class PackageUpgradeOpsMixin:
         if not server_host:
             self.show_warning("请填写设备可访问的本机 IP。")
             return None
-        try:
-            port = int(self.package_upgrade_port_input.text().strip())
-        except ValueError:
-            self.show_warning("传输端口必须是数字。")
-            return None
         return PackageUpgradeConfig(
             package_path=package_path,
             server_host=server_host,
-            protocol=self.package_upgrade_protocol_combo.currentText().strip().lower() or "ftp",
-            port=port,
+            protocol=str(getattr(self, "transfer_protocol", "ftp")).lower() or "ftp",
+            port=int(getattr(self, "transfer_port", 2121)),
             username=str(getattr(self, "transfer_username", "device")).strip(),
             password=str(getattr(self, "transfer_password", "device")),
             master_storage=DEFAULT_MASTER_STORAGE,
