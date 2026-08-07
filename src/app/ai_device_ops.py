@@ -146,14 +146,10 @@ class AiDeviceOpsMixin:
                 return self.transfer_password_input.text()
             return str(getattr(self, "transfer_password", ""))
         if secret_ref == "transfer.username":
-            if hasattr(self, "package_upgrade_username_input"):
-                return self.package_upgrade_username_input.text().strip()
             if hasattr(self, "transfer_username_input"):
                 return self.transfer_username_input.text().strip()
             return str(getattr(self, "transfer_username", "")).strip()
         if secret_ref == "transfer.password":
-            if hasattr(self, "package_upgrade_password_input"):
-                return self.package_upgrade_password_input.text()
             if hasattr(self, "transfer_password_input"):
                 return self.transfer_password_input.text()
             return str(getattr(self, "transfer_password", ""))

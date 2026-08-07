@@ -220,16 +220,6 @@ class PackageUpgradeOpsMixin:
         protocol_row.addWidget(self.package_upgrade_port_input)
         form_layout.addRow("传输", protocol_row)
 
-        self.package_upgrade_username_input = QLineEdit(str(getattr(self, "transfer_username", "device")))
-        self.package_upgrade_password_input = QLineEdit(str(getattr(self, "transfer_password", "device")))
-        form_layout.addRow("账号", self.package_upgrade_username_input)
-        form_layout.addRow("密码", self.package_upgrade_password_input)
-
-        self.package_upgrade_master_storage_input = QLineEdit(DEFAULT_MASTER_STORAGE)
-        self.package_upgrade_slave_storage_input = QLineEdit(DEFAULT_SLAVE_STORAGE)
-        form_layout.addRow("主控路径", self.package_upgrade_master_storage_input)
-        form_layout.addRow("备控路径", self.package_upgrade_slave_storage_input)
-
         self.package_upgrade_include_slave_checkbox = QCheckBox("自动探测双主控并同步备控")
         self.package_upgrade_include_slave_checkbox.setChecked(True)
         form_layout.addRow("", self.package_upgrade_include_slave_checkbox)
@@ -867,8 +857,8 @@ class PackageUpgradeOpsMixin:
         except ValueError:
             self.show_warning("传输端口必须是数字。")
             return None
-        username = self.package_upgrade_username_input.text().strip()
-        password = self.package_upgrade_password_input.text()
+        username = str(getattr(self, "transfer_username", "device")).strip()
+        password = str(getattr(self, "transfer_password", "device"))
         if not username or not password:
             self.show_warning("FTP/SFTP 账号和密码不能为空。")
             return None
@@ -916,10 +906,10 @@ class PackageUpgradeOpsMixin:
             server_host=server_host,
             protocol=self.package_upgrade_protocol_combo.currentText().strip().lower() or "ftp",
             port=port,
-            username=self.package_upgrade_username_input.text().strip(),
-            password=self.package_upgrade_password_input.text(),
-            master_storage=self.package_upgrade_master_storage_input.text().strip() or DEFAULT_MASTER_STORAGE,
-            slave_storage=self.package_upgrade_slave_storage_input.text().strip() or DEFAULT_SLAVE_STORAGE,
+            username=str(getattr(self, "transfer_username", "device")).strip(),
+            password=str(getattr(self, "transfer_password", "device")),
+            master_storage=DEFAULT_MASTER_STORAGE,
+            slave_storage=DEFAULT_SLAVE_STORAGE,
             include_slave=self.package_upgrade_include_slave_checkbox.isChecked(),
             auto_delete_old_packages=self.package_upgrade_auto_delete_checkbox.isChecked(),
             reboot_after_setting=self.package_upgrade_reboot_checkbox.isChecked(),
