@@ -214,11 +214,6 @@ class PackageUpgradeOpsMixin:
         self.package_upgrade_reboot_checkbox.setChecked(True)
         form_layout.addRow("", self.package_upgrade_reboot_checkbox)
 
-        if hasattr(form_layout, "setRowVisible"):
-            for row_index in range(2, form_layout.rowCount()):
-                form_layout.setRowVisible(row_index, False)
-            form_layout.setRowVisible(form_layout.rowCount() - 1, True)
-
         self.package_upgrade_startup_output = self._new_package_upgrade_textarea(
             "粘贴 display startup 输出，用于保护当前/下次启动包"
         )
