@@ -209,9 +209,6 @@ class PackageUpgradeOpsMixin:
 
         group_layout.addWidget(form_frame)
 
-        self.package_upgrade_include_slave_checkbox = QCheckBox("自动探测双主控并同步备控")
-        self.package_upgrade_include_slave_checkbox.setChecked(True)
-        form_layout.addRow("", self.package_upgrade_include_slave_checkbox)
         self.package_upgrade_auto_delete_checkbox = QCheckBox("空间不足时自动删除未使用旧 .cc 包")
         self.package_upgrade_auto_delete_checkbox.setChecked(True)
         form_layout.addRow("", self.package_upgrade_auto_delete_checkbox)
@@ -461,7 +458,7 @@ class PackageUpgradeOpsMixin:
             return
         self.package_upgrade_startup_output.setPlainText(text)
         self.package_upgrade_master_dir_output.setPlainText(text)
-        if self.package_upgrade_include_slave_checkbox.isChecked():
+        if self.package_upgrade_include_slave:
             self.package_upgrade_slave_dir_output.setPlainText(text)
         self.generate_package_upgrade_script()
 
@@ -635,14 +632,14 @@ class PackageUpgradeOpsMixin:
             self.package_upgrade_master_dir_output.setPlainText(
                 str(precheck_outputs.get(f"dir {config.master_storage}") or text)
             )
-            if self.package_upgrade_include_slave_checkbox.isChecked():
+            if self.package_upgrade_include_slave:
                 self.package_upgrade_slave_dir_output.setPlainText(
                     str(precheck_outputs.get(f"dir {config.slave_storage}") or text)
                 )
         elif text:
             self.package_upgrade_startup_output.setPlainText(text)
             self.package_upgrade_master_dir_output.setPlainText(text)
-            if self.package_upgrade_include_slave_checkbox.isChecked():
+            if self.package_upgrade_include_slave:
                 self.package_upgrade_slave_dir_output.setPlainText(text)
         mode_status = ""
         if config.include_slave:
@@ -884,7 +881,7 @@ class PackageUpgradeOpsMixin:
             password=str(getattr(self, "transfer_password", "device")),
             master_storage=DEFAULT_MASTER_STORAGE,
             slave_storage=DEFAULT_SLAVE_STORAGE,
-            include_slave=self.package_upgrade_include_slave_checkbox.isChecked(),
+            include_slave=self.package_upgrade_include_slave,
             auto_delete_old_packages=self.package_upgrade_auto_delete_checkbox.isChecked(),
             reboot_after_setting=self.package_upgrade_reboot_checkbox.isChecked(),
         )

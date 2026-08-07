@@ -358,6 +358,7 @@ if PYSIDE6_IMPORT_ERROR is None:
             self.package_upgrade_server_host = ""
             self.package_upgrade_package_dir = ""
             self.package_upgrade_package_file = ""
+            self.package_upgrade_include_slave = True
             self.session_manager_panel = None
             self.session_manager_tree = None
             self.session_manager_search = None

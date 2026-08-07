@@ -27,8 +27,8 @@ def test_package_upgrade_panel_exists_in_left_sidebar(app: QApplication) -> None
     assert window.package_upgrade_one_click_button.text() == "一键更换选中设备"
     assert "华为" not in window.package_upgrade_one_click_button.text()
     assert window.package_upgrade_auto_delete_checkbox.isChecked()
-    assert window.package_upgrade_include_slave_checkbox.isChecked()
-    assert "自动探测双主控" in window.package_upgrade_include_slave_checkbox.text()
+    assert window.package_upgrade_include_slave is True
+    assert not hasattr(window, "package_upgrade_include_slave_checkbox")
     assert window.package_upgrade_reboot_checkbox.isChecked()
     assert not window.package_upgrade_reboot_checkbox.isHidden()
     assert window.package_upgrade_startup_output.parent() is None
