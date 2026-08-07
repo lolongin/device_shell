@@ -3410,20 +3410,11 @@ QWidget#sessionBreadcrumb {
     min-height: 30px;
     max-height: 30px;
 }
-QLabel#breadcrumbHome,
 QLabel#breadcrumbDevice,
 QLabel#breadcrumbSession {
     background: transparent;
     border-radius: 6px;
     padding: 3px 8px;
-}
-QLabel#breadcrumbHome {
-    color: #22c55e;
-    font-weight: 800;
-    font-size: 12px;
-}
-QLabel#breadcrumbHome:hover {
-    background: rgba(34, 197, 94, 0.14);
 }
 QLabel#breadcrumbDevice {
     color: #a7b4c7;

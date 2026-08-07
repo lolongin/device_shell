@@ -267,8 +267,15 @@ def test_breadcrumb_has_polished_style() -> None:
 
     assert "QWidget#sessionBreadcrumb {" in APP_STYLE
     assert "QLabel#breadcrumbSeparator {" in APP_STYLE
-    assert "QLabel#breadcrumbHome {" in APP_STYLE
+    assert "QLabel#breadcrumbDevice {" in APP_STYLE
     assert "border-radius: 10px;" in APP_STYLE
+
+
+def test_breadcrumb_drops_home_crumb() -> None:
+    """The breadcrumb should no longer show a leading '设备池' home crumb."""
+    from src.styles import APP_STYLE
+
+    assert "breadcrumbHome" not in APP_STYLE
 
 
 def test_breadcrumb_hover_blue_mapped_to_light() -> None:

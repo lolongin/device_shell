@@ -442,10 +442,6 @@ class SessionLayoutOpsMixin:
         layout = QHBoxLayout(breadcrumb)
         layout.setContentsMargins(14, 5, 14, 5)
         layout.setSpacing(6)
-        home_label = QLabel("设备池")
-        home_label.setObjectName("breadcrumbHome")
-        home_label.setCursor(Qt.PointingHandCursor)
-        home_label.mousePressEvent = lambda _event: self._breadcrumb_goto_home()
         self.session_breadcrumb_device_label = QLabel()
         self.session_breadcrumb_device_label.setObjectName("breadcrumbDevice")
         self.session_breadcrumb_device_label.setCursor(Qt.PointingHandCursor)
@@ -466,19 +462,12 @@ class SessionLayoutOpsMixin:
             sep.setObjectName("breadcrumbSeparator")
             return sep
 
-        layout.addWidget(home_label)
-        layout.addWidget(separator())
         layout.addWidget(self.session_breadcrumb_device_label)
         layout.addWidget(separator())
         layout.addWidget(self.session_breadcrumb_session_label)
         layout.addStretch(1)
         self.session_breadcrumb = breadcrumb
         return breadcrumb
-
-    def _breadcrumb_goto_home(self) -> None:
-        self.center_stage_mode = "home"
-        self.update_center_stage_state()
-        self.apply_left_sidebar_state()
 
     def _breadcrumb_device_click(self, _event: object = None) -> None:
         label = getattr(self, "session_breadcrumb_device_label", None)
