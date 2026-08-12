@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from .data import Device
@@ -16,6 +17,9 @@ MOCK_DEVICE_TELNET_USER = "lon"
 MOCK_DEVICE_TELNET_PASSWORD = "202188"
 MOCK_LINUX_SSH_USER = "ops"
 MOCK_LINUX_SSH_PASSWORD = "ops123"
+MOCK_PROTOCOL_FAILURE = os.getenv("DEVICE_TUI_MOCK_PROTOCOL_FAILURE") == "1"
+MOCK_DEVICE_SSH_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2200
+MOCK_DEVICE_TELNET_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2323
 SAMPLE_NOW = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
 
 STATUS_OCCUPIED = "已被占用"
@@ -44,12 +48,12 @@ def sample_devices() -> list[Device]:
             rack="Local-R01",
             version="Telnet:2323 / SSH:2200",
             notes="Local GUI sample device. Configure matching Telnet and SSH endpoints before using it for connection tests.",
-            ssh_port=2200,
-            telnet_port=2323,
+            ssh_port=MOCK_DEVICE_SSH_PORT,
+            telnet_port=MOCK_DEVICE_TELNET_PORT,
             ssh_username=MOCK_LINUX_SSH_USER,
             ssh_password=MOCK_LINUX_SSH_PASSWORD,
             serial_ip=MOCK_DEVICE_HOST,
-            serial_port=2323,
+            serial_port=MOCK_DEVICE_TELNET_PORT,
             serial_username=MOCK_DEVICE_TELNET_USER,
             serial_password=MOCK_DEVICE_TELNET_PASSWORD,
             supports_power_off=True,

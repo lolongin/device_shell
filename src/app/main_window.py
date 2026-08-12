@@ -1068,6 +1068,7 @@ if PYSIDE6_IMPORT_ERROR is None:
                 item = self.temporary_list_layout.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
+                    widget.setParent(None)
                     widget.deleteLater()
             self.temporary_empty_label.setVisible(not self.temporary_devices)
             for device in self.temporary_devices:

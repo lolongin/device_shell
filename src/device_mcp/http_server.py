@@ -111,6 +111,7 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             "/v1/ai/upload-file": "ai_upload_file",
             "/v1/ai/download-file": "ai_download_file",
             "/v1/ai/get-result": "ai_get_result",
+            "/v1/ai/list-skills": "ai_list_skills",
             "/v1/ai/run-skill": "ai_run_skill",
         }
         tool = routes.get(urlparse(self.path).path)

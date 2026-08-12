@@ -776,3 +776,16 @@ def test_audit_log_redacts_secrets(tmp_path: Path) -> None:
     assert "super-secret" not in payload["command"]
     assert "device:secret@" not in payload["url"]
     assert redact_text("password=hunter2") == "password=***"
+
+
+def test_audit_log_rotates_large_jsonl_file(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    logger = AuditLogger(audit_path, max_bytes=64 * 1024, backup_count=2)
+
+    logger.write({"command": "A" * 60_000})
+    logger.write({"command": "B" * 60_000})
+
+    rotated = audit_path.with_name("audit.jsonl.1")
+    assert rotated.exists()
+    assert "A" * 1_000 in rotated.read_text(encoding="utf-8")
+    assert "B" * 1_000 in audit_path.read_text(encoding="utf-8")

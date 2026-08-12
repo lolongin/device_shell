@@ -18,6 +18,7 @@ def test_mcp_server_exposes_device_control_tools() -> None:
         "ai_execute_command",
         "ai_execute_script",
         "ai_get_result",
+        "ai_list_skills",
         "ai_run_skill",
         "ai_upload_file",
         "system_status",

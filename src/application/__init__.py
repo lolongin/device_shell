@@ -1,0 +1,118 @@
+"""UI-independent application services shared by desktop clients and MCP."""
+
+from .automation import (
+    AutomationRuleRecord,
+    AutomationService,
+    AutomationSessionStatus,
+    AutomationStore,
+    MemoryAutomationStore,
+)
+from .commands import (
+    CommandGroup,
+    CommandService,
+    CommandStore,
+    MemoryCommandStore,
+    redact_command_secrets,
+)
+from .desktop import DesktopApplication, build_desktop_application
+from .ai import AiApplicationService, AiPlan
+from .credentials import (
+    ConnectionTarget,
+    CredentialResolver,
+    RepositoryCredentialResolver,
+    SessionCredential,
+    SessionProtocol,
+)
+from .devices import DeviceActionResult, DeviceInventory, DeviceService, DeviceSnapshot
+from .errors import (
+    ApplicationError,
+    ApplicationConflictError,
+    PackageUpgradeError,
+    ResourceNotFoundError,
+    SessionBusyError,
+    SessionConnectionError,
+    UnsupportedOperationError,
+)
+from .events import ApplicationEvent, EventBus
+from .operations import OperationManager, OperationRecord
+from .profiles import (
+    CompositeCredentialResolver,
+    ConnectionProfile,
+    ConnectionProfileDraft,
+    ConnectionProfileService,
+    ConnectionProfileStore,
+    MemoryConnectionProfileStore,
+    ProfileEndpoint,
+)
+from .secrets import KeyringSecretStore, MemorySecretStore, SecretStore
+from .sessions import SessionLogRecord, SessionRecord, SessionService
+from .settings import MemorySettingsStore, SettingsStore
+from .simulator import SIMULATED_DEVICE_ID, create_simulated_device
+from .transfers import (
+    ManagedTransferService,
+    MemoryTransferStore,
+    TerminalPlanExecutor,
+    TransferSettings,
+    TransferStore,
+)
+from .upgrades import PackageUpgradeService
+
+__all__ = [
+    "ApplicationError",
+    "AiApplicationService",
+    "AiPlan",
+    "ApplicationConflictError",
+    "ApplicationEvent",
+    "AutomationRuleRecord",
+    "AutomationService",
+    "AutomationSessionStatus",
+    "AutomationStore",
+    "ConnectionTarget",
+    "ConnectionProfile",
+    "ConnectionProfileDraft",
+    "ConnectionProfileService",
+    "ConnectionProfileStore",
+    "CompositeCredentialResolver",
+    "CommandGroup",
+    "CommandService",
+    "CommandStore",
+    "CredentialResolver",
+    "DesktopApplication",
+    "DeviceInventory",
+    "DeviceActionResult",
+    "DeviceService",
+    "DeviceSnapshot",
+    "EventBus",
+    "MemorySettingsStore",
+    "MemoryConnectionProfileStore",
+    "MemoryCommandStore",
+    "MemoryAutomationStore",
+    "MemorySecretStore",
+    "MemoryTransferStore",
+    "ManagedTransferService",
+    "OperationManager",
+    "OperationRecord",
+    "PackageUpgradeError",
+    "PackageUpgradeService",
+    "RepositoryCredentialResolver",
+    "ProfileEndpoint",
+    "ResourceNotFoundError",
+    "SessionRecord",
+    "SessionLogRecord",
+    "SessionCredential",
+    "redact_command_secrets",
+    "SessionBusyError",
+    "SessionConnectionError",
+    "SessionProtocol",
+    "SessionService",
+    "SIMULATED_DEVICE_ID",
+    "SettingsStore",
+    "TerminalPlanExecutor",
+    "TransferSettings",
+    "TransferStore",
+    "SecretStore",
+    "KeyringSecretStore",
+    "UnsupportedOperationError",
+    "build_desktop_application",
+    "create_simulated_device",
+]

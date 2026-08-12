@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import threading
 import time
 from typing import Any
 
 from .client import AppControlClient, AppControlClientError
+from .desktop_client import DesktopApiClient, DesktopApiClientError
 from .runtime import default_state_path
 
 
@@ -30,15 +32,17 @@ class McpGateway:
 
     def __init__(self, state_path: Path | None = None) -> None:
         self.state_path = state_path or default_state_path()
-        self._client: AppControlClient | None = None
-        self._state_signature: tuple[int, int] | None = None
+        self._desktop_url = os.getenv("DEVICE_TUI_MCP_BACKEND_URL", "").strip()
+        self._desktop_token = os.getenv("DEVICE_TUI_MCP_BACKEND_TOKEN", os.getenv("DEVICE_TUI_DESKTOP_TOKEN", ""))
+        self._client: AppControlClient | DesktopApiClient | None = None
+        self._state_signature: tuple[object, ...] | None = None
         self._lock = threading.RLock()
 
     def call(self, method: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
         started = time.monotonic()
         try:
             response = getattr(self.client(), method)(*args, **kwargs)
-        except AppControlClientError as exc:
+        except (AppControlClientError, DesktopApiClientError) as exc:
             response = exc.response or unavailable_response(str(exc))
         elapsed_ms = round((time.monotonic() - started) * 1000, 2)
         timing = response.setdefault("timing", {})
@@ -46,12 +50,15 @@ class McpGateway:
             timing["gateway_ms"] = elapsed_ms
         return response
 
-    def client(self) -> AppControlClient:
+    def client(self) -> AppControlClient | DesktopApiClient:
         with self._lock:
             signature = self._signature()
             if self._client is None or signature != self._state_signature:
                 previous = self._client
-                self._client = AppControlClient.from_state_file(self.state_path)
+                if self._desktop_url and self._desktop_token:
+                    self._client = DesktopApiClient(self._desktop_url, self._desktop_token)
+                else:
+                    self._client = AppControlClient.from_state_file(self.state_path)
                 self._state_signature = signature
                 if previous is not None:
                     previous.close()
@@ -65,7 +72,9 @@ class McpGateway:
         if client is not None:
             client.close()
 
-    def _signature(self) -> tuple[int, int]:
+    def _signature(self) -> tuple[object, ...]:
+        if self._desktop_url and self._desktop_token:
+            return ("desktop-api", self._desktop_url, self._desktop_token)
         try:
             stat = self.state_path.stat()
         except OSError as exc:

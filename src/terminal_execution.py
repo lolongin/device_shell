@@ -11,7 +11,10 @@ ANSI_ESCAPE_RE = re.compile(
 PROMPT_PATTERNS = (
     re.compile(r"<[^<>\r\n]{1,128}>"),
     re.compile(r"\[[^\[\]\r\n]{1,128}\]"),
-    re.compile(r"[^\r\n]{0,160}[$#]"),
+    # Shell prompts are one non-whitespace token (for example root@host:/#).
+    # Requiring that shape prevents a partially echoed command such as
+    # ``dir slave#flash:/`` from matching at the intermediate ``dir slave#``.
+    re.compile(r"[^\s\r\n]{1,160}[$#]"),
 )
 
 

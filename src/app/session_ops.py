@@ -102,6 +102,7 @@ except ImportError:
     QWebEngineView = None
 
 from ..app_state import DeviceTabState, SessionInputRecord, SessionTabState
+from ..application.simulator import create_simulated_device
 from ..auto_response import (
     AutoResponseAction,
     AutoResponseRule,
@@ -3460,26 +3461,7 @@ class SessionOpsMixin:
 
     @staticmethod
     def simulated_device() -> Device:
-        return Device(
-            id="SIM-TERMINAL",
-            name="模拟终端",
-            board_id="0000",
-            domain="测试",
-            device_type="本地终端",
-            cpu="ARM",
-            status="空闲",
-            owner=None,
-            ssh_ip="localhost",
-            telnet_ip="localhost",
-            username="sim",
-            password="",
-            vendor="本地",
-            model="终端",
-            site="本机",
-            rack="-",
-            version="V1.0",
-            notes="本机终端，用于验证自动响应规则。",
-        )
+        return create_simulated_device()
 
     # ---- Remembered terminal sessions ----
 

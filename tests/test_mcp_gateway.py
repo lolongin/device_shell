@@ -87,3 +87,28 @@ def test_gateway_reloads_client_when_control_state_changes(
     assert second is not first
     assert len(clients) == 2
     assert first.closed
+
+
+def test_gateway_can_route_to_electron_backend_without_state_file(monkeypatch: object) -> None:
+    class _DesktopClient:
+        def __init__(self, url: str, token: str) -> None:
+            assert url == "http://127.0.0.1:9999"
+            assert token == "desktop-token"
+
+        def ai_get_result(self, *, result_id: str, include_raw: bool = False) -> dict[str, object]:
+            return {"ok": True, "result_id": result_id, "include_raw": include_raw}
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setenv("DEVICE_TUI_MCP_BACKEND_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("DEVICE_TUI_MCP_BACKEND_TOKEN", "desktop-token")
+    monkeypatch.setattr("src.device_mcp.gateway.DesktopApiClient", _DesktopClient)
+    gateway = McpGateway(Path("unused-state.json"))
+
+    response = gateway.call("ai_get_result", result_id="ai-1", include_raw=True)
+
+    assert response["ok"] is True
+    assert response["result_id"] == "ai-1"
+    assert response["include_raw"] is True
+    assert response["timing"]["gateway_ms"] >= 0

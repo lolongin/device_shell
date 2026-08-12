@@ -359,6 +359,7 @@ def test_connection_failure_does_not_popup(app: QApplication, monkeypatch: pytes
 
         def _run_coro(coro, on_success=None, on_error=None):
             captured["on_error"] = on_error
+            coro.close()
 
         monkeypatch.setattr(window, "run_coro", _run_coro)
         window.connect_session_tab(state.tab_id)

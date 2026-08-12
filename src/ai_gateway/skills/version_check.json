@@ -1,0 +1,14 @@
+{
+  "name": "version_check",
+  "description": "Collect the device software version through the controlled terminal path.",
+  "params": [],
+  "flow": {
+    "steps": [
+      {
+        "id": "read_version",
+        "command": "display version",
+        "timeout_seconds": 30
+      }
+    ]
+  }
+}

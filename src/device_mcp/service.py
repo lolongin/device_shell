@@ -231,6 +231,15 @@ class AppControlService(
             return self._operation_wait(params, request_id=request_id)
         if tool == "operation_cancel":
             return self._operation_cancel(params, request_id=request_id)
+        if tool == "ai_list_skills":
+            gateway = getattr(self.backend, "gateway_service", lambda: None)()
+            if gateway is None:
+                raise AppControlError("gateway_unavailable", "AI gateway is unavailable.", status=409)
+            return self._success(
+                request_id,
+                "Available skills loaded.",
+                {"skills": gateway.skill_registry.list_skills()},
+            )
 
         action = self._build_action(tool, params)
         idempotency_key = str(params.get("idempotency_key") or "").strip()

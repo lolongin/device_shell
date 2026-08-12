@@ -51,6 +51,80 @@ or after editable install:
 device-tui
 ```
 
+## Electron + Vue Desktop Preview
+
+The next-generation desktop client is developed alongside the existing PySide6
+application. It starts a headless Python API on a random loopback port, loads the
+real device repository, and keeps terminal sessions in a backend-owned Session Hub.
+
+Install the Python backend dependency and desktop packages:
+
+```powershell
+python -m pip install "fastapi>=0.135,<1" "uvicorn>=0.46,<1" "websockets>=15,<17" "keyring>=25,<26"
+Set-Location desktop
+npm install
+```
+
+Run the new desktop client during development:
+
+```powershell
+$env:DEVICE_TUI_PROJECT_ROOT = (Resolve-Path ..)
+npm run dev
+```
+
+Build and preview the production renderer:
+
+```powershell
+npm run build
+npm run preview
+```
+
+Build the Windows installer with the bundled Python backend and run the local
+release smoke:
+
+```powershell
+npm run dist
+npm run smoke:release
+npm run smoke:clean-runtime
+npm run smoke:soak
+npm run smoke:app-soak
+```
+
+For an overnight packaged-app soak, run:
+
+```powershell
+npm run soak:app
+```
+
+To exercise a real upgrade and rollback path, pass an older installer to the
+validation script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validate-release.ps1 -PreviousInstaller C:\path\to\old\DeviceTUISetup.exe
+```
+
+The current migration milestone includes device inventory/details and filters,
+occupancy and power actions, temporary connections, saved servers and groups,
+Electron supervision of the Python process, backend-owned simulated/SSH/Telnet/
+serial-over-Telnet sessions, replay and reconnect, terminal logs/search/font
+preferences, and multi-session navigation. Connection metadata is stored in SQLite;
+saved passwords use the operating-system credential vault. One-time passwords are
+entered in an isolated Electron credential window and do not enter Vue/Pinia,
+SQLite, or logs. The backend bearer token also remains outside the Vue renderer,
+and terminal WebSockets use short-lived one-time tickets. The Electron workspace now
+also includes persisted command tabs/history and a Python-owned terminal automation
+editor with output matching, manual/connection/delayed triggers, multi-step and
+action-flow execution, target routing, loops, cancellation, and manual-input
+precedence. Credential-like legacy automation responses are moved to the operating-
+system vault; echoed values are redacted before WebSocket replay and logging.
+The managed file-transfer workspace starts backend-owned FTP/SFTP services, browses
+a user-selected shared directory, runs PC-to-device or device-to-PC terminal plans,
+and exposes progress/cancellation with overwrite, space, source-change, and exact-
+byte verification gates. Its generated service password stays in the operating-
+system credential vault and never enters Vue or SQLite.
+Existing PySide6 state is imported once without modifying its source file. The
+legacy `device-tui` entry point remains unchanged.
+
 ## Large Local Dataset
 
 For local GUI performance testing, set `DEVICE_TUI_SAMPLE_DEVICE_COUNT` before

@@ -9,6 +9,11 @@ from ..gateway import McpGateway
 
 def register_ai_gateway_tools(mcp: Any, gateway: McpGateway) -> None:
     @mcp.tool()
+    def ai_list_skills() -> dict[str, Any]:
+        """List bundled, reviewable device-operation skills available to AI."""
+        return gateway.call("ai_list_skills")
+
+    @mcp.tool()
     def ai_create_session(device_id: str) -> dict[str, Any]:
         """Create or reuse a gateway session for a device."""
         return gateway.call("ai_create_session", device_id)

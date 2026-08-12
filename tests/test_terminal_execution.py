@@ -13,6 +13,7 @@ def test_detect_terminal_prompt_supports_device_and_linux_prompts() -> None:
     assert detect_terminal_prompt("entered\r\n[Core-1]") == "[Core-1]"
     assert detect_terminal_prompt("ok\nadmin@host:~$ ") == "admin@host:~$"
     assert detect_terminal_prompt("ok\nroot@host:/# ") == "root@host:/#"
+    assert detect_terminal_prompt("dir slave#") == ""
 
 
 def test_prompt_detection_strips_ansi_and_ignores_regular_output() -> None:

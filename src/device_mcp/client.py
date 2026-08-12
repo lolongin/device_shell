@@ -367,6 +367,9 @@ class AppControlClient:
     def ai_get_result(self, *, result_id: str, include_raw: bool = False) -> dict[str, Any]:
         return self._request("POST", "/v1/ai/get-result", {"result_id": result_id, "include_raw": include_raw})
 
+    def ai_list_skills(self) -> dict[str, Any]:
+        return self._request("POST", "/v1/ai/list-skills", {})
+
     def ai_run_skill(self, *, skill_name: str, params: dict[str, Any], session_id: str = "", device_id: str = "", timeout_seconds: int = 60, idempotency_key: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/v1/ai/run-skill", {
             "skill_name": skill_name, "params": params, "session_id": session_id,

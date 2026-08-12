@@ -1,0 +1,47 @@
+{
+  "command_record_groups": [
+    {
+      "name": "巡检命令",
+      "content": "display version\ndisplay interface brief"
+    }
+  ],
+  "current_command_group": 0,
+  "command_enter_sends": false,
+  "command_history": [
+    {
+      "command": "display current-configuration",
+      "device_id": "MOCK-LAB-000",
+      "session_kind": "simulated",
+      "count": 2,
+      "last_used_at": 100
+    }
+  ],
+  "temporary_devices": [
+    {
+      "id": "TEMP-ELECTRON-SMOKE",
+      "name": "临时实验室",
+      "ssh_ip": "192.0.2.10",
+      "ssh_port": 22,
+      "ssh_username": "operator",
+      "ssh_password": "",
+      "preferred_kind": "linux",
+      "notes": "Electron legacy import smoke"
+    }
+  ],
+  "saved_server_groups": [
+    "生产环境",
+    "空分组"
+  ],
+  "saved_servers": [
+    {
+      "id": "SERVER-ELECTRON-SMOKE",
+      "name": "核心路由管理机",
+      "host": "192.0.2.20",
+      "port": 22,
+      "username": "root",
+      "password": "",
+      "group": "生产环境",
+      "notes": "Electron legacy import smoke"
+    }
+  ]
+}

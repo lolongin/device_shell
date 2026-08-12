@@ -1,0 +1,1067 @@
+from pathlib import Path
+
+
+APP_VUE = Path("desktop/src/renderer/src/App.vue")
+STYLES_CSS = Path("desktop/src/renderer/src/styles.css")
+TERMINAL_PANE = Path("desktop/src/renderer/src/components/TerminalPane.vue")
+TERMINAL_SPLIT_WORKSPACE = Path("desktop/src/renderer/src/components/TerminalSplitWorkspace.vue")
+TERMINAL_QUICK_TOOLBAR = Path(
+    "desktop/src/renderer/src/components/TerminalQuickToolbar.vue"
+)
+SESSION_MANAGER = Path("desktop/src/renderer/src/components/SessionManager.vue")
+COMMAND_WORKSPACE = Path("desktop/src/renderer/src/components/CommandWorkspace.vue")
+AUTOMATION_WORKSPACE = Path("desktop/src/renderer/src/components/AutomationWorkspace.vue")
+AUTOMATION_STEP_EDITOR = Path(
+    "desktop/src/renderer/src/components/AutomationStepEditor.vue"
+)
+AUTOMATION_ACTION_LIST = Path(
+    "desktop/src/renderer/src/components/AutomationActionList.vue"
+)
+UPGRADE_WORKSPACE = Path("desktop/src/renderer/src/components/UpgradeWorkspace.vue")
+SETTINGS_PANEL = Path("desktop/src/renderer/src/components/SettingsPanel.vue")
+HELP_PANEL = Path("desktop/src/renderer/src/components/HelpPanel.vue")
+WORKSPACE_STORE = Path("desktop/src/renderer/src/stores/workspace.ts")
+TYPES_TS = Path("desktop/src/renderer/src/types.ts")
+MAIN_TS = Path("desktop/src/main/index.ts")
+PACKAGE_JSON = Path("desktop/package.json")
+UI_PARITY_SMOKE = Path("desktop/scripts/smoke-ui-parity.mjs")
+PRELOAD_TS = Path("desktop/src/preload/index.ts")
+
+
+def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> None:
+    toolbar = TERMINAL_QUICK_TOOLBAR.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
+        encoding="utf-8"
+    )
+
+    for label in (
+        "新增快捷发送",
+        "敏感内容",
+        "发送后追加 Enter",
+        "替换敏感内容",
+    ):
+        assert label in toolbar
+
+    assert 'data-testid="terminal-quick-toolbar"' in toolbar
+    assert ':data-quick-send-id="button.id"' in toolbar
+    assert 'data-testid="quick-send-add"' in toolbar
+    assert 'data-testid="quick-send-name"' in toolbar
+    assert 'data-testid="quick-send-response"' in toolbar
+    assert 'data-testid="quick-send-save"' in toolbar
+    assert "workspace.sendQuickSendButton(button.id)" in toolbar
+    assert "device-tui.desktop-v2.quick-toolbar-collapsed" in toolbar
+    assert ':aria-label="`编辑 ${button.name}`"' in toolbar
+
+    assert "quickSendButtons" in store
+    assert "saveQuickSendButton" in store
+    assert "deleteQuickSendButton" in store
+    assert "sendQuickSendButton" in store
+    assert "/api/v1/automation/quick-send-buttons" in transport
+
+
+def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
+    manager = SESSION_MANAGER.read_text(encoding="utf-8")
+    app = APP_VUE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    for label in (
+        "会话管理器",
+        "搜索设备、会话",
+        "全部展开",
+        "全部收起",
+        "调整会话管理器宽度",
+    ):
+        assert label in manager
+
+    assert "new Map<string, SessionSummary[]>()" in manager
+    assert "session.device_id" in manager
+    assert "visibleGroups" in manager
+    assert 'role="tree"' in manager
+    assert 'role="treeitem"' in manager
+    assert ':data-device-group-id="group.id"' in manager
+    assert "device-tui.desktop-v2.session-manager-width" in manager
+    assert "device-tui.desktop-v2.session-manager-collapsed-groups" in manager
+    assert "Math.max(200, Math.min(480" in manager
+    assert "rect.right - event.clientX" in manager
+    assert "event.key === 'ArrowLeft' ? 10 : -10" in manager
+    assert "application/x-device-tui-session" in manager
+    assert "emit('deviceContext'" in manager
+    assert "emit('sessionContext'" in manager
+
+    assert "import SessionManager" in app
+    assert "<SessionManager" in app
+    assert 'class="session-sidebar"' in app
+    assert 'aria-label="右侧会话栏"' in app
+    assert '!document.querySelector(\'.session-workspace .session-manager\')' in MAIN_TS.read_text(encoding="utf-8")
+    assert "sessionManagerDeviceContextMenu" in app
+    for label in (
+        "关闭当前设备会话",
+        "关闭左侧设备会话",
+        "关闭右侧设备会话",
+        "关闭其他设备会话",
+        "关闭所有设备会话",
+        "定位到设备列表",
+        "打开设备管理口",
+        "打开 Linux 后台",
+        "打开串口",
+        "占用设备",
+        "释放设备",
+        "设备掉电",
+    ):
+        assert label in app
+
+    assert "function closeDeviceSessionGroups(" in store
+    assert "new Set(snapshot.map((session) => session.device_id))" in store
+    assert ".session-manager-tree" in styles
+    assert ".session-manager-resize-handle" in styles
+    assert "grid-template-rows: auto auto auto minmax(0, 1fr);" in styles
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+    for check in (
+        "hierarchicalSessionManagerGroupsSessionsByDevice",
+        "sessionManagerSearchFiltersDevicesAndSessions",
+        "sessionManagerDeviceContextActions",
+        "sessionManagerWidthResizePersists",
+        "sessionManagerTreeStartsBelowSearch",
+        "sessionManagerGroupCollapseStatePersists",
+        "sessionManagerWidthRestored",
+        "sessionManagerGroupStateRestored",
+        "sessionManagerLivesInRightSidebar",
+    ):
+        assert check in smoke
+
+
+def test_electron_advanced_automation_editor_covers_python_action_model() -> None:
+    workspace = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    steps = AUTOMATION_STEP_EDITOR.read_text(encoding="utf-8")
+    actions = AUTOMATION_ACTION_LIST.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    for label in ("基础响应", "分步流程", "动作流"):
+        assert label in workspace
+    assert "automationTargets" in workspace
+    assert "session:${session.device_id}:${session.kind}:${session.title}" in workspace
+    assert "normalizeSteps" in workspace
+    assert "normalizeActions" in workspace
+    assert "validateActions" in workspace
+    assert "protectedAdvancedStructure" in workspace
+    assert "<AutomationStepEditor" in workspace
+    assert "<AutomationActionList" in workspace
+
+    for field in (
+        "response_targets",
+        "response_delays",
+        "response_append_enters",
+    ):
+        assert field in steps
+        assert field in types
+    for label in (
+        "添加步骤",
+        "添加响应",
+        "发送目标",
+        "发送前延迟（ms）",
+        "发送后追加 Enter",
+    ):
+        assert label in steps
+
+    for kind in ("send", "wait", "loop", "condition", "exit"):
+        assert f'data-action-kind="{kind}"' in actions
+    for label in (
+        "执行次数（0=持续循环）",
+        "每轮间隔（ms）",
+        "条件文本",
+        "条件匹配",
+        "退出范围",
+        "退出当前循环",
+        "停止整个规则",
+    ):
+        assert label in actions
+    for field in (
+        "repeat_count",
+        "interval_ms",
+        "condition_pattern",
+        "condition_match_type",
+        "exit_pattern",
+        "exit_scope",
+    ):
+        assert field in actions
+        assert field in types
+
+    assert "AutomationActionList" in actions
+    assert ".automation-step-editor" in styles
+    assert ".automation-action-card.kind-loop" in styles
+    assert ".automation-action-card.kind-condition" in styles
+    assert ".automation-action-card.kind-exit" in styles
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+    assert "advancedAutomationStepEditorPersistsAndRuns" in smoke
+    assert "advancedAutomationActionEditorPersistsNestedFlow" in smoke
+
+
+def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
+    transfer = Path(
+        "desktop/src/renderer/src/components/TransferWorkspace.vue"
+    ).read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
+        encoding="utf-8"
+    )
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    for label in (
+        "设备侧客户端命令",
+        "复制客户端命令",
+        "文件服务运行日志",
+        "刷新服务日志",
+        "复制服务日志",
+        "清空服务日志",
+    ):
+        assert label in transfer
+    assert "workspace.transferClientCommand" in transfer
+    assert "workspace.transferServiceLog.join('\\n')" in transfer
+    assert "navigator.clipboard.writeText" in transfer
+    assert 'data-testid="transfer-service-log"' in transfer
+    assert 'data-testid="transfer-client-command"' in transfer
+
+    assert "transferServiceLog" in store
+    assert "transferClientCommand" in store
+    assert "event.type === 'transfer.service.log'" in store
+    assert "loadTransferServiceLog" in store
+    assert "clearTransferServiceLog" in store
+    assert "/api/v1/file-transfer/service/log" in transport
+    assert ".transfer-service-log-card" in styles
+    assert ".transfer-client-hint" in styles
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+    assert "fileServiceLogAndClientCommandAreVisibleAndSafe" in smoke
+    assert "fileServiceLogClearPersistsThroughPythonService" in smoke
+
+
+def test_electron_package_upgrade_has_python_owned_manual_fallback() -> None:
+    upgrade = UPGRADE_WORKSPACE.read_text(encoding="utf-8")
+    transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
+        encoding="utf-8"
+    )
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    for label in (
+        "手动脚本兜底",
+        "读取当前终端",
+        "生成脚本",
+        "复制脚本",
+        "发送脚本",
+        "已检查脚本与目标终端",
+        "密码不会进入界面",
+    ):
+        assert label in upgrade
+    for test_id in (
+        "upgrade-manual-fallback",
+        "upgrade-manual-terminal",
+        "upgrade-manual-script",
+        "upgrade-manual-read",
+        "upgrade-manual-generate",
+        "upgrade-manual-copy",
+        "upgrade-manual-confirm",
+        "upgrade-manual-send",
+    ):
+        assert f'data-testid="{test_id}"' in upgrade
+    assert "{{file_transfer.password}}" in upgrade
+    assert "navigator.clipboard.writeText(manualScript.value)" in upgrade
+    assert "desktopApi.packageUpgradeManualTerminal" in upgrade
+    assert "desktopApi.generatePackageUpgradeManualPlan" in upgrade
+    assert "desktopApi.sendPackageUpgradeManualScript" in upgrade
+    assert "/api/v1/package-upgrades/manual/plan" in transport
+    assert "/api/v1/package-upgrades/manual/send" in transport
+    assert ".upgrade-manual-field textarea:focus" in styles
+    assert "packageUpgradeManualFallbackReadsGeneratesEditsCopiesAndSends" in main
+    assert "DEVICE_TUI_CAPTURE_MANUAL_UPGRADE_PATH" in main
+
+
+def test_electron_device_list_keeps_legacy_table_columns() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    for label in ("序号", "设备", "板类型", "CPU", "Slot", "状态"):
+        assert label in app
+
+    assert 'class="device-list device-table-list"' in app
+    assert 'class="device-table-header"' in app
+    assert 'class="device-row device-table-row"' in app
+    assert "device.device_type" in app
+    assert "device.cpu" in app
+    assert "device.board_type" in app
+    assert "device.slot" in app
+    assert "device.status_text" in app
+    assert "device.tooltip" in app
+    assert ".device-table-row" in styles
+    assert "grid-template-columns: 52px 500px minmax(520px, 1fr);" in styles
+    assert ".app-shell.has-session-sidebar" in styles
+    assert "legacyDeviceColumnsFitWithoutHorizontalScroll" in MAIN_TS.read_text(encoding="utf-8")
+
+
+def test_electron_device_search_covers_legacy_hidden_table_fields() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+
+    for field in ("row_id", "board_id", "board_type", "slot", "status_text", "tooltip"):
+        assert f"{field}: string" in types
+        assert f"device.{field}" in store
+
+
+def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+
+    assert "const myOccupancyCount = computed" in store
+    assert "owned_device_ids: string[]" in types
+    assert "ownedDeviceIds.value = deviceResponse.owned_device_ids" in store
+    assert "ownedDeviceIds.value.includes(device.id)" in store
+    assert "ownedDeviceIds.value.length" in store
+    assert "workspace.myOccupancyCount" in app
+    assert "workspace.filteredDevices.length" in app
+    assert "for (const device of workspace.filteredDevices)" in app
+    assert "statusCounts.pipeline" in app
+    assert "statusCounts.other" in app
+    assert "counts[statusKind(device.status)] += 1" in app
+    assert app.index("value.includes('流水')") < app.index("value.includes('占用')")
+    assert "流水线" in app
+    assert "其他" in app
+    assert "watch(filteredDevices" in store
+    assert "selectedDeviceRowId.value = ''" in store
+    assert "selectedDeviceRowId.value = visibleDevices[0].row_id" in store
+    assert ".summary-row .pipeline b" in styles
+    assert ".summary-row .other b" in styles
+
+
+def test_electron_connection_actions_use_backend_parity_rules() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+
+    for field in (
+        "can_connect_telnet",
+        "can_connect_ssh",
+        "can_connect_serial",
+        "can_claim",
+        "can_release",
+        "can_power_off",
+        "serial_display",
+    ):
+        assert field in types
+
+    assert "connectionDisabledReason" in app
+    assert "device.can_connect_ssh" in app
+    assert "device.can_connect_telnet" in app
+    assert "device.can_connect_serial" in app
+    assert "workspace.selectedDevice.serial_display" in app
+    assert "workspace.selectedDevice.can_power_off" in app
+    assert "workspace.selectedDevice.can_claim" in app
+    assert "workspace.selectedDevice.can_release" in app
+
+    assert "!device?.can_connect_ssh" in store
+    assert "!device?.can_connect_telnet" in store
+    assert "!device?.can_connect_serial" in store
+
+
+def test_electron_session_creation_deduplicates_rest_and_realtime_results() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert "function upsertSession(session: SessionSummary)" in store
+    assert "sessions.value.findIndex((item) => item.id === session.id)" in store
+    assert "Number(session.sequence || 0) < Number(current.sequence || 0)" in store
+    assert "for (const session of sessionResponse) upsertSession(session)" in store
+    assert store.count("upsertSession(session)") >= 4
+
+
+def test_electron_simulated_session_always_targets_canonical_simulator() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert "kind === 'simulated'" in store
+    assert "devices.value.find((candidate) => candidate.is_simulated)" in store
+    assert "desktopApi.createSession(device.id, kind)" in store
+    assert "desktopApi.createSession(selectedDeviceId.value, kind)" not in store
+
+
+def test_ui_smoke_keeps_primary_capture_outside_backend_recovery_transition() -> None:
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    primary_capture = main.index("const primaryImage = await mainWindow.webContents.capturePage()")
+    recovery_probe = main.index("backend.crashForRecoveryProbe()")
+    assert primary_capture < recovery_probe
+    assert "primaryCaptureWritten = true" in main
+    assert "stableRecoveryDom" in main
+    assert "stableRecoveryDom.loading === false" in main
+
+
+def test_electron_terminal_supports_split_context_actions_and_drag_drop() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    for direction in ("left", "right", "top", "bottom"):
+        assert f"分屏到{'左侧' if direction == 'left' else '右侧' if direction == 'right' else '上方' if direction == 'top' else '下方'}" in app
+        assert f"'{direction}'" in split
+    assert 'draggable="true"' in app
+    assert '@dragstart="startSessionTabDrag($event, session)"' in app
+    assert "application/x-device-tui-session" in split
+    assert "@dragover=\"handleDragOver($event, pane)\"" in split
+    assert "@drop=\"handleDrop($event, pane)\"" in split
+    assert "device-tui.desktop-v2.terminal-split-layout" in split
+    assert 'role="separator"' in split
+    assert 'aria-valuemin="20"' in split
+    assert '@pointerdown="startSplitResize"' in split
+    assert '@keydown="handleSplitResizeKeydown"' in split
+    assert "desktopApi.createSession" not in split
+    assert 'data-split-direction="splitDirection || \'none\'"' in split
+    assert '.terminal-split-layout[data-split-direction="left"]' in styles
+    assert '.terminal-split-layout[data-split-direction="top"]' in styles
+
+
+def test_electron_device_table_keeps_keyboard_navigation() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert 'tabindex="0"' in app
+    assert '@keydown="handleDeviceTableKeydown"' in app
+    assert "function handleDeviceListKeydown" in app
+    assert "function handleDeviceTableKeydown" in app
+    for key in ("ArrowDown", "ArrowUp", "Home", "End", "Enter"):
+        assert key in app
+    assert "workspace.openSimulatedSession()" in app
+    assert ':key="device.row_id"' in app
+    assert ':data-device-row-id="device.row_id"' in app
+    assert "device.row_id === workspace.selectedDeviceRowId" in app
+    assert "device.board_id || index + 1" in app
+    assert ".device-table-list:focus-visible" in styles
+
+
+def test_electron_device_table_keeps_legacy_context_menu_actions() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const deviceContextMenu = ref" in app
+    assert "function openDeviceContextMenu" in app
+    assert "function handleDeviceContextKeydown" in app
+    assert "event.key === 'ContextMenu'" in app
+    assert "event.shiftKey && event.key === 'F10'" in app
+    assert '@contextmenu.prevent="openDeviceContextMenu($event, device)"' in app
+    assert 'role="menu"' in app
+    assert 'role="menuitem"' in app
+
+    for label in (
+        "复制设备行",
+        "复制 SSH IP",
+        "复制 Telnet IP",
+        "复制串口 IP",
+        "复制连接信息",
+        "占用",
+        "释放",
+        "掉电",
+        "打开设备管理口",
+        "打开 Linux 后台",
+        "打开串口",
+    ):
+        assert label in app
+
+    assert "deviceRowCopyText" in app
+    assert "deviceConnectionCopyText" in app
+    assert "function endpointHost" in app
+    assert "endpointHost(deviceContextMenu.device.ssh_endpoint)" in app
+    assert "endpointHost(deviceContextMenu.device.telnet_endpoint)" in app
+    assert "navigator.clipboard.writeText(text)" in app
+    assert "workspace.runDeviceAction('claim')" in app
+    assert "workspace.runDeviceAction('release')" in app
+    assert "workspace.runDeviceAction('power_off')" in app
+    assert "openDeviceContextSession('ssh')" in app
+    assert "openDeviceContextSession('telnet')" in app
+    assert "openDeviceContextSession('serial')" in app
+    assert ".device-context-menu" in styles
+    assert ".device-context-menu button:disabled" in styles
+    assert ".device-context-menu button:focus-visible" in styles
+
+
+def test_electron_device_inspector_keeps_field_copy_shortcuts() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "function openDeviceInspectorContextMenu" in app
+    assert "function handleDeviceInspectorKeydown" in app
+    assert "function copyDeviceInspectorField" in app
+    assert "function visibleDeviceFieldValue" in app
+    assert '@contextmenu.prevent="openDeviceInspectorContextMenu($event, workspace.selectedDevice)"' in app
+    assert '@keydown="handleDeviceInspectorKeydown($event, workspace.selectedDevice)"' in app
+    assert 'class="property-list copyable-property-list"' in app
+    assert 'title="右键打开设备快捷操作"' in app
+
+    for label in (
+        "复制状态",
+        "复制占用人",
+        "复制设备ID",
+        "复制板类型",
+        "复制区域",
+        "复制位置",
+        "复制CPU",
+        "复制版本",
+        "复制 SSH",
+        "复制 Telnet",
+        "复制串口",
+    ):
+        assert label in app
+
+    assert "copyDeviceInspectorField('SSH'" in app
+    assert "copyDeviceInspectorField('Telnet'" in app
+    assert "copyDeviceInspectorField('串口'" in app
+    assert "workspace.selectedDevice.serial_display || workspace.selectedDevice.serial_endpoint" in app
+    assert ".copyable-property-list" in styles
+    assert ".property-copy-button" in styles
+    assert ".copyable-property-list:focus-visible" in styles
+
+
+def test_electron_renderer_restores_persisted_theme_toggle() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "device-tui.desktop-v2.theme" in app
+    assert "toggleTheme" in app
+    assert "applyRendererTheme" in app
+    assert "document.documentElement.dataset.theme" in app
+    assert "切换浅色主题" in app
+    assert "切换深色主题" in app
+
+    assert ':root[data-theme="light"]' in styles
+    assert "color-scheme: light" in styles
+    assert '.command-workspace {' in styles
+    assert 'background: var(--surface);' in styles
+    assert ':root[data-theme="light"] .system-banner' in styles
+    assert ':root[data-theme="light"] .notice-banner' in styles
+    assert ':root[data-theme="light"] .status-pill[data-status="occupied"]' in styles
+
+
+def test_electron_restores_persisted_always_on_top_toggle() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+    preload = PRELOAD_TS.read_text(encoding="utf-8")
+
+    assert "device-tui.desktop-v2.always-on-top" in app
+    assert "always-on-top-toggle" in app
+    assert "窗口置顶" in app
+    assert "取消窗口置顶" in app
+    assert "window.desktopApi.setAlwaysOnTop(enabled)" in app
+    assert "window:set-always-on-top" in main
+    assert "mainWindow.setAlwaysOnTop(enabled)" in main
+    assert "ipcRenderer.invoke('window:set-always-on-top', enabled)" in preload
+
+
+def test_electron_terminal_follows_renderer_theme() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+
+    assert "readThemeMode" in terminal
+    assert "terminalThemeFor" in terminal
+    assert "MutationObserver" in terminal
+    assert "attributeFilter: ['data-theme']" in terminal
+    assert "terminal.options.theme" in terminal
+    assert "background: '#f8fafc'" in terminal
+
+
+def test_electron_terminal_keeps_reconnect_and_disconnect_parity() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const canReconnect = computed" in terminal
+    assert "const canDisconnect = computed" in terminal
+    assert "watch(() => props.session.status" in terminal
+    assert "reconnecting.value" in terminal
+    assert "disconnecting.value" in terminal
+    assert "会话已断开，按 Enter 可重连" in terminal
+    assert "data === '\\r' || data === '\\n'" in terminal
+    assert "void reconnect()" in terminal
+    assert ":disabled=\"!canDisconnect\"" in terminal
+    assert ":disabled=\"!canReconnect\"" in terminal
+    assert "[重连失败]" in terminal
+    assert "[断开失败]" in terminal
+    assert ".icon-button:disabled" in styles
+
+
+def test_electron_terminal_keeps_legacy_context_menu_actions() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const contextMenu = ref" in terminal
+    assert "function openContextMenu" in terminal
+    assert "function handleTerminalContextKeydown" in terminal
+    assert "event.key === 'ContextMenu'" in terminal
+    assert "event.shiftKey && event.key === 'F10'" in terminal
+    assert '@contextmenu.prevent="openContextMenu"' in terminal
+    assert 'class="terminal-context-menu"' in terminal
+    assert 'role="menu"' in terminal
+    assert 'role="menuitem"' in terminal
+
+    for label in (
+        "复制选中文本",
+        "复制全部",
+        "粘贴",
+        "清屏",
+        "搜索终端",
+        "查看会话日志",
+        "断开连接",
+        "重新连接",
+    ):
+        assert label in terminal
+
+    assert "terminal?.getSelection()" in terminal
+    assert "terminalBufferText" in terminal
+    assert "terminal?.clear()" in terminal
+    assert "navigator.clipboard.readText()" in terminal
+    assert "navigator.clipboard.writeText" in terminal
+    assert "socket?.send(JSON.stringify({ type: 'terminal.input', data: text }))" in terminal
+    assert ".terminal-context-menu" in styles
+    assert ".terminal-context-menu button:disabled" in styles
+    assert ".terminal-context-menu button:focus-visible" in styles
+
+
+def test_electron_session_tabs_keep_legacy_close_actions() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "function closeSessionsRelative" in store
+    for mode in ("'current'", "'left'", "'right'", "'others'", "'all'"):
+        assert mode in store
+    assert "function closeActiveSession" in store
+    assert "function closeOtherSessions" in store
+    assert "function closeAllSessions" in store
+    assert "Promise.all(closingIds.map" in store
+
+    assert "const sessionContextMenu = ref" in app
+    assert "function openSessionContextMenu" in app
+    assert "function handleSessionTabKeydown" in app
+    assert "event.key === 'ContextMenu'" in app
+    assert "event.shiftKey && event.key === 'F10'" in app
+    assert '@contextmenu.prevent="openSessionContextMenu($event, session)"' in app
+    assert ':data-session-tab-id="session.id"' in app
+    assert "workspace.closeSessionsRelative(session.id, mode)" in app
+
+    assert 'aria-label="批量关闭会话"' in app
+    assert "workspace.closeActiveSession" in app
+    assert "workspace.closeOtherSessions" in app
+    assert "workspace.closeAllSessions" in app
+    for label in (
+        "关闭当前会话",
+        "关闭其他会话",
+        "关闭全部会话",
+        "关闭当前页签",
+        "关闭左侧页签",
+        "关闭右侧页签",
+        "关闭其他页签",
+        "关闭所有页签",
+        "定位到设备列表",
+        "打开设备管理口",
+        "打开 Linux 后台",
+        "打开串口",
+    ):
+        assert label in app
+    assert ".session-tab-actions" in styles
+    assert ".session-context-menu" in styles
+    assert ".session-context-menu button:disabled" in styles
+    assert ".session-context-menu button:focus-visible" in styles
+
+
+def test_electron_profile_list_keeps_legacy_context_menu_actions() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const profileContextMenu = ref" in app
+    assert "function openProfileContextMenu" in app
+    assert "function handleProfileKeydown" in app
+    assert "event.key === 'ContextMenu'" in app
+    assert "event.shiftKey && event.key === 'F10'" in app
+    assert '@contextmenu.prevent="openProfileContextMenu($event, profile)"' in app
+    assert ':data-profile-row-id="profile.id"' in app
+    assert 'class="profile-context-menu"' in app
+    assert "profileConnectionCopyText" in app
+    assert "navigator.clipboard.writeText(text)" in app
+    assert "workspace.openProfileSession(profile, kind)" in app
+    assert "workspace.manageProfileCredential(profile, kind)" in app
+    assert "showProfileDialog(profile.profile_type, profile)" in app
+    assert "workspace.deleteProfile(profile.id)" in app
+    assert "moveProfileToGroupFromContext" in app
+    assert "workspace.saveProfile(" in app
+
+    for label in (
+        "打开",
+        "打开 SSH",
+        "打开设备管理口",
+        "打开串口",
+        "复制连接信息",
+        "管理 SSH 凭据",
+        "管理 Telnet 凭据",
+        "管理串口凭据",
+        "移动到未分组",
+        "编辑",
+        "删除",
+    ):
+        assert label in app
+
+    assert ".profile-context-menu" in styles
+    assert ".profile-context-menu button:disabled" in styles
+    assert ".profile-context-menu button:focus-visible" in styles
+    assert ".danger-menu-item" in styles
+
+
+def test_electron_server_groups_remember_collapsed_state() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "device-tui.desktop-v2.profile-collapsed-groups" in app
+    assert "storedCollapsedProfileGroups" in app
+    assert "profileGroupCollapsed" in app
+    assert "toggleProfileGroup" in app
+    assert "expandProfileGroup(saved.group)" in app
+    assert "if (group) expandProfileGroup(group)" in app
+    assert ':data-profile-group-name="group.name"' in app
+    assert ':data-collapsed="profileGroupCollapsed(group.name)"' in app
+    assert ':aria-expanded="!profileGroupCollapsed(group.name)"' in app
+    assert 'v-show="!profileGroupCollapsed(group.name)"' in app
+    assert "workspace.profileQuery.trim()" in app
+    assert ".profile-group-toggle" in styles
+    assert ".profile-group-toggle:focus-visible" in styles
+    assert "serverGroupCollapsePersistsAndSearchTemporarilyExpands" in smoke
+    assert "serverGroupMoveExpandsDestinationWithoutLosingProfile" in smoke
+    assert "serverGroupCollapsedStateRestored" in smoke
+
+
+def test_electron_command_workspace_keeps_find_replace_feedback() -> None:
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+
+    assert "const findStatus = ref('')" in command
+    assert "const currentMatchIndex = computed" in command
+    assert "const matchLabel = computed" in command
+    assert "未找到:" in command
+    assert "已替换 ${count} 处命令文本。" in command
+    assert "已替换当前匹配。" in command
+    assert "@select=\"updateSelectionState\"" in command
+    assert "findStatus || matchLabel" in command
+
+
+def test_electron_shortcuts_are_scoped_and_discoverable() -> None:
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+
+    assert "function handleWorkspaceShortcut" in command
+    assert '@keydown.capture="handleWorkspaceShortcut"' in command
+    assert "event.key.toLocaleLowerCase() !== 'f'" in command
+    assert "function openFindReplace" in command
+    assert "function closeFindReplace" in command
+    assert "查找和替换 (Ctrl+F)" in command
+    assert '@keydown.esc.prevent.stop="closeFindReplace"' in command
+
+    assert "const pane = ref<HTMLElement | null>(null)" in terminal
+    assert 'ref="pane"' in terminal
+    assert "pane.value.contains(document.activeElement)" in terminal
+    assert "搜索终端 (Ctrl+F)" in terminal
+    assert "重新连接 (Ctrl+Shift+R)" in terminal
+
+
+def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> None:
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const commandGroupContextMenu = ref" in command
+    assert "const editorContextMenu = ref" in command
+    assert "function openCommandGroupContextMenu" in command
+    assert "function handleCommandGroupKeydown" in command
+    assert "function openEditorContextMenu" in command
+    assert "event.key === 'ContextMenu'" in command
+    assert "event.shiftKey && event.key === 'F10'" in command
+    assert '@contextmenu.prevent="openCommandGroupContextMenu($event, group.id, group.name)"' in command
+    assert '@contextmenu.prevent="openEditorContextMenu"' in command
+    assert 'class="command-context-menu"' in command
+    assert 'role="menuitem"' in command
+
+    for label in (
+        "重命名",
+        "新增命令页签",
+        "删除页签",
+        "复制选中/当前命令",
+        "粘贴",
+        "选择当前行",
+        "发送到终端",
+        "广播发送",
+        "查找和替换",
+        "清空当前页签",
+    ):
+        assert label in command
+
+    assert "navigator.clipboard.writeText(command)" in command
+    assert "navigator.clipboard.readText()" in command
+    assert '@click="closeCommandGroupContextMenu(); closeEditorContextMenu()"' in command
+    assert "selectCurrentCommandLine" in command
+    assert "clearCurrentCommandGroup" in command
+    assert ".command-context-menu" in styles
+    assert ".command-context-menu button:disabled" in styles
+    assert ".danger-menu-item" in styles
+
+
+def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "device-tui.desktop-v2.command-panel-height" in command
+    assert "COMMAND_PANEL_MIN_HEIGHT = 180" in command
+    assert "availableCommandPanelHeight" in command
+    assert "startCommandPanelResize" in command
+    assert "resizeCommandPanel" in command
+    assert "handleCommandPanelResizeKeydown" in command
+    assert "window.addEventListener('resize', clampCommandPanelHeight)" in command
+    assert 'data-testid="command-resize-handle"' in command
+    assert 'role="separator"' in command
+    assert 'aria-orientation="horizontal"' in command
+    assert ':aria-valuenow="commandPanelHeight"' in command
+    assert '@dblclick="resetCommandPanelHeight"' in command
+    assert ".command-resize-handle" in styles
+    assert ".command-resize-handle:focus-visible" in styles
+    assert "commandPanelDragResizePersistsAndClampsToWindow" in main
+    assert "commandPanelHeightRestored" in main
+
+
+def test_electron_empty_workspace_does_not_leave_a_dead_command_region() -> None:
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert ".workspace-stage { display: flex; flex-direction: column;" in styles
+    assert "flex: 1;" in styles
+    assert "emptyWorkspaceCommandBarHasNoDeadClickRegion" in main
+
+
+def test_electron_device_detail_shares_left_navigator() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    navigator_detail = app.index('class="navigator-detail"')
+    workspace = app.index('<main class="workspace-stage">')
+    assert navigator_detail < workspace
+    assert "device-tui.desktop-v2.navigator-detail-collapsed" in app
+    assert 'aria-label="设备与连接详情"' in app
+    assert ".navigator-detail-content" in styles
+    assert "deviceDetailSharesLeftNavigator" in main
+    assert "navigatorDetailCollapsePersists" in main
+
+
+def test_electron_command_dispatch_keeps_legacy_empty_target_feedback() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert "请先选中要发送的命令" in store
+    assert "当前没有打开的终端会话" in store
+    assert "当前没有已连接的终端会话" in store
+    assert "connectedSessions.value.length" in store
+
+
+def test_electron_terminal_log_panel_can_copy_log_content() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+
+    assert "Clipboard" in terminal
+    assert "const logNotice = ref('')" in terminal
+    assert "async function copyLog" in terminal
+    assert "navigator.clipboard.writeText(logContent.value)" in terminal
+    assert "暂无日志可复制" in terminal
+    assert "已复制全部日志" in terminal
+    assert "已复制日志尾部内容" in terminal
+    assert 'title="复制日志"' in terminal
+    assert ':disabled="!logContent"' in terminal
+    assert "读取日志失败:" in terminal
+    assert "async function openLogDirectory" in terminal
+    assert "async function saveLogCopy" in terminal
+    assert "openSessionLogDirectory()" in terminal
+    assert "saveSessionLog({" in terminal
+    assert "打开日志目录" in terminal
+    assert "保存日志副本" in terminal
+    assert "日志副本已保存" in terminal
+
+
+def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    settings = SETTINGS_PANEL.read_text(encoding="utf-8")
+    help_panel = HELP_PANEL.read_text(encoding="utf-8")
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+
+    assert "showSettingsPanel" in app
+    assert "showHelpPanel" in app
+    assert "<SettingsPanel" in app
+    assert "<HelpPanel" in app
+    for label in ("工作台设置", "会话页签布局", "右侧会话栏默认折叠", "终端字体大小", "会话日志", "保存目录", "单个日志分卷大小"):
+        assert label in settings
+    assert "chooseSessionLogDirectory()" in settings
+    assert "updateSessionLogSettings" in settings
+    assert "device-tui:terminal-font-size" in settings
+    assert "操作帮助" in help_panel
+    assert "安全边界" in help_panel
+    assert "async function createNewLog" in terminal
+    assert "async function openCurrentLog" in terminal
+    assert "createSessionLog(props.session.id)" in terminal
+    assert "openCurrentSessionLog(props.session.id)" in terminal
+    assert "新建日志" in terminal
+    assert "打开当前会话日志" in terminal
+    assert "打开当前会话自动响应" in terminal
+    assert "openSessionAutomation" in app
+    assert ".session-sidebar .session-manager" in STYLES_CSS.read_text(encoding="utf-8")
+    assert "session-rail-toggle" in SESSION_MANAGER.read_text(encoding="utf-8")
+    assert "展开右侧会话栏" in SESSION_MANAGER.read_text(encoding="utf-8")
+    assert "折叠右侧会话栏" in SESSION_MANAGER.read_text(encoding="utf-8")
+
+
+def test_electron_terminal_connection_failures_stay_inline_and_actionable() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const connectionStatusLabel = computed" in terminal
+    for label in ("正在连接", "已连接", "已断开", "通道已分离", "连接错误", "连接失败"):
+        assert label in terminal
+    assert "[终端连接失败]" in terminal
+    assert "[终端通道错误] 请重新连接。" in terminal
+    assert "emit('status', props.session.id, 'error', lastSequence)" in terminal
+    assert "['disconnected', 'error', 'failed', 'closed']" in terminal
+    assert '.connection-state[data-state="connecting"]' in styles
+    assert '.connection-state[data-state="detached"]' in styles
+    assert '.connection-state[data-state="failed"]' in styles
+
+
+def test_electron_automation_workspace_keeps_runtime_feedback() -> None:
+    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "event.type.startsWith('automation.')" in store
+    assert "void refreshAutomation()" in store
+    for message in ("自动化已启动", "自动化已完成", "自动化执行失败", "自动化已取消"):
+        assert message in store
+
+    assert "const activeTriggeredIds = computed" in automation
+    assert "const runningRuleNames = computed" in automation
+    assert "const triggeredRuleNames = computed" in automation
+    assert "const automationStatusText = computed" in automation
+    assert "当前会话暂无运行中的自动响应" in automation
+    assert "已触发" in automation
+    assert "automation-session-status" in automation
+    assert "data-state=\"running\"" in styles
+    assert "data-state=\"triggered\"" in styles
+
+    assert 'class="notice-banner"' in app
+    assert 'role="status"' in app
+    assert 'workspace.error && !backendFailure' in app
+    assert 'role="alert"' in app
+    assert ".notice-banner" in styles
+
+
+def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    package = PACKAGE_JSON.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+    smoke = UI_PARITY_SMOKE.read_text(encoding="utf-8")
+
+    assert '"smoke:ui-parity": "npm run build && node scripts/smoke-ui-parity.mjs"' in package
+    assert "DEVICE_TUI_CAPTURE_UI_PARITY" in main
+    assert "uiParityPassed" in main
+    assert "uiRestorePassed" in main
+    assert "backendRecoveryPassed" in main
+    assert "backend.crashForRecoveryProbe()" in main
+    assert "backend:recovered" in main
+    assert "stopApplicationEvents = null" in app
+    assert "Python 后端已自动恢复，工作区已重新载入。" in app
+    for label in (
+        "multiSessionCountRestored",
+        "activeSessionRestored",
+        "selectedDeviceRowRestored",
+        "themeRestored",
+        "alwaysOnTopRestored",
+        "sessionTabLayoutRestored",
+        "sessionTabRailCollapsedRestored",
+        "rightSessionSidebarRestored",
+        "navigatorDetailStateRestored",
+        "tokenStillHiddenAfterReload",
+    ):
+        assert label in main
+
+    for selector in (
+        ".device-table-header",
+        ".device-table-row",
+        ".summary-clear",
+        ".navigator-detail",
+        ".session-sidebar",
+        ".theme-toggle",
+        ".device-context-menu",
+        ".session-context-menu",
+        ".terminal-context-menu",
+        ".command-context-menu",
+        ".profile-context-menu",
+    ):
+        assert selector in main
+
+    for label in (
+        "序号",
+        "板类型",
+        "legacyDeviceColumnsFitWithoutHorizontalScroll",
+        "deviceKeywordSearchFiltersAndKeepsSelection",
+        "deviceDomainFilterUpdatesRowsAndClearAction",
+        "deviceStatusFilterUpdatesRowsAndClearAction",
+        "deviceCpuFilterUpdatesRowsAndClearAction",
+        "deviceClearFiltersRestoresAllRows",
+        "ownedDeviceCountUsesUniqueIdsWhileFilterKeepsBoardRows",
+        "legacyStatusBucketsClassifyPipelineBeforeOccupied",
+        "legacyInventoryHasTwentyOneRows",
+        "simulatedTerminalAppearsExactlyOnce",
+        "simulatedTerminalOnlyOffersSimulatedSession",
+        "simulatedTerminalDeviceActionsAreDisabledWithReason",
+        "disabledConnectionActionsExplainReason",
+        "复制设备行",
+        "关闭当前页签",
+        "复制选中文本",
+        "查找和替换",
+        "commandFindShortcutOpensWithoutTerminalConflict",
+        "commandFindEscapeCloses",
+        "commandDispatchWritesTerminalOutput",
+        "commandHistoryRecordsUiDispatch",
+        "terminalLogPanelShowsSessionLog",
+        "terminalLogCopyControlAvailable",
+        "terminalLogExportCreatesSafeCopy",
+        "terminalLogDirectoryActionWorks",
+        "settingsPanelExposesLegacyControls",
+        "settingsTerminalFontAppliesImmediately",
+        "sessionTabSideLayoutAppliesAndPersists",
+        "sessionTabCollapsedPreferenceAppliesAndPersists",
+        "collapsedSessionRailRemainsAccessibleAndRestorable",
+        "terminalAutomationQuickAccessTargetsCurrentSession",
+        "settingsLogDirectoryAndRotationPersist",
+        "helpPanelIsFunctional",
+        "terminalCurrentLogNativeOpenWorks",
+        "terminalManualNewLogWorks",
+        "terminalDisconnectShowsInlineFeedback",
+        "terminalReconnectRestoresConnectedState",
+        "sshFailureShowsInlineReasonAndRetry",
+        "sshFailureRetryStaysInline",
+        "telnetFailureShowsInlineReasonAndRetry",
+        "serialClaimAndFailureFlowStaysInline",
+    ):
+        assert label in main
+
+    assert "DEVICE_TUI_CAPTURE_TERMINAL: '1'" in smoke
+    assert "DEVICE_TUI_CAPTURE_UI_PARITY: '1'" in smoke
+    assert "DEVICE_TUI_CAPTURE_LIGHT_PATH" in smoke
+    assert "DEVICE_TUI_CAPTURE_SETTINGS_PATH" in smoke
+    assert "DEVICE_TUI_CAPTURE_BACKEND_RECOVERY: '1'" in smoke
+    assert "DEVICE_TUI_DISABLE_EXTERNAL_OPEN: '1'" in smoke
+    assert "DEVICE_TUI_LOG_EXPORT_PATH" in smoke
+    assert "DEVICE_TUI_LOG_DIRECTORY_SELECTION" in smoke
+    assert "DEVICE_TUI_MOCK_PROTOCOL_FAILURE: '1'" in smoke
+    assert "[renderer] uiParityPassed=true" in smoke
+    assert "[renderer] uiRestorePassed=true" in smoke
+    assert "[renderer] backendRecoveryPassed=true" in smoke
+    assert "[renderer] tokenExposed=false" in smoke
+    assert "ui-parity-light.png" in smoke
+    assert "session-log-export.log" in smoke

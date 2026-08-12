@@ -19,6 +19,7 @@ except ModuleNotFoundError:
     QWidget = None
 
 from ..command_suggestions import CommandHistoryItem, record_command_history, suggest_commands
+from ..command_suggestions import DEFAULT_COMMAND_SUGGESTIONS, normalize_command_text
 
 
 class CommandRecordOpsMixin:
@@ -140,7 +141,20 @@ class CommandRecordOpsMixin:
             session_kind=getattr(state, "kind", ""),
             limit=limit,
         )
-        return suggestions
+        normalized_query = normalize_command_text(query).casefold()
+        if normalized_query and len(normalized_query) < 3:
+            default_prefix_matches = [
+                command
+                for command in DEFAULT_COMMAND_SUGGESTIONS
+                if command.casefold().startswith(normalized_query)
+                and command.casefold() != normalized_query
+            ]
+            if default_prefix_matches:
+                suggestions = [
+                    *default_prefix_matches,
+                    *(command for command in suggestions if command not in default_prefix_matches),
+                ]
+        return suggestions[:limit]
 
     def toggle_command_find_replace(self) -> None:
         if self.command_find_replace_visible:

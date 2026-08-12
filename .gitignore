@@ -1,3 +1,12 @@
 __pycache__/
 *.py[cod]
 .superpowers/
+*.egg-info/
+desktop/node_modules/
+desktop/out/
+desktop/dist/
+desktop/release/
+desktop/resources/backend/
+desktop/.pyinstaller-work/
+desktop/.pyinstaller-spec/
+*.tsbuildinfo
