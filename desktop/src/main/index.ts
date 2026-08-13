@@ -31,10 +31,22 @@ interface ProfileCredentialRequest {
   hasPassword: boolean
 }
 
+interface DeviceConnectionRequest {
+  deviceId: string
+  deviceName: string
+  protocol: 'ssh' | 'telnet' | 'serial'
+  host: string
+  port: number
+  username: string
+}
+
 interface CredentialDialogResult {
   action: 'submit' | 'remove' | 'cancel'
   password: string
   save: boolean
+  host?: string
+  port?: number
+  username?: string
 }
 
 interface SessionLogExportRequest {
@@ -58,7 +70,11 @@ function validateBackendRequest(request: BackendRequest): void {
   ) {
     throw new Error('Invalid backend API path')
   }
-  if (request.path.includes('/credentials/') || request.path === '/api/v1/sessions/with-credential') {
+  if (
+    request.path.includes('/credentials/')
+    || request.path === '/api/v1/sessions/with-credential'
+    || request.path === '/api/v1/sessions/direct'
+  ) {
     throw new Error('Credential endpoints require the isolated credential bridge')
   }
   const method = String(request.method || 'GET').toUpperCase()
@@ -109,15 +125,15 @@ function backendError(response: BackendResponse): Error {
 }
 
 async function promptForCredential(
-  request: ProfileCredentialRequest,
-  mode: 'connect' | 'manage'
+  request: ProfileCredentialRequest | DeviceConnectionRequest,
+  mode: 'connect' | 'manage' | 'custom'
 ): Promise<CredentialDialogResult> {
   if (!mainWindow) return { action: 'cancel', password: '', save: false }
   const credentialWindow = new BrowserWindow({
     parent: mainWindow,
     modal: true,
-    width: 480,
-    height: 390,
+    width: mode === 'custom' ? 520 : 480,
+    height: mode === 'custom' ? 590 : 390,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -147,10 +163,25 @@ async function promptForCredential(
       event.sender === credentialWindow.webContents
     const onSubmit = (event: Electron.IpcMainEvent, value: unknown): void => {
       if (!trusted(event) || !value || typeof value !== 'object') return
-      const submission = value as { password?: unknown; save?: unknown }
+      const submission = value as {
+        password?: unknown
+        save?: unknown
+        host?: unknown
+        port?: unknown
+        username?: unknown
+      }
       const password = typeof submission.password === 'string' ? submission.password : ''
-      if (!password || password.length > 4_096) return
-      finish({ action: 'submit', password, save: submission.save === true })
+      if ((mode !== 'custom' && !password) || password.length > 4_096) return
+      const host = typeof submission.host === 'string' ? submission.host.trim() : ''
+      const port = Number(submission.port)
+      const username = typeof submission.username === 'string' ? submission.username.trim() : ''
+      if (mode === 'custom' && (!host || host.length > 255 || !Number.isInteger(port) || port < 1 || port > 65535 || username.length > 255)) return
+      finish({
+        action: 'submit',
+        password,
+        save: submission.save === true,
+        ...(mode === 'custom' ? { host, port, username } : {})
+      })
     }
     const onRemove = (event: Electron.IpcMainEvent): void => {
       if (trusted(event)) finish({ action: 'remove', password: '', save: false })
@@ -162,15 +193,20 @@ async function promptForCredential(
     ipcMain.on('credential-dialog:remove', onRemove)
     ipcMain.on('credential-dialog:cancel', onCancel)
     credentialWindow.once('closed', () => finish({ action: 'cancel', password: '', save: false }))
+    const profileName = 'profileName' in request ? request.profileName : request.deviceName
+    const endpoint = 'endpoint' in request ? request.endpoint : `${request.host}:${request.port}`
     credentialWindow.loadFile(
       path.join(__dirname, '../../resources/credential-dialog.html'),
       {
         query: {
           mode,
-          profile: request.profileName,
+          profile: profileName,
           protocol: request.protocol,
-          endpoint: request.endpoint,
-          hasPassword: request.hasPassword ? '1' : '0'
+          endpoint,
+          hasPassword: 'hasPassword' in request && request.hasPassword ? '1' : '0',
+          host: 'host' in request ? request.host : '',
+          port: 'port' in request ? String(request.port) : '',
+          username: 'username' in request ? request.username : ''
         }
       }
     ).then(() => credentialWindow.show()).catch(() => {
@@ -184,6 +220,7 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('runtime:get')
   ipcMain.removeHandler('backend:request')
   ipcMain.removeHandler('credential:open-profile-session')
+  ipcMain.removeHandler('credential:open-device-session')
   ipcMain.removeHandler('credential:manage-profile')
   ipcMain.removeHandler('logs:choose-directory')
   ipcMain.removeHandler('logs:open-directory')
@@ -381,6 +418,55 @@ async function createWindow(): Promise<void> {
             })
           )
         }
+      } finally {
+        result = { action: 'cancel', password: '', save: false }
+      }
+      if (response.status < 200 || response.status >= 300) throw backendError(response)
+      return JSON.parse(response.body) as unknown
+    }
+  )
+
+  ipcMain.handle(
+    'credential:open-device-session',
+    async (event, request: DeviceConnectionRequest): Promise<unknown | null> => {
+      if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted credential caller')
+      if (!request || !['ssh', 'telnet', 'serial'].includes(request.protocol)) {
+        throw new Error('Invalid device connection protocol')
+      }
+      if (
+        typeof request.deviceId !== 'string'
+        || !request.deviceId.trim()
+        || request.deviceId.length > 160
+        || typeof request.deviceName !== 'string'
+        || request.deviceName.length > 160
+        || typeof request.host !== 'string'
+        || request.host.length > 255
+        || !Number.isInteger(request.port)
+        || request.port < 1
+        || request.port > 65535
+        || typeof request.username !== 'string'
+        || request.username.length > 255
+      ) {
+        throw new Error('Invalid device connection target')
+      }
+      let result = await promptForCredential(request, 'custom')
+      if (result.action !== 'submit') return null
+      let response: BackendResponse
+      try {
+        response = await fetchBackend(
+          backend.config,
+          '/api/v1/sessions/direct',
+          'POST',
+          JSON.stringify({
+            device_id: request.deviceId,
+            kind: request.protocol,
+            host: result.host,
+            port: result.port,
+            username: result.username,
+            password: result.password,
+            title: request.deviceName
+          })
+        )
       } finally {
         result = { action: 'cancel', password: '', save: false }
       }
@@ -620,6 +706,20 @@ async function createWindow(): Promise<void> {
               'collapsed=' + detailCollapsedByControl
                 + ' restored=' + (document.querySelector('.navigator-detail')?.getAttribute('data-collapsed') || '')
             )
+            const navigator = document.querySelector('.navigator')
+            const navigatorResizeHandle = document.querySelector('.navigator-resize-handle')
+            const navigatorWidthBefore = navigator?.getBoundingClientRect().width || 0
+            navigatorResizeHandle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+            await sleep(40)
+            const navigatorWidthAfter = navigator?.getBoundingClientRect().width || 0
+            const storedNavigatorWidth = Number(localStorage.getItem('device-tui.desktop-v2.navigator-width') || 0)
+            setCheck(
+              'navigatorWidthResizePersists',
+              Boolean(navigatorResizeHandle)
+                && navigatorWidthAfter >= navigatorWidthBefore + 9
+                && Math.abs(storedNavigatorWidth - navigatorWidthAfter) <= 1,
+              navigatorWidthBefore + '->' + navigatorWidthAfter + ' stored=' + storedNavigatorWidth
+            )
             const emptySessionWorkspace = document.querySelector('.session-workspace')
             const collapsedCommandWorkspace = document.querySelector('.command-workspace:not(.open)')
             const workspaceStage = document.querySelector('.workspace-stage')
@@ -721,19 +821,14 @@ async function createWindow(): Promise<void> {
             const simulatedRow = deviceRows().find((row) => row.getAttribute('data-device-row-id') === 'SIM-TERMINAL::0000')
             simulatedRow?.click()
             await sleep(60)
-            const simulatedProtocolButtons = [...document.querySelectorAll('.connection-actions button')]
-            const simulatedOnlyButton = simulatedProtocolButtons.find((button) => (button.textContent || '').includes('模拟'))
-            const unavailableSimulatedProtocols = simulatedProtocolButtons.filter((button) =>
-              ['SSH', 'Telnet', '串口'].some((label) => (button.textContent || '').includes(label))
-            )
+            const simulatedProtocolButtons = [...document.querySelectorAll('.device-connection-panel button')]
+            const simulatedOnlyButton = simulatedProtocolButtons.find((button) => (button.textContent || '').includes('模拟终端'))
             setCheck(
               'simulatedTerminalOnlyOffersSimulatedSession',
               Boolean(simulatedRow)
-                && simulatedProtocolButtons.length === 4
+                && simulatedProtocolButtons.length === 1
                 && Boolean(simulatedOnlyButton)
-                && !simulatedOnlyButton?.disabled
-                && unavailableSimulatedProtocols.length === 3
-                && unavailableSimulatedProtocols.every((button) => button.disabled && (button.getAttribute('title') || '').includes('模拟终端不支持')),
+                && !simulatedOnlyButton?.disabled,
               simulatedProtocolButtons.map((button) => (button.textContent?.trim() || '') + ':' + button.disabled + ':' + (button.getAttribute('title') || '')).join('|')
             )
             if (simulatedRow) {
@@ -766,15 +861,21 @@ async function createWindow(): Promise<void> {
             setCheck('themeToggleChangesRendererTheme', beforeTheme !== afterTheme && ['dark', 'light'].includes(afterTheme), beforeTheme + '->' + afterTheme)
             click('.theme-toggle')
             await sleep(40)
-            clickButtonByTitle('窗口置顶')
+            const alwaysOnTopBefore = document.querySelector('.always-on-top-toggle')?.getAttribute('aria-pressed') === 'true'
+            document.querySelector('.always-on-top-toggle')?.click()
             await sleep(80)
             const alwaysOnTopButton = document.querySelector('.always-on-top-toggle')
+            const alwaysOnTopAfter = alwaysOnTopButton?.getAttribute('aria-pressed') === 'true'
             setCheck(
               'alwaysOnTopTogglePersistsState',
-              alwaysOnTopButton?.getAttribute('aria-pressed') === 'true'
-                && localStorage.getItem('device-tui.desktop-v2.always-on-top') === '1',
+              alwaysOnTopAfter !== alwaysOnTopBefore
+                && localStorage.getItem('device-tui.desktop-v2.always-on-top') === (alwaysOnTopAfter ? '1' : '0'),
               (alwaysOnTopButton?.getAttribute('title') || '') + ':' + (alwaysOnTopButton?.getAttribute('aria-pressed') || '')
             )
+            if (!alwaysOnTopAfter) {
+              alwaysOnTopButton?.click()
+              await sleep(50)
+            }
 
             clickButtonByTitle('设置')
             for (let attempt = 0; attempt < 30 && !document.querySelector('.settings-panel'); attempt += 1) {
@@ -915,6 +1016,7 @@ async function createWindow(): Promise<void> {
             const rightSessionSidebar = document.querySelector('.app-shell > .session-sidebar')
             const rightSessionManager = rightSessionSidebar?.querySelector(':scope > .session-manager')
             const rightSessionRect = rightSessionSidebar?.getBoundingClientRect()
+            const expandedWorkspaceRect = document.querySelector('.workspace-stage')?.getBoundingClientRect()
             const appShellRect = document.querySelector('.app-shell')?.getBoundingClientRect()
             setCheck(
               'sessionManagerLivesInRightSidebar',
@@ -923,6 +1025,17 @@ async function createWindow(): Promise<void> {
                 && Math.abs((rightSessionRect?.right || 0) - (appShellRect?.right || 0)) <= 1,
               'parent=' + (rightSessionManager?.parentElement?.className || '')
                 + ' right=' + (rightSessionRect?.right || 0) + '/' + (appShellRect?.right || 0)
+            )
+            setCheck(
+              'sessionManagerDoesNotOverlayTerminal',
+              Boolean(collapsedSidebarRect)
+                && Boolean(collapsedWorkspaceRect)
+                && collapsedWorkspaceRect.right <= collapsedSidebarRect.left + 1
+                && Boolean(rightSessionRect)
+                && Boolean(expandedWorkspaceRect)
+                && expandedWorkspaceRect.right <= rightSessionRect.left + 1,
+              'collapsed=' + (collapsedWorkspaceRect?.right || 0) + '<=' + (collapsedSidebarRect?.left || 0)
+                + ' expanded=' + (expandedWorkspaceRect?.right || 0) + '<=' + (rightSessionRect?.left || 0)
             )
             setCheck(
               'hierarchicalSessionManagerGroupsSessionsByDevice',
@@ -1018,16 +1131,49 @@ async function createWindow(): Promise<void> {
             document.querySelector('.workspace-stage')?.click()
             await sleep(40)
 
-            clickButtonByTitle('打开当前会话自动响应')
+            const automationShortcut = document.querySelector('button[title="打开当前会话自动响应"]')
+            const automationTargetSessionId = automationShortcut?.closest('.terminal-pane')?.getAttribute('data-session-id') || ''
+            automationShortcut?.click()
             for (let attempt = 0; attempt < 30 && !document.querySelector('.automation-workspace'); attempt += 1) {
               await sleep(50)
             }
             setCheck(
               'terminalAutomationQuickAccessTargetsCurrentSession',
-              Boolean(document.querySelector('.automation-workspace[role="dialog"]'))
+              Boolean(document.querySelector('.automation-workspace[role="region"]'))
                 && text('.automation-workspace').includes('终端自动化')
+                && Boolean(automationTargetSessionId)
+                && document.querySelector('.automation-workspace')?.getAttribute('data-active-session-id') === automationTargetSessionId
                 && Boolean(document.querySelector('.automation-session-status')),
-              text('.automation-header')
+              'target=' + automationTargetSessionId
+                + ' bound=' + (document.querySelector('.automation-workspace')?.getAttribute('data-active-session-id') || '')
+                + ' header=' + text('.automation-header')
+            )
+            const automationWorkspaceRect = document.querySelector('.automation-workspace')?.getBoundingClientRect()
+            const automationTerminalRect = document.querySelector('.workspace-stage')?.getBoundingClientRect()
+            setCheck(
+              'terminalAutomationKeepsTerminalVisibleAndInteractive',
+              Boolean(automationWorkspaceRect)
+                && Boolean(automationTerminalRect)
+                && automationTerminalRect.width >= 340
+                && automationWorkspaceRect.right <= automationTerminalRect.left + 1
+                && Boolean(document.querySelector('.session-sidebar'))
+                && getComputedStyle(document.querySelector('.automation-backdrop')).position !== 'fixed'
+                && document.querySelector('.automation-workspace')?.getAttribute('aria-modal') !== 'true',
+              'terminal=' + (automationTerminalRect?.left || 0) + '-' + (automationTerminalRect?.right || 0)
+                + ' panel=' + (automationWorkspaceRect?.left || 0) + '-' + (automationWorkspaceRect?.right || 0)
+            )
+            const operationResizeHandle = document.querySelector('[data-testid="operation-panel-resize-handle"]')
+            const operationWidthBefore = automationWorkspaceRect?.width || 0
+            operationResizeHandle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+            await sleep(50)
+            const operationWidthAfter = document.querySelector('.automation-workspace')?.getBoundingClientRect().width || 0
+            setCheck(
+              'leftOperationWorkbenchWidthResizePersists',
+              Boolean(operationResizeHandle)
+                && operationWidthAfter >= operationWidthBefore + 9
+                && Math.abs(Number(localStorage.getItem('device-tui.desktop-v2.navigator-width') || 0) - operationWidthAfter) <= 1,
+              operationWidthBefore + '->' + operationWidthAfter
+                + ' stored=' + (localStorage.getItem('device-tui.desktop-v2.navigator-width') || '')
             )
 
             document.querySelector('.automation-new-button')?.click()
@@ -1273,10 +1419,52 @@ async function createWindow(): Promise<void> {
               deletedWorkspaceResponse.body
             )
 
+            const terminalTransferShortcut = document.querySelector('.terminal-operation-button[title="托管传输当前设备"]')
+            terminalTransferShortcut?.click()
+            for (let attempt = 0; attempt < 30 && !document.querySelector('.transfer-workspace'); attempt += 1) {
+              await sleep(50)
+            }
+            setCheck(
+              'terminalToolbarTransferShortcutTargetsCurrentSession',
+              Boolean(terminalTransferShortcut)
+                && Boolean(document.querySelector('.transfer-workspace'))
+                && Boolean(document.querySelector('.transfer-run-card header')?.textContent?.trim()),
+              text('.transfer-run-card header')
+            )
+            document.querySelector('button[aria-label="关闭文件传输"]')?.click()
+            await sleep(60)
+            const terminalUpgradeShortcut = document.querySelector('.terminal-operation-button[title="升级当前设备系统包"]')
+            terminalUpgradeShortcut?.click()
+            for (let attempt = 0; attempt < 30 && !document.querySelector('.upgrade-workspace'); attempt += 1) {
+              await sleep(50)
+            }
+            setCheck(
+              'terminalToolbarUpgradeShortcutTargetsCurrentSession',
+              Boolean(terminalUpgradeShortcut)
+                && Boolean(document.querySelector('.upgrade-workspace'))
+                && Boolean(document.querySelector('.upgrade-header-actions')?.textContent?.trim()),
+              text('.upgrade-header-actions')
+            )
+            document.querySelector('button[aria-label="关闭升级任务"]')?.click()
+            await sleep(60)
             clickButtonByTitle('文件传输')
             for (let attempt = 0; attempt < 30 && !document.querySelector('.transfer-workspace'); attempt += 1) {
               await sleep(50)
             }
+            const transferWorkspaceRect = document.querySelector('.transfer-workspace')?.getBoundingClientRect()
+            const transferTerminalRect = document.querySelector('.workspace-stage')?.getBoundingClientRect()
+            setCheck(
+              'managedTransferKeepsTerminalVisibleAndInteractive',
+              Boolean(transferWorkspaceRect)
+                && Boolean(transferTerminalRect)
+                && transferTerminalRect.width >= 340
+                && transferWorkspaceRect.right <= transferTerminalRect.left + 1
+                && Boolean(document.querySelector('.session-sidebar'))
+                && getComputedStyle(document.querySelector('.transfer-backdrop')).position !== 'fixed'
+                && document.querySelector('.transfer-workspace')?.getAttribute('aria-modal') !== 'true',
+              'terminal=' + (transferTerminalRect?.left || 0) + '-' + (transferTerminalRect?.right || 0)
+                + ' panel=' + (transferWorkspaceRect?.left || 0) + '-' + (transferWorkspaceRect?.right || 0)
+            )
             setValue('[data-testid="transfer-root"]', ${JSON.stringify(manualUpgradeRoot)})
             document.querySelector('[data-testid="transfer-settings"]')?.requestSubmit()
             await sleep(700)
@@ -1332,6 +1520,20 @@ async function createWindow(): Promise<void> {
             for (let attempt = 0; attempt < 30 && !document.querySelector('.upgrade-workspace'); attempt += 1) {
               await sleep(50)
             }
+            const upgradeWorkspaceRect = document.querySelector('.upgrade-workspace')?.getBoundingClientRect()
+            const upgradeTerminalRect = document.querySelector('.workspace-stage')?.getBoundingClientRect()
+            setCheck(
+              'packageUpgradeKeepsTerminalVisibleAndInteractive',
+              Boolean(upgradeWorkspaceRect)
+                && Boolean(upgradeTerminalRect)
+                && upgradeTerminalRect.width >= 340
+                && upgradeWorkspaceRect.right <= upgradeTerminalRect.left + 1
+                && Boolean(document.querySelector('.session-sidebar'))
+                && getComputedStyle(document.querySelector('.upgrade-backdrop')).position !== 'fixed'
+                && document.querySelector('.upgrade-workspace')?.getAttribute('aria-modal') !== 'true',
+              'terminal=' + (upgradeTerminalRect?.left || 0) + '-' + (upgradeTerminalRect?.right || 0)
+                + ' panel=' + (upgradeWorkspaceRect?.left || 0) + '-' + (upgradeWorkspaceRect?.right || 0)
+            )
             const manualPackageRow = [...document.querySelectorAll('[data-testid="upgrade-package"]')]
               .find((row) => row.querySelector('strong')?.textContent?.trim() === ${JSON.stringify(manualUpgradePackageName)})
             manualPackageRow?.click()
@@ -1359,7 +1561,7 @@ async function createWindow(): Promise<void> {
             } catch {
               copiedManualScript = ''
             }
-            const activeManualSessionId = document.querySelector('.session-tab.active')?.getAttribute('data-session-tab-id') || ''
+            const activeManualSessionId = document.querySelector('.terminal-pane')?.getAttribute('data-session-id') || ''
             const readVersionCount = async () => {
               if (!activeManualSessionId) return -1
               const response = await window.desktopApi.request({ path: '/api/v1/sessions/' + encodeURIComponent(activeManualSessionId) + '/log' })
@@ -1643,8 +1845,10 @@ async function createWindow(): Promise<void> {
               text('.terminal-log-panel header') + ' ' + text('.terminal-log-panel pre').slice(-160)
             )
             clickButtonByTitle('关闭日志')
-            const sshButton = [...document.querySelectorAll('.connection-actions button')]
-              .find((button) => button.textContent?.trim() === 'SSH')
+            openContextMenu('.device-table-row.selected')
+            await sleep(40)
+            const sshButton = [...document.querySelectorAll('.device-context-menu button')]
+              .find((button) => button.textContent?.trim() === '打开 Linux 后台')
             sshButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
               const terminalText = document.querySelector('.xterm-rows')?.textContent || ''
@@ -1659,7 +1863,8 @@ async function createWindow(): Promise<void> {
                 && text('.connection-state') === '连接失败'
                 && failedSshText.includes('Connection failed')
                 && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
-              text('.terminal-endpoint') + ' ' + text('.connection-state') + ' ' + failedSshText.slice(-180)
+              (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
+                + text('.connection-state') + ' ' + failedSshText.slice(-180)
             )
             const activeSshSessionId = document.querySelector('.session-tab.active')?.getAttribute('data-session-tab-id') || ''
             const readSessionSnapshot = async (sessionId) => {
@@ -1695,12 +1900,14 @@ async function createWindow(): Promise<void> {
               'generation=' + beforeSshRetry.generation + '->' + afterSshRetry.generation + ' '
                 + text('.connection-state') + ' ' + failedSshRetryText.slice(-220)
             )
-            const telnetButton = [...document.querySelectorAll('.connection-actions button')]
-              .find((button) => button.textContent?.trim() === 'Telnet')
+            openContextMenu('.device-table-row.selected')
+            await sleep(40)
+            const telnetButton = [...document.querySelectorAll('.device-context-menu button')]
+              .find((button) => button.textContent?.trim() === '打开设备管理口')
             telnetButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
               if (
-                text('.terminal-endpoint').includes('telnet')
+                document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'telnet'
                 && document.querySelector('.connection-state[data-state="failed"]')
               ) break
               await sleep(100)
@@ -1709,27 +1916,128 @@ async function createWindow(): Promise<void> {
             setCheck(
               'telnetFailureShowsInlineReasonAndRetry',
               Boolean(telnetButton)
-                && text('.terminal-endpoint').includes('telnet')
+                && document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'telnet'
                 && text('.connection-state') === '连接失败'
                 && failedTelnetText.includes('Connection failed')
                 && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
-              text('.terminal-endpoint') + ' ' + text('.connection-state') + ' ' + failedTelnetText.slice(-180)
+              (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
+                + text('.connection-state') + ' ' + failedTelnetText.slice(-180)
+            )
+
+            const activeTitleResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
+            const activeTitleDevicesResponse = await window.desktopApi.request({ path: '/api/v1/devices' })
+            let activeTitleSessions = []
+            let activeTitleDevices = []
+            try {
+              activeTitleSessions = JSON.parse(activeTitleResponse.body).sessions || []
+              activeTitleDevices = JSON.parse(activeTitleDevicesResponse.body).devices || []
+            } catch {
+              activeTitleSessions = []
+              activeTitleDevices = []
+            }
+            clickButtonByTitle('设置')
+            await sleep(50)
+            const topSessionLayoutButton = [...document.querySelectorAll('.settings-panel button')]
+              .find((button) => button.textContent?.trim() === '顶部')
+            topSessionLayoutButton?.click()
+            clickButtonByTitle('关闭设置')
+            await sleep(80)
+            const sessionsOnDifferentDevices = activeTitleSessions.filter((session, index, items) =>
+              items.findIndex((candidate) => candidate.device_id === session.device_id) === index
+            ).slice(0, 2)
+            const followedTitles = []
+            for (const session of sessionsOnDifferentDevices) {
+              document.querySelector('.device-session-tab[data-device-tab-id="' + session.device_id + '"] .device-session-tab-select')?.click()
+              await sleep(50)
+              followedTitles.push({
+                expected: activeTitleDevices.find((device) => device.id === session.device_id)?.name || session.title || session.device_id,
+                actual: text('[data-testid="live-workspace-title"]')
+              })
+            }
+            setCheck(
+              'liveWorkspaceTitleFollowsActiveSession',
+              sessionsOnDifferentDevices.length >= 2
+                && followedTitles.every((entry) => entry.actual === entry.expected),
+              followedTitles.map((entry) => entry.expected + '=' + entry.actual).join('|')
+            )
+            const deviceTabIds = [...document.querySelectorAll('.device-session-tab')]
+              .map((tab) => tab.getAttribute('data-device-tab-id') || '')
+            const activeDeviceTabId = document.querySelector('.device-session-tab.active')?.getAttribute('data-device-tab-id') || ''
+            const childSessionIds = [...document.querySelectorAll('.session-child-tabs .session-tab')]
+              .map((tab) => tab.getAttribute('data-session-tab-id') || '')
+            const childSessions = activeTitleSessions.filter((session) => childSessionIds.includes(session.id))
+            setCheck(
+              'hierarchicalDeviceSessionTabsScopeChildrenToActiveDevice',
+              Boolean(topSessionLayoutButton)
+                && deviceTabIds.length === new Set(activeTitleSessions.map((session) => session.device_id)).size
+                && childSessions.length === childSessionIds.length
+                && childSessions.every((session) => session.device_id === activeDeviceTabId),
+              'devices=' + deviceTabIds.join('|') + ' active=' + activeDeviceTabId
+                + ' children=' + childSessions.map((session) => session.kind + ':' + session.device_id).join('|')
+            )
+            const visibleSessionLabels = [...document.querySelectorAll('.session-child-tabs .session-tab-select > span')]
+              .map((label) => label.textContent?.trim() || '')
+            setCheck(
+              'duplicateSessionTabsHaveUniqueLabels',
+              visibleSessionLabels.length > 0
+                && new Set(visibleSessionLabels).size === visibleSessionLabels.length
+                && visibleSessionLabels.every((label) => ['SSH', 'Telnet', '串口', '模拟终端'].some((kind) => label.startsWith(kind))),
+              visibleSessionLabels.join('|')
+            )
+            const terminalConnectionActions = [...document.querySelectorAll('.terminal-bottom-toolbar .terminal-actions .sr-only')]
+              .map((label) => label.textContent?.trim() || '')
+            const terminalBottomToolbarTitles = [...document.querySelectorAll('.terminal-bottom-toolbar button')]
+              .map((button) => button.getAttribute('title') || '')
+            setCheck(
+              'terminalLowFrequencyActionsLiveInBottomToolbar',
+              ['查看会话日志', '打开当前会话自动响应', '托管传输当前设备', '升级当前设备系统包', '搜索终端 (Ctrl+F)', '缩小字体 (Ctrl+-)', '放大字体 (Ctrl++)']
+                .every((title) => terminalBottomToolbarTitles.includes(title))
+                && ['当前会话与设备操作', '断开连接', '重新连接']
+                  .every((action) => terminalConnectionActions.includes(action))
+                && !document.querySelector('.terminal-toolbar'),
+              'actions=' + terminalConnectionActions.join('|') + ' bottom=' + terminalBottomToolbarTitles.join('|')
+            )
+            const focusedTerminalRect = document.querySelector('.terminal-split-pane.focused .terminal-pane')?.getBoundingClientRect()
+              || document.querySelector('.terminal-pane')?.getBoundingClientRect()
+            const quickSendRect = document.querySelector('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore')?.getBoundingClientRect()
+            const quickSendToolbarRect = document.querySelector('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore')
+              ?.closest('.terminal-bottom-toolbar')?.getBoundingClientRect()
+            const commandWorkspaceRect = document.querySelector('.command-workspace')?.getBoundingClientRect()
+            const splitActiveForQuickSend = document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') !== 'none'
+            const terminalSplitRect = document.querySelector('.terminal-split-layout')?.getBoundingClientRect()
+            setCheck(
+              'quickSendLivesInFocusedTerminalBottomToolbar',
+              Boolean(focusedTerminalRect)
+                && Boolean(quickSendRect)
+                && document.querySelectorAll('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore').length === 1
+                && (splitActiveForQuickSend
+                  ? Boolean(terminalSplitRect)
+                    && !quickSendToolbarRect
+                    && quickSendRect.top >= terminalSplitRect.bottom - 1
+                  : Boolean(quickSendToolbarRect)
+                    && quickSendRect.top >= quickSendToolbarRect.top - 1
+                    && quickSendRect.bottom <= quickSendToolbarRect.bottom + 1)
+                && (!commandWorkspaceRect || quickSendRect.bottom <= commandWorkspaceRect.top + 1),
+              'terminalBottom=' + (focusedTerminalRect?.bottom || 0)
+                + ' quick=' + (quickSendRect?.top || 0) + '-' + (quickSendRect?.bottom || 0)
+                + ' toolbar=' + (quickSendToolbarRect?.top || 0) + '-' + (quickSendToolbarRect?.bottom || 0)
+                + ' commandTop=' + (commandWorkspaceRect?.top || 0)
             )
 
             clickButtonByTitle('占用设备')
             for (let attempt = 0; attempt < 40; attempt += 1) {
-              const serialAction = [...document.querySelectorAll('.connection-actions button')]
-                .find((button) => button.textContent?.trim() === '串口')
-              if (document.querySelector('button[title="释放设备"]') && serialAction && !serialAction.disabled) break
+              if (document.querySelector('button[title="释放设备"]')) break
               await sleep(100)
             }
-            const serialButton = [...document.querySelectorAll('.connection-actions button')]
-              .find((button) => button.textContent?.trim() === '串口')
+            openContextMenu('.device-table-row.selected')
+            await sleep(40)
+            const serialButton = [...document.querySelectorAll('.device-context-menu button')]
+              .find((button) => button.textContent?.trim() === '打开串口')
             const serialEnabledAfterClaim = Boolean(serialButton && !serialButton.disabled)
             serialButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
               if (
-                text('.terminal-endpoint').includes('serial')
+                document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'serial'
                 && document.querySelector('.connection-state[data-state="failed"]')
               ) break
               await sleep(100)
@@ -1738,11 +2046,13 @@ async function createWindow(): Promise<void> {
             setCheck(
               'serialClaimAndFailureFlowStaysInline',
               serialEnabledAfterClaim
-                && text('.terminal-endpoint').includes('serial')
+                && document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'serial'
                 && text('.connection-state') === '连接失败'
                 && failedSerialText.includes('Connection failed')
                 && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
-              'enabledAfterClaim=' + serialEnabledAfterClaim + ' ' + text('.terminal-endpoint') + ' ' + text('.connection-state') + ' ' + failedSerialText.slice(-180)
+              'enabledAfterClaim=' + serialEnabledAfterClaim + ' '
+                + (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
+                + text('.connection-state') + ' ' + failedSerialText.slice(-180)
             )
 
             const smokeServerGroup = '折叠烟测组'
@@ -1908,10 +2218,19 @@ async function createWindow(): Promise<void> {
                 + ' panes=' + document.querySelectorAll('.terminal-split-pane').length
                 + ' backend=' + sessionsBeforeSplit.length + '->' + sessionsAfterSplit.length
             )
+            setCheck(
+              'splitPaneUsesCompactCurrentSessionHeader',
+              document.querySelectorAll('.split-pane-tabs').length === 2
+                && document.querySelectorAll('.split-pane-tabs .split-session-tab').length === 0
+                && document.querySelectorAll('.split-pane-tabs .split-pane-session-title').length === 2,
+              'headers=' + document.querySelectorAll('.split-pane-tabs').length
+                + ' repeatedTabs=' + document.querySelectorAll('.split-pane-tabs .split-session-tab').length
+                + ' titles=' + document.querySelectorAll('.split-pane-tabs .split-pane-session-title').length
+            )
             const draggableTabs = [...document.querySelectorAll('.session-tab')]
             const secondaryPane = document.querySelector('.terminal-split-pane[data-pane-id="secondary"]')
-            const secondarySessionIds = [...document.querySelectorAll('.terminal-split-pane[data-pane-id="secondary"] .split-session-tab')]
-              .map((tab) => tab.getAttribute('data-session-id') || '')
+            const secondarySessionIds = [...document.querySelectorAll('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')]
+              .map((title) => title.getAttribute('data-session-id') || '')
             const primaryCandidate = draggableTabs.find((tab) => {
               const id = tab.getAttribute('data-session-tab-id') || ''
               return Boolean(id) && !secondarySessionIds.includes(id)
@@ -1936,7 +2255,8 @@ async function createWindow(): Promise<void> {
                 dataTransfer: transfer
               }))
               await sleep(160)
-              dragDropWorked = document.querySelectorAll('.terminal-split-pane[data-pane-id="secondary"] .split-session-tab').length >= 2
+              dragDropWorked = document.querySelector('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')
+                ?.getAttribute('data-session-id') === primaryCandidate.getAttribute('data-session-tab-id')
             }
             const sessionsAfterDragResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
             let sessionsAfterDrag = []
@@ -1948,7 +2268,7 @@ async function createWindow(): Promise<void> {
             setCheck(
               'terminalTabDragDropMovesExistingSessionOnly',
               dragDropWorked && sessionsAfterDrag.length === sessionsBeforeSplit.length,
-              'secondaryTabs=' + document.querySelectorAll('.terminal-split-pane[data-pane-id="secondary"] .split-session-tab').length
+              'secondarySession=' + (document.querySelector('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')?.getAttribute('data-session-id') || '')
                 + ' backend=' + sessionsBeforeSplit.length + '->' + sessionsAfterDrag.length
             )
 
@@ -2194,6 +2514,7 @@ async function createWindow(): Promise<void> {
             sessionManagerCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.session-manager-collapsed-groups') || '',
             profileCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.profile-collapsed-groups') || '',
             navigatorDetailCollapsed: localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '1',
+            navigatorWidth: localStorage.getItem('device-tui.desktop-v2.navigator-width') || '',
             commandPanelHeight: localStorage.getItem('device-tui.desktop-v2.command-panel-height') || '',
             terminalSplitDirection: document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') || '',
             terminalSplitPaneCount: document.querySelectorAll('.terminal-split-pane').length
@@ -2231,6 +2552,8 @@ async function createWindow(): Promise<void> {
               profileCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.profile-collapsed-groups') || '',
               navigatorDetailCollapsed: localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '1',
               navigatorDetailCollapsedDom: document.querySelector('.navigator-detail')?.getAttribute('data-collapsed') === 'true',
+              navigatorWidth: localStorage.getItem('device-tui.desktop-v2.navigator-width') || '',
+              navigatorWidthDom: String(Math.round(document.querySelector('.navigator')?.getBoundingClientRect().width || 0)),
               rightSessionSidebarPresent: Boolean(document.querySelector('.app-shell > .session-sidebar > .session-manager')),
               commandPanelHeight: localStorage.getItem('device-tui.desktop-v2.command-panel-height') || '',
               commandPanelDomHeight: document.querySelector('.command-workspace.open')?.getAttribute('data-panel-height') || '',
@@ -2255,9 +2578,10 @@ async function createWindow(): Promise<void> {
               selectedDeviceRowRestored: Boolean(baseline.selectedDeviceRowId) && restored.selectedDeviceRowId === baseline.selectedDeviceRowId,
               themeRestored: Boolean(baseline.theme) && restored.theme === baseline.theme,
               alwaysOnTopRestored: baseline.alwaysOnTop === true && restored.alwaysOnTop === true,
-              sessionTabLayoutRestored: baseline.sessionTabLayout === 'side' && restored.sessionTabLayout === 'side',
-              sessionTabRailCollapsedRestored: baseline.sessionTabRailCollapsed === true && restored.sessionTabRailCollapsed === true,
-              rightSessionSidebarRestored: restored.rightSessionSidebarPresent === true,
+              sessionTabLayoutRestored: Boolean(baseline.sessionTabLayout)
+                && restored.sessionTabLayout === baseline.sessionTabLayout,
+              sessionTabRailCollapsedRestored: restored.sessionTabRailCollapsed === baseline.sessionTabRailCollapsed,
+              rightSessionSidebarRestored: restored.rightSessionSidebarPresent === (baseline.sessionTabLayout === 'side'),
               sessionManagerWidthRestored: Boolean(baseline.sessionManagerWidth)
                 && restored.sessionManagerWidth === baseline.sessionManagerWidth,
               sessionManagerGroupStateRestored: baseline.sessionManagerCollapsedGroups.includes('SIM-TERMINAL')
@@ -2267,6 +2591,9 @@ async function createWindow(): Promise<void> {
                 && restored.serverGroupCollapsedDom === true,
               navigatorDetailStateRestored: restored.navigatorDetailCollapsed === baseline.navigatorDetailCollapsed
                 && restored.navigatorDetailCollapsedDom === baseline.navigatorDetailCollapsed,
+              navigatorWidthRestored: Boolean(baseline.navigatorWidth)
+                && restored.navigatorWidth === baseline.navigatorWidth
+                && restored.navigatorWidthDom === baseline.navigatorWidth,
               commandPanelHeightRestored: Boolean(baseline.commandPanelHeight)
                 && restored.commandPanelHeight === baseline.commandPanelHeight
                 && restored.commandPanelDomHeight === baseline.commandPanelHeight,

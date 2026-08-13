@@ -24,6 +24,15 @@ interface ProfileCredentialRequest {
   hasPassword: boolean
 }
 
+interface DeviceConnectionRequest {
+  deviceId: string
+  deviceName: string
+  protocol: 'ssh' | 'telnet' | 'serial'
+  host: string
+  port: number
+  username: string
+}
+
 interface SessionLogExportRequest {
   suggestedName: string
   content: string
@@ -33,6 +42,7 @@ interface DesktopApi {
   getRuntimeConfig(): Promise<BackendRuntime>
   request(request: BackendRequest): Promise<BackendResponse>
   openProfileSession(request: ProfileCredentialRequest): Promise<import('./types').SessionSummary | null>
+  openDeviceSession(request: DeviceConnectionRequest): Promise<import('./types').SessionSummary | null>
   manageProfileCredential(request: ProfileCredentialRequest): Promise<boolean>
   chooseTransferRoot(): Promise<string>
   chooseSessionLogDirectory(): Promise<string>

@@ -222,6 +222,22 @@ class OneTimeCredentialSessionRequest(BaseModel):
     rows: int = Field(default=40, ge=5, le=500)
 
 
+class DirectCredentialSessionRequest(BaseModel):
+    """One-time device target assembled inside the trusted desktop boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, max_length=160)
+    kind: Literal["ssh", "telnet", "serial"]
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+    username: str = Field(default="", max_length=255)
+    password: str = Field(default="", max_length=4_096, repr=False)
+    title: str = Field(default="", max_length=120)
+    cols: int = Field(default=160, ge=20, le=1_000)
+    rows: int = Field(default=40, ge=5, le=500)
+
+
 class CommandGroupModel(BaseModel):
     id: str
     name: str

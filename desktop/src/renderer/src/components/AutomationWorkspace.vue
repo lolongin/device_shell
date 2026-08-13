@@ -54,9 +54,10 @@ const triggeredRuleNames = computed(() =>
 )
 const automationStatusText = computed(() => {
   if (!workspace.activeSession) return '当前没有活动终端会话。'
-  if (runningRuleNames.value.length) return `运行中：${runningRuleNames.value.join('、')}`
-  if (triggeredRuleNames.value.length) return `已触发：${triggeredRuleNames.value.join('、')}`
-  return '当前会话暂无运行中的自动响应。'
+  const target = workspace.activeSession.title
+  if (runningRuleNames.value.length) return `${target} · 运行中：${runningRuleNames.value.join('、')}`
+  if (triggeredRuleNames.value.length) return `${target} · 已触发：${triggeredRuleNames.value.join('、')}`
+  return `${target} · 当前会话暂无运行中的自动响应。`
 })
 const protectedResponse = computed(() => draft.value.response_text.includes('••••••'))
 const protectedAdvancedStructure = computed(() =>
@@ -359,7 +360,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
     class="automation-backdrop"
     @mousedown.self="workspace.automationPanelOpen = false"
   >
-    <aside class="automation-workspace" role="dialog" aria-modal="true" aria-labelledby="automation-title">
+    <aside
+      class="automation-workspace"
+      role="region"
+      aria-labelledby="automation-title"
+      :data-active-session-id="workspace.activeSessionId"
+    >
       <header class="automation-header">
         <div class="automation-heading">
           <span class="automation-icon"><Workflow :size="18" /></span>

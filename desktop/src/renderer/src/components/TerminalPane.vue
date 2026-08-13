@@ -4,12 +4,15 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import {
+  Box,
   Clipboard,
   ExternalLink,
   FilePlus2,
   FileText,
+  FileUp,
   FolderOpen,
   Minus,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -26,6 +29,9 @@ const props = defineProps<{ session: SessionSummary }>()
 const emit = defineEmits<{
   status: [sessionId: string, status: string, sequence: number]
   automation: [sessionId: string]
+  transfer: [sessionId: string]
+  upgrade: [sessionId: string]
+  context: [sessionId: string, event: MouseEvent]
 }>()
 
 const pane = ref<HTMLElement | null>(null)
@@ -495,35 +501,62 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section ref="pane" class="terminal-pane" aria-label="终端会话" @click="closeContextMenu">
-    <header class="terminal-toolbar">
-      <div>
-        <strong>{{ session.title }}</strong>
-        <span class="terminal-endpoint">{{ session.device_id }} · {{ session.kind }}</span>
+  <section
+    ref="pane"
+    class="terminal-pane"
+    :data-session-id="session.id"
+    :data-session-kind="session.kind"
+    :aria-label="`终端会话：${session.title}`"
+    @click="closeContextMenu"
+  >
+    <div
+      ref="container"
+      class="terminal-host"
+      tabindex="0"
+      @contextmenu.prevent="openContextMenu"
+      @keydown="handleTerminalContextKeydown"
+    ></div>
+    <footer class="terminal-bottom-toolbar" role="toolbar" aria-label="终端辅助操作">
+      <div class="terminal-bottom-leading">
+        <slot name="bottom-leading"></slot>
       </div>
-      <div class="terminal-actions">
+      <button class="icon-button" type="button" title="查看会话日志" @click="loadLog">
+        <FileText :size="15" aria-hidden="true" />
+        <span class="sr-only">查看会话日志</span>
+      </button>
+      <button class="icon-button" type="button" title="打开当前会话自动响应" @click="openAutomation">
+        <Workflow :size="15" aria-hidden="true" />
+        <span class="sr-only">打开当前会话自动响应</span>
+      </button>
+      <button class="icon-button terminal-operation-button" type="button" title="托管传输当前设备" @click="emit('transfer', session.id)">
+        <FileUp :size="15" aria-hidden="true" />
+        <span class="sr-only">托管传输当前设备</span>
+      </button>
+      <button class="icon-button terminal-operation-button" type="button" title="升级当前设备系统包" @click="emit('upgrade', session.id)">
+        <Box :size="15" aria-hidden="true" />
+        <span class="sr-only">升级当前设备系统包</span>
+      </button>
+      <span class="terminal-bottom-divider" aria-hidden="true"></span>
+      <button class="icon-button" type="button" title="搜索终端 (Ctrl+F)" @click="openSearch">
+        <Search :size="15" aria-hidden="true" />
+        <span class="sr-only">搜索终端</span>
+      </button>
+      <button class="icon-button" type="button" title="缩小字体 (Ctrl+-)" @click="changeFontSize(-1)">
+        <Minus :size="15" aria-hidden="true" />
+        <span class="sr-only">缩小终端字体</span>
+      </button>
+      <button class="icon-button" type="button" title="放大字体 (Ctrl++)" @click="changeFontSize(1)">
+        <Plus :size="15" aria-hidden="true" />
+        <span class="sr-only">放大终端字体</span>
+      </button>
+      <span class="terminal-bottom-divider" aria-hidden="true"></span>
+      <div class="terminal-actions" :aria-label="`${session.title} 会话控制`">
         <span class="connection-state" :data-state="connectionStatus" :title="connectionStatus">
           <i aria-hidden="true"></i>{{ connectionStatusLabel }}
         </span>
-        <button class="icon-button" type="button" title="查看会话日志" @click="loadLog">
-          <FileText :size="15" aria-hidden="true" />
-          <span class="sr-only">查看会话日志</span>
-        </button>
-        <button class="icon-button" type="button" title="打开当前会话自动响应" @click="openAutomation">
-          <Workflow :size="15" aria-hidden="true" />
-          <span class="sr-only">打开当前会话自动响应</span>
-        </button>
-        <button class="icon-button" type="button" title="搜索终端 (Ctrl+F)" @click="openSearch">
-          <Search :size="15" aria-hidden="true" />
-          <span class="sr-only">搜索终端</span>
-        </button>
-        <button class="icon-button" type="button" title="缩小字体 (Ctrl+-)" @click="changeFontSize(-1)">
-          <Minus :size="15" aria-hidden="true" />
-          <span class="sr-only">缩小终端字体</span>
-        </button>
-        <button class="icon-button" type="button" title="放大字体 (Ctrl++)" @click="changeFontSize(1)">
-          <Plus :size="15" aria-hidden="true" />
-          <span class="sr-only">放大终端字体</span>
+        <button class="icon-button" type="button" title="当前会话与设备操作" @click.stop="emit('context', session.id, $event)">
+          <MoreHorizontal :size="15" aria-hidden="true" />
+          <span class="sr-only">当前会话与设备操作</span>
         </button>
         <button
           class="icon-button"
@@ -546,14 +579,7 @@ onBeforeUnmount(() => {
           <span class="sr-only">重新连接</span>
         </button>
       </div>
-    </header>
-    <div
-      ref="container"
-      class="terminal-host"
-      tabindex="0"
-      @contextmenu.prevent="openContextMenu"
-      @keydown="handleTerminalContextKeydown"
-    ></div>
+    </footer>
     <div
       v-if="contextMenu"
       class="terminal-context-menu"

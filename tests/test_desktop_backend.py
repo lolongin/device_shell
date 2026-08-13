@@ -647,6 +647,32 @@ def test_profile_credential_endpoints_support_vault_and_one_time_sessions() -> N
     assert listed.json()["profiles"][0]["ssh"]["has_password"] is False
 
 
+def test_direct_session_accepts_one_time_target_without_exposing_password() -> None:
+    one_time_secret = "direct-session-secret"
+    with _client() as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        devices = client.get("/api/v1/devices", headers=headers).json()["devices"]
+        device = next(item for item in devices if item["can_connect_ssh"])
+        session = client.post(
+            "/api/v1/sessions/direct",
+            headers=headers,
+            json={
+                "device_id": device["id"],
+                "kind": "ssh",
+                "host": "127.0.0.1",
+                "port": 9,
+                "username": "operator",
+                "password": one_time_secret,
+                "title": "custom target",
+            },
+        )
+
+    assert session.status_code == 200
+    assert session.json()["device_id"] == device["id"]
+    assert session.json()["kind"] == "ssh"
+    assert one_time_secret not in session.text
+
+
 def test_temporary_profile_cannot_be_deleted_while_its_session_is_open() -> None:
     with _client() as client:
         headers = {"Authorization": f"Bearer {TOKEN}"}

@@ -87,6 +87,20 @@ const allGroupsExpanded = computed(() =>
   visibleGroups.value.length > 0
     && visibleGroups.value.every((group) => !collapsedGroups.value.has(group.id))
 )
+const sessionDisplayLabels = computed<Record<string, string>>(() => {
+  const totals = new Map<string, number>()
+  const seen = new Map<string, number>()
+  for (const session of props.sessions) {
+    totals.set(session.title, (totals.get(session.title) || 0) + 1)
+  }
+  return Object.fromEntries(props.sessions.map((session) => {
+    const index = (seen.get(session.title) || 0) + 1
+    seen.set(session.title, index)
+    return [session.id, (totals.get(session.title) || 0) > 1
+      ? `${session.title} #${index}`
+      : session.title]
+  }))
+})
 
 function readManagerWidth(): number {
   const value = Number(localStorage.getItem(WIDTH_KEY) || 260)
@@ -255,7 +269,7 @@ onBeforeUnmount(stopResize)
           class="session-tab session-manager-strip-tab"
           :class="{ active: session.id === activeSessionId }"
           :data-session-tab-id="session.id"
-          :title="session.title"
+          :title="sessionDisplayLabels[session.id]"
           draggable="true"
           @dragstart="startSessionDrag($event, session)"
           @contextmenu.prevent="emit('sessionContext', $event, session)"
@@ -264,7 +278,7 @@ onBeforeUnmount(stopResize)
             class="session-tab-select"
             type="button"
             role="tab"
-            :aria-label="session.title"
+            :aria-label="sessionDisplayLabels[session.id]"
             :aria-selected="session.id === activeSessionId"
             @click="emit('activate', session.id)"
             @keydown="handleSessionKeydown($event, session)"
@@ -325,7 +339,7 @@ onBeforeUnmount(stopResize)
               class="session-tab session-manager-session"
               :class="{ active: session.id === activeSessionId }"
               :data-session-tab-id="session.id"
-              :title="session.title"
+              :title="sessionDisplayLabels[session.id]"
               role="treeitem"
               draggable="true"
               @dragstart="startSessionDrag($event, session)"
@@ -335,14 +349,14 @@ onBeforeUnmount(stopResize)
                 class="session-tab-select"
                 type="button"
                 role="tab"
-                :aria-label="session.title"
+                :aria-label="sessionDisplayLabels[session.id]"
                 :aria-selected="session.id === activeSessionId"
                 @click="emit('activate', session.id)"
                 @keydown="handleSessionKeydown($event, session)"
               >
                 <i :data-state="session.status" aria-hidden="true"></i>
                 <span>
-                  <strong>{{ session.title }}</strong>
+                  <strong>{{ sessionDisplayLabels[session.id] }}</strong>
                   <small>{{ kindLabel(session.kind) }} · {{ statusLabel(session.status) }}</small>
                 </span>
               </button>

@@ -60,6 +60,16 @@ def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> Non
     assert "/api/v1/automation/quick-send-buttons" in transport
 
 
+def test_electron_activity_rail_does_not_expose_ai_tab() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+
+    assert "import AiWorkspace" not in app
+    assert "<AiWorkspace" not in app
+    assert "toggleAiPanel" not in app
+    assert 'title="AI助手"' not in app
+    assert "<Bot" not in app
+
+
 def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
     manager = SESSION_MANAGER.read_text(encoding="utf-8")
     app = APP_VUE.read_text(encoding="utf-8")
@@ -199,6 +209,28 @@ def test_electron_advanced_automation_editor_covers_python_action_model() -> Non
     assert "advancedAutomationActionEditorPersistsNestedFlow" in smoke
 
 
+def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "workspace.automationPanelOpen || workspace.transferPanelOpen" in app
+    assert 'class="automation-workspace"' in automation
+    assert 'role="region"' in automation
+    assert ':data-active-session-id="workspace.activeSessionId"' in automation
+    assert 'aria-modal="true"' not in automation
+    backdrop_start = styles.index("\n.automation-backdrop {") + 1
+    backdrop = styles[backdrop_start:styles.index(".automation-workspace", backdrop_start)]
+    assert "position: fixed" not in backdrop
+    assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
+    assert ".automation-body { min-height: 0; display: grid; grid-template-rows:" in styles
+    assert ".automation-rule-list" in styles
+    assert "overflow-x: auto" in styles
+    assert "terminalAutomationKeepsTerminalVisibleAndInteractive" in main
+    assert "leftOperationWorkbenchWidthResizePersists" in main
+
+
 def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     transfer = Path(
         "desktop/src/renderer/src/components/TransferWorkspace.vue"
@@ -235,6 +267,69 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     smoke = MAIN_TS.read_text(encoding="utf-8")
     assert "fileServiceLogAndClientCommandAreVisibleAndSafe" in smoke
     assert "fileServiceLogClearPersistsThroughPythonService" in smoke
+
+
+def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    transfer = Path("desktop/src/renderer/src/components/TransferWorkspace.vue").read_text(encoding="utf-8")
+    upgrade = UPGRADE_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "operationPanelOpen" in app
+    assert "showSessionSidebar" in app
+    assert 'v-show="!operationPanelOpen" class="navigator"' in app
+    assert 'data-testid="operation-panel-resize-handle"' in app
+    assert 'role="region"' in transfer
+    assert 'aria-modal="true"' not in transfer
+    assert 'role="region"' in upgrade
+    assert 'aria-modal="true"' not in upgrade
+    assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
+    assert ".workspace-stage { grid-column: 3;" in styles
+    assert ".session-sidebar { grid-column: 4;" in styles
+    transfer_start = styles.index("\n.transfer-backdrop {") + 1
+    upgrade_start = styles.index("\n.upgrade-backdrop {") + 1
+    transfer_backdrop = styles[transfer_start:styles.index(".transfer-workspace", transfer_start)]
+    upgrade_backdrop = styles[upgrade_start:styles.index(".upgrade-workspace", upgrade_start)]
+    assert "position: fixed" not in transfer_backdrop
+    assert "position: fixed" not in upgrade_backdrop
+    assert "managedTransferKeepsTerminalVisibleAndInteractive" in main
+    assert "packageUpgradeKeepsTerminalVisibleAndInteractive" in main
+    assert "overflow-x: auto" in styles[styles.index(".upgrade-stage-list {"):styles.index(".upgrade-stage-list > div {")]
+    terminal_pane = Path("desktop/src/renderer/src/components/TerminalPane.vue").read_text(encoding="utf-8")
+    assert ':data-session-id="session.id"' in terminal_pane
+
+
+def test_terminal_toolbar_exposes_current_session_operations_without_navigation() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    pane = TERMINAL_PANE.read_text(encoding="utf-8")
+    split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
+    manager = SESSION_MANAGER.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert 'title="托管传输当前设备"' in pane
+    assert 'title="升级当前设备系统包"' in pane
+    assert 'title="当前会话与设备操作"' in pane
+    assert "transfer: [sessionId: string]" in pane
+    assert "upgrade: [sessionId: string]" in pane
+    assert "context: [sessionId: string, event: MouseEvent]" in pane
+    assert '@transfer="emit(\'transfer\', $event)"' in split
+    assert '@upgrade="emit(\'upgrade\', $event)"' in split
+    assert '@context="(sessionId, event) => emit(\'context\', sessionId, event)"' in split
+    assert "function openSessionTransfer(sessionId: string)" in app
+    assert "function openSessionUpgrade(sessionId: string)" in app
+    assert "function openSessionToolbarContext(sessionId: string, event: MouseEvent)" in app
+    assert ".terminal-operation-button" in styles
+
+
+def test_transfer_workspace_polls_service_log_while_open() -> None:
+    transfer = Path(
+        "desktop/src/renderer/src/components/TransferWorkspace.vue"
+    ).read_text(encoding="utf-8")
+
+    assert "pollingTimer = setInterval" in transfer
+    assert "void workspace.refreshOperations()" in transfer
+    assert "void workspace.loadTransferServiceLog()" in transfer
 
 
 def test_electron_package_upgrade_has_python_owned_manual_fallback() -> None:
@@ -295,7 +390,7 @@ def test_electron_device_list_keeps_legacy_table_columns() -> None:
     assert "device.status_text" in app
     assert "device.tooltip" in app
     assert ".device-table-row" in styles
-    assert "grid-template-columns: 52px 500px minmax(520px, 1fr);" in styles
+    assert "grid-template-columns: 52px var(--navigator-width, 500px) minmax(520px, 1fr);" in styles
     assert ".app-shell.has-session-sidebar" in styles
     assert "legacyDeviceColumnsFitWithoutHorizontalScroll" in MAIN_TS.read_text(encoding="utf-8")
 
@@ -622,7 +717,7 @@ def test_electron_terminal_keeps_legacy_context_menu_actions() -> None:
     assert ".terminal-context-menu button:focus-visible" in styles
 
 
-def test_electron_session_tabs_keep_legacy_close_actions() -> None:
+def test_electron_session_tabs_keep_close_actions_without_crowding_tab_rail() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -642,16 +737,13 @@ def test_electron_session_tabs_keep_legacy_close_actions() -> None:
     assert "event.shiftKey && event.key === 'F10'" in app
     assert '@contextmenu.prevent="openSessionContextMenu($event, session)"' in app
     assert ':data-session-tab-id="session.id"' in app
-    assert "workspace.closeSessionsRelative(session.id, mode)" in app
+    assert "workspace.closeSessionsRelative(session.id, mode, session.device_id)" in app
+    assert "const scoped = deviceId" in store
+    assert "snapshot.filter((session) => session.device_id === deviceId)" in store
+    assert "const closingDeviceId = sessions.value.find" in store
+    assert "session.device_id === closingDeviceId" in store
 
-    assert 'aria-label="批量关闭会话"' in app
-    assert "workspace.closeActiveSession" in app
-    assert "workspace.closeOtherSessions" in app
-    assert "workspace.closeAllSessions" in app
     for label in (
-        "关闭当前会话",
-        "关闭其他会话",
-        "关闭全部会话",
         "关闭当前页签",
         "关闭左侧页签",
         "关闭右侧页签",
@@ -663,10 +755,75 @@ def test_electron_session_tabs_keep_legacy_close_actions() -> None:
         "打开串口",
     ):
         assert label in app
-    assert ".session-tab-actions" in styles
+    assert 'class="session-tab-actions"' not in app
+    assert ".session-tab-actions" not in styles
     assert ".session-context-menu" in styles
     assert ".session-context-menu button:disabled" in styles
     assert ".session-context-menu button:focus-visible" in styles
+
+
+def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compact() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
+    manager = SESSION_MANAGER.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const liveWorkspaceTitle = computed" in app
+    assert "const session = workspace.activeSession" in app
+    assert "workspace.devices.find((device) => device.id === session.device_id)?.name" in app
+    assert 'data-testid="live-workspace-title"' in app
+    assert 'v-if="!workspace.sessions.length || sessionTabLayout !== \'top\'"' in app
+    assert ":data-testid=\"group.id === activeSessionDeviceId ? 'live-workspace-title' : undefined\"" in app
+    assert "const sessionDeviceGroups = computed" in app
+    assert "const activeDeviceSessions = computed" in app
+    assert "const activeProtocolLabels = computed" in app
+    assert "const lastActiveSessionByDevice = ref" in app
+    assert "function activateSessionDevice" in app
+    assert "function sessionKindLabel" in app
+    assert 'class="device-session-tabs"' in app
+    assert 'class="session-tabs session-child-tabs"' in app
+    assert 'v-for="session in activeDeviceSessions"' in app
+    assert ':sessions="activeDeviceSessions"' in app
+    assert ':key="activeSessionDeviceId"' in app
+    assert "const sessionDisplayLabels = computed" in manager
+    assert manager.count("sessionDisplayLabels[session.id]") >= 5
+
+    bottom_toolbar = terminal.split(
+        '<footer class="terminal-bottom-toolbar"', 1
+    )[1].split("</footer>", 1)[0]
+    for title in (
+        "查看会话日志",
+        "打开当前会话自动响应",
+        "托管传输当前设备",
+        "升级当前设备系统包",
+        "搜索终端 (Ctrl+F)",
+        "缩小字体 (Ctrl+-)",
+        "放大字体 (Ctrl++)",
+    ):
+        assert title in bottom_toolbar
+    for title in ("当前会话与设备操作", "断开连接", "重新连接 (Ctrl+Shift+R)"):
+        assert title in bottom_toolbar
+
+    assert 'class="split-session-tab"' not in split
+    assert 'class="split-pane-session-title"' in split
+    assert ':data-session-id="activeSessionFor(pane)!.id"' in split
+    assert ".split-pane-session-title" in styles
+    assert "grid-template-rows: minmax(0, 1fr) 34px" in styles
+    assert ':data-session-kind="session.kind"' in terminal
+    assert ':aria-label="`${session.title} 会话控制`"' in terminal
+    assert 'class="terminal-toolbar"' not in terminal
+    assert ".terminal-bottom-toolbar" in styles
+    assert "bottom: 34px" in styles
+    assert '<template v-if="!splitDirection && focusedPane === pane" #bottom-leading>' in split
+    assert '<TerminalQuickToolbar v-if="splitDirection" />' in split
+    assert "<TerminalQuickToolbar />" in split
+    assert '<slot name="bottom-leading"></slot>' in terminal
+    assert "grid-template-rows: minmax(0, 1fr)" in styles
+    assert ".terminal-workspace-stack.split" in styles
+    assert ".terminal-bottom-leading" in styles
+    assert ".device-session-tabs" in styles
+    assert ".session-child-tabs" in styles
 
 
 def test_electron_profile_list_keeps_legacy_context_menu_actions() -> None:
@@ -851,6 +1008,70 @@ def test_electron_device_detail_shares_left_navigator() -> None:
     assert ".navigator-detail-content" in styles
     assert "deviceDetailSharesLeftNavigator" in main
     assert "navigatorDetailCollapsePersists" in main
+
+
+def test_electron_device_navigator_width_is_resizable_and_persistent() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "device-tui.desktop-v2.navigator-width" in app
+    assert 'data-testid="navigator-resize-handle"' in app
+    assert 'role="separator"' in app
+    assert 'aria-orientation="vertical"' in app
+    assert ':aria-valuenow="effectiveNavigatorWidth"' in app
+    assert '@pointerdown="startNavigatorResize"' in app
+    assert '@keydown="handleNavigatorResizeKeydown"' in app
+    assert '@dblclick="resetNavigatorWidth"' in app
+    assert "var(--navigator-width" in styles
+    assert ".navigator-resize-handle" in styles
+    assert ".navigator-resize-handle:focus-visible" in styles
+    assert "navigatorWidthResizePersists" in main
+    assert "navigatorWidthRestored" in main
+
+
+def test_electron_session_manager_uses_a_non_overlay_grid_column() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    responsive_styles = styles[styles.index("@media (max-width: 1680px)"):styles.index("@media (max-width: 900px)")]
+    assert ".app-shell.has-session-sidebar" in responsive_styles
+    assert "minmax(460px, 1fr) auto" in responsive_styles
+    assert "minmax(440px, 1fr) auto" in responsive_styles
+    assert "minmax(420px, 1fr) auto" in responsive_styles
+    assert "position: fixed" not in responsive_styles
+    assert "session-sidebar-collapsed" in responsive_styles
+    assert "const showSessionSidebar = computed" in app
+    assert "const sideManagerReserve = showSessionSidebar.value" in app
+    assert "sessionManagerDoesNotOverlayTerminal" in main
+
+
+def test_electron_device_controls_use_compact_progressive_disclosure() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert 'class="device-connection-panel"' in app
+    assert "管理地址" in app
+    assert "IP、端口、账号、密码均可修改" in app
+    assert "openCustomDeviceSession(workspace.selectedDevice, 'ssh')" in app
+    assert "openCustomDeviceSession(workspace.selectedDevice, 'telnet')" in app
+    assert "openCustomDeviceSession(workspace.selectedDevice, 'serial')" in app
+    assert 'class="connection-actions connection-menu"' not in app
+    assert 'class="primary-button device-lease-button"' in app
+    assert 'class="device-more-details"' in app
+    assert "更多设备信息" in app
+    assert ".device-connection-panel" in styles
+    assert "一键连接 SSH" in app
+    assert "一键连接 Telnet" in app
+    assert "一键连接串口" in app
+    assert 'aria-label="编辑 SSH 连接"' in app
+    assert ".device-protocol-action" in styles
+    assert ".device-protocol-connect" in styles
+    assert ".device-protocol-edit" in styles
+    assert ".device-lease-button" in styles
+    assert ".device-more-details" in styles
+    assert "min-height: 50px" in styles
 
 
 def test_electron_command_dispatch_keeps_legacy_empty_target_feedback() -> None:

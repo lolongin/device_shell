@@ -29,6 +29,7 @@ from ..application import (
     CommandGroup,
     ConnectionProfile,
     ConnectionProfileDraft,
+    ConnectionTarget,
     DesktopApplication,
     AiApplicationService,
     KeyringSecretStore,
@@ -38,6 +39,7 @@ from ..application import (
     MemoryTransferStore,
     MemorySecretStore,
     SecretStore,
+    SessionCredential,
     ProfileEndpoint,
     redact_command_secrets,
     build_desktop_application,
@@ -56,6 +58,7 @@ from .models import (
     ConnectionProfileGroupListResponse,
     ProfileCredentialUpdateRequest,
     OneTimeCredentialSessionRequest,
+    DirectCredentialSessionRequest,
     CommandGroupModel,
     CommandHistoryModel,
     CommandWorkspaceResponse,
@@ -992,6 +995,36 @@ def create_app(
             request.profile_id,
             request.kind,
             request.password,
+        )
+        session = await desktop.sessions.create_target(
+            target,
+            request.title,
+            (request.cols, request.rows),
+        )
+        return _session_summary(session)
+
+    @app.post(
+        "/api/v1/sessions/direct",
+        response_model=SessionSummary,
+        dependencies=[Depends(authorize)],
+    )
+    async def create_direct_credential_session(
+        request: DirectCredentialSessionRequest,
+    ) -> SessionSummary:
+        if request.password:
+            credentials = (SessionCredential(request.username.strip(), request.password),)
+        else:
+            base_target = desktop.credentials.resolve(request.device_id, request.kind)
+            credentials = tuple(
+                SessionCredential(request.username.strip() or credential.username, credential.password)
+                for credential in base_target.credentials
+            )
+        target = ConnectionTarget(
+            device_id=request.device_id,
+            protocol=request.kind,
+            host=request.host.strip(),
+            port=request.port,
+            credentials=credentials,
         )
         session = await desktop.sessions.create_target(
             target,

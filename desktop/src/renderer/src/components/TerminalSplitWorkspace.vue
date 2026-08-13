@@ -17,6 +17,7 @@ interface StoredSplitLayout {
 }
 
 const props = defineProps<{
+  deviceId: string
   sessions: SessionSummary[]
   activeSessionId: string
 }>()
@@ -24,6 +25,9 @@ const emit = defineEmits<{
   activate: [sessionId: string]
   status: [sessionId: string, status: string, sequence: number]
   automation: [sessionId: string]
+  transfer: [sessionId: string]
+  upgrade: [sessionId: string]
+  context: [sessionId: string, event: MouseEvent]
   splitChange: [active: boolean]
 }>()
 
@@ -39,6 +43,10 @@ const splitContainer = ref<HTMLElement | null>(null)
 const focusedPane = ref<PaneId>('primary')
 const dropDirection = ref<SplitDirection | null>(null)
 const dropPane = ref<PaneId>('secondary')
+
+function splitStorageKey(): string {
+  return `${STORAGE_KEY}.${props.deviceId}`
+}
 
 const primarySessions = computed(() => sessionsForPane('primary'))
 const secondarySessions = computed(() => sessionsForPane('secondary'))
@@ -67,7 +75,7 @@ const splitResizeStyle = computed(() => {
 
 function readStoredLayout(): StoredSplitLayout {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') as Partial<StoredSplitLayout>
+    const parsed = JSON.parse(localStorage.getItem(splitStorageKey()) || '{}') as Partial<StoredSplitLayout>
     const direction = ['left', 'right', 'top', 'bottom'].includes(String(parsed.direction))
       ? parsed.direction as SplitDirection
       : null
@@ -166,14 +174,6 @@ function handleSplitResizeKeydown(event: KeyboardEvent): void {
   splitRatio.value = Math.max(20, Math.min(80, splitRatio.value + (increase ? 5 : -5)))
 }
 
-function startLocalDrag(event: DragEvent, session: SessionSummary): void {
-  if (!event.dataTransfer) return
-  event.dataTransfer.effectAllowed = 'move'
-  event.dataTransfer.setData(SESSION_DRAG_TYPE, session.id)
-  event.dataTransfer.setData('text/plain', session.id)
-  emit('activate', session.id)
-}
-
 function directionForEvent(event: DragEvent): SplitDirection {
   const target = event.currentTarget as HTMLElement
   const rect = target.getBoundingClientRect()
@@ -252,7 +252,7 @@ watch(
 watch(
   [splitDirection, assignments, primaryActiveId, secondaryActiveId, splitRatio],
   () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    localStorage.setItem(splitStorageKey(), JSON.stringify({
       direction: splitDirection.value,
       assignments: assignments.value,
       primaryActiveId: primaryActiveId.value,
@@ -270,8 +270,7 @@ defineExpose({ splitSession, resetSplit })
 </script>
 
 <template>
-  <div class="terminal-workspace-stack">
-    <TerminalQuickToolbar />
+  <div class="terminal-workspace-stack" :class="{ split: Boolean(splitDirection) }">
     <div
       ref="splitContainer"
       class="terminal-split-layout"
@@ -297,19 +296,12 @@ defineExpose({ splitSession, resetSplit })
           <Rows2 v-else :size="13" />
           {{ pane === 'primary' ? '主窗格' : '分屏' }}
         </span>
-        <button
-          v-for="session in (pane === 'primary' ? primarySessions : secondarySessions)"
-          :key="session.id"
-          class="split-session-tab"
-          :class="{ active: activeSessionFor(pane)?.id === session.id }"
-          type="button"
-          draggable="true"
-          :data-session-id="session.id"
-          :title="session.title"
-          :aria-pressed="activeSessionFor(pane)?.id === session.id"
-          @click="activateSession(session.id, pane)"
-          @dragstart="startLocalDrag($event, session)"
-        >{{ session.title }}</button>
+        <strong
+          v-if="activeSessionFor(pane)"
+          class="split-pane-session-title"
+          :data-session-id="activeSessionFor(pane)!.id"
+          :title="activeSessionFor(pane)!.title"
+        >{{ activeSessionFor(pane)!.title }}</strong>
         <button
           v-if="pane === 'secondary'"
           class="split-close-button"
@@ -326,7 +318,14 @@ defineExpose({ splitSession, resetSplit })
         :session="activeSessionFor(pane)!"
         @status="(sessionId, status, sequence) => emit('status', sessionId, status, sequence)"
         @automation="emit('automation', $event)"
-      />
+        @transfer="emit('transfer', $event)"
+        @upgrade="emit('upgrade', $event)"
+        @context="(sessionId, event) => emit('context', sessionId, event)"
+      >
+        <template v-if="!splitDirection && focusedPane === pane" #bottom-leading>
+          <TerminalQuickToolbar />
+        </template>
+      </TerminalPane>
       <div v-else class="split-empty-pane">
         <Columns2 :size="24" />
         <strong>空窗格</strong>
@@ -356,5 +355,6 @@ defineExpose({ splitSession, resetSplit })
       @keydown="handleSplitResizeKeydown"
       ></div>
     </div>
+    <TerminalQuickToolbar v-if="splitDirection" />
   </div>
 </template>

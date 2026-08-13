@@ -14,7 +14,7 @@ watch(() => props.open, async (open) => {
 
 const shortcuts = [
   ['↑ / ↓ / Home / End', '浏览设备列表'],
-  ['Enter / Space', '从选中设备打开模拟会话'],
+  ['Enter / Space', '打开选中设备的默认连接'],
   ['ContextMenu / Shift+F10', '打开当前区域上下文菜单'],
   ['Ctrl+F', '搜索当前聚焦的终端或命令记录'],
   ['Ctrl++ / Ctrl+-', '放大或缩小终端字体'],

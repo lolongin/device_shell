@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
     class="upgrade-backdrop"
     @mousedown.self="workspace.upgradePanelOpen = false"
   >
-    <aside class="upgrade-workspace" role="dialog" aria-modal="true" aria-labelledby="upgrade-title">
+    <aside class="upgrade-workspace" role="region" aria-labelledby="upgrade-title">
       <header class="upgrade-header">
         <div class="upgrade-heading">
           <span class="upgrade-icon"><Box :size="18" /></span>

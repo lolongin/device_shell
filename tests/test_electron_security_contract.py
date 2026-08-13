@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.desktop_backend.models import (
+    DirectCredentialSessionRequest,
     OneTimeCredentialSessionRequest,
     ProfileCredentialUpdateRequest,
 )
@@ -70,6 +71,36 @@ def test_sensitive_backend_models_hide_password_from_repr() -> None:
         kind="ssh",
         password="one-time-secret",
     )
+    direct = DirectCredentialSessionRequest(
+        device_id="DEVICE-1",
+        kind="ssh",
+        host="127.0.0.1",
+        port=22,
+        username="operator",
+        password="direct-one-time-secret",
+    )
 
     assert "vault-secret" not in repr(vault)
     assert "one-time-secret" not in repr(one_time)
+    assert "direct-one-time-secret" not in repr(direct)
+
+
+def test_custom_device_connection_uses_isolated_credential_bridge() -> None:
+    electron_main = (ROOT / "desktop" / "src" / "main" / "index.ts").read_text(encoding="utf-8")
+    preload = (ROOT / "desktop" / "src" / "preload" / "index.ts").read_text(encoding="utf-8")
+    workspace_store = (
+        ROOT / "desktop" / "src" / "renderer" / "src" / "stores" / "workspace.ts"
+    ).read_text(encoding="utf-8")
+    credential_dialog = (
+        ROOT / "desktop" / "resources" / "credential-dialog.html"
+    ).read_text(encoding="utf-8")
+
+    assert "credential:open-device-session" in electron_main
+    assert "request.path === '/api/v1/sessions/direct'" in electron_main
+    assert "ipcRenderer.invoke('credential:open-device-session', request)" in preload
+    assert "window.desktopApi.openDeviceSession" in workspace_store
+    assert 'type="password"' not in workspace_store
+    assert 'id="host"' in credential_dialog
+    assert 'id="port"' in credential_dialog
+    assert 'id="username"' in credential_dialog
+    assert 'id="password" type="password"' in credential_dialog

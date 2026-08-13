@@ -377,6 +377,56 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const openSimulatedSession = (): Promise<void> => openSession('simulated')
 
+  function splitEndpoint(endpoint: string | null, defaultPort: number): { host: string; port: number } {
+    const value = String(endpoint || '').trim()
+    if (!value) return { host: '', port: defaultPort }
+    if (value.startsWith('[')) {
+      const end = value.indexOf(']')
+      const host = end > 0 ? value.slice(1, end) : value
+      const port = end > 0 && value[end + 1] === ':' ? Number(value.slice(end + 2)) : defaultPort
+      return { host, port: Number.isInteger(port) && port > 0 ? port : defaultPort }
+    }
+    const separator = value.lastIndexOf(':')
+    const parsedPort = separator > 0 ? Number(value.slice(separator + 1)) : defaultPort
+    return {
+      host: separator > 0 ? value.slice(0, separator) : value,
+      port: Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : defaultPort
+    }
+  }
+
+  async function openCustomDeviceSession(
+    device: DeviceSummary,
+    kind: Exclude<SessionKind, 'simulated'>
+  ): Promise<void> {
+    const endpoint = splitEndpoint(
+      kind === 'ssh'
+        ? device.ssh_endpoint
+        : kind === 'telnet'
+          ? device.telnet_endpoint
+          : device.serial_endpoint,
+      kind === 'ssh' ? 22 : 23
+    )
+    openingKind.value = kind
+    error.value = ''
+    try {
+      const session = await window.desktopApi.openDeviceSession({
+        deviceId: device.id,
+        deviceName: device.name,
+        protocol: kind,
+        host: endpoint.host,
+        port: endpoint.port,
+        username: kind === 'ssh' ? 'root' : ''
+      })
+      if (!session) return
+      upsertSession(session)
+      activeSessionId.value = session.id
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      openingKind.value = ''
+    }
+  }
+
   async function openProfileSession(
     profile: ConnectionProfileSummary,
     kind: Exclude<SessionKind, 'simulated'> = profile.preferred_protocol
@@ -911,33 +961,40 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function closeSession(sessionId: string): Promise<void> {
+    const closingDeviceId = sessions.value.find((session) => session.id === sessionId)?.device_id || ''
     await desktopApi.closeSession(sessionId)
     sessions.value = sessions.value.filter((session) => session.id !== sessionId)
     if (activeSessionId.value === sessionId) {
-      activeSessionId.value = sessions.value[0]?.id || ''
+      activeSessionId.value = sessions.value.find(
+        (session) => session.device_id === closingDeviceId
+      )?.id || sessions.value[0]?.id || ''
     }
   }
 
   async function closeSessionsRelative(
     referenceSessionId: string,
-    mode: 'current' | 'left' | 'right' | 'others' | 'all'
+    mode: 'current' | 'left' | 'right' | 'others' | 'all',
+    deviceId = ''
   ): Promise<void> {
     const snapshot = [...sessions.value]
-    const referenceIndex = snapshot.findIndex((session) => session.id === referenceSessionId)
+    const scoped = deviceId
+      ? snapshot.filter((session) => session.device_id === deviceId)
+      : snapshot
+    const referenceIndex = scoped.findIndex((session) => session.id === referenceSessionId)
     if (referenceIndex < 0 && mode !== 'all') {
       notice.value = '没有符合条件的会话可关闭。'
       return
     }
     const targets =
       mode === 'current'
-        ? snapshot.filter((session) => session.id === referenceSessionId)
+        ? scoped.filter((session) => session.id === referenceSessionId)
         : mode === 'left'
-          ? snapshot.slice(0, referenceIndex)
+          ? scoped.slice(0, referenceIndex)
           : mode === 'right'
-            ? snapshot.slice(referenceIndex + 1)
+            ? scoped.slice(referenceIndex + 1)
             : mode === 'others'
-              ? snapshot.filter((session) => session.id !== referenceSessionId)
-              : snapshot
+              ? scoped.filter((session) => session.id !== referenceSessionId)
+              : scoped
     if (!targets.length) {
       notice.value = '没有符合条件的会话可关闭。'
       return
@@ -951,6 +1008,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!sessions.value.some((session) => session.id === activeSessionId.value)) {
       activeSessionId.value =
         sessions.value.find((session) => session.id === referenceSessionId)?.id
+        || sessions.value.find((session) => session.device_id === deviceId)?.id
         || sessions.value[0]?.id
         || ''
     }
@@ -1151,6 +1209,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     initialize,
     startApplicationEvents,
     openSimulatedSession,
+    openCustomDeviceSession,
     openSession,
     openProfileSession,
     manageProfileCredential,

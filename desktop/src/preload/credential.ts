@@ -3,6 +3,9 @@ import { contextBridge, ipcRenderer } from 'electron'
 interface CredentialSubmission {
   password: string
   save: boolean
+  host?: string
+  port?: number
+  username?: string
 }
 
 const credentialDialogApi = {

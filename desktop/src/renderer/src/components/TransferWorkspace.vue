@@ -72,6 +72,7 @@ watch(
     void workspace.refreshOperations()
     pollingTimer = setInterval(() => {
       void workspace.refreshOperations()
+      void workspace.loadTransferServiceLog()
     }, 1_000)
   },
   { immediate: true }
@@ -151,7 +152,7 @@ onBeforeUnmount(() => {
     class="transfer-backdrop"
     @mousedown.self="workspace.transferPanelOpen = false"
   >
-    <aside class="transfer-workspace" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
+    <aside class="transfer-workspace" role="region" aria-labelledby="transfer-title">
       <header class="transfer-header">
         <div class="transfer-heading">
           <span class="transfer-icon"><FileUp :size="18" /></span>

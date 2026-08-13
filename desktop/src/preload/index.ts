@@ -23,6 +23,15 @@ interface ProfileCredentialRequest {
   hasPassword: boolean
 }
 
+interface DeviceConnectionRequest {
+  deviceId: string
+  deviceName: string
+  protocol: 'ssh' | 'telnet' | 'serial'
+  host: string
+  port: number
+  username: string
+}
+
 interface SessionLogExportRequest {
   suggestedName: string
   content: string
@@ -34,6 +43,8 @@ const desktopApi = {
     ipcRenderer.invoke('backend:request', request),
   openProfileSession: (request: ProfileCredentialRequest): Promise<unknown | null> =>
     ipcRenderer.invoke('credential:open-profile-session', request),
+  openDeviceSession: (request: DeviceConnectionRequest): Promise<unknown | null> =>
+    ipcRenderer.invoke('credential:open-device-session', request),
   manageProfileCredential: (request: ProfileCredentialRequest): Promise<boolean> =>
     ipcRenderer.invoke('credential:manage-profile', request),
   chooseTransferRoot: (): Promise<string> =>
