@@ -859,6 +859,55 @@ def test_automation_rule_crud_manual_trigger_and_terminal_dispatch() -> None:
     assert removed.status_code == 204
 
 
+def test_automation_preview_expands_expressions_without_terminal_writes() -> None:
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    with _client() as client:
+        session = client.post(
+            "/api/v1/sessions",
+            headers=headers,
+            json={"device_id": "SIM-TERMINAL", "kind": "simulated"},
+        ).json()
+        preview = client.post(
+            "/api/v1/automation/preview",
+            headers=headers,
+            json={
+                "session_id": session["id"],
+                "sample_output": "Port 2002 ready",
+                "rule": {
+                    "name": "Preview ports",
+                    "pattern": "",
+                    "response": "",
+                    "trigger_type": "manual",
+                    "actions": [
+                        {
+                            "kind": "set",
+                            "variable_name": "base",
+                            "variable_value": "2000",
+                        },
+                        {
+                            "kind": "loop",
+                            "repeat_count": 2,
+                            "actions": [{
+                                "kind": "send",
+                                "text": "connect {{base + loop.index0}}",
+                                "append_enter": True,
+                            }],
+                        },
+                    ],
+                },
+            },
+        )
+
+    assert preview.status_code == 200
+    payload = preview.json()
+    assert [step["title"] for step in payload["steps"] if step["kind"] == "send"] == [
+        "connect 2000",
+        "connect 2001",
+    ]
+    assert payload["variables"] == {"base": 2000}
+    assert payload["sample_output"] == "Port 2002 ready"
+
+
 def test_automation_routes_require_authorization_and_reject_plaintext_secrets() -> None:
     unsafe_secret = "do-not-persist-this"
     with _client() as client:

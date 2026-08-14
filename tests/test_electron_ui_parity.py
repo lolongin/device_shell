@@ -217,6 +217,22 @@ def test_electron_advanced_automation_editor_covers_python_action_model() -> Non
         assert field in types
 
     assert "AutomationActionList" in actions
+    assert 'data-action-kind="set"' in actions
+    assert "变量名" in actions
+    assert "变量值" in actions
+    assert "{{loop.index}}" in actions
+    assert "variable_operation" in workspace
+    assert "variable_name" in types
+    assert "const expandedIndexes" in actions
+    assert "expandedIndexes.value = new Set([next.length - 1])" in actions
+    assert ": new Set([index])" in actions
+    assert "function actionSummary" in actions
+    assert "function actionMeta" in actions
+    assert ':aria-expanded="isExpanded(index)"' in actions
+    assert 'v-show="isExpanded(index)"' in actions
+    assert "点击动作展开参数" in actions
+    assert ".automation-action-summary" in styles
+    assert ".automation-action-details" in styles
     assert ".automation-step-editor" in styles
     assert ".automation-action-card.kind-loop" in styles
     assert ".automation-action-card.kind-condition" in styles
@@ -224,6 +240,19 @@ def test_electron_advanced_automation_editor_covers_python_action_model() -> Non
     smoke = MAIN_TS.read_text(encoding="utf-8")
     assert "advancedAutomationStepEditorPersistsAndRuns" in smoke
     assert "advancedAutomationActionEditorPersistsNestedFlow" in smoke
+    assert "automationModeSwitchPreservesDraftWithoutDialog" in smoke
+    assert "automationLivePreviewTracksDraftWithoutDispatch" in smoke
+    assert 'data-testid="automation-preview"' in workspace
+    assert 'data-testid="automation-live-preview"' in workspace
+    assert "schedulePreview" in workspace
+    assert "previewGeneration" in workspace
+    assert "desktopApi.previewAutomationRule" in workspace
+    assert "automation-preview-panel" not in workspace
+    assert ".automation-live-preview" in styles
+    assert ".automation-preview-steps" in styles
+    assert "切换编辑模式会将现有高级结构转换" not in workspace
+    assert "cachedSteps" in workspace
+    assert "cachedActions" in workspace
 
 
 def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:

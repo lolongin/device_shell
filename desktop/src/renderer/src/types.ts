@@ -134,7 +134,7 @@ export interface AutoResponseStep {
 }
 
 export interface AutoResponseAction {
-  kind: 'send' | 'wait' | 'loop' | 'exit' | 'condition'
+  kind: 'send' | 'wait' | 'loop' | 'exit' | 'condition' | 'set'
   text: string
   target: string
   delay_ms: number
@@ -144,7 +144,10 @@ export interface AutoResponseAction {
   exit_pattern: string
   exit_scope: 'loop' | 'rule'
   condition_pattern: string
-  condition_match_type: 'contains' | 'regex'
+  condition_match_type: 'contains' | 'regex' | 'expression'
+  variable_name: string
+  variable_value: string
+  variable_operation: 'set' | 'add' | 'subtract' | 'multiply'
   actions?: AutoResponseAction[]
 }
 
@@ -221,6 +224,28 @@ export interface AutomationWorkspaceResponse {
   sessions: AutomationSessionStatus[]
   quick_send_buttons: QuickSendButtonRecord[]
   activity: AutomationActivityRecord[]
+}
+
+export interface AutomationPreviewStep {
+  path: string
+  kind: 'send' | 'wait' | 'loop' | 'exit' | 'condition' | 'set'
+  title: string
+  detail: string
+  variables: Record<string, unknown>
+  text?: string
+  target?: string
+  append_enter?: boolean
+  matched?: boolean
+  operation?: string
+}
+
+export interface AutomationPreviewResponse {
+  api_version: number
+  steps: AutomationPreviewStep[]
+  variables: Record<string, unknown>
+  warnings: string[]
+  truncated: boolean
+  sample_output: string
 }
 
 export interface AutomationDispatchResponse {

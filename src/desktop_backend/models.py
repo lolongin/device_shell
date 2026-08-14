@@ -362,6 +362,24 @@ class AutomationRuleUpsertRequest(BaseModel):
     rule: dict[str, object]
 
 
+class AutomationPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule: dict[str, object]
+    session_id: str = Field(default="", max_length=160)
+    sample_output: str = Field(default="", max_length=100_000)
+    max_steps: int = Field(default=200, ge=1, le=500)
+
+
+class AutomationPreviewResponse(BaseModel):
+    api_version: int = API_VERSION
+    steps: list[dict[str, object]]
+    variables: dict[str, object]
+    warnings: list[str]
+    truncated: bool
+    sample_output: str
+
+
 class AutomationRuleEnabledRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

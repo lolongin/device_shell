@@ -11,6 +11,7 @@ import type {
   AutoResponseRulePayload,
   QuickSendButtonPayload,
   AutomationDispatchResponse,
+  AutomationPreviewResponse,
   AutomationWorkspaceResponse,
   TransferSettings,
   TransferServiceLogResponse,
@@ -153,6 +154,20 @@ export const desktopApi = {
     }),
   automationWorkspace: (): Promise<AutomationWorkspaceResponse> =>
     request('/api/v1/automation/workspace'),
+  previewAutomationRule: (
+    rule: AutoResponseRulePayload,
+    sessionId = '',
+    sampleOutput = ''
+  ): Promise<AutomationPreviewResponse> =>
+    request('/api/v1/automation/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        rule,
+        session_id: sessionId,
+        sample_output: sampleOutput,
+        max_steps: 200
+      })
+    }),
   createAutomationRule: (
     rule: AutoResponseRulePayload
   ): Promise<AutomationWorkspaceResponse> =>

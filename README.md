@@ -115,7 +115,13 @@ and terminal WebSockets use short-lived one-time tickets. The Electron workspace
 also includes persisted command tabs/history and a Python-owned terminal automation
 editor with output matching, manual/connection/delayed triggers, multi-step and
 action-flow execution, target routing, loops, cancellation, and manual-input
-precedence. Credential-like legacy automation responses are moved to the operating-
+precedence. Action flows support scoped variables, controlled assignment/add/subtract/
+multiply operations, safe expressions such as `{{base + loop.index0 * step}}`,
+array/object access, read-only session/device context, and templates such as
+`{{counter}}`, `{{loop.index}}`, `{{loop.count}}`, `{{loop.first}}`, and
+`{{loop.last}}`. A backend dry-run preview expands actions and variable changes with
+optional simulated terminal output without waiting or writing to a terminal.
+Credential-like legacy automation responses are moved to the operating-
 system vault; echoed values are redacted before WebSocket replay and logging.
 The managed file-transfer workspace starts backend-owned FTP/SFTP services, browses
 a user-selected shared directory, runs PC-to-device or device-to-PC terminal plans,

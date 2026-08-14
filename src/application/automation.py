@@ -27,12 +27,15 @@ from ..auto_response import (
 from ..terminal_execution import ANSI_ESCAPE_RE
 from .errors import ResourceNotFoundError, UnsupportedOperationError
 from .events import EventBus
+from .automation_expressions import SafeAutomationExpression, template_expression_pattern
 from .secrets import SecretStore
 from .sessions import SessionRecord, SessionService
 
 
 SECRET_MASK = "••••••"
 _SECRET_REFERENCE = re.compile(r"\{\{secret:([^{}]+)}}")
+_TEMPLATE_EXPRESSION = template_expression_pattern()
+_VARIABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _SENSITIVE_PROMPT = re.compile(
     r"(?i)(password|passwd|passphrase|secret|community|token|密码|口令|密钥)"
 )
@@ -190,6 +193,7 @@ class AutomationService:
         rule_id = f"AUTOMATION-{uuid4().hex[:12].upper()}"
         candidate = deepcopy(rule)
         self._validate_regex_patterns(candidate)
+        self._validate_action_variables(candidate.actions)
         self._validate_plaintext_secrets(candidate)
         record = AutomationRuleRecord(rule_id, candidate, now, now)
         self._store.upsert_automation_rule(record)
@@ -205,6 +209,7 @@ class AutomationService:
         candidate = deepcopy(rule)
         self._restore_masked_secrets(candidate, current.rule)
         self._validate_regex_patterns(candidate)
+        self._validate_action_variables(candidate.actions)
         self._validate_plaintext_secrets(candidate)
         updated = replace(current, rule=candidate, updated_at=self._now())
         self.cancel_rule(rule_id)
@@ -285,6 +290,211 @@ class AutomationService:
 
     def activities(self, limit: int = 100) -> list[AutomationActivityRecord]:
         return list(self._activities)[: max(0, min(300, int(limit)))]
+
+    def preview_rule(
+        self,
+        rule: AutoResponseRule,
+        *,
+        session_id: str = "",
+        sample_output: str = "",
+        max_steps: int = 200,
+    ) -> dict[str, object]:
+        """Expand a rule without sleeping, writing to sessions, or resolving secrets."""
+
+        candidate = deepcopy(rule)
+        self._validate_regex_patterns(candidate)
+        self._validate_action_variables(candidate.actions)
+        limit = max(1, min(500, int(max_steps)))
+        variables = self._initial_variables(session_id, sample_output)
+        steps: list[dict[str, object]] = []
+        warnings: list[str] = []
+        truncated = False
+
+        def public_variables() -> dict[str, object]:
+            return {
+                key: deepcopy(value)
+                for key, value in variables.items()
+                if key not in {"session", "device", "trigger", "output"}
+            }
+
+        def append_step(
+            path: str,
+            kind: str,
+            title: str,
+            detail: str = "",
+            **extra: object,
+        ) -> bool:
+            nonlocal truncated
+            if len(steps) >= limit:
+                truncated = True
+                if "预览步骤过多，结果已截断。" not in warnings:
+                    warnings.append("预览步骤过多，结果已截断。")
+                return False
+            steps.append({
+                "path": path,
+                "kind": kind,
+                "title": title,
+                "detail": detail,
+                "variables": public_variables(),
+                **extra,
+            })
+            return True
+
+        def preview_actions(
+            actions: list[AutoResponseAction],
+            prefix: str = "",
+        ) -> str | None:
+            nonlocal truncated
+            for index, action in enumerate(actions, start=1):
+                if truncated:
+                    return None
+                path = f"{prefix}.{index}" if prefix else str(index)
+                if action.kind == "wait":
+                    append_step(path, "wait", f"等待 {max(0, action.delay_ms)} ms")
+                    continue
+                if action.kind == "set":
+                    self._set_variable(action, variables)
+                    value = variables.get(action.variable_name.strip(), "")
+                    append_step(
+                        path,
+                        "set",
+                        f"{action.variable_name.strip()} = {SafeAutomationExpression.format_value(value)}",
+                        operation=action.variable_operation,
+                    )
+                    continue
+                if action.kind == "send":
+                    rendered = self._render_variables(action.text, variables)
+                    rendered = _SECRET_REFERENCE.sub(SECRET_MASK, rendered)
+                    append_step(
+                        path,
+                        "send",
+                        rendered or "（空发送）",
+                        f"目标：{action.target}"
+                        + (f" · 延迟 {action.delay_ms} ms" if action.delay_ms else "")
+                        + (" · 追加 Enter" if action.append_enter else ""),
+                        text=rendered,
+                        target=action.target,
+                        append_enter=action.append_enter,
+                    )
+                    continue
+                if action.kind == "exit":
+                    pattern = self._render_variables(action.exit_pattern, variables)
+                    matched = bool(pattern) and self._pattern_matches(
+                        candidate,
+                        pattern,
+                        sample_output,
+                    )
+                    append_step(
+                        path,
+                        "exit",
+                        "退出条件已命中" if matched else "退出条件未命中",
+                        pattern,
+                        matched=matched,
+                    )
+                    if matched:
+                        return action.exit_scope
+                    continue
+                if action.kind == "condition":
+                    if action.condition_match_type == "expression":
+                        matched = bool(SafeAutomationExpression.evaluate(
+                            action.condition_pattern,
+                            variables,
+                        ))
+                        rendered_pattern = action.condition_pattern
+                    else:
+                        rendered_pattern = self._render_variables(
+                            action.condition_pattern,
+                            variables,
+                        )
+                        matched = self._condition_matches(
+                            candidate,
+                            action,
+                            sample_output,
+                            rendered_pattern,
+                        )
+                    append_step(
+                        path,
+                        "condition",
+                        "条件成立" if matched else "条件不成立",
+                        rendered_pattern,
+                        matched=matched,
+                    )
+                    if matched:
+                        scope = preview_actions(action.actions, path)
+                        if scope is not None:
+                            return scope
+                    continue
+                if action.kind == "loop":
+                    repeat_count = max(0, action.repeat_count)
+                    preview_count = min(repeat_count, 20) if repeat_count else 3
+                    if repeat_count == 0:
+                        warnings.append("持续循环仅预览前 3 轮。")
+                    elif repeat_count > preview_count:
+                        warnings.append(f"循环 {repeat_count} 次，仅预览前 {preview_count} 轮。")
+                    append_step(
+                        path,
+                        "loop",
+                        "持续循环" if repeat_count == 0 else f"循环 {repeat_count} 次",
+                        f"预览 {preview_count} 轮",
+                    )
+                    had_previous_loop = "loop" in variables
+                    previous_loop = variables.get("loop")
+                    try:
+                        for iteration in range(preview_count):
+                            variables["loop"] = {
+                                "index": iteration + 1,
+                                "index0": iteration,
+                                "count": repeat_count,
+                                "first": iteration == 0,
+                                "last": repeat_count > 0 and iteration + 1 == repeat_count,
+                            }
+                            scope = preview_actions(
+                                action.actions,
+                                f"{path}[{iteration + 1}]",
+                            )
+                            if scope == "rule":
+                                return "rule"
+                            if scope == "loop" or truncated:
+                                break
+                    finally:
+                        if had_previous_loop:
+                            variables["loop"] = previous_loop
+                        else:
+                            variables.pop("loop", None)
+            return None
+
+        if candidate.actions:
+            preview_actions(candidate.actions)
+        elif candidate.steps:
+            for step_index, step in enumerate(candidate.steps, start=1):
+                if step.pattern:
+                    append_step(
+                        str(step_index),
+                        "condition",
+                        "等待终端输出",
+                        step.pattern,
+                    )
+                for response_index, response in enumerate(step.response_texts, start=1):
+                    rendered = self._render_variables(response, variables)
+                    append_step(
+                        f"{step_index}.{response_index}",
+                        "send",
+                        _SECRET_REFERENCE.sub(SECRET_MASK, rendered),
+                    )
+        else:
+            rendered = self._render_variables(
+                candidate.response_text or candidate.response,
+                variables,
+            )
+            append_step("1", "send", _SECRET_REFERENCE.sub(SECRET_MASK, rendered))
+
+        return {
+            "steps": steps,
+            "variables": public_variables(),
+            "warnings": warnings,
+            "truncated": truncated,
+            "sample_output": sample_output,
+        }
 
     def list_quick_send_buttons(self) -> list[QuickSendButtonRecord]:
         raw = self._store.get_meta(self.QUICK_SEND_META_KEY)
@@ -727,6 +937,7 @@ class AutomationService:
                 rule,
                 rule.actions,
                 scan_text,
+                self._initial_variables(session_id, scan_text),
             )
         else:
             completed = await self._run_steps(
@@ -835,6 +1046,7 @@ class AutomationService:
         rule: AutoResponseRule,
         actions: list[AutoResponseAction],
         scan_text: str,
+        variables: dict[str, object],
     ) -> str | None:
         for action in actions:
             if action.kind == "wait":
@@ -844,16 +1056,22 @@ class AutomationService:
                 current = self._visible_terminal_text(
                     self._runtime(session_id).buffer
                 ) or scan_text
-                if action.exit_pattern and self._pattern_matches(
-                    rule, action.exit_pattern, current
+                self._update_output_variables(variables, current)
+                exit_pattern = self._render_variables(action.exit_pattern, variables)
+                if exit_pattern and self._pattern_matches(
+                    rule, exit_pattern, current
                 ):
                     return action.exit_scope
+                continue
+            if action.kind == "set":
+                self._set_variable(action, variables)
                 continue
             if action.kind == "send":
                 await self._sleep(action.delay_ms)
                 target_id = self._require_target(session_id, action.target)
-                protected = _SECRET_REFERENCE.search(action.text) is not None
-                text = self._resolve_secret_text(action.text)
+                rendered = self._render_variables(action.text, variables)
+                protected = _SECRET_REFERENCE.search(rendered) is not None
+                text = self._resolve_secret_text(rendered)
                 payload = decode_response_text(text, append_enter=action.append_enter)
                 if payload:
                     if protected:
@@ -865,35 +1083,72 @@ class AutomationService:
                 current = self._visible_terminal_text(
                     self._runtime(session_id).buffer
                 ) or scan_text
-                if self._condition_matches(rule, action, current):
+                self._update_output_variables(variables, current)
+                if action.condition_match_type == "expression":
+                    condition_matches = bool(SafeAutomationExpression.evaluate(
+                        action.condition_pattern,
+                        variables,
+                    ))
+                else:
+                    condition_pattern = self._render_variables(
+                        action.condition_pattern,
+                        variables,
+                    )
+                    condition_matches = self._condition_matches(
+                        rule,
+                        action,
+                        current,
+                        condition_pattern,
+                    )
+                if condition_matches:
                     scope = await self._run_actions(
                         session_id,
                         rule_id,
                         rule,
                         action.actions,
                         current,
+                        variables,
                     )
                     if scope is not None:
                         return scope
                 continue
             if action.kind == "loop":
                 iteration = 0
-                while action.repeat_count == 0 or iteration < max(0, action.repeat_count):
-                    scope = await self._run_actions(
-                        session_id,
-                        rule_id,
-                        rule,
-                        action.actions,
-                        self._visible_terminal_text(
-                            self._runtime(session_id).buffer
-                        ) or scan_text,
-                    )
-                    if scope == "rule":
-                        return "rule"
-                    if scope == "loop":
-                        break
-                    iteration += 1
-                    await self._sleep(max(10, action.interval_ms) if action.repeat_count == 0 else action.interval_ms)
+                had_previous_loop = "loop" in variables
+                previous_loop = variables.get("loop")
+                try:
+                    while action.repeat_count == 0 or iteration < max(0, action.repeat_count):
+                        variables["loop"] = {
+                            "index": iteration + 1,
+                            "index0": iteration,
+                            "count": action.repeat_count,
+                            "first": iteration == 0,
+                            "last": (
+                                action.repeat_count > 0
+                                and iteration + 1 == action.repeat_count
+                            ),
+                        }
+                        scope = await self._run_actions(
+                            session_id,
+                            rule_id,
+                            rule,
+                            action.actions,
+                            self._visible_terminal_text(
+                                self._runtime(session_id).buffer
+                            ) or scan_text,
+                            variables,
+                        )
+                        if scope == "rule":
+                            return "rule"
+                        if scope == "loop":
+                            break
+                        iteration += 1
+                        await self._sleep(max(10, action.interval_ms) if action.repeat_count == 0 else action.interval_ms)
+                finally:
+                    if had_previous_loop:
+                        variables["loop"] = previous_loop
+                    else:
+                        variables.pop("loop", None)
         return None
 
     def _task_finished(
@@ -1205,20 +1460,110 @@ class AutomationService:
         rule: AutoResponseRule,
         action: AutoResponseAction,
         output: str,
+        pattern: str | None = None,
     ) -> bool:
+        condition_pattern = action.condition_pattern if pattern is None else pattern
         if action.condition_match_type == "regex":
             flags = 0 if rule.case_sensitive else re.IGNORECASE
             try:
-                return re.search(action.condition_pattern, output, flags) is not None
+                return re.search(condition_pattern, output, flags) is not None
             except re.error:
                 return False
         haystack = output if rule.case_sensitive else output.casefold()
         needle = (
-            action.condition_pattern
+            condition_pattern
             if rule.case_sensitive
-            else action.condition_pattern.casefold()
+            else condition_pattern.casefold()
         )
         return bool(needle) and needle in haystack
+
+    @classmethod
+    def _render_variables(
+        cls,
+        value: str,
+        variables: dict[str, object],
+    ) -> str:
+        return SafeAutomationExpression.render(value, variables)
+
+    def _initial_variables(
+        self,
+        session_id: str,
+        scan_text: str,
+    ) -> dict[str, object]:
+        session = next(
+            (record for record in self._sessions.list_sessions() if record.id == session_id),
+            None,
+        )
+        return {
+            "session": {
+                "id": session_id,
+                "title": session.title if session is not None else "",
+                "kind": session.kind if session is not None else "",
+                "status": session.status if session is not None else "",
+            },
+            "device": {
+                "id": session.device_id if session is not None else "",
+            },
+            "trigger": {"text": scan_text},
+            "output": {"text": scan_text, "last": scan_text},
+        }
+
+    @staticmethod
+    def _update_output_variables(
+        variables: dict[str, object],
+        output: str,
+    ) -> None:
+        variables["output"] = {"text": output, "last": output}
+
+    @classmethod
+    def _set_variable(
+        cls,
+        action: AutoResponseAction,
+        variables: dict[str, object],
+    ) -> None:
+        name = action.variable_name.strip()
+        evaluated = SafeAutomationExpression.value(action.variable_value, variables)
+        operand = (
+            cls._coerce_variable_value(evaluated)
+            if isinstance(evaluated, str)
+            else evaluated
+        )
+        if action.variable_operation == "set":
+            variables[name] = operand
+            return
+        if name not in variables:
+            raise UnsupportedOperationError(f"自动化变量尚未赋值：{name}")
+        current = cls._numeric_variable(variables[name], name)
+        value = cls._numeric_variable(operand, name)
+        if action.variable_operation == "add":
+            result = current + value
+        elif action.variable_operation == "subtract":
+            result = current - value
+        else:
+            result = current * value
+        variables[name] = int(result) if result.is_integer() else result
+
+    @staticmethod
+    def _coerce_variable_value(value: str) -> object:
+        text = value.strip()
+        if re.fullmatch(r"[-+]?\d+", text):
+            return int(text)
+        if re.fullmatch(r"[-+]?(?:\d+\.\d*|\d*\.\d+)", text):
+            return float(text)
+        if text.casefold() in {"true", "false"}:
+            return text.casefold() == "true"
+        return value
+
+    @staticmethod
+    def _numeric_variable(value: object, name: str) -> float:
+        if isinstance(value, bool):
+            raise UnsupportedOperationError(f"自动化变量不是数字：{name}")
+        try:
+            return float(value)
+        except (TypeError, ValueError) as error:
+            raise UnsupportedOperationError(
+                f"自动化变量不是数字：{name}"
+            ) from error
 
     @staticmethod
     def _scan_text(previous: str, message: str, pattern: str) -> str:
@@ -1402,7 +1747,7 @@ class AutomationService:
             if not pattern:
                 return
             try:
-                re.compile(pattern, flags)
+                re.compile(_TEMPLATE_EXPRESSION.sub("value", pattern), flags)
             except re.error as error:
                 raise UnsupportedOperationError(
                     f"正则表达式无效（{field}）：{error}",
@@ -1424,6 +1769,32 @@ class AutomationService:
                 validate_actions(action.actions, field)
 
         validate_actions(rule.actions, "动作流")
+
+    def _validate_action_variables(
+        self,
+        actions: list[AutoResponseAction],
+        prefix: str = "动作流",
+    ) -> None:
+        for index, action in enumerate(actions):
+            field = f"{prefix}第 {index + 1} 个动作"
+            if action.kind == "set":
+                name = action.variable_name.strip()
+                if not _VARIABLE_NAME.fullmatch(name):
+                    raise UnsupportedOperationError(
+                        f"变量名无效（{field}）：仅支持字母、数字和下划线，且不能以数字开头。"
+                    )
+                if name in {"session", "device", "trigger", "output", "loop"}:
+                    raise UnsupportedOperationError(
+                        f"变量名为系统保留名称（{field}）：{name}"
+                    )
+                if action.variable_operation not in {
+                    "set",
+                    "add",
+                    "subtract",
+                    "multiply",
+                }:
+                    raise UnsupportedOperationError(f"变量操作无效（{field}）。")
+            self._validate_action_variables(action.actions, field)
 
     def _validate_action_secrets(
         self,

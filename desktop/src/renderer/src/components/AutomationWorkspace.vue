@@ -5,6 +5,7 @@ import {
   ChevronDown,
   CopyPlus,
   History,
+  Eye,
   KeyRound,
   Play,
   Plus,
@@ -16,6 +17,7 @@ import {
   X
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
+import { desktopApi } from '../transport/api'
 import AutomationActionList from './AutomationActionList.vue'
 import AutomationStepEditor from './AutomationStepEditor.vue'
 import type {
@@ -24,6 +26,7 @@ import type {
   AutoResponseStep,
   AutomationRuleRecord,
   AutomationActivityRecord,
+  AutomationPreviewResponse,
   AutomationTargetOption
 } from '../types'
 
@@ -32,18 +35,29 @@ type EditorMode = 'basic' | 'steps' | 'actions'
 const workspace = useWorkspaceStore()
 const selectedId = ref('')
 const draft = ref<AutoResponseRulePayload>(newRule())
-const draftBaseline = ref(JSON.stringify(draft.value))
+const draftBaseline = ref(draftFingerprint(draft.value))
 const creatingNew = ref(false)
 const loadedRuleId = ref('')
 const ruleQuery = ref('')
 const ruleStatusFilter = ref<'all' | 'active' | 'enabled' | 'disabled'>('all')
 const ruleSearchInput = ref<HTMLInputElement | null>(null)
 const activityExpanded = ref(false)
+const PREVIEW_OPEN_KEY = 'device-tui.desktop-v2.automation-live-preview-open'
+const previewExpanded = ref(localStorage.getItem(PREVIEW_OPEN_KEY) === '1')
+const previewSampleOutput = ref('')
+const previewResult = ref<AutomationPreviewResponse | null>(null)
+const previewLoading = ref(false)
+const previewError = ref('')
+const previewValidationHint = ref('')
 const localError = ref('')
 const editorMode = ref<EditorMode>('basic')
 let releaseCloseGuard: (() => void) | null = null
+let cachedSteps: AutoResponseStep[] = []
+let cachedActions: AutoResponseAction[] = []
+let previewTimer: ReturnType<typeof setTimeout> | null = null
+let previewGeneration = 0
 
-const isDirty = computed(() => JSON.stringify(draft.value) !== draftBaseline.value)
+const isDirty = computed(() => draftFingerprint(draft.value) !== draftBaseline.value)
 const draftStateText = computed(() => {
   if (isDirty.value) return '有未保存修改'
   return selectedRecord.value ? '已保存' : '新规则草稿'
@@ -158,6 +172,24 @@ watch(selectedRecord, (record) => {
   }
 }, { immediate: true })
 
+watch(
+  [() => draftFingerprint(draft.value), previewSampleOutput, previewExpanded],
+  ([, , open]) => {
+    if (open) schedulePreview()
+  }
+)
+
+watch(() => workspace.automationPanelOpen, (open) => {
+  if (open) {
+    if (previewExpanded.value) schedulePreview(0)
+    return
+  }
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = null
+  previewGeneration += 1
+  previewLoading.value = false
+})
+
 function newRule(): AutoResponseRulePayload {
   return {
     name: '新建自动化',
@@ -186,8 +218,29 @@ function cloneRule(rule: AutoResponseRulePayload): AutoResponseRulePayload {
   return JSON.parse(JSON.stringify(rule)) as AutoResponseRulePayload
 }
 
+function cloneSteps(steps: AutoResponseStep[]): AutoResponseStep[] {
+  return JSON.parse(JSON.stringify(steps)) as AutoResponseStep[]
+}
+
+function cloneActions(actions: AutoResponseAction[]): AutoResponseAction[] {
+  return JSON.parse(JSON.stringify(actions)) as AutoResponseAction[]
+}
+
+function draftFingerprint(rule: AutoResponseRulePayload): string {
+  return JSON.stringify({
+    ...rule,
+    steps: rule.steps || [],
+    actions: rule.actions || []
+  })
+}
+
+function cacheAdvancedDrafts(): void {
+  cachedSteps = cloneSteps(draft.value.steps || [])
+  cachedActions = cloneActions(draft.value.actions || [])
+}
+
 function setDraftBaseline(): void {
-  draftBaseline.value = JSON.stringify(draft.value)
+  draftBaseline.value = draftFingerprint(draft.value)
 }
 
 function loadRecord(record: AutomationRuleRecord): void {
@@ -196,6 +249,8 @@ function loadRecord(record: AutomationRuleRecord): void {
   creatingNew.value = false
   draft.value = cloneRule(record.rule)
   editorMode.value = ruleEditorMode(record.rule)
+  cacheAdvancedDrafts()
+  previewResult.value = null
   localError.value = ''
   setDraftBaseline()
 }
@@ -206,6 +261,8 @@ function loadNewDraft(): void {
   creatingNew.value = true
   draft.value = newRule()
   editorMode.value = 'basic'
+  cacheAdvancedDrafts()
+  previewResult.value = null
   localError.value = ''
   setDraftBaseline()
 }
@@ -256,8 +313,8 @@ function ruleEditorMode(rule: AutoResponseRulePayload): EditorMode {
   return 'basic'
 }
 
-function defaultStep(): AutoResponseStep {
-  const text = draft.value.response_text || ''
+function defaultStep(initialText = ''): AutoResponseStep {
+  const text = initialText || draft.value.response_text || ''
   return {
     pattern: draft.value.pattern || '',
     responses: [text],
@@ -269,10 +326,10 @@ function defaultStep(): AutoResponseStep {
   }
 }
 
-function defaultAction(): AutoResponseAction {
+function defaultAction(initialText = ''): AutoResponseAction {
   return {
     kind: 'send',
-    text: draft.value.response_text || '',
+    text: initialText || draft.value.response_text || '',
     target: 'current',
     delay_ms: Math.max(0, Number(draft.value.delay_ms) || 0),
     append_enter: draft.value.append_enter,
@@ -282,6 +339,9 @@ function defaultAction(): AutoResponseAction {
     exit_scope: 'loop',
     condition_pattern: '',
     condition_match_type: 'contains',
+    variable_name: '',
+    variable_value: '',
+    variable_operation: 'set',
     actions: []
   }
 }
@@ -292,18 +352,16 @@ function setEditorMode(mode: EditorMode): void {
     localError.value = '该规则包含受保护的敏感响应，不能改变高级结构；可继续编辑非结构字段。'
     return
   }
-  const hasAdvanced = Boolean(draft.value.steps?.length || draft.value.actions?.length)
-  if (
-    hasAdvanced
-    && selectedRecord.value
-    && !window.confirm('切换编辑模式会将现有高级结构转换为所选模式，是否继续？')
-  ) return
+  if (editorMode.value === 'steps') cachedSteps = cloneSteps(draft.value.steps || [])
+  if (editorMode.value === 'actions') cachedActions = cloneActions(draft.value.actions || [])
   if (mode === 'steps') {
-    draft.value.steps = draft.value.steps?.length ? draft.value.steps : [defaultStep()]
+    const actionText = firstSendText(cachedActions)
+    draft.value.steps = cachedSteps.length ? cloneSteps(cachedSteps) : [defaultStep(actionText)]
     draft.value.actions = []
     draft.value.kind = 'advanced'
   } else if (mode === 'actions') {
-    draft.value.actions = draft.value.actions?.length ? draft.value.actions : [defaultAction()]
+    const stepText = cachedSteps[0]?.response_texts?.[0] || ''
+    draft.value.actions = cachedActions.length ? cloneActions(cachedActions) : [defaultAction(stepText)]
     draft.value.steps = []
     draft.value.kind = 'advanced'
   } else {
@@ -331,10 +389,12 @@ function firstSendText(actions: AutoResponseAction[]): string {
 
 function updateSteps(steps: AutoResponseStep[]): void {
   draft.value.steps = steps
+  cachedSteps = cloneSteps(steps)
 }
 
 function updateActions(actions: AutoResponseAction[]): void {
   draft.value.actions = actions
+  cachedActions = cloneActions(actions)
 }
 
 function beginCreate(): void {
@@ -348,7 +408,7 @@ function selectRule(record: AutomationRuleRecord): void {
   loadRecord(record)
 }
 
-async function save(): Promise<void> {
+function buildNormalizedDraft(): AutoResponseRulePayload | null {
   localError.value = ''
   const value = cloneRule(draft.value)
   value.name = value.name.trim()
@@ -359,7 +419,7 @@ async function save(): Promise<void> {
   value.loop_count = Math.max(1, Math.min(10, Number(value.loop_count) || 1))
   if (!value.name) {
     localError.value = '请输入规则名称。'
-    return
+    return null
   }
 
   if (editorMode.value === 'steps') {
@@ -368,15 +428,15 @@ async function save(): Promise<void> {
     value.kind = 'advanced'
     if (!value.steps.length) {
       localError.value = '请至少添加一个流程步骤。'
-      return
+      return null
     }
     if (value.steps.some((step) => !step.response_texts.length || step.response_texts.some((text) => !text))) {
       localError.value = '每个流程步骤都必须包含非空响应。'
-      return
+      return null
     }
     if (value.trigger_type === 'match' && !value.steps[0].pattern) {
       localError.value = '输出匹配流程的第一步必须填写等待文本。'
-      return
+      return null
     }
     value.pattern = value.steps[0].pattern || value.pattern
     value.response_text = value.steps[0].response_texts[0] || ''
@@ -388,7 +448,7 @@ async function save(): Promise<void> {
     const validationError = validateActions(value.actions)
     if (validationError) {
       localError.value = validationError
-      return
+      return null
     }
     value.response_text = firstSendText(value.actions)
     value.response = ''
@@ -398,17 +458,82 @@ async function save(): Promise<void> {
     value.kind = 'capture'
     if (!value.response_text) {
       localError.value = '请输入发送内容。'
-      return
+      return null
     }
     value.response = value.response_text === '••••••' ? '••••••' : ''
   }
   if (value.trigger_type === 'match' && !value.pattern) {
     localError.value = '输出匹配规则需要填写触发文本。'
-    return
+    return null
   }
+  return value
+}
+
+async function save(): Promise<void> {
+  const value = buildNormalizedDraft()
+  if (!value) return
   const saved = await workspace.saveAutomationRule(value, selectedId.value)
   if (saved) {
     loadRecord(saved)
+  }
+}
+
+function toggleLivePreview(): void {
+  previewExpanded.value = !previewExpanded.value
+  localStorage.setItem(PREVIEW_OPEN_KEY, previewExpanded.value ? '1' : '0')
+  if (previewExpanded.value) {
+    schedulePreview(0)
+    return
+  }
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = null
+  previewGeneration += 1
+  previewLoading.value = false
+}
+
+function schedulePreview(delay = 320): void {
+  if (!previewExpanded.value || !workspace.automationPanelOpen) return
+  if (previewTimer) clearTimeout(previewTimer)
+  previewGeneration += 1
+  previewLoading.value = true
+  previewError.value = ''
+  previewValidationHint.value = ''
+  previewTimer = setTimeout(() => {
+    previewTimer = null
+    void refreshLivePreview()
+  }, delay)
+}
+
+async function refreshLivePreview(): Promise<void> {
+  if (!previewExpanded.value) return
+  const generation = ++previewGeneration
+  const previousError = localError.value
+  const value = buildNormalizedDraft()
+  const validationHint = localError.value
+  localError.value = previousError
+  if (!value) {
+    previewLoading.value = false
+    previewError.value = ''
+    previewValidationHint.value = validationHint || '继续填写后将自动预览。'
+    return
+  }
+
+  previewLoading.value = true
+  previewError.value = ''
+  previewValidationHint.value = ''
+  try {
+    const result = await desktopApi.previewAutomationRule(
+      value,
+      workspace.activeSessionId,
+      previewSampleOutput.value
+    )
+    if (generation !== previewGeneration || !previewExpanded.value) return
+    previewResult.value = result
+  } catch (cause) {
+    if (generation !== previewGeneration || !previewExpanded.value) return
+    previewError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    if (generation === previewGeneration) previewLoading.value = false
   }
 }
 
@@ -439,7 +564,14 @@ function normalizeActions(actions: AutoResponseAction[]): AutoResponseAction[] {
     exit_pattern: String(action.exit_pattern || ''),
     exit_scope: action.exit_scope === 'rule' ? 'rule' : 'loop',
     condition_pattern: String(action.condition_pattern || ''),
-    condition_match_type: action.condition_match_type === 'regex' ? 'regex' : 'contains',
+    condition_match_type: ['regex', 'expression'].includes(action.condition_match_type)
+      ? action.condition_match_type
+      : 'contains',
+    variable_name: String(action.variable_name || '').trim(),
+    variable_value: String(action.variable_value || ''),
+    variable_operation: ['add', 'subtract', 'multiply'].includes(action.variable_operation)
+      ? action.variable_operation
+      : 'set',
     actions: normalizeActions(action.actions || [])
   }))
 }
@@ -451,6 +583,15 @@ function validateActions(actions: AutoResponseAction[], path = '动作流'): str
     const label = `${path}第 ${index + 1} 项`
     if (action.kind === 'send' && !action.text) return `${label}的发送内容不能为空。`
     if (action.kind === 'exit' && !action.exit_pattern) return `${label}必须填写退出匹配文本。`
+    if (action.kind === 'set') {
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(action.variable_name)) {
+        return `${label}的变量名只能包含字母、数字和下划线，且不能以数字开头。`
+      }
+      if (['session', 'device', 'trigger', 'output', 'loop'].includes(action.variable_name)) {
+        return `${label}使用了系统保留变量名：${action.variable_name}。`
+      }
+      if (!action.variable_value) return `${label}必须填写变量值。`
+    }
     if (action.kind === 'condition') {
       if (!action.condition_pattern) return `${label}必须填写条件文本。`
       const nested = validateActions(action.actions || [], `${label}的条件分支`)
@@ -515,8 +656,11 @@ onMounted(() => {
   releaseCloseGuard = workspace.registerAutomationCloseGuard(prepareClose)
   document.addEventListener('keydown', handleAutomationShortcuts, true)
   window.addEventListener('beforeunload', warnBeforeUnload)
+  if (previewExpanded.value && workspace.automationPanelOpen) schedulePreview(0)
 })
 onBeforeUnmount(() => {
+  if (previewTimer) clearTimeout(previewTimer)
+  previewGeneration += 1
   releaseCloseGuard?.()
   document.removeEventListener('keydown', handleAutomationShortcuts, true)
   window.removeEventListener('beforeunload', warnBeforeUnload)
@@ -613,6 +757,15 @@ onBeforeUnmount(() => {
               <span class="automation-draft-state" :data-dirty="isDirty">{{ draftStateText }}</span>
             </div>
             <div>
+              <button
+                class="secondary-button"
+                :class="{ active: previewExpanded }"
+                type="button"
+                data-testid="automation-preview"
+                :aria-pressed="previewExpanded"
+                :title="previewExpanded ? '关闭右侧实时预览' : '在右侧打开实时预览'"
+                @click="toggleLivePreview"
+              ><Eye :size="13" />实时预览</button>
               <button
                 v-if="selectedRecord"
                 class="secondary-button"
@@ -792,6 +945,68 @@ onBeforeUnmount(() => {
             </button>
           </footer>
         </form>
+      </div>
+    </aside>
+
+    <aside
+      v-if="previewExpanded"
+      class="automation-live-preview"
+      data-testid="automation-live-preview"
+      role="complementary"
+      aria-labelledby="automation-preview-title"
+    >
+      <header class="automation-live-preview-header">
+        <div>
+          <span class="automation-preview-live-dot" :data-state="previewLoading ? 'loading' : previewError ? 'error' : 'ready'"></span>
+          <span>
+            <strong id="automation-preview-title">实时预览</strong>
+            <small>{{ previewLoading ? '正在同步草稿…' : previewError ? '预览失败' : previewValidationHint ? '等待有效配置' : '已与当前草稿同步' }}</small>
+          </span>
+        </div>
+        <button type="button" title="关闭实时预览" aria-label="关闭实时预览" @click="toggleLivePreview"><X :size="14" /></button>
+      </header>
+
+      <div class="automation-live-preview-body">
+        <p class="automation-preview-safety"><Eye :size="13" />仅演算动作，不会等待或向终端发送内容</p>
+        <label class="form-field automation-preview-output">
+          <span>模拟终端输出（条件与退出判断，可选）</span>
+          <textarea
+            v-model="previewSampleOutput"
+            rows="3"
+            maxlength="100000"
+            spellcheck="false"
+            placeholder="例如：Login: 或 Port 2000 ready"
+          ></textarea>
+        </label>
+        <div class="automation-preview-actions" aria-live="polite">
+          <span>{{ previewLoading ? '自动刷新中…' : previewResult ? `${previewResult.steps.length} 个渲染步骤` : '修改草稿后自动刷新' }}</span>
+          <button class="secondary-button" type="button" :disabled="previewLoading" @click="schedulePreview(0)">
+            <Eye :size="12" />立即刷新
+          </button>
+        </div>
+
+        <p v-if="previewError" class="automation-preview-state error" role="alert">{{ previewError }}</p>
+        <p v-else-if="previewValidationHint" class="automation-preview-state">{{ previewValidationHint }}</p>
+        <div v-else-if="previewResult" class="automation-preview-steps" :aria-busy="previewLoading">
+          <article v-for="step in previewResult.steps" :key="`${step.path}-${step.kind}-${step.title}`" :data-kind="step.kind">
+            <b>{{ step.path }}</b>
+            <span>
+              <small>{{ step.kind === 'send' ? '发送' : step.kind === 'set' ? '变量' : step.kind === 'wait' ? '等待' : step.kind === 'loop' ? '循环' : step.kind === 'condition' ? '条件' : '退出' }}</small>
+              <strong>{{ step.title }}</strong>
+              <em v-if="step.detail">{{ step.detail }}</em>
+            </span>
+          </article>
+          <p v-for="warning in previewResult.warnings" :key="warning" class="automation-preview-warning">{{ warning }}</p>
+          <details v-if="Object.keys(previewResult.variables).length" class="automation-preview-variables">
+            <summary>最终变量</summary>
+            <pre>{{ JSON.stringify(previewResult.variables, null, 2) }}</pre>
+          </details>
+        </div>
+        <div v-else class="automation-preview-empty">
+          <Eye :size="22" />
+          <strong>正在准备预览</strong>
+          <span>动作和变量会在这里实时展开。</span>
+        </div>
       </div>
     </aside>
   </div>

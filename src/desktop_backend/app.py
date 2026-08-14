@@ -76,6 +76,8 @@ from .models import (
     QuickSendButtonModel,
     AutomationWorkspaceResponse,
     AutomationRuleUpsertRequest,
+    AutomationPreviewRequest,
+    AutomationPreviewResponse,
     AutomationRuleEnabledRequest,
     AutomationRuleTriggerRequest,
     AutomationDispatchResponse,
@@ -1172,6 +1174,22 @@ def create_app(
     )
     async def automation_workspace() -> AutomationWorkspaceResponse:
         return _automation_workspace(desktop)
+
+    @app.post(
+        "/api/v1/automation/preview",
+        response_model=AutomationPreviewResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def preview_automation_rule(
+        request: AutomationPreviewRequest,
+    ) -> AutomationPreviewResponse:
+        result = desktop.automation.preview_rule(
+            desktop.automation.deserialize_rule(request.rule),
+            session_id=request.session_id,
+            sample_output=request.sample_output,
+            max_steps=request.max_steps,
+        )
+        return AutomationPreviewResponse(**result)
 
     @app.post(
         "/api/v1/automation/rules",

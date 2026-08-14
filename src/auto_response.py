@@ -58,6 +58,9 @@ class AutoResponseAction:
     exit_scope: str = "loop"
     condition_pattern: str = ""
     condition_match_type: str = "contains"
+    variable_name: str = ""
+    variable_value: str = ""
+    variable_operation: str = "set"
     actions: list["AutoResponseAction"] = field(default_factory=list)
 
 
@@ -278,6 +281,12 @@ def serialize_auto_response_action(action: AutoResponseAction) -> dict[str, obje
         "condition_pattern": action.condition_pattern,
         "condition_match_type": action.condition_match_type,
     }
+    if action.kind == "set":
+        payload.update({
+            "variable_name": action.variable_name,
+            "variable_value": action.variable_value,
+            "variable_operation": action.variable_operation,
+        })
     if action.actions:
         payload["actions"] = [serialize_auto_response_action(child) for child in action.actions]
     return payload
@@ -293,7 +302,7 @@ def deserialize_auto_response_actions(value: Any) -> list[AutoResponseAction]:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "").strip().lower()
-        if kind not in {"send", "wait", "loop", "exit", "condition"}:
+        if kind not in {"send", "wait", "loop", "exit", "condition", "set"}:
             continue
         try:
             delay_ms = max(0, int(item.get("delay_ms", 0)))
@@ -311,8 +320,11 @@ def deserialize_auto_response_actions(value: Any) -> list[AutoResponseAction]:
         if exit_scope not in {"loop", "rule"}:
             exit_scope = "loop"
         condition_match_type = str(item.get("condition_match_type") or "contains").strip().lower()
-        if condition_match_type not in {"contains", "regex"}:
+        if condition_match_type not in {"contains", "regex", "expression"}:
             condition_match_type = "contains"
+        variable_operation = str(item.get("variable_operation") or "set").strip().lower()
+        if variable_operation not in {"set", "add", "subtract", "multiply"}:
+            variable_operation = "set"
         actions.append(
             AutoResponseAction(
                 kind=kind,
@@ -326,6 +338,9 @@ def deserialize_auto_response_actions(value: Any) -> list[AutoResponseAction]:
                 exit_scope=exit_scope,
                 condition_pattern=str(item.get("condition_pattern") or ""),
                 condition_match_type=condition_match_type,
+                variable_name=str(item.get("variable_name") or ""),
+                variable_value=str(item.get("variable_value") or ""),
+                variable_operation=variable_operation,
                 actions=deserialize_auto_response_actions(item.get("actions")),
             )
         )

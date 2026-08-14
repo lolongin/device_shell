@@ -1018,6 +1018,9 @@ if QDialog is not None:
                 "exitScope": action.exit_scope,
                 "conditionPattern": action.condition_pattern,
                 "conditionMatchType": action.condition_match_type,
+                "variableName": action.variable_name,
+                "variableValue": action.variable_value,
+                "variableOperation": action.variable_operation,
             }
             if action.actions:
                 payload["actions"] = [cls.action_payload_from_action(child) for child in action.actions]
@@ -2574,7 +2577,7 @@ class SessionOpsMixin:
             if not isinstance(action, dict):
                 continue
             kind = str(action.get("kind") or "").strip().lower()
-            if kind not in {"send", "wait", "loop", "exit", "condition"}:
+            if kind not in {"send", "wait", "loop", "exit", "condition", "set"}:
                 self.show_warning(f"动作 {index} 类型无效。")
                 return None
             parsed_action = self.parse_auto_response_action(action, append_enter=append_enter)
@@ -2601,8 +2604,19 @@ class SessionOpsMixin:
         condition_match_type = str(
             action.get("conditionMatchType", action.get("condition_match_type", "contains")) or "contains"
         ).strip().lower()
-        if condition_match_type not in {"contains", "regex"}:
+        if condition_match_type not in {"contains", "regex", "expression"}:
             condition_match_type = "contains"
+        variable_name = str(
+            action.get("variableName", action.get("variable_name", "")) or ""
+        ).strip()
+        variable_value = str(
+            action.get("variableValue", action.get("variable_value", "")) or ""
+        )
+        variable_operation = str(
+            action.get("variableOperation", action.get("variable_operation", "set")) or "set"
+        ).strip().lower()
+        if variable_operation not in {"set", "add", "subtract", "multiply"}:
+            variable_operation = "set"
         child_actions = self.parse_auto_response_actions(
             action.get("actions") if isinstance(action.get("actions"), list) else [],
             append_enter=append_enter,
@@ -2614,6 +2628,13 @@ class SessionOpsMixin:
         if kind == "send" and not text.strip():
             self.show_warning("发送动作的内容不能为空。")
             return None
+        if kind == "set":
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", variable_name):
+                self.show_warning("变量名只能包含字母、数字和下划线，且不能以数字开头。")
+                return None
+            if not variable_value:
+                self.show_warning("变量动作必须填写变量值。")
+                return None
         if kind == "loop" and not child_actions:
             self.show_warning("循环动作中至少需要一个动作。")
             return None
@@ -2645,6 +2666,9 @@ class SessionOpsMixin:
             exit_scope=exit_scope,
             condition_pattern=condition_pattern,
             condition_match_type=condition_match_type,
+            variable_name=variable_name,
+            variable_value=variable_value,
+            variable_operation=variable_operation,
             actions=child_actions,
         )
 
@@ -3306,6 +3330,9 @@ class SessionOpsMixin:
                 exit_scope=action.exit_scope,
                 condition_pattern=action.condition_pattern,
                 condition_match_type=action.condition_match_type,
+                variable_name=action.variable_name,
+                variable_value=action.variable_value,
+                variable_operation=action.variable_operation,
                 actions=SessionOpsMixin.clone_auto_response_actions(action.actions),
             )
             for action in actions
@@ -3337,6 +3364,9 @@ class SessionOpsMixin:
                 action.exit_scope,
                 action.condition_pattern,
                 action.condition_match_type,
+                action.variable_name,
+                action.variable_value,
+                action.variable_operation,
                 tuple(action_signature(child) for child in action.actions),
             )
 

@@ -1432,13 +1432,37 @@ async function createWindow(): Promise<void> {
                 + ' versions=' + versionCountBeforeStepRun + '->' + versionCountAfterStepRun
             )
 
+            const originalModeSwitchConfirm = window.confirm
+            let modeSwitchConfirmCount = 0
+            window.confirm = () => {
+              modeSwitchConfirmCount += 1
+              return false
+            }
+            document.querySelector('[data-testid="automation-mode-actions"]')?.click()
+            await sleep(60)
+            const convertedActionText = document.querySelector('.automation-action-send-text')?.value || ''
+            document.querySelector('[data-testid="automation-mode-steps"]')?.click()
+            await sleep(60)
+            const restoredStepText = document.querySelector('.automation-step-response-text')?.value || ''
+            const restoredStepTimeout = document.querySelector('.automation-step-timeout')?.value || ''
+            window.confirm = originalModeSwitchConfirm
+            setCheck(
+              'automationModeSwitchPreservesDraftWithoutDialog',
+              modeSwitchConfirmCount === 0
+                && convertedActionText === 'display version'
+                && restoredStepText === 'display version'
+                && restoredStepTimeout === '2500'
+                && document.querySelector('[data-testid="automation-save"]')?.disabled === true,
+              JSON.stringify({ modeSwitchConfirmCount, convertedActionText, restoredStepText, restoredStepTimeout })
+            )
+
             document.querySelector('.automation-new-button')?.click()
             await sleep(60)
             setValue('[data-testid="automation-name"]', '动作流烟测')
             setValue('[data-testid="automation-trigger"]', 'manual')
             document.querySelector('[data-testid="automation-mode-actions"]')?.click()
             await sleep(60)
-            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-text', 'display version')
+            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-text', '{{command}}')
             await sleep(30)
             setValue(
               '.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-target',
@@ -1450,12 +1474,21 @@ async function createWindow(): Promise<void> {
             const rootSendAppend = document.querySelector('.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-append')
             if (rootSendAppend && !rootSendAppend.checked) rootSendAppend.click()
             await sleep(50)
+            document.querySelector('.automation-action-list[data-depth="0"] > .automation-action-add button[data-action-kind="set"]')?.click()
+            await sleep(40)
+            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-set .automation-action-variable-name', 'command')
+            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-set .automation-action-variable-value', 'display version')
+            document.querySelector('.automation-action-list[data-depth="0"] > .automation-action-card.kind-set button[title="上移动作"]')?.click()
+            await sleep(50)
             document.querySelector('.automation-action-list[data-depth="0"] > .automation-action-add button[data-action-kind="loop"]')?.click()
             await sleep(40)
             document.querySelector('.automation-action-list[data-depth="0"] > .automation-action-add button[data-action-kind="condition"]')?.click()
             await sleep(40)
             document.querySelector('.automation-action-list[data-depth="0"] > .automation-action-add button[data-action-kind="exit"]')?.click()
             await sleep(60)
+            const defaultExpandedRootActionCount = document.querySelectorAll(
+              '.automation-action-list[data-depth="0"] > .automation-action-card[data-expanded="true"]'
+            ).length
             setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-loop .automation-action-loop-repeat', '2')
             await sleep(30)
             setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-loop .automation-action-loop-interval', '15')
@@ -1478,6 +1511,49 @@ async function createWindow(): Promise<void> {
             await sleep(30)
             setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-exit .automation-action-exit-scope', 'rule')
             await sleep(50)
+            const versionCountBeforePreview = [...document.querySelectorAll('.xterm-rows')]
+              .map((rows) => rows.textContent || '').join('').split('SimOS V1.0').length - 1
+            document.querySelector('[data-testid="automation-preview"]')?.click()
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              if (document.querySelectorAll('.automation-preview-steps > article').length > 0) break
+              await sleep(100)
+            }
+            let previewTitles = [...document.querySelectorAll('.automation-preview-steps > article strong')]
+              .map((node) => node.textContent?.trim() || '')
+            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-set .automation-action-variable-value', 'display interfaces')
+            let livePreviewUpdated = false
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const titles = [...document.querySelectorAll('.automation-preview-steps > article strong')]
+                .map((node) => node.textContent?.trim() || '')
+              if (titles.includes('command = display interfaces')) {
+                livePreviewUpdated = true
+                break
+              }
+              await sleep(100)
+            }
+            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-set .automation-action-variable-value', 'display version')
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              previewTitles = [...document.querySelectorAll('.automation-preview-steps > article strong')]
+                .map((node) => node.textContent?.trim() || '')
+              if (previewTitles.includes('command = display version')) break
+              await sleep(100)
+            }
+            const versionCountAfterPreview = [...document.querySelectorAll('.xterm-rows')]
+              .map((rows) => rows.textContent || '').join('').split('SimOS V1.0').length - 1
+            const previewRect = document.querySelector('[data-testid="automation-live-preview"]')?.getBoundingClientRect()
+            const editorRect = document.querySelector('.automation-workspace')?.getBoundingClientRect()
+            setCheck(
+              'automationLivePreviewTracksDraftWithoutDispatch',
+              Boolean(document.querySelector('[data-testid="automation-live-preview"]'))
+                && Boolean(previewRect && editorRect && previewRect.left >= editorRect.left)
+                && livePreviewUpdated
+                && previewTitles.includes('command = display version')
+                && previewTitles.includes('display version')
+                && versionCountAfterPreview === versionCountBeforePreview,
+              JSON.stringify({ previewTitles, livePreviewUpdated, versionCountBeforePreview, versionCountAfterPreview })
+            )
+            document.querySelector('.automation-live-preview button[title="关闭实时预览"]')?.click()
+            await sleep(40)
             document.querySelector('[data-testid="automation-save"]')?.click()
             for (let attempt = 0; attempt < 40; attempt += 1) {
               if ([...document.querySelectorAll('.automation-rule-row strong')].some((node) => node.textContent?.trim() === '动作流烟测')) break
@@ -1504,20 +1580,24 @@ async function createWindow(): Promise<void> {
             const smokeActions = actionSmokeRule?.rule?.actions || []
             const actionSmokeAssertions = {
               status: actionWorkspaceResponse.status === 200,
-              rootSend: smokeActions[0]?.kind === 'send',
-              target: smokeActions[0]?.target === 'session-id:' + automationTargetSessionId,
-              delay: smokeActions[0]?.delay_ms === 25,
-              appendEnter: smokeActions[0]?.append_enter === true,
-              loop: smokeActions[1]?.kind === 'loop',
-              loopCount: smokeActions[1]?.repeat_count === 2,
-              loopInterval: smokeActions[1]?.interval_ms === 15,
-              loopChild: smokeActions[1]?.actions?.[0]?.text === 'display version',
-              condition: smokeActions[2]?.kind === 'condition',
-              conditionPattern: smokeActions[2]?.condition_pattern === 'SimOS',
-              conditionChild: smokeActions[2]?.actions?.[0]?.text === 'display version',
-              exit: smokeActions[3]?.kind === 'exit',
-              exitPattern: smokeActions[3]?.exit_pattern === 'never-match',
-              exitScope: smokeActions[3]?.exit_scope === 'rule',
+              accordion: defaultExpandedRootActionCount === 1,
+              variable: smokeActions[0]?.kind === 'set'
+                && smokeActions[0]?.variable_name === 'command'
+                && smokeActions[0]?.variable_value === 'display version',
+              rootSend: smokeActions[1]?.kind === 'send' && smokeActions[1]?.text === '{{command}}',
+              target: smokeActions[1]?.target === 'session-id:' + automationTargetSessionId,
+              delay: smokeActions[1]?.delay_ms === 25,
+              appendEnter: smokeActions[1]?.append_enter === true,
+              loop: smokeActions[2]?.kind === 'loop',
+              loopCount: smokeActions[2]?.repeat_count === 2,
+              loopInterval: smokeActions[2]?.interval_ms === 15,
+              loopChild: smokeActions[2]?.actions?.[0]?.text === 'display version',
+              condition: smokeActions[3]?.kind === 'condition',
+              conditionPattern: smokeActions[3]?.condition_pattern === 'SimOS',
+              conditionChild: smokeActions[3]?.actions?.[0]?.text === 'display version',
+              exit: smokeActions[4]?.kind === 'exit',
+              exitPattern: smokeActions[4]?.exit_pattern === 'never-match',
+              exitScope: smokeActions[4]?.exit_scope === 'rule',
               executed: actionVersionCountAfter > actionVersionCountBefore
             }
             setCheck(
@@ -2754,7 +2834,11 @@ async function createWindow(): Promise<void> {
             "[...document.querySelectorAll('.automation-rule-row')].find((button) => (button.textContent || '').includes('动作流烟测'))?.click()",
             true
           )
-          await new Promise((resolve) => setTimeout(resolve, 160))
+          await mainWindow.webContents.executeJavaScript(
+            "document.querySelector('[data-testid=\"automation-preview\"]')?.click()",
+            true
+          )
+          await new Promise((resolve) => setTimeout(resolve, 500))
           const advancedAutomationImage = await mainWindow.webContents.capturePage()
           await writeFile(captureAdvancedAutomationPath, advancedAutomationImage.toPNG())
           const captureAdvancedAutomationLightPath = process.env.DEVICE_TUI_CAPTURE_ADVANCED_AUTOMATION_LIGHT_PATH

@@ -9,6 +9,7 @@ import type {
   CommandWorkspaceResponse,
   AutoResponseRulePayload,
   AutomationActivityRecord,
+  AutomationPreviewResponse,
   AutomationRuleRecord,
   AutomationSessionStatus,
   AutomationWorkspaceResponse,
@@ -676,6 +677,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  async function previewAutomationRule(
+    rule: AutoResponseRulePayload,
+    sampleOutput = ''
+  ): Promise<AutomationPreviewResponse | null> {
+    automationBusy.value = true
+    error.value = ''
+    try {
+      return await desktopApi.previewAutomationRule(
+        rule,
+        activeSessionId.value,
+        sampleOutput
+      )
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return null
+    } finally {
+      automationBusy.value = false
+    }
+  }
+
   async function setAutomationRuleEnabled(ruleId: string, enabled: boolean): Promise<void> {
     automationBusy.value = true
     error.value = ''
@@ -1271,6 +1292,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     registerAutomationCloseGuard,
     closeAutomationPanel,
     saveAutomationRule,
+    previewAutomationRule,
     cloneAutomationRule,
     setAutomationRuleEnabled,
     deleteAutomationRule,

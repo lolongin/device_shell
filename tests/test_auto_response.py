@@ -635,6 +635,37 @@ def test_auto_response_condition_action_round_trips() -> None:
     assert loaded.actions[0].actions[0].text == "display clock"
 
 
+def test_auto_response_variable_action_round_trips() -> None:
+    rule = AutoResponseRule(
+        name="Incrementing ports",
+        pattern="",
+        response="",
+        trigger_type="manual",
+        actions=[
+            AutoResponseAction(
+                kind="set",
+                variable_name="port",
+                variable_value="2000",
+                variable_operation="set",
+            ),
+            AutoResponseAction(
+                kind="set",
+                variable_name="port",
+                variable_value="1",
+                variable_operation="add",
+            ),
+        ],
+    )
+
+    loaded = deserialize_auto_response_rule(serialize_auto_response_rule(rule))
+
+    assert loaded is not None
+    assert loaded.actions[0].kind == "set"
+    assert loaded.actions[0].variable_name == "port"
+    assert loaded.actions[0].variable_value == "2000"
+    assert loaded.actions[1].variable_operation == "add"
+
+
 def test_create_auto_response_rule_accepts_infinite_loop_action(app: QApplication) -> None:
     _ = app
     window = DeviceDesktopApp()

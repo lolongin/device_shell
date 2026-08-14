@@ -12,6 +12,7 @@ import pytest
 
 from src.application import MemorySecretStore, UnsupportedOperationError, build_desktop_application
 from src.application.credentials import ConnectionTarget
+from src.application.automation_expressions import SafeAutomationExpression
 from src.application.sessions import SessionRecord
 from src.auto_response import AutoResponseAction, AutoResponseRule, AutoResponseStep
 from src.infrastructure.sqlite_desktop import SQLiteDesktopStore
@@ -860,6 +861,179 @@ def test_action_loop_manual_trigger_and_explicit_cancel(tmp_path: Path) -> None:
         assert count_after_cancel >= 2
         assert len(manager.writes) == count_after_cancel
         assert all(write[2] == "automation" for write in manager.writes)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_action_variables_increment_inside_loop_and_render_builtins(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Incrementing ports",
+            pattern="",
+            response="",
+            trigger_type="manual",
+            once=False,
+            actions=[
+                AutoResponseAction(
+                    kind="set",
+                    variable_name="port",
+                    variable_value="2000",
+                ),
+                AutoResponseAction(
+                    kind="loop",
+                    repeat_count=3,
+                    actions=[
+                        AutoResponseAction(
+                            kind="send",
+                            text="connect {{port}} {{loop.index}}/{{loop.count}}",
+                            append_enter=True,
+                        ),
+                        AutoResponseAction(
+                            kind="set",
+                            variable_name="port",
+                            variable_value="1",
+                            variable_operation="add",
+                        ),
+                    ],
+                ),
+                AutoResponseAction(
+                    kind="send",
+                    text="next {{port}}",
+                    append_enter=True,
+                ),
+            ],
+        ))
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.03)
+
+        assert [write[1] for write in manager.writes] == [
+            "connect 2000 1/3\r",
+            "connect 2001 2/3\r",
+            "connect 2002 3/3\r",
+            "next 2003\r",
+        ]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_action_expression_preview_is_side_effect_free_and_matches_runtime(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        rule = AutoResponseRule(
+            name="Expression ports",
+            pattern="",
+            response="",
+            trigger_type="manual",
+            once=False,
+            actions=[
+                AutoResponseAction(kind="set", variable_name="base", variable_value="2000"),
+                AutoResponseAction(kind="set", variable_name="step", variable_value="2"),
+                AutoResponseAction(
+                    kind="loop",
+                    repeat_count=3,
+                    actions=[
+                        AutoResponseAction(
+                            kind="set",
+                            variable_name="port",
+                            variable_value="{{base + loop.index0 * step}}",
+                        ),
+                        AutoResponseAction(
+                            kind="send",
+                            text="connect {{port}} {{upper(session.kind)}}",
+                            append_enter=True,
+                        ),
+                        AutoResponseAction(
+                            kind="condition",
+                            condition_match_type="expression",
+                            condition_pattern="loop.last and port == 2004",
+                            actions=[AutoResponseAction(
+                                kind="send",
+                                text="done {{device.id}}",
+                                append_enter=True,
+                            )],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        preview = application.automation.preview_rule(rule, session_id=first.id)
+
+        assert manager.writes == []
+        assert preview["variables"] == {"base": 2000, "step": 2, "port": 2004}
+        send_titles = [
+            step["title"]
+            for step in preview["steps"]
+            if step["kind"] == "send"
+        ]
+        assert send_titles == [
+            "connect 2000 SIMULATED",
+            "connect 2002 SIMULATED",
+            "connect 2004 SIMULATED",
+            f"done {first.device_id}",
+        ]
+
+        record = application.automation.create_rule(rule)
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.03)
+        assert [write[1] for write in manager.writes] == [
+            "connect 2000 SIMULATED\r",
+            "connect 2002 SIMULATED\r",
+            "connect 2004 SIMULATED\r",
+            f"done {first.device_id}\r",
+        ]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_action_expression_rejects_unsafe_calls_and_private_attributes() -> None:
+    with pytest.raises(UnsupportedOperationError, match="函数不受支持"):
+        SafeAutomationExpression.evaluate("__import__('os')", {})
+    with pytest.raises(UnsupportedOperationError, match="属性不存在"):
+        SafeAutomationExpression.evaluate("session.__class__", {"session": {"id": "x"}})
+
+
+def test_action_variable_validation_and_unknown_reference_are_explicit(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        with pytest.raises(UnsupportedOperationError, match="变量名无效"):
+            application.automation.create_rule(AutoResponseRule(
+                name="Invalid variable",
+                pattern="",
+                response="",
+                trigger_type="manual",
+                actions=[AutoResponseAction(
+                    kind="set",
+                    variable_name="1bad",
+                    variable_value="1",
+                )],
+            ))
+
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Unknown variable",
+            pattern="",
+            response="",
+            trigger_type="manual",
+            actions=[AutoResponseAction(kind="send", text="{{missing}}")],
+        ))
+        queue, _replay = application.events.subscribe()
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.02)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        failed = next(event for event in events if event.type == "automation.rule.failed")
+        assert "变量尚未赋值：missing" in failed.data["message"]
+        assert manager.writes == []
+        application.events.unsubscribe(queue)
         await application.automation.close()
 
     asyncio.run(scenario())
