@@ -256,7 +256,13 @@ async function createWindow(): Promise<void> {
     }
   })
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  mainWindow.once('ready-to-show', () => {
+    const window = mainWindow
+    if (!window) return
+    window.show()
+    window.focus()
+    window.webContents.focus()
+  })
   mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error(`Preload failed: ${preloadPath}`, error)
   })
@@ -610,6 +616,42 @@ async function createWindow(): Promise<void> {
           path.join(manualUpgradeRoot, manualUpgradePackageName),
           Buffer.from('device-tui-manual-upgrade-smoke', 'utf8')
         )
+        const nativeInputProbeReady = await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const input = document.querySelector('.device-filter-panel input[aria-label="CPU"]')
+            if (!input) return false
+            input.value = ''
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+            input.focus()
+            return document.activeElement === input
+          })()`,
+          true
+        )
+        if (nativeInputProbeReady) {
+          for (const character of 'input123') {
+            mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: character })
+            mainWindow.webContents.sendInputEvent({ type: 'char', keyCode: character })
+            mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: character })
+          }
+          await new Promise((resolve) => setTimeout(resolve, 120))
+        }
+        await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const input = document.querySelector('.device-filter-panel input[aria-label="CPU"]')
+            const result = {
+              ready: ${JSON.stringify(Boolean(nativeInputProbeReady))},
+              value: input?.value || '',
+              focused: document.activeElement === input
+            }
+            sessionStorage.setItem('device-tui.smoke.native-input', JSON.stringify(result))
+            if (input) {
+              input.value = ''
+              input.dispatchEvent(new Event('input', { bubbles: true }))
+              input.dispatchEvent(new Event('change', { bubbles: true }))
+            }
+          })()`,
+          true
+        )
         const uiParity = await mainWindow.webContents.executeJavaScript(
           `(async () => {
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -696,13 +738,21 @@ async function createWindow(): Promise<void> {
             const columns = labels('.device-table-header [role="columnheader"]')
             let realEmptyAction = {}
             let simulatedEmptyAction = {}
+            let nativeInput = {}
             try {
               realEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.real-empty-action') || '{}')
               simulatedEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.simulated-empty-action') || '{}')
+              nativeInput = JSON.parse(sessionStorage.getItem('device-tui.smoke.native-input') || '{}')
             } catch {
               realEmptyAction = {}
               simulatedEmptyAction = {}
+              nativeInput = {}
             }
+            setCheck(
+              'nativeKeyboardInputReachesFocusedFields',
+              nativeInput.ready && nativeInput.focused && nativeInput.value === 'input123',
+              JSON.stringify(nativeInput)
+            )
             setCheck(
               'emptyWorkspaceActionFollowsSelectedDevice',
               realEmptyAction.action?.includes('Mock-Huawei-Lab')
@@ -3580,6 +3630,7 @@ if (!instanceLock) {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
+      mainWindow.webContents.focus()
     }
   })
 

@@ -277,6 +277,15 @@ def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
     assert "leftOperationWorkbenchWidthResizePersists" in main
 
 
+def test_electron_restores_renderer_focus_and_accepts_native_keyboard_input() -> None:
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "window.webContents.focus()" in main
+    assert "mainWindow.webContents.focus()" in main
+    assert "nativeKeyboardInputReachesFocusedFields" in main
+    assert "mainWindow.webContents.sendInputEvent({ type: 'char'" in main
+
+
 def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     transfer = Path(
         "desktop/src/renderer/src/components/TransferWorkspace.vue"
