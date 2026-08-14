@@ -853,7 +853,10 @@ def test_action_loop_manual_trigger_and_explicit_cancel(tmp_path: Path) -> None:
         ))
 
         application.automation.trigger_rule(record.id, first.id)
-        await asyncio.sleep(0.04)
+        for _ in range(20):
+            if len(manager.writes) >= 2:
+                break
+            await asyncio.sleep(0.01)
         application.automation.cancel_session(first.id, reason="test")
         count_after_cancel = len(manager.writes)
         await asyncio.sleep(0.03)

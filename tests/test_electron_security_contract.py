@@ -12,7 +12,7 @@ from src.desktop_backend.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_vue_profile_ui_and_store_do_not_hold_password_fields() -> None:
+def test_new_temporary_profile_accepts_passwords_without_exposing_saved_values() -> None:
     profile_dialog = (
         ROOT / "desktop" / "src" / "renderer" / "src" / "components"
         / "ConnectionProfileDialog.vue"
@@ -24,8 +24,13 @@ def test_vue_profile_ui_and_store_do_not_hold_password_fields() -> None:
         ROOT / "desktop" / "src" / "renderer" / "src" / "types.ts"
     ).read_text(encoding="utf-8")
 
-    assert 'type="password"' not in profile_dialog
-    assert "Password" not in profile_dialog
+    assert profile_dialog.count('type="password"') == 3
+    assert 'data-testid="temporary-telnet-password"' in profile_dialog
+    assert 'data-testid="temporary-ssh-password"' in profile_dialog
+    assert 'data-testid="temporary-serial-password"' in profile_dialog
+    assert "!profile && profileType === 'temporary'" in profile_dialog
+    assert 'autocomplete="new-password"' in profile_dialog
+    assert "profile?.ssh.has_password" in profile_dialog
     assert ".password" not in workspace_store.casefold()
     assert "telnet_password" not in renderer_types.casefold()
     assert "ssh_password" not in renderer_types.casefold()
@@ -36,10 +41,17 @@ def test_generic_renderer_bridge_rejects_sensitive_body_keys() -> None:
     electron_main = (
         ROOT / "desktop" / "src" / "main" / "index.ts"
     ).read_text(encoding="utf-8")
+    preload = (
+        ROOT / "desktop" / "src" / "preload" / "index.ts"
+    ).read_text(encoding="utf-8")
 
     assert "hasSensitiveKey(JSON.parse(request.body))" in electron_main
     assert "Sensitive values are not allowed through the renderer API bridge" in electron_main
     assert "credential:open-profile-session" in electron_main
+    assert "credential:create-temporary-profile" in electron_main
+    assert "payload.profile_type !== 'temporary'" in electron_main
+    assert "Untrusted temporary-profile caller" in electron_main
+    assert "ipcRenderer.invoke('credential:create-temporary-profile', request)" in preload
 
 
 def test_session_log_export_bridge_is_bounded_and_main_owned() -> None:
@@ -62,6 +74,22 @@ def test_session_log_export_bridge_is_bounded_and_main_owned() -> None:
     assert "ipcRenderer.invoke('logs:save-copy', request)" in preload
     assert "ipcRenderer.invoke('logs:choose-directory')" in preload
     assert "ipcRenderer.invoke('logs:open-session', sessionId)" in preload
+
+
+def test_terminal_clipboard_bridge_is_bounded_and_main_owned() -> None:
+    electron_main = (
+        ROOT / "desktop" / "src" / "main" / "index.ts"
+    ).read_text(encoding="utf-8")
+    preload = (
+        ROOT / "desktop" / "src" / "preload" / "index.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "Untrusted clipboard caller" in electron_main
+    assert "value.length > 2_000_000" in electron_main
+    assert "clipboard.readText()" in electron_main
+    assert "clipboard.writeText(value)" in electron_main
+    assert "ipcRenderer.invoke('clipboard:read-text')" in preload
+    assert "ipcRenderer.invoke('clipboard:write-text', value)" in preload
 
 
 def test_sensitive_backend_models_hide_password_from_repr() -> None:

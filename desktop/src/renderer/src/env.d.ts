@@ -33,6 +33,11 @@ interface DeviceConnectionRequest {
   username: string
 }
 
+interface TemporaryProfileSaveRequest {
+  payload: import('./types').ConnectionProfilePayload
+  secrets: import('./types').ConnectionProfileSecrets
+}
+
 interface SessionLogExportRequest {
   suggestedName: string
   content: string
@@ -44,11 +49,14 @@ interface DesktopApi {
   openProfileSession(request: ProfileCredentialRequest): Promise<import('./types').SessionSummary | null>
   openDeviceSession(request: DeviceConnectionRequest): Promise<import('./types').SessionSummary | null>
   manageProfileCredential(request: ProfileCredentialRequest): Promise<boolean>
+  saveTemporaryProfile(request: TemporaryProfileSaveRequest): Promise<BackendResponse>
   chooseTransferRoot(): Promise<string>
   chooseSessionLogDirectory(): Promise<string>
   openSessionLogDirectory(): Promise<boolean>
   openCurrentSessionLog(sessionId: string): Promise<boolean>
   saveSessionLog(request: SessionLogExportRequest): Promise<boolean>
+  readClipboardText(): Promise<string>
+  writeClipboardText(value: string): Promise<boolean>
   setAlwaysOnTop(enabled: boolean): Promise<boolean>
   onBackendExit(callback: (details: string) => void): () => void
   onBackendRecovered(callback: (details: string) => void): () => void

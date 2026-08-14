@@ -4,6 +4,7 @@ import { CircleAlert, CircleCheck, X } from 'lucide-vue-next'
 import { useDialogFocus } from '../composables/useDialogFocus'
 import type {
   ConnectionProfilePayload,
+  ConnectionProfileSecrets,
   ConnectionProfileSummary,
   ProfileType
 } from '../types'
@@ -17,7 +18,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   close: []
-  save: [payload: ConnectionProfilePayload, connectAfterSave: boolean]
+  save: [payload: ConnectionProfilePayload, connectAfterSave: boolean, secrets: ConnectionProfileSecrets]
 }>()
 const dialog = ref<HTMLElement | null>(null)
 const { handleDialogKeydown } = useDialogFocus(dialog, {
@@ -33,12 +34,15 @@ const form = reactive({
   telnetHost: '',
   telnetPort: 23,
   telnetUsername: '',
+  telnetSecret: '',
   sshHost: '',
   sshPort: 22,
   sshUsername: '',
+  sshSecret: '',
   serialHost: '',
   serialPort: 23,
-  serialUsername: ''
+  serialUsername: '',
+  serialSecret: ''
 })
 const hasAnyEndpoint = computed(() => props.profileType === 'server'
   ? Boolean(form.sshHost.trim())
@@ -68,12 +72,15 @@ watch(
     form.telnetHost = profile?.telnet.host || ''
     form.telnetPort = profile?.telnet.port || 23
     form.telnetUsername = profile?.telnet.username || ''
+    form.telnetSecret = ''
     form.sshHost = profile?.ssh.host || ''
     form.sshPort = profile?.ssh.port || 22
     form.sshUsername = profile?.ssh.username || (props.profileType === 'server' ? 'root' : '')
+    form.sshSecret = ''
     form.serialHost = profile?.serial.host || ''
     form.serialPort = profile?.serial.port || 23
     form.serialUsername = profile?.serial.username || ''
+    form.serialSecret = ''
   },
   { immediate: true }
 )
@@ -101,7 +108,14 @@ function submit(connectAfterSave = false): void {
       username: form.serialUsername.trim()
     }
   }
-  emit('save', payload, connectAfterSave)
+  const secrets: ConnectionProfileSecrets = props.profileType === 'temporary' && !props.profile
+    ? {
+        telnet: form.telnetHost.trim() ? form.telnetSecret : '',
+        ssh: form.sshHost.trim() ? form.sshSecret : '',
+        serial: form.serialHost.trim() ? form.serialSecret : ''
+      }
+    : {}
+  emit('save', payload, connectAfterSave, secrets)
 }
 </script>
 
@@ -144,7 +158,8 @@ function submit(connectAfterSave = false): void {
           <label class="protocol-field protocol-host-field"><span>主机地址</span><input v-model="form.telnetHost" placeholder="例如 192.0.2.10" /></label>
           <input v-model.number="form.telnetPort" type="number" min="1" max="65535" aria-label="Telnet 端口" />
           <label class="protocol-field protocol-user-field"><span>用户名</span><input v-model="form.telnetUsername" placeholder="输入 Telnet 用户名" :required="Boolean(form.telnetHost)" /></label>
-          <p class="protocol-secret-state">凭据：{{ profile?.telnet.has_password ? '已存于系统凭据库' : '保存后设置或连接时输入' }}</p>
+          <label v-if="!profile" class="protocol-field protocol-secret-field"><span>密码（可选）</span><input v-model="form.telnetSecret" data-testid="temporary-telnet-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="直接输入，保存后不再弹窗" /></label>
+          <p v-else class="protocol-secret-state">凭据：{{ profile.telnet.has_password ? '已存于系统凭据库' : '未保存，可在详情中设置' }}</p>
         </fieldset>
 
         <fieldset class="protocol-form">
@@ -152,7 +167,8 @@ function submit(connectAfterSave = false): void {
           <label class="protocol-field protocol-host-field"><span>主机地址</span><input v-model="form.sshHost" placeholder="例如 192.0.2.10" :required="profileType === 'server'" /></label>
           <input v-model.number="form.sshPort" type="number" min="1" max="65535" aria-label="SSH 端口" />
           <label class="protocol-field protocol-user-field"><span>用户名</span><input v-model="form.sshUsername" placeholder="输入 SSH 用户名" :required="profileType === 'temporary' && Boolean(form.sshHost)" /></label>
-          <p class="protocol-secret-state">凭据：{{ profile?.ssh.has_password ? '已存于系统凭据库' : '保存后设置或连接时输入' }}</p>
+          <label v-if="!profile && profileType === 'temporary'" class="protocol-field protocol-secret-field"><span>密码（可选）</span><input v-model="form.sshSecret" data-testid="temporary-ssh-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="直接输入，保存后不再弹窗" /></label>
+          <p v-else class="protocol-secret-state">凭据：{{ profile?.ssh.has_password ? '已存于系统凭据库' : '未保存，可在详情中设置' }}</p>
         </fieldset>
 
         <fieldset v-if="profileType === 'temporary'" class="protocol-form">
@@ -160,14 +176,15 @@ function submit(connectAfterSave = false): void {
           <label class="protocol-field protocol-host-field"><span>串口服务器地址</span><input v-model="form.serialHost" placeholder="例如 192.0.2.20" /></label>
           <input v-model.number="form.serialPort" type="number" min="1" max="65535" aria-label="串口端口" />
           <label class="protocol-field protocol-user-field"><span>用户名（可选）</span><input v-model="form.serialUsername" placeholder="可留空" /></label>
-          <p class="protocol-secret-state">凭据：{{ profile?.serial.has_password ? '已存于系统凭据库' : '保存后设置或连接时输入' }}</p>
+          <label v-if="!profile" class="protocol-field protocol-secret-field"><span>密码（可选）</span><input v-model="form.serialSecret" data-testid="temporary-serial-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="直接输入，保存后不再弹窗" /></label>
+          <p v-else class="protocol-secret-state">凭据：{{ profile.serial.has_password ? '已存于系统凭据库' : '未保存，可在详情中设置' }}</p>
         </fieldset>
 
         <label class="form-field form-field-wide">
           <span>备注</span>
           <textarea v-model="form.notes" rows="3" maxlength="4000"></textarea>
         </label>
-        <p class="secret-hint">此表单不接收密码。连接时可临时输入，或通过详情面板写入操作系统凭据库；密码不进入 Vue 状态、SQLite 或日志。</p>
+        <p class="secret-hint">{{ !profile && profileType === 'temporary' ? '新建时填写的密码会直接写入操作系统凭据库，保存完成后表单立即销毁；密码不会写入 SQLite 或日志。' : '已保存密码不会回显；需要更换或删除时，请通过详情面板管理系统凭据。' }}</p>
       </div>
 
       <footer>

@@ -269,13 +269,13 @@ function terminalBufferText(): string {
 
 async function copySelection(): Promise<void> {
   const selected = terminal?.getSelection() || ''
-  if (selected) await navigator.clipboard.writeText(selected)
+  if (selected) await window.desktopApi.writeClipboardText(selected)
   contextMenu.value = null
 }
 
 async function copyAll(): Promise<void> {
   const text = terminalBufferText()
-  if (text) await navigator.clipboard.writeText(text)
+  if (text) await window.desktopApi.writeClipboardText(text)
   contextMenu.value = null
 }
 
@@ -286,11 +286,30 @@ function clearTerminal(): void {
 
 async function pasteFromClipboard(): Promise<void> {
   if (!canPaste.value) return
-  const text = await navigator.clipboard.readText()
+  const text = await window.desktopApi.readClipboardText()
   if (!text) return
   recordTerminalInput(text)
   socket?.send(JSON.stringify({ type: 'terminal.input', data: text }))
   contextMenu.value = null
+}
+
+function handleTerminalClipboardShortcut(event: KeyboardEvent): boolean {
+  if (event.type !== 'keydown' || !(event.ctrlKey || event.metaKey) || event.altKey) return true
+  const key = event.key.toLocaleLowerCase()
+  if (key === 'c' && terminal?.hasSelection()) {
+    event.preventDefault()
+    event.stopPropagation()
+    void copySelection()
+    return false
+  }
+  if (key === 'v') {
+    event.preventDefault()
+    event.stopPropagation()
+    void pasteFromClipboard()
+    return false
+  }
+  // Ctrl+C without a selection must keep its terminal interrupt behavior.
+  return true
 }
 
 function openContextMenu(event: MouseEvent): void {
@@ -386,6 +405,15 @@ function handleSharedFontSize(event: Event): void {
   sendResize()
 }
 
+function handleTerminalFocusRequest(event: Event): void {
+  const requestedSessionId = event instanceof CustomEvent
+    && typeof event.detail?.sessionId === 'string'
+    ? event.detail.sessionId
+    : ''
+  if (requestedSessionId && requestedSessionId !== props.session.id) return
+  terminal?.focus()
+}
+
 function readThemeMode(): 'dark' | 'light' {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
 }
@@ -455,6 +483,7 @@ function handleShortcut(event: KeyboardEvent): void {
   if (!pane.value || (!pane.value.contains(target) && !pane.value.contains(document.activeElement))) return
   if (!(event.ctrlKey || event.metaKey)) return
   if (event.key.toLocaleLowerCase() === 'f') {
+    if (document.querySelector('.automation-workspace')) return
     event.preventDefault()
     void openSearch()
   } else if (event.key === '=' || event.key === '+') {
@@ -493,6 +522,7 @@ onMounted(async () => {
   terminal.loadAddon(fitAddon)
   terminal.loadAddon(searchAddon)
   terminal.open(container.value)
+  terminal.attachCustomKeyEventHandler(handleTerminalClipboardShortcut)
   fitAddon.fit()
   terminal.onData((data) => {
     if ((data === '\r' || data === '\n') && canReconnect.value) {
@@ -513,6 +543,7 @@ onMounted(async () => {
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   window.addEventListener('keydown', handleShortcut, true)
   window.addEventListener('device-tui:terminal-font-size', handleSharedFontSize)
+  window.addEventListener('device-tui:focus-terminal', handleTerminalFocusRequest)
   await connect()
   terminal.focus()
 })
@@ -522,6 +553,7 @@ onBeforeUnmount(() => {
   themeObserver?.disconnect()
   window.removeEventListener('keydown', handleShortcut, true)
   window.removeEventListener('device-tui:terminal-font-size', handleSharedFontSize)
+  window.removeEventListener('device-tui:focus-terminal', handleTerminalFocusRequest)
   socket?.close()
   terminal?.dispose()
 })

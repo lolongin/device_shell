@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { PythonBackend } from './python-backend.js'
 
 let mainWindow: BrowserWindow | null = null
@@ -38,6 +38,11 @@ interface DeviceConnectionRequest {
   host: string
   port: number
   username: string
+}
+
+interface TemporaryProfileSaveRequest {
+  payload: Record<string, unknown>
+  secrets?: Partial<Record<'telnet' | 'ssh' | 'serial', unknown>>
 }
 
 interface CredentialDialogResult {
@@ -222,10 +227,13 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('credential:open-profile-session')
   ipcMain.removeHandler('credential:open-device-session')
   ipcMain.removeHandler('credential:manage-profile')
+  ipcMain.removeHandler('credential:create-temporary-profile')
   ipcMain.removeHandler('logs:choose-directory')
   ipcMain.removeHandler('logs:open-directory')
   ipcMain.removeHandler('logs:open-session')
   ipcMain.removeHandler('logs:save-copy')
+  ipcMain.removeHandler('clipboard:read-text')
+  ipcMain.removeHandler('clipboard:write-text')
   ipcMain.removeHandler('window:set-always-on-top')
   ipcMain.handle('runtime:get', () => {
     const runtime = backend.config
@@ -240,6 +248,55 @@ async function createWindow(): Promise<void> {
     const method = String(request.method || 'GET').toUpperCase()
     return await fetchBackend(backend.config, request.path, method, request.body)
   })
+  ipcMain.handle('clipboard:read-text', (event): string => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted clipboard caller')
+    return clipboard.readText()
+  })
+  ipcMain.handle('clipboard:write-text', (event, value: unknown): boolean => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted clipboard caller')
+    if (typeof value !== 'string' || value.length > 2_000_000) {
+      throw new Error('Invalid clipboard text')
+    }
+    clipboard.writeText(value)
+    return true
+  })
+  ipcMain.handle(
+    'credential:create-temporary-profile',
+    async (event, request: TemporaryProfileSaveRequest): Promise<BackendResponse> => {
+      if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted temporary-profile caller')
+      const payload = request?.payload
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new Error('Invalid temporary-profile payload')
+      }
+      if (payload.profile_type !== 'temporary' || hasSensitiveKey(payload)) {
+        throw new Error('Invalid temporary-profile payload')
+      }
+      const rawSecrets = request?.secrets || {}
+      const allowedProtocols = new Set(['telnet', 'ssh', 'serial'])
+      for (const [protocol, value] of Object.entries(rawSecrets)) {
+        if (!allowedProtocols.has(protocol) || typeof value !== 'string' || value.length > 4_096) {
+          throw new Error('Invalid temporary-profile credential')
+        }
+      }
+      const backendPayload: Record<string, unknown> = { ...payload }
+      for (const protocol of allowedProtocols) {
+        const value = rawSecrets[protocol as 'telnet' | 'ssh' | 'serial']
+        if (typeof value === 'string' && value) backendPayload[`${protocol}_password`] = value
+      }
+      let body = JSON.stringify(backendPayload)
+      try {
+        return await fetchBackend(
+          backend.config,
+          '/api/v1/connection-profiles',
+          'POST',
+          body
+        )
+      } finally {
+        body = ''
+        for (const protocol of allowedProtocols) backendPayload[`${protocol}_password`] = ''
+      }
+    }
+  )
 
   mainWindow = new BrowserWindow({
     width: 1560,
@@ -616,6 +673,38 @@ async function createWindow(): Promise<void> {
           path.join(manualUpgradeRoot, manualUpgradePackageName),
           Buffer.from('device-tui-manual-upgrade-smoke', 'utf8')
         )
+        const nativeTerminalPasteReady = await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const input = document.querySelector('.terminal-pane .xterm-helper-textarea')
+            const output = [...document.querySelectorAll('.xterm-rows')]
+              .map((rows) => rows.textContent || '').join('')
+            input?.focus()
+            sessionStorage.setItem('device-tui.smoke.native-terminal-paste-before', String(output.split('clipboard-smoke').length - 1))
+            return Boolean(input && document.activeElement === input)
+          })()`,
+          true
+        )
+        const previousClipboardText = clipboard.readText()
+        if (nativeTerminalPasteReady) {
+          clipboard.writeText('clipboard-smoke\r')
+          mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] })
+          mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] })
+          await new Promise((resolve) => setTimeout(resolve, 500))
+        }
+        clipboard.writeText(previousClipboardText)
+        await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const before = Number(sessionStorage.getItem('device-tui.smoke.native-terminal-paste-before') || 0)
+            const output = [...document.querySelectorAll('.xterm-rows')]
+              .map((rows) => rows.textContent || '').join('')
+            sessionStorage.setItem('device-tui.smoke.native-terminal-paste', JSON.stringify({
+              ready: ${JSON.stringify(Boolean(nativeTerminalPasteReady))},
+              before,
+              after: output.split('clipboard-smoke').length - 1
+            }))
+          })()`,
+          true
+        )
         const nativeInputProbeReady = await mainWindow.webContents.executeJavaScript(
           `(() => {
             const input = document.querySelector('.device-filter-panel input[aria-label="CPU"]')
@@ -739,19 +828,27 @@ async function createWindow(): Promise<void> {
             let realEmptyAction = {}
             let simulatedEmptyAction = {}
             let nativeInput = {}
+            let nativeTerminalPaste = {}
             try {
               realEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.real-empty-action') || '{}')
               simulatedEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.simulated-empty-action') || '{}')
               nativeInput = JSON.parse(sessionStorage.getItem('device-tui.smoke.native-input') || '{}')
+              nativeTerminalPaste = JSON.parse(sessionStorage.getItem('device-tui.smoke.native-terminal-paste') || '{}')
             } catch {
               realEmptyAction = {}
               simulatedEmptyAction = {}
               nativeInput = {}
+              nativeTerminalPaste = {}
             }
             setCheck(
               'nativeKeyboardInputReachesFocusedFields',
               nativeInput.ready && nativeInput.focused && nativeInput.value === 'input123',
               JSON.stringify(nativeInput)
+            )
+            setCheck(
+              'terminalClipboardShortcutsPreserveTerminalInput',
+              nativeTerminalPaste.ready && nativeTerminalPaste.after > nativeTerminalPaste.before,
+              JSON.stringify(nativeTerminalPaste)
             )
             setCheck(
               'emptyWorkspaceActionFollowsSelectedDevice',
@@ -1627,6 +1724,7 @@ async function createWindow(): Promise<void> {
               if (actionVersionCountAfter > actionVersionCountBefore) break
               await sleep(100)
             }
+            const terminalFocusedAfterAutomationRun = document.activeElement?.classList.contains('xterm-helper-textarea') === true
             const smokeActions = actionSmokeRule?.rule?.actions || []
             const actionSmokeAssertions = {
               status: actionWorkspaceResponse.status === 200,
@@ -1648,6 +1746,7 @@ async function createWindow(): Promise<void> {
               exit: smokeActions[4]?.kind === 'exit',
               exitPattern: smokeActions[4]?.exit_pattern === 'never-match',
               exitScope: smokeActions[4]?.exit_scope === 'rule',
+              terminalFocus: terminalFocusedAfterAutomationRun,
               executed: actionVersionCountAfter > actionVersionCountBefore
             }
             setCheck(
@@ -2135,6 +2234,22 @@ async function createWindow(): Promise<void> {
             await sleep(120)
             const commandPanel = document.querySelector('.command-workspace.open')
             const commandResizeHandle = document.querySelector('[data-testid="command-resize-handle"]')
+            const commandEditorSurface = document.querySelector('.command-editor-row textarea')
+            const commandDispatchBar = document.querySelector('.command-dispatch-actions')
+            const commandEditorRect = commandEditorSurface?.getBoundingClientRect()
+            const commandDispatchRect = commandDispatchBar?.getBoundingClientRect()
+            setCheck(
+              'commandWorkspaceHasScannableEditorAndDispatchHierarchy',
+              Boolean(document.querySelector('.command-editor-meta'))
+                && Boolean(document.querySelector('.command-target-badge'))
+                && Boolean(document.querySelector('.command-save-state'))
+                && Boolean(document.querySelector('.command-suggestions-label'))
+                && document.querySelectorAll('.command-dispatch-buttons button').length === 2
+                && Boolean(commandEditorRect && commandDispatchRect && commandDispatchRect.top >= commandEditorRect.bottom - 1),
+              'meta=' + text('.command-editor-meta')
+                + ' suggestions=' + text('.command-suggestions-label')
+                + ' actions=' + text('.command-dispatch-buttons')
+            )
             const commandInitialHeight = commandPanel?.getBoundingClientRect().height || 0
             if (commandResizeHandle) {
               const rect = commandResizeHandle.getBoundingClientRect()
@@ -2164,6 +2279,20 @@ async function createWindow(): Promise<void> {
             await sleep(220)
             const commandHeightInSmallWindow = commandPanel?.getBoundingClientRect().height || 0
             const commandStageHeightInSmallWindow = document.querySelector('.workspace-stage')?.getBoundingClientRect().height || 0
+            const commandEditorRowInSmallWindow = document.querySelector('.command-editor-row')
+            const commandDispatchInSmallWindow = document.querySelector('.command-dispatch-actions')
+            const commandEditorClientWidth = commandEditorRowInSmallWindow?.clientWidth || 0
+            const commandEditorScrollWidth = commandEditorRowInSmallWindow?.scrollWidth || 0
+            const commandDispatchClientWidth = commandDispatchInSmallWindow?.clientWidth || 0
+            const commandDispatchScrollWidth = commandDispatchInSmallWindow?.scrollWidth || 0
+            const commandNarrowLayoutFits = Boolean(
+              commandEditorRowInSmallWindow
+                && commandDispatchInSmallWindow
+                && commandEditorClientWidth > 0
+                && commandDispatchClientWidth > 0
+                && commandEditorScrollWidth <= commandEditorClientWidth + 1
+                && commandDispatchScrollWidth <= commandDispatchClientWidth + 1
+            )
             window.resizeTo(1560, 960)
             await sleep(220)
             const commandHeightAfterWindowRestore = commandPanel?.getBoundingClientRect().height || 0
@@ -2199,6 +2328,12 @@ async function createWindow(): Promise<void> {
                 + '/' + commandStageHeightInSmallWindow + ' restored=' + commandHeightAfterWindowRestore
                 + ' final=' + commandFinalHeight + ' collapseRestore=' + commandHeightAfterCollapseRestore
                 + ' stored=' + persistedCommandHeight
+            )
+            setCheck(
+              'commandWorkspaceFitsNarrowStage',
+              commandNarrowLayoutFits,
+              'editor=' + commandEditorClientWidth + '/' + commandEditorScrollWidth
+                + ' dispatch=' + commandDispatchClientWidth + '/' + commandDispatchScrollWidth
             )
             const shortcutCommandEditor = document.querySelector('.command-editor-row textarea')
             shortcutCommandEditor?.focus()
@@ -2746,6 +2881,64 @@ async function createWindow(): Promise<void> {
             smokeServerGroupElement?.querySelector('.profile-group-toggle')?.click()
             await sleep(60)
 
+            const temporaryProfileName = '直输密码烟测'
+            const temporaryProfileSecret = 'inline-temporary-secret'
+            const sessionIdBeforeTemporaryProfile = document.querySelector('.session-tab.active')?.getAttribute('data-session-tab-id') || ''
+            clickButtonByTitle('临时连接')
+            await sleep(120)
+            setValue('.search-field input[type="search"]', '')
+            clickButtonByTitle('新增连接')
+            for (let attempt = 0; attempt < 30 && !document.querySelector('.profile-dialog:not(.server-dialog)'); attempt += 1) {
+              await sleep(50)
+            }
+            const temporaryPasswordInputPresent = Boolean(document.querySelector('[data-testid="temporary-ssh-password"]'))
+            setValue('.profile-dialog:not(.server-dialog) [data-dialog-initial-focus]', temporaryProfileName)
+            setValue('.profile-dialog:not(.server-dialog) .protocol-form:nth-of-type(2) .protocol-host-field input', '127.0.0.1')
+            setValue('.profile-dialog:not(.server-dialog) .protocol-form:nth-of-type(2) input[aria-label="SSH 端口"]', '9')
+            setValue('.profile-dialog:not(.server-dialog) .protocol-form:nth-of-type(2) .protocol-user-field input', 'root')
+            setValue('[data-testid="temporary-ssh-password"]', temporaryProfileSecret)
+            document.querySelector('.profile-dialog:not(.server-dialog)')?.requestSubmit()
+            let temporaryProfile = null
+            let temporaryProfileResponse = null
+            for (let attempt = 0; attempt < 50; attempt += 1) {
+              temporaryProfileResponse = await window.desktopApi.request({ path: '/api/v1/connection-profiles' })
+              try {
+                temporaryProfile = JSON.parse(temporaryProfileResponse.body).profiles
+                  ?.find((profile) => profile.name === temporaryProfileName) || null
+              } catch {
+                temporaryProfile = null
+              }
+              if (temporaryProfile?.ssh?.has_password) break
+              await sleep(100)
+            }
+            const temporarySessionsResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
+            let temporarySessionCreated = false
+            try {
+              temporarySessionCreated = JSON.parse(temporarySessionsResponse.body).sessions
+                ?.some((session) => session.device_id === temporaryProfile?.id && session.kind === 'ssh') || false
+            } catch {
+              temporarySessionCreated = false
+            }
+            setCheck(
+              'temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup',
+              temporaryPasswordInputPresent
+                && temporaryProfileResponse?.status === 200
+                && temporaryProfile?.ssh?.has_password === true
+                && !temporaryProfileResponse.body.includes(temporaryProfileSecret)
+                && temporarySessionCreated
+                && !document.querySelector('.profile-dialog'),
+              JSON.stringify({
+                temporaryPasswordInputPresent,
+                hasPassword: temporaryProfile?.ssh?.has_password,
+                temporarySessionCreated,
+                dialogOpen: Boolean(document.querySelector('.profile-dialog'))
+              })
+            )
+            const previousSessionTab = [...document.querySelectorAll('.session-tab[data-session-tab-id]')]
+              .find((tab) => tab.getAttribute('data-session-tab-id') === sessionIdBeforeTemporaryProfile)
+            previousSessionTab?.querySelector('.session-tab-select')?.click()
+            await sleep(120)
+
             let profileRows = 0
             let profileMenuText = ''
             for (const title of ['临时连接', '服务器']) {
@@ -2766,6 +2959,8 @@ async function createWindow(): Promise<void> {
             )
             clickButtonByTitle('设备与终端')
             await sleep(80)
+            document.querySelector('.device-session-tab[data-device-tab-id="MOCK-LAB-000"] .device-session-tab-select')?.click()
+            await sleep(120)
 
             const sessionsBeforeSplitResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
             let sessionsBeforeSplit = []

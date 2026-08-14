@@ -87,6 +87,8 @@ export interface ConnectionProfilePayload {
   allow_duplicate?: boolean
 }
 
+export type ConnectionProfileSecrets = Partial<Record<'telnet' | 'ssh' | 'serial', string>>
+
 export interface CommandGroup {
   id: string
   name: string

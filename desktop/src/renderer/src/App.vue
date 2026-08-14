@@ -54,6 +54,7 @@ import {
 } from './contextMenu'
 import type {
   ConnectionProfilePayload,
+  ConnectionProfileSecrets,
   ConnectionProfileSummary,
   DeviceSummary,
   ProfileType,
@@ -1174,10 +1175,11 @@ function showGroupDialog(event?: Event): void {
 
 async function saveProfile(
   payload: ConnectionProfilePayload,
-  connectAfterSave = false
+  connectAfterSave = false,
+  secrets: ConnectionProfileSecrets = {}
 ): Promise<void> {
   savingProfile.value = true
-  let saved = await workspace.saveProfile(payload, editingProfile.value?.id)
+  let saved = await workspace.saveProfile(payload, editingProfile.value?.id, secrets)
   if (
     !saved
     && workspace.errorCode === 'conflict'
@@ -1185,7 +1187,8 @@ async function saveProfile(
   ) {
     saved = await workspace.saveProfile(
       { ...payload, allow_duplicate: true },
-      editingProfile.value?.id
+      editingProfile.value?.id,
+      secrets
     )
   }
   savingProfile.value = false

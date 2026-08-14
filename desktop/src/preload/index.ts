@@ -32,6 +32,11 @@ interface DeviceConnectionRequest {
   username: string
 }
 
+interface TemporaryProfileSaveRequest {
+  payload: Record<string, unknown>
+  secrets: Partial<Record<'telnet' | 'ssh' | 'serial', string>>
+}
+
 interface SessionLogExportRequest {
   suggestedName: string
   content: string
@@ -47,6 +52,8 @@ const desktopApi = {
     ipcRenderer.invoke('credential:open-device-session', request),
   manageProfileCredential: (request: ProfileCredentialRequest): Promise<boolean> =>
     ipcRenderer.invoke('credential:manage-profile', request),
+  saveTemporaryProfile: (request: TemporaryProfileSaveRequest): Promise<BackendResponse> =>
+    ipcRenderer.invoke('credential:create-temporary-profile', request),
   chooseTransferRoot: (): Promise<string> =>
     ipcRenderer.invoke('file-transfer:choose-root'),
   chooseSessionLogDirectory: (): Promise<string> =>
@@ -57,6 +64,10 @@ const desktopApi = {
     ipcRenderer.invoke('logs:open-session', sessionId),
   saveSessionLog: (request: SessionLogExportRequest): Promise<boolean> =>
     ipcRenderer.invoke('logs:save-copy', request),
+  readClipboardText: (): Promise<string> =>
+    ipcRenderer.invoke('clipboard:read-text'),
+  writeClipboardText: (value: string): Promise<boolean> =>
+    ipcRenderer.invoke('clipboard:write-text', value),
   setAlwaysOnTop: (enabled: boolean): Promise<boolean> =>
     ipcRenderer.invoke('window:set-always-on-top', enabled),
   onBackendExit: (callback: (details: string) => void): (() => void) => {

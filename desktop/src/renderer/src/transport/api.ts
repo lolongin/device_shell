@@ -4,6 +4,7 @@ import type {
   ConnectionProfileListResponse,
   ConnectionProfileGroupListResponse,
   ConnectionProfilePayload,
+  ConnectionProfileSecrets,
   ConnectionProfileSummary,
   CommandWorkspaceResponse,
   CommandSuggestionResponse,
@@ -52,12 +53,7 @@ export class BackendApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
-  const response = await window.desktopApi.request({
-    path,
-    method: init.method,
-    body: init.body
-  })
+export function parseBackendResponse<T>(response: BackendResponse): T {
   if (response.status < 200 || response.status >= 300) {
     const raw = response.body
     let message = raw
@@ -82,6 +78,15 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   return JSON.parse(response.body) as T
 }
 
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const response = await window.desktopApi.request({
+    path,
+    method: init.method,
+    body: init.body
+  })
+  return parseBackendResponse<T>(response)
+}
+
 export const desktopApi = {
   devices: (): Promise<DeviceListResponse> => request('/api/v1/devices'),
   connectionProfiles: (): Promise<ConnectionProfileListResponse> =>
@@ -98,6 +103,12 @@ export const desktopApi = {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
+  createTemporaryProfileWithSecrets: async (
+    payload: ConnectionProfilePayload,
+    secrets: ConnectionProfileSecrets
+  ): Promise<ConnectionProfileSummary> => parseBackendResponse<ConnectionProfileSummary>(
+    await window.desktopApi.saveTemporaryProfile({ payload, secrets })
+  ),
   updateConnectionProfile: (
     profileId: string,
     payload: ConnectionProfilePayload

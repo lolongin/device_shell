@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { BackendApiError, applicationEventSocketUrl, desktopApi } from '../transport/api'
 import type {
   ConnectionProfilePayload,
+  ConnectionProfileSecrets,
   ConnectionProfileSummary,
   CommandGroup,
   CommandHistoryItem,
@@ -495,14 +496,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function saveProfile(
     payload: ConnectionProfilePayload,
-    profileId = ''
+    profileId = '',
+    secrets: ConnectionProfileSecrets = {}
   ): Promise<ConnectionProfileSummary | null> {
     error.value = ''
     errorCode.value = ''
     try {
       const saved = profileId
         ? await desktopApi.updateConnectionProfile(profileId, payload)
-        : await desktopApi.createConnectionProfile(payload)
+        : payload.profile_type === 'temporary'
+          ? await desktopApi.createTemporaryProfileWithSecrets(payload, secrets)
+          : await desktopApi.createConnectionProfile(payload)
       const index = profiles.value.findIndex((profile) => profile.id === saved.id)
       if (index >= 0) profiles.value[index] = saved
       else profiles.value.push(saved)

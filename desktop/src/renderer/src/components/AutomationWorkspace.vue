@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CircleStop,
   ChevronDown,
@@ -283,7 +283,27 @@ function prepareClose(): boolean {
 }
 
 function requestClose(): void {
-  workspace.closeAutomationPanel()
+  if (!workspace.closeAutomationPanel()) return
+  void nextTick(focusActiveTerminal)
+}
+
+function focusActiveTerminal(): void {
+  if (!workspace.activeSessionId) return
+  window.dispatchEvent(new CustomEvent('device-tui:focus-terminal', {
+    detail: { sessionId: workspace.activeSessionId }
+  }))
+}
+
+async function runSelectedRule(): Promise<void> {
+  if (!selectedRecord.value) return
+  if (await workspace.triggerAutomationRule(selectedRecord.value.id)) {
+    focusActiveTerminal()
+  }
+}
+
+async function cancelAutomationAndFocusTerminal(): Promise<void> {
+  await workspace.cancelActiveAutomation()
+  focusActiveTerminal()
 }
 
 function activityLabel(event: AutomationActivityRecord['event']): string {
@@ -774,14 +794,14 @@ onBeforeUnmount(() => {
                 :title="runActionHint"
                 aria-describedby="automation-run-hint"
                 :disabled="!activeSessionConnected || !selectedRecord.rule.enabled || selectedInProgress || workspace.automationBusy"
-                @click="workspace.triggerAutomationRule(selectedRecord.id)"
+                @click="runSelectedRule"
               ><Play :size="13" />{{ selectedRunning ? '运行中' : selectedWaiting ? '等待中' : '运行一次' }}</button>
               <button
                 v-if="workspace.activeAutomationStatus?.running_rule_ids.length || workspace.activeAutomationStatus?.waiting_rule_ids.length"
                 class="secondary-button danger-button"
                 type="button"
                 :disabled="workspace.automationBusy"
-                @click="workspace.cancelActiveAutomation"
+                @click="cancelAutomationAndFocusTerminal"
               ><CircleStop :size="13" />停止</button>
               <span id="automation-run-hint" class="automation-run-hint" :data-ready="activeSessionConnected && Boolean(selectedRecord?.rule.enabled)">
                 <i aria-hidden="true"></i>{{ runActionHint }}

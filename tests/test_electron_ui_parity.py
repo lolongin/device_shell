@@ -258,6 +258,7 @@ def test_electron_advanced_automation_editor_covers_python_action_model() -> Non
 def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
@@ -275,6 +276,14 @@ def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
     assert "overflow-x: auto" in styles
     assert "terminalAutomationKeepsTerminalVisibleAndInteractive" in main
     assert "leftOperationWorkbenchWidthResizePersists" in main
+    assert "device-tui:focus-terminal" in automation
+    assert "device-tui:focus-terminal" in terminal
+    assert "handleTerminalFocusRequest" in terminal
+    assert "document.querySelector('.automation-workspace')" in terminal
+    assert "runSelectedRule" in automation
+    assert "cancelAutomationAndFocusTerminal" in automation
+    assert "terminalFocusedAfterAutomationRun" in main
+    assert "terminalClipboardShortcutsPreserveTerminalInput" in main
 
 
 def test_electron_restores_renderer_focus_and_accepts_native_keyboard_input() -> None:
@@ -782,9 +791,13 @@ def test_electron_terminal_keeps_legacy_context_menu_actions() -> None:
     assert "terminal?.getSelection()" in terminal
     assert "terminalBufferText" in terminal
     assert "terminal?.clear()" in terminal
-    assert "navigator.clipboard.readText()" in terminal
-    assert "navigator.clipboard.writeText" in terminal
+    assert "window.desktopApi.readClipboardText()" in terminal
+    assert "window.desktopApi.writeClipboardText" in terminal
     assert "socket?.send(JSON.stringify({ type: 'terminal.input', data: text }))" in terminal
+    assert "attachCustomKeyEventHandler(handleTerminalClipboardShortcut)" in terminal
+    assert "key === 'c' && terminal?.hasSelection()" in terminal
+    assert "key === 'v'" in terminal
+    assert "Ctrl+C without a selection" in terminal
     assert ".terminal-context-menu" in styles
     assert ".terminal-context-menu button:disabled" in styles
     assert ".terminal-context-menu button:focus-visible" in styles
@@ -1034,8 +1047,8 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
     ):
         assert label in command
 
-    assert "navigator.clipboard.writeText(command)" in command
-    assert "navigator.clipboard.readText()" in command
+    assert "window.desktopApi.writeClipboardText(command)" in command
+    assert "window.desktopApi.readClipboardText()" in command
     assert '@click="closeCommandGroupContextMenu(); closeEditorContextMenu()"' in command
     assert "selectCurrentCommandLine" in command
     assert "clearCurrentCommandGroup" in command
@@ -1045,6 +1058,14 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
     assert "dispatchScopeLabel" in command
     assert "dispatchTargetLabel" in command
     assert ".command-dispatch-context" in styles
+    assert "visibleCommandSuggestions" in command
+    assert "saveStateLabel" in command
+    assert 'class="command-editor-meta"' in command
+    assert 'class="command-target-badge"' in command
+    assert 'class="command-dispatch-buttons"' in command
+    assert "@container (max-width: 700px)" in styles
+    assert "commandWorkspaceHasScannableEditorAndDispatchHierarchy" in MAIN_TS.read_text(encoding="utf-8")
+    assert "commandWorkspaceFitsNarrowStage" in MAIN_TS.read_text(encoding="utf-8")
 
 
 def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
@@ -1246,8 +1267,13 @@ def test_connection_profile_dialog_explains_and_enforces_readiness() -> None:
     assert '@keydown.esc.prevent="emit(\'close\')"' in dialog
     assert "protocol-host-field" in dialog
     assert "protocol-user-field" in dialog
+    assert 'data-testid="temporary-ssh-password"' in dialog
+    assert "createTemporaryProfileWithSecrets" in WORKSPACE_STORE.read_text(encoding="utf-8")
+    assert "credential:create-temporary-profile" in MAIN_TS.read_text(encoding="utf-8")
+    assert "temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup" in MAIN_TS.read_text(encoding="utf-8")
     assert ".profile-readiness" in styles
     assert ".protocol-field" in styles
+    assert ".protocol-secret-field" in styles
 
 
 def test_electron_modal_dialogs_share_keyboard_focus_management() -> None:
