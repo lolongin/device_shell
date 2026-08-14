@@ -563,7 +563,41 @@ async function createWindow(): Promise<void> {
       console.log(`[renderer] sessionTabs=${sessionTabs}`)
       if (process.env.DEVICE_TUI_CAPTURE_TERMINAL === '1') {
         await mainWindow.webContents.executeJavaScript(
-          "document.querySelector('.empty-workspace .primary-button')?.click()",
+          `(() => {
+            const realDevice = [...document.querySelectorAll('.device-table-row')]
+              .find((row) => row.getAttribute('data-device-row-id') === 'MOCK-LAB-000::0001')
+            realDevice?.click()
+          })()`,
+          true
+        )
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const action = document.querySelector('.empty-workspace .primary-button')
+            const context = document.querySelector('.empty-workspace-context')
+            sessionStorage.setItem('device-tui.smoke.real-empty-action', JSON.stringify({
+              action: action?.textContent?.trim() || '',
+              context: context?.textContent?.trim() || '',
+              disabled: Boolean(action?.disabled)
+            }))
+            const simulator = [...document.querySelectorAll('.device-table-row')]
+              .find((row) => row.getAttribute('data-device-row-id') === 'SIM-TERMINAL::0000')
+            simulator?.click()
+          })()`,
+          true
+        )
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const action = document.querySelector('.empty-workspace .primary-button')
+            const context = document.querySelector('.empty-workspace-context')
+            sessionStorage.setItem('device-tui.smoke.simulated-empty-action', JSON.stringify({
+              action: action?.textContent?.trim() || '',
+              context: context?.textContent?.trim() || '',
+              disabled: Boolean(action?.disabled)
+            }))
+            action?.click()
+          })()`,
           true
         )
         await new Promise((resolve) => setTimeout(resolve, 1_800))
@@ -650,7 +684,36 @@ async function createWindow(): Promise<void> {
               const body = text(selector)
               return expected.every((label) => body.includes(label))
             }
+            const menuFitsViewport = (selector) => {
+              const menu = document.querySelector(selector)
+              if (!menu) return false
+              const rect = menu.getBoundingClientRect()
+              return rect.left >= 7
+                && rect.top >= 7
+                && rect.right <= window.innerWidth - 7
+                && rect.bottom <= window.innerHeight - 7
+            }
             const columns = labels('.device-table-header [role="columnheader"]')
+            let realEmptyAction = {}
+            let simulatedEmptyAction = {}
+            try {
+              realEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.real-empty-action') || '{}')
+              simulatedEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.simulated-empty-action') || '{}')
+            } catch {
+              realEmptyAction = {}
+              simulatedEmptyAction = {}
+            }
+            setCheck(
+              'emptyWorkspaceActionFollowsSelectedDevice',
+              realEmptyAction.action?.includes('Mock-Huawei-Lab')
+                && realEmptyAction.action?.includes('SSH')
+                && realEmptyAction.context?.includes('SSH')
+                && !realEmptyAction.disabled
+                && simulatedEmptyAction.action === '打开模拟终端'
+                && simulatedEmptyAction.context?.includes('模拟终端')
+                && !simulatedEmptyAction.disabled,
+              JSON.stringify({ realEmptyAction, simulatedEmptyAction })
+            )
             setCheck(
               'legacyDeviceColumns',
               ['序号', '设备', '板类型', 'CPU', 'Slot', '状态'].every((label) => columns.includes(label)),
@@ -691,6 +754,23 @@ async function createWindow(): Promise<void> {
                 && navigatorDetail.parentElement?.classList.contains('navigator')
                 && !navigatorDetail.hasAttribute('hidden'),
               navigatorDetail?.parentElement?.className || ''
+            )
+            document.querySelector('.navigator-detail .property-copy-button')?.click()
+            await sleep(80)
+            const actionableNotice = document.querySelector('.notice-banner[data-state="success"]')
+            const actionableNoticeClose = actionableNotice?.querySelector('button[title="关闭通知"]')
+            actionableNoticeClose?.click()
+            await sleep(40)
+            setCheck(
+              'globalNoticeIsSemanticAndDismissible',
+              Boolean(actionableNotice)
+                && Boolean(actionableNotice?.querySelector('svg'))
+                && Boolean(actionableNoticeClose)
+                && !document.querySelector('.notice-banner'),
+              'notice=' + Boolean(actionableNotice)
+                + ' icon=' + Boolean(actionableNotice?.querySelector('svg'))
+                + ' close=' + Boolean(actionableNoticeClose)
+                + ' dismissed=' + !document.querySelector('.notice-banner')
             )
             document.querySelector('.navigator-detail-header .icon-button')?.click()
             await sleep(40)
@@ -804,6 +884,18 @@ async function createWindow(): Promise<void> {
               !cpuValue || (deviceRows().length > 0 && Boolean(document.querySelector('.summary-clear'))),
               cpuValue + ' rows=' + deviceRows().length
             )
+            setValue('.search-field input[type="search"]', '__no_matching_device__')
+            await sleep(120)
+            const deviceEmptyState = document.querySelector('.device-table-empty')
+            setCheck(
+              'deviceSearchNoResultsIsActionable',
+              deviceRows().length === 0
+                && Boolean(deviceEmptyState)
+                && Boolean(deviceEmptyState?.querySelector('button')),
+              text('.device-table-empty')
+            )
+            deviceEmptyState?.querySelector('button')?.click()
+            await sleep(120)
             document.querySelector('.summary-clear')?.click()
             for (let attempt = 0; attempt < 30; attempt += 1) {
               const rowCount = deviceRows().length
@@ -877,16 +969,45 @@ async function createWindow(): Promise<void> {
               await sleep(50)
             }
 
+            const settingsTrigger = document.querySelector('.rail-button[title="设置"]')
             clickButtonByTitle('设置')
             for (let attempt = 0; attempt < 30 && !document.querySelector('.settings-panel'); attempt += 1) {
               await sleep(50)
             }
+            const settingsPanel = document.querySelector('.settings-panel')
+            const settingsInitialFocus = document.activeElement === settingsPanel?.querySelector('[data-dialog-initial-focus]')
+            const settingsFocusable = [...(settingsPanel?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])]
+            const settingsFirstFocusable = settingsFocusable[0]
+            const settingsLastFocusable = settingsFocusable[settingsFocusable.length - 1]
+            settingsLastFocusable?.focus()
+            settingsLastFocusable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+            const settingsFocusWrapped = document.activeElement === settingsFirstFocusable
             setCheck(
               'settingsPanelExposesLegacyControls',
               Boolean(document.querySelector('.settings-panel[role="dialog"]'))
                 && ['工作台设置', '会话页签布局', '右侧会话栏默认折叠', '终端字体大小', '会话日志', '保存目录', '单个日志分卷大小']
                   .every((label) => text('.settings-panel').includes(label)),
               text('.settings-panel')
+            )
+            const settingsPanelRect = settingsPanel?.getBoundingClientRect()
+            const settingsActionBarRect = document.querySelector('.settings-action-bar')?.getBoundingClientRect()
+            const settingsScrollRect = document.querySelector('.settings-scroll')?.getBoundingClientRect()
+            setCheck(
+              'settingsActionsRemainVisibleOutsideScrollRegion',
+              Boolean(settingsPanelRect)
+                && Boolean(settingsActionBarRect)
+                && Boolean(settingsScrollRect)
+                && Math.abs(settingsActionBarRect.bottom - settingsPanelRect.bottom) <= 1
+                && settingsActionBarRect.top >= settingsScrollRect.bottom - 1
+                && document.querySelector('.settings-action-bar .settings-save')?.getClientRects().length > 0,
+              'panel=' + (settingsPanelRect?.top || 0) + '-' + (settingsPanelRect?.bottom || 0)
+                + ' scroll=' + (settingsScrollRect?.top || 0) + '-' + (settingsScrollRect?.bottom || 0)
+                + ' actions=' + (settingsActionBarRect?.top || 0) + '-' + (settingsActionBarRect?.bottom || 0)
+            )
+            setCheck(
+              'settingsDialogTrapsAndRestoresFocus',
+              settingsInitialFocus && settingsFocusWrapped,
+              'initial=' + settingsInitialFocus + ' wrapped=' + settingsFocusWrapped
             )
             const sideLayoutButton = [...document.querySelectorAll('.settings-panel button')]
               .find((button) => button.textContent?.trim() === '右侧')
@@ -923,6 +1044,7 @@ async function createWindow(): Promise<void> {
             chooseLogDirectory?.click()
             await sleep(120)
             setValue('.settings-panel input[type="number"]', '7')
+            const dirtyLogState = Boolean(document.querySelector('.settings-dirty-state[data-dirty="true"]'))
             const saveLogSettings = [...document.querySelectorAll('.settings-panel button')]
               .find((button) => (button.textContent || '').includes('保存日志设置'))
             saveLogSettings?.click()
@@ -944,24 +1066,109 @@ async function createWindow(): Promise<void> {
                 && String(savedLogSettings.directory || '').includes('configured-session-logs'),
               logSettingsResponse.body
             )
-            clickButtonByTitle('关闭设置')
+            setCheck(
+              'settingsUnsavedLogChangesAreVisible',
+              dirtyLogState && Boolean(document.querySelector('.settings-dirty-state[data-dirty="false"]')),
+              text('.settings-dirty-state')
+            )
+            document.querySelector('.settings-panel')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
             await sleep(60)
+            const settingsFocusRestored = document.activeElement === settingsTrigger
+            const helpTrigger = document.querySelector('.rail-button[title="帮助"]')
             clickButtonByTitle('帮助')
             await sleep(60)
+            const helpPanel = document.querySelector('.help-panel')
+            const helpInitialFocus = document.activeElement === helpPanel?.querySelector('[data-dialog-initial-focus]')
+            const helpFocusable = [...(helpPanel?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])]
+            const helpFirstFocusable = helpFocusable[0]
+            const helpLastFocusable = helpFocusable[helpFocusable.length - 1]
+            helpLastFocusable?.focus()
+            helpLastFocusable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+            const helpFocusWrapped = document.activeElement === helpFirstFocusable
+            setValue('.help-search-field input', 'FTP')
+            await sleep(40)
+            const helpSearchFindsOperation = document.querySelectorAll('.help-shortcut-group').length === 1
+              && text('.help-shortcut-group').includes('启动 FTP/SFTP 服务')
+              && text('.help-search-bar').includes('1 项操作')
+            setValue('.help-search-field input', 'no-such-help-action')
+            await sleep(40)
+            const helpNoResultsActionable = Boolean(document.querySelector('.help-empty'))
+              && text('.help-empty').includes('没有匹配的操作')
+              && Boolean(document.querySelector('.help-empty button'))
+            document.querySelector('.help-empty button')?.click()
+            await sleep(40)
             setCheck(
               'helpPanelIsFunctional',
               Boolean(document.querySelector('.help-panel[role="dialog"]'))
                 && text('.help-panel').includes('操作帮助')
-                && text('.help-panel').includes('安全边界'),
+                && text('.help-panel').includes('安全边界')
+                && document.querySelectorAll('.help-shortcut-group').length === 5
+                && document.querySelectorAll('.help-categories button').length === 6
+                && helpSearchFindsOperation
+                && helpNoResultsActionable,
               text('.help-panel')
             )
-            clickButtonByTitle('关闭帮助')
+            document.querySelector('.help-panel')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
             await sleep(40)
+            setCheck(
+              'modalPanelsKeepKeyboardFocusContained',
+              settingsFocusRestored
+                && helpInitialFocus
+                && helpFocusWrapped
+                && document.activeElement === helpTrigger,
+              'settingsRestore=' + settingsFocusRestored
+                + ' helpInitial=' + helpInitialFocus
+                + ' helpWrapped=' + helpFocusWrapped
+                + ' helpRestore=' + (document.activeElement === helpTrigger)
+            )
 
             setCheck(
               'deviceContextMenu',
               openContextMenu('.device-list.device-table-list > .device-table-row') && await sleep(40).then(() => menuHasLabels('.device-context-menu', ['复制设备行', '复制 SSH IP', '复制 Telnet IP', '复制串口 IP', '复制连接信息', '占用', '掉电', '打开设备管理口', '打开 Linux 后台', '打开串口'])),
               text('.device-context-menu')
+            )
+            const edgeDeviceRow = document.querySelector('.device-list.device-table-list > .device-table-row')
+            edgeDeviceRow?.dispatchEvent(new MouseEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              clientX: window.innerWidth - 2,
+              clientY: window.innerHeight - 2
+            }))
+            await sleep(60)
+            const edgeDeviceMenu = document.querySelector('.device-context-menu')
+            setCheck(
+              'contextMenusStayInsideViewportAndFocusFirstAction',
+              menuFitsViewport('.device-context-menu')
+                && document.activeElement?.closest('.device-context-menu') === edgeDeviceMenu
+                && document.activeElement?.getAttribute('role') === 'menuitem',
+              edgeDeviceMenu ? JSON.stringify(edgeDeviceMenu.getBoundingClientRect().toJSON()) : 'missing'
+            )
+            const enabledDeviceMenuItems = [...(edgeDeviceMenu?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [])]
+              .filter((item) => item.getClientRects().length > 0)
+            const firstDeviceMenuItem = enabledDeviceMenuItems[0]
+            const secondDeviceMenuItem = enabledDeviceMenuItems[1]
+            const lastDeviceMenuItem = enabledDeviceMenuItems[enabledDeviceMenuItems.length - 1]
+            document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+            const arrowMovedToSecond = document.activeElement === secondDeviceMenuItem
+            document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
+            const endMovedToLast = document.activeElement === lastDeviceMenuItem
+            document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }))
+            const homeMovedToFirst = document.activeElement === firstDeviceMenuItem
+            document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+            await sleep(40)
+            setCheck(
+              'contextMenusSupportKeyboardNavigationAndRestoreFocus',
+              enabledDeviceMenuItems.length >= 3
+                && arrowMovedToSecond
+                && endMovedToLast
+                && homeMovedToFirst
+                && !document.querySelector('.device-context-menu')
+                && document.activeElement === edgeDeviceRow,
+              'items=' + enabledDeviceMenuItems.length
+                + ' arrow=' + arrowMovedToSecond
+                + ' end=' + endMovedToLast
+                + ' home=' + homeMovedToFirst
+                + ' restored=' + (document.activeElement === edgeDeviceRow)
             )
             document.querySelector('.workspace-stage')?.click()
             await sleep(40)
@@ -1064,7 +1271,8 @@ async function createWindow(): Promise<void> {
             const matchingManagerGroups = document.querySelectorAll('.session-device-group').length
             setValue('.session-manager-search-row input', 'no-such-session')
             await sleep(60)
-            const managerEmptyForMissingQuery = text('.session-manager-tree').includes('没有匹配的设备或会话')
+            const managerEmptyForMissingQuery = Boolean(document.querySelector('.session-manager-empty'))
+              && text('.session-manager-empty').includes('没有匹配结果')
             setValue('.session-manager-search-row input', '')
             await sleep(60)
             setCheck(
@@ -1183,6 +1391,7 @@ async function createWindow(): Promise<void> {
             document.querySelector('[data-testid="automation-mode-steps"]')?.click()
             await sleep(60)
             setValue('.automation-step-response-text', 'display version')
+            setValue('.automation-step-timeout', '2500')
             const stepAppendEnter = document.querySelector('.automation-step-response-append')
             if (stepAppendEnter && !stepAppendEnter.checked) stepAppendEnter.click()
             const versionCountBeforeStepRun = [...document.querySelectorAll('.xterm-rows')]
@@ -1208,13 +1417,19 @@ async function createWindow(): Promise<void> {
               if (versionCountAfterStepRun > versionCountBeforeStepRun) break
               await sleep(100)
             }
+            const stepSmokeAssertions = {
+              status: stepWorkspaceResponse.status === 200,
+              found: Boolean(stepSmokeRule),
+              response: stepSmokeRule?.rule?.steps?.[0]?.response_texts?.[0] === 'display version',
+              appendEnter: stepSmokeRule?.rule?.steps?.[0]?.response_append_enters?.[0] === true,
+              timeout: stepSmokeRule?.rule?.steps?.[0]?.timeout_ms === 2500,
+              executed: versionCountAfterStepRun > versionCountBeforeStepRun
+            }
             setCheck(
               'advancedAutomationStepEditorPersistsAndRuns',
-              stepWorkspaceResponse.status === 200
-                && stepSmokeRule?.rule?.steps?.[0]?.response_texts?.[0] === 'display version'
-                && stepSmokeRule?.rule?.steps?.[0]?.response_append_enters?.[0] === true
-                && versionCountAfterStepRun > versionCountBeforeStepRun,
-              stepWorkspaceResponse.body + ' versions=' + versionCountBeforeStepRun + '->' + versionCountAfterStepRun
+              Object.values(stepSmokeAssertions).every(Boolean),
+              JSON.stringify(stepSmokeAssertions)
+                + ' versions=' + versionCountBeforeStepRun + '->' + versionCountAfterStepRun
             )
 
             document.querySelector('.automation-new-button')?.click()
@@ -1225,7 +1440,10 @@ async function createWindow(): Promise<void> {
             await sleep(60)
             setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-text', 'display version')
             await sleep(30)
-            setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-target', 'next')
+            setValue(
+              '.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-target',
+              'session-id:' + automationTargetSessionId
+            )
             await sleep(30)
             setValue('.automation-action-list[data-depth="0"] > .automation-action-card.kind-send .automation-action-send-delay', '25')
             await sleep(30)
@@ -1287,7 +1505,7 @@ async function createWindow(): Promise<void> {
             const actionSmokeAssertions = {
               status: actionWorkspaceResponse.status === 200,
               rootSend: smokeActions[0]?.kind === 'send',
-              target: smokeActions[0]?.target === 'next',
+              target: smokeActions[0]?.target === 'session-id:' + automationTargetSessionId,
               delay: smokeActions[0]?.delay_ms === 25,
               appendEnter: smokeActions[0]?.append_enter === true,
               loop: smokeActions[1]?.kind === 'loop',
@@ -1308,15 +1526,121 @@ async function createWindow(): Promise<void> {
               JSON.stringify(actionSmokeAssertions)
                 + ' versions=' + actionVersionCountBefore + '->' + actionVersionCountAfter
             )
+            document.querySelector('.automation-activity-toggle')?.click()
+            await sleep(80)
+            const activityEvents = [...document.querySelectorAll('.automation-activity-row')]
+              .map((row) => row.getAttribute('data-event') || '')
+            const activityText = text('.automation-activity-list')
+            setCheck(
+              'automationActivityShowsLifecycle',
+              activityEvents.includes('started')
+                && activityEvents.includes('sent')
+                && activityEvents.includes('completed')
+                && activityText.includes('动作流烟测')
+                && activityText.includes('已发送自动化响应'),
+              JSON.stringify({ activityEvents, activityText })
+            )
+            document.querySelector('[data-testid="automation-clone"]')?.click()
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              if ([...document.querySelectorAll('.automation-rule-row strong')]
+                .some((node) => node.textContent?.trim() === '动作流烟测 副本')) break
+              await sleep(100)
+            }
+            const cloneWorkspaceResponse = await window.desktopApi.request({ path: '/api/v1/automation/workspace' })
+            let clonedSmokeRule = null
+            try {
+              clonedSmokeRule = JSON.parse(cloneWorkspaceResponse.body).rules
+                ?.find((record) => record.rule?.name === '动作流烟测 副本') || null
+            } catch {
+              clonedSmokeRule = null
+            }
+            const cloneSmokeAssertions = {
+              status: cloneWorkspaceResponse.status === 200,
+              found: Boolean(clonedSmokeRule),
+              disabled: clonedSmokeRule?.rule?.enabled === false,
+              resetCount: clonedSmokeRule?.rule?.trigger_count === 0,
+              actionsPreserved: clonedSmokeRule?.rule?.actions?.length === smokeActions.length,
+              selected: text('.automation-editor-toolbar').includes('动作流烟测 副本')
+                || document.querySelector('[data-testid="automation-name"]')?.value === '动作流烟测 副本'
+            }
+            setCheck(
+              'automationCloneCreatesDisabledIndependentRule',
+              Object.values(cloneSmokeAssertions).every(Boolean),
+              JSON.stringify(cloneSmokeAssertions)
+            )
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'f',
+              ctrlKey: true,
+              bubbles: true,
+              cancelable: true
+            }))
+            await sleep(30)
+            const automationSearch = document.querySelector('.automation-rule-search input')
+            const automationSearchFocused = document.activeElement === automationSearch
+            setValue('.automation-rule-search input', '动作流烟测')
+            setValue('.automation-rule-filter', 'enabled')
+            await sleep(40)
+            const filteredRuleNames = [...document.querySelectorAll('.automation-rule-row strong')]
+              .map((node) => node.textContent?.trim() || '')
+            setValue('.automation-rule-search input', '不存在的自动化规则')
+            await sleep(40)
+            const automationEmptySearchVisible = text('.automation-rule-list').includes('没有匹配的规则')
+            automationSearch?.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape',
+              bubbles: true,
+              cancelable: true
+            }))
+            await sleep(40)
+            const automationEscapeClearedSearch = automationSearch?.value === ''
+            setValue('.automation-rule-filter', 'all')
+            setCheck(
+              'automationRuleSearchAndFilter',
+              automationSearchFocused
+                && filteredRuleNames.length === 1
+                && filteredRuleNames[0] === '动作流烟测'
+                && automationEmptySearchVisible
+                && automationEscapeClearedSearch,
+              JSON.stringify({
+                automationSearchFocused,
+                filteredRuleNames,
+                automationEmptySearchVisible,
+                automationEscapeClearedSearch
+              })
+            )
+            setValue('[data-testid="automation-name"]', '未保存关闭保护烟测')
+            await sleep(50)
+            const nativeConfirm = window.confirm
+            window.confirm = () => false
             document.querySelector('button[aria-label="关闭自动化面板"]')?.click()
-            await sleep(60)
+            await sleep(50)
+            const unsavedCloseStayedOpen = Boolean(document.querySelector('.automation-workspace'))
+            const unsavedStateVisible = document.querySelector('.automation-draft-state')?.getAttribute('data-dirty') === 'true'
+            window.confirm = () => true
+            document.querySelector('button[aria-label="关闭自动化面板"]')?.click()
+            await sleep(50)
+            const confirmedCloseSucceeded = !document.querySelector('.automation-workspace')
+            window.confirm = nativeConfirm
+            setCheck(
+              'automationUnsavedDraftGuardsClose',
+              unsavedCloseStayedOpen && unsavedStateVisible && confirmedCloseSucceeded,
+              JSON.stringify({ unsavedCloseStayedOpen, unsavedStateVisible, confirmedCloseSucceeded })
+            )
 
             const quickSendName = '快捷烟测'
             const editedQuickSendName = '快捷烟测-已编辑'
+            const quickSendAddTrigger = document.querySelector('[data-testid="quick-send-add"]')
             click('[data-testid="quick-send-add"]')
             for (let attempt = 0; attempt < 30 && !document.querySelector('.quick-send-dialog'); attempt += 1) {
               await sleep(50)
             }
+            const quickSendDialogInitialFocus = document.activeElement === document.querySelector('.quick-send-dialog [data-dialog-initial-focus]')
+            const quickSendDialogFocusable = [...document.querySelectorAll('.quick-send-dialog button:not([disabled]), .quick-send-dialog input:not([disabled]), .quick-send-dialog select:not([disabled]), .quick-send-dialog textarea:not([disabled]), .quick-send-dialog [tabindex]:not([tabindex="-1"])')]
+            const quickSendDialogFirstFocusable = quickSendDialogFocusable[0]
+            const quickSendDialogLastFocusable = quickSendDialogFocusable[quickSendDialogFocusable.length - 1]
+            quickSendDialogLastFocusable?.focus()
+            quickSendDialogLastFocusable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+            const quickSendDialogFocusWrapped = document.activeElement === quickSendDialogFirstFocusable
+            document.querySelector('.quick-send-dialog [data-dialog-initial-focus]')?.focus()
             setValue('[data-testid="quick-send-name"]', quickSendName)
             setValue('[data-testid="quick-send-response"]', 'display version')
             const appendEnterOption = [...document.querySelectorAll('.quick-send-option')]
@@ -1328,6 +1652,15 @@ async function createWindow(): Promise<void> {
               if ([...document.querySelectorAll('.quick-send-button')].some((button) => button.textContent?.trim() === quickSendName)) break
               await sleep(100)
             }
+            setCheck(
+              'quickSendDialogManagesKeyboardFocus',
+              quickSendDialogInitialFocus
+                && quickSendDialogFocusWrapped
+                && document.activeElement === quickSendAddTrigger,
+              'initial=' + quickSendDialogInitialFocus
+                + ' wrapped=' + quickSendDialogFocusWrapped
+                + ' restored=' + (document.activeElement === quickSendAddTrigger)
+            )
             const createdQuickSendButton = [...document.querySelectorAll('.quick-send-button')]
               .find((button) => button.textContent?.trim() === quickSendName)
             const createdQuickSendId = createdQuickSendButton?.getAttribute('data-quick-send-id') || ''
@@ -1465,6 +1798,28 @@ async function createWindow(): Promise<void> {
               'terminal=' + (transferTerminalRect?.left || 0) + '-' + (transferTerminalRect?.right || 0)
                 + ' panel=' + (transferWorkspaceRect?.left || 0) + '-' + (transferWorkspaceRect?.right || 0)
             )
+            const transferSettingsRect = document.querySelector('.transfer-settings-card')?.getBoundingClientRect()
+            const transferFilesRect = document.querySelector('.transfer-files-card')?.getBoundingClientRect()
+            const transferRunRect = document.querySelector('.transfer-run-card')?.getBoundingClientRect()
+            const transferFileList = document.querySelector('.transfer-file-list')
+            setCheck(
+              'managedTransferCardsRemainVisibleAndOrdered',
+              Boolean(transferSettingsRect)
+                && Boolean(transferFilesRect)
+                && Boolean(transferRunRect)
+                && transferSettingsRect.height >= 250
+                && transferFilesRect.height >= 80
+                && transferFilesRect.height <= Math.min(332, window.innerHeight * 0.38 + 2)
+                && transferRunRect.height >= 250
+                && Boolean(transferFileList)
+                && getComputedStyle(transferFileList).overflowY === 'auto'
+                && transferSettingsRect.bottom <= transferFilesRect.top + 1
+                && transferFilesRect.bottom <= transferRunRect.top + 1,
+              'settings=' + (transferSettingsRect?.top || 0) + '-' + (transferSettingsRect?.bottom || 0)
+                + ' files=' + (transferFilesRect?.top || 0) + '-' + (transferFilesRect?.bottom || 0)
+                + ' run=' + (transferRunRect?.top || 0) + '-' + (transferRunRect?.bottom || 0)
+                + ' fileScroll=' + (transferFileList?.scrollHeight || 0) + '/' + (transferFileList?.clientHeight || 0)
+            )
             setValue('[data-testid="transfer-root"]', ${JSON.stringify(manualUpgradeRoot)})
             document.querySelector('[data-testid="transfer-settings"]')?.requestSubmit()
             await sleep(700)
@@ -1533,6 +1888,22 @@ async function createWindow(): Promise<void> {
                 && document.querySelector('.upgrade-workspace')?.getAttribute('aria-modal') !== 'true',
               'terminal=' + (upgradeTerminalRect?.left || 0) + '-' + (upgradeTerminalRect?.right || 0)
                 + ' panel=' + (upgradeWorkspaceRect?.left || 0) + '-' + (upgradeWorkspaceRect?.right || 0)
+            )
+            const upgradePackageRect = document.querySelector('.upgrade-package-card')?.getBoundingClientRect()
+            const upgradeConfigRect = document.querySelector('.upgrade-config-card')?.getBoundingClientRect()
+            const upgradeManualRect = document.querySelector('.upgrade-manual-card')?.getBoundingClientRect()
+            setCheck(
+              'packageUpgradeCardsRemainVisibleAndOrdered',
+              Boolean(upgradePackageRect)
+                && Boolean(upgradeConfigRect)
+                && Boolean(upgradeManualRect)
+                && upgradePackageRect.height >= 180
+                && upgradeConfigRect.height >= 250
+                && upgradePackageRect.bottom <= upgradeConfigRect.top + 1
+                && upgradeConfigRect.bottom <= upgradeManualRect.top + 1,
+              'package=' + (upgradePackageRect?.top || 0) + '-' + (upgradePackageRect?.bottom || 0)
+                + ' config=' + (upgradeConfigRect?.top || 0) + '-' + (upgradeConfigRect?.bottom || 0)
+                + ' manual=' + (upgradeManualRect?.top || 0) + '-' + (upgradeManualRect?.bottom || 0)
             )
             const manualPackageRow = [...document.querySelectorAll('[data-testid="upgrade-package"]')]
               .find((row) => row.querySelector('strong')?.textContent?.trim() === ${JSON.stringify(manualUpgradePackageName)})
@@ -1612,7 +1983,10 @@ async function createWindow(): Promise<void> {
             setCheck(
               'terminalDisconnectShowsInlineFeedback',
               Boolean(document.querySelector('.connection-state[data-state="disconnected"]'))
-                && (document.querySelector('.xterm-rows')?.textContent || '').includes('会话已断开'),
+                && (document.querySelector('.xterm-rows')?.textContent || '').includes('会话已断开')
+                && Boolean(document.querySelector('.terminal-recovery-banner button'))
+                && Boolean(document.querySelector('.session-tab.active .session-tab-select > i[data-state="disconnected"]'))
+                && (document.querySelector('.session-tab.active .session-tab-select')?.getAttribute('aria-label') || '').includes('已断开'),
               text('.connection-state') + ' ' + (document.querySelector('.xterm-rows')?.textContent || '').slice(-120)
             )
             clickButtonByTitle('重新连接 (Ctrl+Shift+R)')
@@ -1852,7 +2226,14 @@ async function createWindow(): Promise<void> {
             sshButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
               const terminalText = document.querySelector('.xterm-rows')?.textContent || ''
-              if (document.querySelector('.connection-state[data-state="failed"]') && terminalText.includes('Connection failed')) break
+              const failedTab = document.querySelector('.session-tab.active .session-tab-select > i[data-state="failed"]')
+              const failedTabLabel = document.querySelector('.session-tab.active .session-tab-select')?.getAttribute('aria-label') || ''
+              if (
+                document.querySelector('.connection-state[data-state="failed"]')
+                && terminalText.includes('Connection failed')
+                && failedTab
+                && failedTabLabel.includes('连接失败')
+              ) break
               await sleep(100)
             }
             const failedSshText = document.querySelector('.xterm-rows')?.textContent || ''
@@ -1862,6 +2243,8 @@ async function createWindow(): Promise<void> {
                 && Boolean(document.querySelector('.connection-state[data-state="failed"]'))
                 && text('.connection-state') === '连接失败'
                 && failedSshText.includes('Connection failed')
+                && Boolean(document.querySelector('.session-tab.active .session-tab-select > i[data-state="failed"]'))
+                && (document.querySelector('.session-tab.active .session-tab-select')?.getAttribute('aria-label') || '').includes('连接失败')
                 && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
               (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
                 + text('.connection-state') + ' ' + failedSshText.slice(-180)
@@ -1962,6 +2345,34 @@ async function createWindow(): Promise<void> {
             )
             const deviceTabIds = [...document.querySelectorAll('.device-session-tab')]
               .map((tab) => tab.getAttribute('data-device-tab-id') || '')
+            const expectedDeviceHealth = (sessions) => {
+              const statuses = new Set(sessions.map((session) => session.status))
+              if (statuses.has('failed') || statuses.has('error')) return ['failed', '存在连接失败']
+              if (statuses.has('disconnected') || statuses.has('detached') || statuses.has('closed')) return ['disconnected', '存在已断开会话']
+              if (statuses.has('connecting') || statuses.has('reconnecting')) return ['connecting', '会话连接中']
+              return ['connected', '全部已连接']
+            }
+            const deviceHealthChecks = [...new Set(activeTitleSessions.map((session) => session.device_id))].map((deviceId) => {
+              const sessions = activeTitleSessions.filter((session) => session.device_id === deviceId)
+              const expected = expectedDeviceHealth(sessions)
+              const tab = document.querySelector('.device-session-tab[data-device-tab-id="' + deviceId + '"]')
+              return {
+                deviceId,
+                expectedState: expected[0],
+                actualState: tab?.querySelector('.device-session-health')?.getAttribute('data-state') || '',
+                expectedLabel: expected[1],
+                label: tab?.querySelector('.device-session-tab-select')?.getAttribute('aria-label') || '',
+                visibleHealth: tab?.querySelector('.device-session-health-label')?.textContent?.trim() || ''
+              }
+            })
+            setCheck(
+              'deviceSessionTabsSummarizeWorstSessionHealth',
+              deviceHealthChecks.length >= 2
+                && deviceHealthChecks.every((entry) => entry.actualState === entry.expectedState
+                  && entry.label.includes(entry.expectedLabel)
+                  && ['正常', '连接中', '已断开', '失败'].includes(entry.visibleHealth)),
+              JSON.stringify(deviceHealthChecks)
+            )
             const activeDeviceTabId = document.querySelector('.device-session-tab.active')?.getAttribute('data-device-tab-id') || ''
             const childSessionIds = [...document.querySelectorAll('.session-child-tabs .session-tab')]
               .map((tab) => tab.getAttribute('data-session-tab-id') || '')
@@ -2059,21 +2470,53 @@ async function createWindow(): Promise<void> {
             const smokeServerName = '折叠烟测服务器'
             clickButtonByTitle('服务器')
             await sleep(120)
+            const groupDialogTrigger = document.querySelector('button[title="新建分组"]')
             clickButtonByTitle('新建分组')
             await sleep(60)
+            const groupDialogInitialFocus = document.activeElement === document.querySelector('.group-dialog [data-dialog-initial-focus]')
             setValue('.group-dialog input', smokeServerGroup)
             document.querySelector('.group-dialog')?.requestSubmit()
             for (let attempt = 0; attempt < 30; attempt += 1) {
               if ([...document.querySelectorAll('.profile-group')].some((group) => group.getAttribute('data-profile-group-name') === smokeServerGroup)) break
               await sleep(100)
             }
+            const groupDialogFocusRestored = document.activeElement === groupDialogTrigger
+            const profileDialogTrigger = document.querySelector('button[title="新增连接"]')
             clickButtonByTitle('新增连接')
             for (let attempt = 0; attempt < 30 && !document.querySelector('.server-dialog'); attempt += 1) {
               await sleep(50)
             }
+            const profileDialogInitialFocus = document.activeElement === document.querySelector('.server-dialog [data-dialog-initial-focus]')
+            const profileDialogFocusable = [...document.querySelectorAll('.server-dialog button:not([disabled]), .server-dialog input:not([disabled]), .server-dialog select:not([disabled]), .server-dialog textarea:not([disabled]), .server-dialog [tabindex]:not([tabindex="-1"])')]
+            const profileDialogFirstFocusable = profileDialogFocusable[0]
+            const profileDialogLastFocusable = profileDialogFocusable[profileDialogFocusable.length - 1]
+            profileDialogLastFocusable?.focus()
+            profileDialogLastFocusable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+            const profileDialogFocusWrapped = document.activeElement === profileDialogFirstFocusable
+            document.querySelector('.server-dialog [data-dialog-initial-focus]')?.focus()
+            setCheck(
+              'connectionDialogsManageKeyboardFocus',
+              groupDialogInitialFocus
+                && groupDialogFocusRestored
+                && profileDialogInitialFocus
+                && profileDialogFocusWrapped,
+              'groupInitial=' + groupDialogInitialFocus
+                + ' groupRestore=' + groupDialogFocusRestored
+                + ' profileInitial=' + profileDialogInitialFocus
+                + ' profileWrapped=' + profileDialogFocusWrapped
+            )
+            const initialProfileActions = [...document.querySelectorAll('.server-dialog footer button')]
+              .filter((button, index) => button.type === 'submit' || index === 1)
+            setCheck(
+              'connectionProfileReadinessPreventsIncompleteSave',
+              initialProfileActions.length === 2
+                && initialProfileActions.every((button) => button.disabled)
+                && Boolean(document.querySelector('.server-dialog .profile-readiness[data-ready="false"]')),
+              text('.server-dialog .profile-readiness')
+            )
             setValue('.server-dialog .profile-form-body > .form-field:nth-of-type(1) input', smokeServerName)
             setValue('.server-dialog .profile-form-body > .form-field:nth-of-type(2) input', smokeServerGroup)
-            setValue('.server-dialog .protocol-form input[placeholder="主机地址"]', '192.0.2.44')
+            setValue('.server-dialog .protocol-host-field input', '192.0.2.44')
             await sleep(100)
             const saveOnlyServer = [...document.querySelectorAll('.server-dialog footer button')]
               .find((button) => button.textContent?.trim() === '仅保存')
@@ -2082,6 +2525,11 @@ async function createWindow(): Promise<void> {
               if ([...document.querySelectorAll('.profile-list .device-row strong')].some((node) => node.textContent?.trim() === smokeServerName)) break
               await sleep(100)
             }
+            setCheck(
+              'connectionDialogRestoresTriggerFocus',
+              document.activeElement === profileDialogTrigger,
+              String(document.activeElement === profileDialogTrigger)
+            )
             let smokeServerRow = [...document.querySelectorAll('.profile-list .device-row')]
               .find((row) => row.querySelector('strong')?.textContent?.trim() === smokeServerName)
             let smokeServerGroupElement = [...document.querySelectorAll('.profile-group')]
@@ -2121,7 +2569,12 @@ async function createWindow(): Promise<void> {
             const moveToUngrouped = [...document.querySelectorAll('.profile-context-menu button')]
               .find((button) => button.textContent?.trim() === '移动到未分组')
             moveToUngrouped?.click()
-            await sleep(160)
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const row = [...document.querySelectorAll('.profile-list .device-row')]
+                .find((candidate) => candidate.querySelector('strong')?.textContent?.trim() === smokeServerName)
+              if (row?.closest('.profile-group')?.getAttribute('data-profile-group-name') === '未分组') break
+              await sleep(100)
+            }
             smokeServerRow = [...document.querySelectorAll('.profile-list .device-row')]
               .find((row) => row.querySelector('strong')?.textContent?.trim() === smokeServerName)
             if (smokeServerRow) {
@@ -2137,9 +2590,14 @@ async function createWindow(): Promise<void> {
             const moveBackToGroup = [...document.querySelectorAll('.profile-context-menu button')]
               .find((button) => button.textContent?.trim() === '移动到 ' + smokeServerGroup)
             moveBackToGroup?.click()
-            await sleep(180)
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const row = [...document.querySelectorAll('.profile-list .device-row')]
+                .find((candidate) => candidate.querySelector('strong')?.textContent?.trim() === smokeServerName)
+              if (row?.closest('.profile-group')?.getAttribute('data-profile-group-name') === smokeServerGroup) break
+              await sleep(100)
+            }
             setValue('.search-field input[type="search"]', '')
-            await sleep(80)
+            await sleep(120)
             smokeServerGroupElement = [...document.querySelectorAll('.profile-group')]
               .find((group) => group.getAttribute('data-profile-group-name') === smokeServerGroup)
             smokeServerRow = [...document.querySelectorAll('.profile-list .device-row')]
@@ -2496,10 +2954,55 @@ async function createWindow(): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, 180))
           const settingsImage = await mainWindow.webContents.capturePage()
           await writeFile(captureSettingsPath, settingsImage.toPNG())
+          const captureSettingsLightPath = process.env.DEVICE_TUI_CAPTURE_SETTINGS_LIGHT_PATH
+          if (captureSettingsLightPath) {
+            await mainWindow.webContents.executeJavaScript(
+              "document.querySelector('.theme-toggle')?.click()",
+              true
+            )
+            await new Promise((resolve) => setTimeout(resolve, 180))
+            const settingsLightImage = await mainWindow.webContents.capturePage()
+            await writeFile(captureSettingsLightPath, settingsLightImage.toPNG())
+            await mainWindow.webContents.executeJavaScript(
+              "document.querySelector('.theme-toggle')?.click()",
+              true
+            )
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
           await mainWindow.webContents.executeJavaScript(
             "[...document.querySelectorAll('button')].find((button) => button.getAttribute('title') === '关闭设置')?.click()",
             true
           )
+        }
+        const captureHelpPath = process.env.DEVICE_TUI_CAPTURE_HELP_PATH
+        if (captureHelpPath) {
+          await mainWindow.webContents.executeJavaScript(
+            "[...document.querySelectorAll('button')].find((button) => button.getAttribute('title') === '帮助')?.click()",
+            true
+          )
+          await new Promise((resolve) => setTimeout(resolve, 180))
+          const helpImage = await mainWindow.webContents.capturePage()
+          await writeFile(captureHelpPath, helpImage.toPNG())
+          const captureHelpLightPath = process.env.DEVICE_TUI_CAPTURE_HELP_LIGHT_PATH
+          if (captureHelpLightPath) {
+            await mainWindow.webContents.executeJavaScript(
+              "document.querySelector('.theme-toggle')?.click()",
+              true
+            )
+            await new Promise((resolve) => setTimeout(resolve, 180))
+            const helpLightImage = await mainWindow.webContents.capturePage()
+            await writeFile(captureHelpLightPath, helpLightImage.toPNG())
+            await mainWindow.webContents.executeJavaScript(
+              "document.querySelector('.theme-toggle')?.click()",
+              true
+            )
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
+          await mainWindow.webContents.executeJavaScript(
+            "document.querySelector('.help-panel button[title=\"关闭帮助\"]')?.click()",
+            true
+          )
+          await new Promise((resolve) => setTimeout(resolve, 80))
         }
         const restoreBaseline = await mainWindow.webContents.executeJavaScript(
           `({
@@ -2873,6 +3376,7 @@ async function createWindow(): Promise<void> {
         console.log(`[renderer] recoveryCrashed=${crashed}`)
         let recoveredRuntime = beforeRuntime
         let failureBannerSeen = false
+        let recoveryActionSeen = false
         for (let attempt = 0; attempt < 80; attempt += 1) {
           try {
             const failure = await mainWindow.webContents.executeJavaScript(
@@ -2880,6 +3384,11 @@ async function createWindow(): Promise<void> {
               true
             )
             if (failure) failureBannerSeen = true
+            const recoveryAction = await mainWindow.webContents.executeJavaScript(
+              "Boolean(document.querySelector('.system-banner button[title=\"立即重试工作区\"]'))",
+              true
+            )
+            if (recoveryAction) recoveryActionSeen = true
             const nextRuntime = backend.config
             if (nextRuntime.apiBaseUrl && nextRuntime.apiBaseUrl !== beforeRuntime.apiBaseUrl) {
               recoveredRuntime = nextRuntime
@@ -2940,12 +3449,14 @@ async function createWindow(): Promise<void> {
           firstRecoveredDom: recoveryDom,
           crashStarted: crashed,
           failureBannerSeen,
+          recoveryActionSeen,
           requestStatus: recoveryResponse,
           logSettingsRestored,
           runtimeChanged: recoveredRuntime.apiBaseUrl !== beforeRuntime.apiBaseUrl,
           passed: Boolean(
             crashed
               && failureBannerSeen
+              && recoveryActionSeen
               && recoveredRuntime.apiBaseUrl !== beforeRuntime.apiBaseUrl
               && recoveryResponse === 200
               && logSettingsRestored

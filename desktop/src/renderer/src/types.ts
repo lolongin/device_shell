@@ -130,6 +130,7 @@ export interface AutoResponseStep {
   response_targets: string[]
   response_delays: number[]
   response_append_enters: boolean[]
+  timeout_ms: number
 }
 
 export interface AutoResponseAction {
@@ -184,7 +185,19 @@ export interface AutomationRuleRecord {
 export interface AutomationSessionStatus {
   session_id: string
   running_rule_ids: string[]
+  waiting_rule_ids: string[]
   triggered_rule_ids: string[]
+}
+
+export interface AutomationActivityRecord {
+  id: string
+  timestamp: string
+  event: 'started' | 'sent' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  session_id: string
+  rule_id: string
+  name: string
+  message: string
+  target_session_id: string
 }
 
 export interface QuickSendButtonRecord {
@@ -207,6 +220,7 @@ export interface AutomationWorkspaceResponse {
   rules: AutomationRuleRecord[]
   sessions: AutomationSessionStatus[]
   quick_send_buttons: QuickSendButtonRecord[]
+  activity: AutomationActivityRecord[]
 }
 
 export interface AutomationDispatchResponse {

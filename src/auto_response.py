@@ -40,6 +40,7 @@ class AutoResponseStep:
     response_targets: list[str] = field(default_factory=list)
     response_delays: list[int] = field(default_factory=list)
     response_append_enters: list[bool] = field(default_factory=list)
+    timeout_ms: int = 0
 
 
 @dataclass(slots=True)
@@ -155,6 +156,7 @@ def serialize_auto_response_rule(rule: AutoResponseRule) -> dict[str, object]:
                 "response_targets": step.response_targets,
                 "response_delays": step.response_delays,
                 "response_append_enters": step.response_append_enters,
+                "timeout_ms": step.timeout_ms,
             }
             for step in rule.steps
         ]
@@ -196,7 +198,7 @@ def deserialize_auto_response_rule(value: Any) -> AutoResponseRule | None:
         trigger_type = "match"
     if not pattern and trigger_type == "match":
         return None
-    if not response:
+    if not response and not actions:
         return None
     match_type = str(value.get("match_type") or "contains").strip().lower()
     if match_type not in {"contains", "regex"}:
@@ -379,6 +381,10 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
         raw_response_targets = item.get("response_targets")
         raw_response_delays = item.get("response_delays")
         raw_response_append_enters = item.get("response_append_enters")
+        try:
+            timeout_ms = max(0, int(item.get("timeout_ms", 0)))
+        except (TypeError, ValueError):
+            timeout_ms = 0
         if not isinstance(raw_responses, list):
             continue
         responses = [str(response) for response in raw_responses if str(response)]
@@ -421,6 +427,7 @@ def deserialize_auto_response_steps(value: Any) -> list[AutoResponseStep]:
                     response_targets=response_targets[: len(responses)],
                     response_delays=response_delays[: len(responses)],
                     response_append_enters=response_append_enters[: len(responses)],
+                    timeout_ms=timeout_ms,
                 )
             )
     return steps

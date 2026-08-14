@@ -806,6 +806,10 @@ def test_automation_rule_crud_manual_trigger_and_terminal_dispatch() -> None:
             },
         )
         rule_id = created.json()["rules"][0]["id"]
+        cloned = client.post(
+            f"/api/v1/automation/rules/{rule_id}/clone",
+            headers=headers,
+        )
         triggered = client.post(
             f"/api/v1/automation/rules/{rule_id}/trigger",
             headers=headers,
@@ -820,6 +824,10 @@ def test_automation_rule_crud_manual_trigger_and_terminal_dispatch() -> None:
                 output += str(event.get("data") or "")
                 if "SimOS V1.0" in output:
                     break
+        activity_workspace = client.get(
+            "/api/v1/automation/workspace",
+            headers=headers,
+        )
         disabled = client.put(
             f"/api/v1/automation/rules/{rule_id}/enabled",
             headers=headers,
@@ -832,8 +840,20 @@ def test_automation_rule_crud_manual_trigger_and_terminal_dispatch() -> None:
 
     assert created.status_code == 200
     assert created.json()["rules"][0]["rule"]["name"] == "Version probe"
+    cloned_rule = next(
+        record for record in cloned.json()["rules"] if record["id"] != rule_id
+    )
+    assert cloned.status_code == 200
+    assert cloned_rule["rule"]["name"] == "Version probe 副本"
+    assert cloned_rule["rule"]["enabled"] is False
+    assert cloned_rule["rule"]["trigger_count"] == 0
     assert triggered.status_code == 200
     assert triggered.json()["status"] == "started"
+    assert [item["event"] for item in activity_workspace.json()["activity"][:3]] == [
+        "completed",
+        "sent",
+        "started",
+    ]
     assert disabled.json()["rules"][0]["rule"]["enabled"] is False
     assert "SimOS V1.0" in output
     assert removed.status_code == 204
@@ -855,6 +875,19 @@ def test_automation_routes_require_authorization_and_reject_plaintext_secrets() 
                 }
             },
         )
+        invalid_regex = client.post(
+            "/api/v1/automation/rules",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "rule": {
+                    "name": "Broken regex",
+                    "pattern": "(",
+                    "response": "never\r",
+                    "match_type": "regex",
+                    "once": False,
+                }
+            },
+        )
         workspace = client.get(
             "/api/v1/automation/workspace",
             headers={"Authorization": f"Bearer {TOKEN}"},
@@ -863,4 +896,6 @@ def test_automation_routes_require_authorization_and_reject_plaintext_secrets() 
     assert unauthorized.status_code == 401
     assert rejected.status_code == 400
     assert unsafe_secret not in rejected.text
+    assert invalid_regex.status_code == 400
+    assert "触发文本" in invalid_regex.text
     assert workspace.json()["rules"] == []

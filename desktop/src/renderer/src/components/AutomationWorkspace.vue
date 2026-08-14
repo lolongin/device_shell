@@ -2,10 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CircleStop,
+  ChevronDown,
+  CopyPlus,
+  History,
   KeyRound,
   Play,
   Plus,
   Save,
+  Search,
   ShieldCheck,
   Trash2,
   Workflow,
@@ -19,6 +23,7 @@ import type {
   AutoResponseRulePayload,
   AutoResponseStep,
   AutomationRuleRecord,
+  AutomationActivityRecord,
   AutomationTargetOption
 } from '../types'
 
@@ -27,8 +32,22 @@ type EditorMode = 'basic' | 'steps' | 'actions'
 const workspace = useWorkspaceStore()
 const selectedId = ref('')
 const draft = ref<AutoResponseRulePayload>(newRule())
+const draftBaseline = ref(JSON.stringify(draft.value))
+const creatingNew = ref(false)
+const loadedRuleId = ref('')
+const ruleQuery = ref('')
+const ruleStatusFilter = ref<'all' | 'active' | 'enabled' | 'disabled'>('all')
+const ruleSearchInput = ref<HTMLInputElement | null>(null)
+const activityExpanded = ref(false)
 const localError = ref('')
 const editorMode = ref<EditorMode>('basic')
+let releaseCloseGuard: (() => void) | null = null
+
+const isDirty = computed(() => JSON.stringify(draft.value) !== draftBaseline.value)
+const draftStateText = computed(() => {
+  if (isDirty.value) return '有未保存修改'
+  return selectedRecord.value ? '已保存' : '新规则草稿'
+})
 
 const selectedRecord = computed<AutomationRuleRecord | null>(() =>
   workspace.automationRules.find((record) => record.id === selectedId.value) || null
@@ -36,15 +55,61 @@ const selectedRecord = computed<AutomationRuleRecord | null>(() =>
 const activeRunningIds = computed(
   () => new Set(workspace.activeAutomationStatus?.running_rule_ids || [])
 )
+const activeWaitingIds = computed(
+  () => new Set(workspace.activeAutomationStatus?.waiting_rule_ids || [])
+)
+const filteredAutomationRules = computed(() => {
+  const query = ruleQuery.value.trim().toLocaleLowerCase()
+  return workspace.automationRules.filter((record) => {
+    const active = activeRunningIds.value.has(record.id) || activeWaitingIds.value.has(record.id)
+    if (ruleStatusFilter.value === 'active' && !active) return false
+    if (ruleStatusFilter.value === 'enabled' && !record.rule.enabled) return false
+    if (ruleStatusFilter.value === 'disabled' && record.rule.enabled) return false
+    if (!query) return true
+    return [record.id, record.rule.name, record.rule.pattern, record.rule.trigger_type]
+      .join(' ')
+      .toLocaleLowerCase()
+      .includes(query)
+  })
+})
+const ruleCountText = computed(() => {
+  if (filteredAutomationRules.value.length === workspace.automationRules.length) {
+    return `${workspace.automationRules.length} 条规则`
+  }
+  return `${filteredAutomationRules.value.length}/${workspace.automationRules.length} 条规则`
+})
+const recentActivity = computed(() => workspace.automationActivity
+  .filter((item) => !workspace.activeSessionId || item.session_id === workspace.activeSessionId)
+  .slice(0, 20)
+)
 const selectedRunning = computed(
   () => Boolean(selectedId.value && activeRunningIds.value.has(selectedId.value))
 )
+const selectedWaiting = computed(
+  () => Boolean(selectedId.value && activeWaitingIds.value.has(selectedId.value))
+)
+const selectedInProgress = computed(() => selectedRunning.value || selectedWaiting.value)
+const activeSessionConnected = computed(() => workspace.activeSession?.status === 'connected')
+const runActionHint = computed(() => {
+  if (!workspace.activeSession) return '请先打开并选择一个终端会话'
+  if (!activeSessionConnected.value) return '当前终端未连接，请先重连终端'
+  if (!selectedRecord.value) return '请先选择或保存一条规则'
+  if (!selectedRecord.value.rule.enabled) return '当前规则已停用，请先启用规则'
+  if (selectedRunning.value) return '规则正在当前终端执行'
+  if (selectedWaiting.value) return '规则正在等待下一步终端输出'
+  return '可在当前终端运行一次'
+})
 const activeTriggeredIds = computed(
   () => new Set(workspace.activeAutomationStatus?.triggered_rule_ids || [])
 )
 const runningRuleNames = computed(() =>
   workspace.automationRules
     .filter((record) => activeRunningIds.value.has(record.id))
+    .map((record) => record.rule.name)
+)
+const waitingRuleNames = computed(() =>
+  workspace.automationRules
+    .filter((record) => activeWaitingIds.value.has(record.id))
     .map((record) => record.rule.name)
 )
 const triggeredRuleNames = computed(() =>
@@ -56,6 +121,7 @@ const automationStatusText = computed(() => {
   if (!workspace.activeSession) return '当前没有活动终端会话。'
   const target = workspace.activeSession.title
   if (runningRuleNames.value.length) return `${target} · 运行中：${runningRuleNames.value.join('、')}`
+  if (waitingRuleNames.value.length) return `${target} · 等待中：${waitingRuleNames.value.join('、')}`
   if (triggeredRuleNames.value.length) return `${target} · 已触发：${triggeredRuleNames.value.join('、')}`
   return `${target} · 当前会话暂无运行中的自动响应。`
 })
@@ -68,17 +134,18 @@ const automationTargets = computed<AutomationTargetOption[]>(() => [
   { value: 'current', label: '当前触发会话' },
   { value: 'next', label: '同设备下一个会话' },
   ...workspace.sessions.map((session) => ({
-    value: `session:${session.device_id}:${session.kind}:${session.title}`,
-    label: `${session.title} · ${session.kind.toUpperCase()}`
+    value: `session-id:${session.id}`,
+    label: `${session.title} · ${session.kind.toUpperCase()}${session.status === 'connected' ? '' : ' · 未连接'}`
   }))
 ])
 
 watch(
   () => workspace.automationRules,
   (rules) => {
-    if (!selectedId.value && rules.length) selectedId.value = rules[0].id
+    if (!selectedId.value && !creatingNew.value && rules.length) selectedId.value = rules[0].id
     if (selectedId.value && !rules.some((record) => record.id === selectedId.value)) {
       selectedId.value = rules[0]?.id || ''
+      creatingNew.value = !selectedId.value
     }
   },
   { immediate: true, deep: true }
@@ -86,8 +153,8 @@ watch(
 
 watch(selectedRecord, (record) => {
   if (record) {
-    draft.value = cloneRule(record.rule)
-    editorMode.value = ruleEditorMode(record.rule)
+    if (record.id === loadedRuleId.value && isDirty.value) return
+    loadRecord(record)
   }
 }, { immediate: true })
 
@@ -119,6 +186,70 @@ function cloneRule(rule: AutoResponseRulePayload): AutoResponseRulePayload {
   return JSON.parse(JSON.stringify(rule)) as AutoResponseRulePayload
 }
 
+function setDraftBaseline(): void {
+  draftBaseline.value = JSON.stringify(draft.value)
+}
+
+function loadRecord(record: AutomationRuleRecord): void {
+  selectedId.value = record.id
+  loadedRuleId.value = record.id
+  creatingNew.value = false
+  draft.value = cloneRule(record.rule)
+  editorMode.value = ruleEditorMode(record.rule)
+  localError.value = ''
+  setDraftBaseline()
+}
+
+function loadNewDraft(): void {
+  selectedId.value = ''
+  loadedRuleId.value = ''
+  creatingNew.value = true
+  draft.value = newRule()
+  editorMode.value = 'basic'
+  localError.value = ''
+  setDraftBaseline()
+}
+
+function confirmDiscardChanges(action: string): boolean {
+  return !isDirty.value || window.confirm(`当前规则有未保存修改，${action}会丢失这些修改。是否继续？`)
+}
+
+function discardCurrentDraft(): void {
+  if (selectedRecord.value) loadRecord(selectedRecord.value)
+  else loadNewDraft()
+}
+
+function prepareClose(): boolean {
+  if (!confirmDiscardChanges('关闭自动化面板')) return false
+  discardCurrentDraft()
+  return true
+}
+
+function requestClose(): void {
+  workspace.closeAutomationPanel()
+}
+
+function activityLabel(event: AutomationActivityRecord['event']): string {
+  return event === 'started' ? '开始'
+    : event === 'sent' ? '发送'
+      : event === 'waiting' ? '等待'
+        : event === 'completed' ? '完成'
+          : event === 'failed' ? '失败'
+            : '取消'
+}
+
+function activityTime(timestamp: string): string {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '--:--:--'
+  return date.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+function activityTarget(item: AutomationActivityRecord): string {
+  if (!item.target_session_id) return ''
+  const session = workspace.sessions.find((candidate) => candidate.id === item.target_session_id)
+  return session ? ` → ${session.title}` : ` → ${item.target_session_id.slice(0, 8)}`
+}
+
 function ruleEditorMode(rule: AutoResponseRulePayload): EditorMode {
   if (rule.actions?.length) return 'actions'
   if (rule.steps?.length) return 'steps'
@@ -133,7 +264,8 @@ function defaultStep(): AutoResponseStep {
     response_texts: [text],
     response_targets: ['source'],
     response_delays: [Math.max(0, Number(draft.value.delay_ms) || 0)],
-    response_append_enters: [draft.value.append_enter]
+    response_append_enters: [draft.value.append_enter],
+    timeout_ms: 0
   }
 }
 
@@ -206,16 +338,14 @@ function updateActions(actions: AutoResponseAction[]): void {
 }
 
 function beginCreate(): void {
-  selectedId.value = ''
-  draft.value = newRule()
-  editorMode.value = 'basic'
-  localError.value = ''
+  if (!confirmDiscardChanges('新建规则')) return
+  loadNewDraft()
 }
 
 function selectRule(record: AutomationRuleRecord): void {
-  selectedId.value = record.id
-  draft.value = cloneRule(record.rule)
-  localError.value = ''
+  if (record.id === selectedId.value) return
+  if (!confirmDiscardChanges('切换规则')) return
+  loadRecord(record)
 }
 
 async function save(): Promise<void> {
@@ -278,8 +408,7 @@ async function save(): Promise<void> {
   }
   const saved = await workspace.saveAutomationRule(value, selectedId.value)
   if (saved) {
-    selectedId.value = saved.id
-    draft.value = cloneRule(saved.rule)
+    loadRecord(saved)
   }
 }
 
@@ -292,7 +421,8 @@ function normalizeSteps(steps: AutoResponseStep[]): AutoResponseStep[] {
       response_texts: responseTexts,
       response_targets: responseTexts.map((_, index) => step.response_targets?.[index] || 'source'),
       response_delays: responseTexts.map((_, index) => Math.max(0, Number(step.response_delays?.[index]) || 0)),
-      response_append_enters: responseTexts.map((_, index) => Boolean(step.response_append_enters?.[index]))
+      response_append_enters: responseTexts.map((_, index) => Boolean(step.response_append_enters?.[index])),
+      timeout_ms: Math.max(0, Math.min(3_600_000, Number(step.timeout_ms) || 0))
     }
   })
 }
@@ -335,30 +465,69 @@ function validateActions(actions: AutoResponseAction[], path = '动作流'): str
 }
 
 async function toggleEnabled(record: AutomationRuleRecord): Promise<void> {
+  if (!confirmDiscardChanges(record.rule.enabled ? '停用规则' : '启用规则')) return
+  if (isDirty.value) discardCurrentDraft()
   await workspace.setAutomationRuleEnabled(record.id, !record.rule.enabled)
+}
+
+async function cloneSelected(): Promise<void> {
+  const record = selectedRecord.value
+  if (!record || isDirty.value) return
+  const cloned = await workspace.cloneAutomationRule(record.id)
+  if (!cloned) return
+  ruleQuery.value = ''
+  ruleStatusFilter.value = 'all'
+  loadRecord(cloned)
 }
 
 async function removeSelected(): Promise<void> {
   const record = selectedRecord.value
   if (!record || !window.confirm(`确定删除自动化“${record.rule.name}”吗？`)) return
-  if (await workspace.deleteAutomationRule(record.id)) beginCreate()
+  if (await workspace.deleteAutomationRule(record.id)) loadNewDraft()
 }
 
-function closeOnEscape(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && workspace.automationPanelOpen) {
-    workspace.automationPanelOpen = false
+function handleAutomationShortcuts(event: KeyboardEvent): void {
+  if (!workspace.automationPanelOpen) return
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'f') {
+    event.preventDefault()
+    event.stopPropagation()
+    ruleSearchInput.value?.focus()
+    ruleSearchInput.value?.select()
+    return
   }
+  if (event.key !== 'Escape') return
+  event.stopPropagation()
+  if (ruleQuery.value) {
+    ruleQuery.value = ''
+    ruleSearchInput.value?.focus()
+    return
+  }
+  requestClose()
 }
 
-onMounted(() => document.addEventListener('keydown', closeOnEscape))
-onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
+function warnBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!isDirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onMounted(() => {
+  releaseCloseGuard = workspace.registerAutomationCloseGuard(prepareClose)
+  document.addEventListener('keydown', handleAutomationShortcuts, true)
+  window.addEventListener('beforeunload', warnBeforeUnload)
+})
+onBeforeUnmount(() => {
+  releaseCloseGuard?.()
+  document.removeEventListener('keydown', handleAutomationShortcuts, true)
+  window.removeEventListener('beforeunload', warnBeforeUnload)
+})
 </script>
 
 <template>
   <div
     v-if="workspace.automationPanelOpen"
     class="automation-backdrop"
-    @mousedown.self="workspace.automationPanelOpen = false"
+    @mousedown.self="requestClose"
   >
     <aside
       class="automation-workspace"
@@ -375,12 +544,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
           </div>
         </div>
         <div class="automation-header-actions">
-          <span>{{ workspace.automationRules.length }} 条规则</span>
+          <span class="automation-rule-count">{{ ruleCountText }}</span>
           <span
             class="automation-session-status"
-            :data-state="runningRuleNames.length ? 'running' : triggeredRuleNames.length ? 'triggered' : 'idle'"
+            :data-state="runningRuleNames.length ? 'running' : waitingRuleNames.length ? 'waiting' : triggeredRuleNames.length ? 'triggered' : 'idle'"
           >{{ automationStatusText }}</span>
-          <button class="icon-button" type="button" aria-label="关闭自动化面板" @click="workspace.automationPanelOpen = false">
+          <button class="icon-button" type="button" aria-label="关闭自动化面板" @click="requestClose">
             <X :size="16" />
           </button>
         </div>
@@ -388,11 +557,30 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
 
       <div class="automation-body">
         <nav class="automation-rule-list" aria-label="自动化规则">
-          <button class="automation-new-button" type="button" @click="beginCreate">
-            <Plus :size="14" />新建规则
-          </button>
+          <div class="automation-rule-tools">
+            <label class="automation-rule-search">
+              <Search :size="13" />
+              <input
+                ref="ruleSearchInput"
+                v-model="ruleQuery"
+                type="search"
+                placeholder="搜索规则"
+                aria-label="搜索自动化规则"
+                aria-keyshortcuts="Control+F"
+              />
+            </label>
+            <select v-model="ruleStatusFilter" class="automation-rule-filter" aria-label="筛选自动化规则状态">
+              <option value="all">全部状态</option>
+              <option value="active">运行或等待</option>
+              <option value="enabled">已启用</option>
+              <option value="disabled">已停用</option>
+            </select>
+            <button class="automation-new-button" type="button" @click="beginCreate">
+              <Plus :size="14" />新建规则
+            </button>
+          </div>
           <button
-            v-for="record in workspace.automationRules"
+            v-for="record in filteredAutomationRules"
             :key="record.id"
             class="automation-rule-row"
             :class="{ selected: record.id === selectedId }"
@@ -400,16 +588,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
             :aria-current="record.id === selectedId ? 'true' : undefined"
             @click="selectRule(record)"
           >
-            <i :data-state="activeRunningIds.has(record.id) ? 'running' : activeTriggeredIds.has(record.id) ? 'triggered' : record.rule.enabled ? 'enabled' : 'disabled'"></i>
+            <i :data-state="activeRunningIds.has(record.id) ? 'running' : activeWaitingIds.has(record.id) ? 'waiting' : activeTriggeredIds.has(record.id) ? 'triggered' : record.rule.enabled ? 'enabled' : 'disabled'"></i>
             <span>
               <strong>{{ record.rule.name }}</strong>
               <small>{{ record.rule.trigger_type === 'match' ? record.rule.pattern : record.rule.trigger_type }}</small>
             </span>
             <b v-if="activeRunningIds.has(record.id)">运行中</b>
+            <b v-else-if="activeWaitingIds.has(record.id)">等待中</b>
             <b v-else-if="activeTriggeredIds.has(record.id)">已触发</b>
           </button>
           <p v-if="!workspace.automationRules.length" class="automation-empty">
             暂无规则。创建后由 Python 后端监听终端输出并执行。
+          </p>
+          <p v-else-if="!filteredAutomationRules.length" class="automation-empty">
+            没有匹配的规则。可清空搜索词或切换状态筛选。
           </p>
         </nav>
 
@@ -418,6 +610,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
             <div>
               <strong>{{ selectedRecord ? '编辑规则' : '新建规则' }}</strong>
               <span v-if="selectedRecord" class="mono">{{ selectedRecord.id }}</span>
+              <span class="automation-draft-state" :data-dirty="isDirty">{{ draftStateText }}</span>
             </div>
             <div>
               <button
@@ -425,20 +618,43 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
                 class="secondary-button"
                 type="button"
                 data-testid="automation-run"
-                :disabled="!workspace.activeSession || !selectedRecord.rule.enabled || workspace.automationBusy"
+                :title="runActionHint"
+                aria-describedby="automation-run-hint"
+                :disabled="!activeSessionConnected || !selectedRecord.rule.enabled || selectedInProgress || workspace.automationBusy"
                 @click="workspace.triggerAutomationRule(selectedRecord.id)"
-              ><Play :size="13" />{{ selectedRunning ? '运行中' : '运行一次' }}</button>
+              ><Play :size="13" />{{ selectedRunning ? '运行中' : selectedWaiting ? '等待中' : '运行一次' }}</button>
               <button
-                v-if="workspace.activeAutomationStatus?.running_rule_ids.length"
+                v-if="workspace.activeAutomationStatus?.running_rule_ids.length || workspace.activeAutomationStatus?.waiting_rule_ids.length"
                 class="secondary-button danger-button"
                 type="button"
                 :disabled="workspace.automationBusy"
                 @click="workspace.cancelActiveAutomation"
               ><CircleStop :size="13" />停止</button>
+              <span id="automation-run-hint" class="automation-run-hint" :data-ready="activeSessionConnected && Boolean(selectedRecord?.rule.enabled)">
+                <i aria-hidden="true"></i>{{ runActionHint }}
+              </span>
             </div>
           </div>
 
           <div class="automation-form-scroll">
+            <section class="automation-activity-panel" :data-expanded="activityExpanded">
+              <button type="button" class="automation-activity-toggle" :aria-expanded="activityExpanded" @click="activityExpanded = !activityExpanded">
+                <History :size="14" />
+                <span>
+                  <strong>最近执行</strong>
+                  <small>{{ recentActivity.length ? `${recentActivity.length} 条当前会话记录` : '当前会话暂无记录' }}</small>
+                </span>
+                <ChevronDown :size="14" />
+              </button>
+              <div v-if="activityExpanded" class="automation-activity-list" aria-live="polite">
+                <div v-for="item in recentActivity" :key="item.id" class="automation-activity-row" :data-event="item.event">
+                  <time :datetime="item.timestamp">{{ activityTime(item.timestamp) }}</time>
+                  <b>{{ activityLabel(item.event) }}</b>
+                  <span><strong>{{ item.name }}</strong><small>{{ item.message }}{{ activityTarget(item) }}</small></span>
+                </div>
+                <p v-if="!recentActivity.length">运行规则后，开始、发送、等待、完成和失败记录会显示在这里。</p>
+              </div>
+            </section>
             <div v-if="protectedAdvancedStructure" class="automation-info-banner secure">
               <ShieldCheck :size="15" />高级结构包含系统凭据库托管的敏感响应；为避免错配，结构增删和移动已锁定。
             </div>
@@ -558,11 +774,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
                 v-if="selectedRecord"
                 class="secondary-button"
                 type="button"
+                data-testid="automation-clone"
+                :title="isDirty ? '请先保存或放弃当前修改，再复制规则' : '创建默认停用的独立副本'"
+                :disabled="workspace.automationBusy || isDirty"
+                @click="cloneSelected"
+              ><CopyPlus :size="13" />复制</button>
+              <button
+                v-if="selectedRecord"
+                class="secondary-button"
+                type="button"
                 :disabled="workspace.automationBusy"
                 @click="toggleEnabled(selectedRecord)"
               >{{ selectedRecord.rule.enabled ? '停用规则' : '启用规则' }}</button>
             </div>
-            <button class="primary-button" data-testid="automation-save" type="submit" :disabled="workspace.automationBusy">
+            <button class="primary-button" data-testid="automation-save" type="submit" :disabled="workspace.automationBusy || Boolean(selectedRecord && !isDirty)">
               <Save :size="14" />{{ workspace.automationBusy ? '保存中…' : '保存规则' }}
             </button>
           </footer>

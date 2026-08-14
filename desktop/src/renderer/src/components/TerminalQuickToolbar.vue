@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
 import { ChevronDown, ChevronUp, KeyRound, Pencil, Plus, Send, Trash2, X } from 'lucide-vue-next'
+import { useDialogFocus } from '../composables/useDialogFocus'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { QuickSendButtonPayload, QuickSendButtonRecord } from '../types'
 
@@ -9,10 +10,17 @@ const COLLAPSED_KEY = 'device-tui.desktop-v2.quick-toolbar-collapsed'
 const collapsed = ref(localStorage.getItem(COLLAPSED_KEY) === '1')
 const editing = ref<QuickSendButtonRecord | null>(null)
 const dialogOpen = ref(false)
+const dialog = ref<HTMLElement | null>(null)
+const dialogReturnFocus = ref<HTMLElement | null>(null)
 const responseInput = ref<HTMLTextAreaElement | null>(null)
 const replacingSecret = ref(false)
 const draft = ref<QuickSendButtonPayload>(emptyDraft())
 const localError = ref('')
+const { handleDialogKeydown } = useDialogFocus(dialog, {
+  open: dialogOpen,
+  initialFocus: '[data-dialog-initial-focus]',
+  restoreFocus: () => dialogReturnFocus.value
+})
 
 const protectedResponse = computed(
   () => Boolean(editing.value?.sensitive && draft.value.response_text === '••••••' && !replacingSecret.value)
@@ -27,7 +35,8 @@ function setCollapsed(value: boolean): void {
   localStorage.setItem(COLLAPSED_KEY, value ? '1' : '0')
 }
 
-function beginCreate(): void {
+function beginCreate(event: Event): void {
+  dialogReturnFocus.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   editing.value = null
   draft.value = emptyDraft()
   replacingSecret.value = false
@@ -35,7 +44,8 @@ function beginCreate(): void {
   dialogOpen.value = true
 }
 
-function beginEdit(button: QuickSendButtonRecord): void {
+function beginEdit(button: QuickSendButtonRecord, event: Event): void {
+  dialogReturnFocus.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   editing.value = button
   draft.value = {
     name: button.name,
@@ -105,11 +115,11 @@ function closeDialog(): void {
         >
           <KeyRound v-if="button.sensitive" :size="12" />{{ button.name }}
         </button>
-        <button class="quick-send-edit" type="button" :aria-label="`编辑 ${button.name}`" @click="beginEdit(button)">
+        <button class="quick-send-edit" type="button" :aria-label="`编辑 ${button.name}`" @click="beginEdit(button, $event)">
           <Pencil :size="11" />
         </button>
       </span>
-      <button class="quick-send-add" data-testid="quick-send-add" type="button" title="新增快捷发送" @click="beginCreate">
+      <button class="quick-send-add" data-testid="quick-send-add" type="button" title="新增快捷发送" @click="beginCreate($event)">
         <Plus :size="13" />新增
       </button>
     </div>
@@ -119,13 +129,13 @@ function closeDialog(): void {
   </section>
 
   <div v-if="dialogOpen" class="dialog-backdrop quick-send-dialog-backdrop" @mousedown.self="closeDialog">
-    <form class="profile-dialog quick-send-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-send-title" @submit.prevent="save">
+    <form ref="dialog" class="profile-dialog quick-send-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-send-title" tabindex="-1" @submit.prevent="save" @keydown="handleDialogKeydown" @keydown.esc.prevent="closeDialog">
       <header>
         <div><p class="eyebrow">TERMINAL ACTION</p><h2 id="quick-send-title">{{ editing ? '编辑' : '新增' }}快捷发送</h2></div>
         <button class="icon-button" type="button" title="关闭" @click="closeDialog"><X :size="16" /></button>
       </header>
       <div class="profile-form-body single-column">
-        <label class="form-field"><span>按钮名称</span><input v-model="draft.name" data-testid="quick-send-name" maxlength="160" autofocus /></label>
+        <label class="form-field"><span>按钮名称</span><input v-model="draft.name" data-testid="quick-send-name" maxlength="160" data-dialog-initial-focus /></label>
         <label class="form-field form-field-wide">
           <span>发送内容</span>
           <textarea

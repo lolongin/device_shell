@@ -45,6 +45,19 @@ const currentOperation = computed(() =>
     operation.status === 'running' || operation.status === 'waiting_approval'
   ) || workspace.upgradeOperations[0] || null
 )
+const activeSessionConnected = computed(() => workspace.activeSession?.status === 'connected')
+const upgradeActionHint = computed(() => {
+  if (!workspace.activeSession) return '请先打开并选择一个终端会话'
+  if (!activeSessionConnected.value) return '当前终端未连接，请先重连终端'
+  if (!packagePath.value) return '请先从上方列表选择一个 .cc 系统包'
+  return '已具备预检条件，提交后不会立即重启设备'
+})
+const upgradeErrorMessage = computed(() => {
+  const message = localError.value || workspace.error
+  if (/terminal session is not connected/i.test(message)) return ''
+  if (/no connected terminal session is available/i.test(message)) return ''
+  return message
+})
 const stages = [
   ['prechecking', '安全预检', 5],
   ['cleanup', '空间清理', 20],
@@ -286,7 +299,11 @@ onBeforeUnmount(() => {
                 <span><strong>{{ file.name }}</strong><small>{{ file.relative_path }}</small></span>
                 <b>{{ formatBytes(file.size_bytes) }}</b>
               </button>
-              <p v-if="!packageFiles.length" class="upgrade-empty">共享目录中没有 .cc 系统包。</p>
+              <div v-if="!packageFiles.length" class="upgrade-empty">
+                <FileArchive :size="20" />
+                <strong>没有可用系统包</strong>
+                <span>请先在文件服务共享目录中放入 .cc 文件，然后刷新列表。</span>
+              </div>
             </div>
           </div>
 
@@ -299,8 +316,11 @@ onBeforeUnmount(() => {
             <label class="upgrade-option"><input v-model="includeSlave" type="checkbox" /><span><strong>自动探测备控</strong><small>备控不存在时安全降级为单主控</small></span></label>
             <label class="upgrade-option"><input v-model="autoDelete" type="checkbox" /><span><strong>安全清理旧包</strong><small>绝不删除当前、下次和目标系统包</small></span></label>
             <label class="upgrade-option"><input v-model="requestReboot" data-testid="upgrade-reboot" type="checkbox" /><span><strong>完成后请求重启</strong><small>设置启动项后仍需人工批准</small></span></label>
-            <p v-if="localError || workspace.error" class="upgrade-error" role="alert">{{ localError || workspace.error }}</p>
-            <button class="primary-button" data-testid="upgrade-start" type="submit" :disabled="workspace.upgradeBusy || !workspace.activeSession || !packagePath">
+            <p v-if="upgradeErrorMessage" class="upgrade-error" role="alert">{{ upgradeErrorMessage }}</p>
+            <p class="operation-readiness" :data-ready="activeSessionConnected && Boolean(packagePath)">
+              <i aria-hidden="true"></i>{{ upgradeActionHint }}
+            </p>
+            <button class="primary-button upgrade-start-button" data-testid="upgrade-start" type="submit" :disabled="workspace.upgradeBusy || !activeSessionConnected || !packagePath">
               <RotateCw :size="14" />开始验证升级
             </button>
           </form>
@@ -408,7 +428,11 @@ onBeforeUnmount(() => {
               <div><strong>{{ String(operation.data.package_name || '系统包') }}</strong><small>{{ operation.message }}</small></div>
               <b>{{ operation.status }}</b>
             </article>
-            <p v-if="!workspace.upgradeOperations.length" class="upgrade-empty">暂无系统包升级记录。</p>
+            <div v-if="!workspace.upgradeOperations.length" class="upgrade-empty">
+              <Box :size="19" />
+              <strong>暂无升级记录</strong>
+              <span>完成安全预检并启动升级后，执行结果会显示在这里。</span>
+            </div>
           </div>
         </section>
       </div>

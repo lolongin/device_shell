@@ -10,12 +10,19 @@ import {
   X
 } from 'lucide-vue-next'
 import type { DeviceSummary, SessionSummary } from '../types'
+import {
+  aggregateSessionHealth,
+  sessionHealthLabel,
+  sessionHealthShortLabel,
+  sessionStatusLabel
+} from '../sessionStatus'
 
 interface SessionDeviceGroup {
   id: string
   label: string
   device: DeviceSummary | null
   sessions: SessionSummary[]
+  health: ReturnType<typeof aggregateSessionHealth>
 }
 
 const props = defineProps<{
@@ -55,7 +62,8 @@ const groups = computed<SessionDeviceGroup[]>(() => {
       id: deviceId,
       label: device?.name || sessions[0]?.title.split(' · ')[0] || deviceId,
       device,
-      sessions
+      sessions,
+      health: aggregateSessionHealth(sessions)
     }
   })
 })
@@ -79,7 +87,7 @@ const visibleGroups = computed<SessionDeviceGroup[]>(() => {
       session.kind,
       session.status
     ].join(' ').toLocaleLowerCase().includes(needle))
-    return sessions.length ? [{ ...group, sessions }] : []
+    return sessions.length ? [{ ...group, sessions, health: aggregateSessionHealth(sessions) }] : []
   })
 })
 
@@ -228,12 +236,12 @@ function kindLabel(kind: string): string {
           : kind
 }
 
-function statusLabel(status: string): string {
-  return status === 'connected' ? '已连接'
-    : status === 'connecting' || status === 'reconnecting' ? '连接中'
-      : status === 'failed' ? '失败'
-        : status === 'disconnected' ? '已断开'
-          : status
+function sessionAccessibleLabel(session: SessionSummary): string {
+  return `${sessionDisplayLabels.value[session.id]}，${kindLabel(session.kind)}，${sessionStatusLabel(session.status)}`
+}
+
+function groupAccessibleLabel(group: SessionDeviceGroup): string {
+  return `${group.label}，${group.sessions.length} 个终端，${sessionHealthLabel(group.health)}`
 }
 
 onBeforeUnmount(stopResize)
@@ -269,7 +277,7 @@ onBeforeUnmount(stopResize)
           class="session-tab session-manager-strip-tab"
           :class="{ active: session.id === activeSessionId }"
           :data-session-tab-id="session.id"
-          :title="sessionDisplayLabels[session.id]"
+          :title="sessionAccessibleLabel(session)"
           draggable="true"
           @dragstart="startSessionDrag($event, session)"
           @contextmenu.prevent="emit('sessionContext', $event, session)"
@@ -278,7 +286,7 @@ onBeforeUnmount(stopResize)
             class="session-tab-select"
             type="button"
             role="tab"
-            :aria-label="sessionDisplayLabels[session.id]"
+            :aria-label="sessionAccessibleLabel(session)"
             :aria-selected="session.id === activeSessionId"
             @click="emit('activate', session.id)"
             @keydown="handleSessionKeydown($event, session)"
@@ -311,6 +319,8 @@ onBeforeUnmount(stopResize)
             class="session-device-group-header"
             role="treeitem"
             :aria-expanded="groupExpanded(group.id)"
+            :aria-label="groupAccessibleLabel(group)"
+            :title="groupAccessibleLabel(group)"
             :data-device-group-id="group.id"
             tabindex="0"
             @contextmenu.prevent="emit('deviceContext', $event, group.id)"
@@ -326,11 +336,17 @@ onBeforeUnmount(stopResize)
               <ChevronRight v-else :size="13" />
             </button>
             <button class="session-device-select" type="button" @click="activateGroup(group)">
-              <MonitorDot :size="13" />
+              <span class="device-session-health" :data-state="group.health" aria-hidden="true">
+                <MonitorDot :size="13" />
+                <i></i>
+              </span>
               <span>{{ group.label }}</span>
               <small>{{ group.id }}</small>
             </button>
-            <b>{{ group.sessions.length }}</b>
+            <span class="session-device-group-summary">
+              <em class="device-session-health-label" :data-state="group.health">{{ sessionHealthShortLabel(group.health) }}</em>
+              <b>{{ group.sessions.length }}</b>
+            </span>
           </div>
           <div v-if="groupExpanded(group.id)" class="session-device-children" role="group">
             <div
@@ -339,7 +355,7 @@ onBeforeUnmount(stopResize)
               class="session-tab session-manager-session"
               :class="{ active: session.id === activeSessionId }"
               :data-session-tab-id="session.id"
-              :title="sessionDisplayLabels[session.id]"
+              :title="sessionAccessibleLabel(session)"
               role="treeitem"
               draggable="true"
               @dragstart="startSessionDrag($event, session)"
@@ -349,7 +365,7 @@ onBeforeUnmount(stopResize)
                 class="session-tab-select"
                 type="button"
                 role="tab"
-                :aria-label="sessionDisplayLabels[session.id]"
+                :aria-label="sessionAccessibleLabel(session)"
                 :aria-selected="session.id === activeSessionId"
                 @click="emit('activate', session.id)"
                 @keydown="handleSessionKeydown($event, session)"
@@ -357,7 +373,7 @@ onBeforeUnmount(stopResize)
                 <i :data-state="session.status" aria-hidden="true"></i>
                 <span>
                   <strong>{{ sessionDisplayLabels[session.id] }}</strong>
-                  <small>{{ kindLabel(session.kind) }} · {{ statusLabel(session.status) }}</small>
+                  <small>{{ kindLabel(session.kind) }} · {{ sessionStatusLabel(session.status) }}</small>
                 </span>
               </button>
               <button class="tab-close" type="button" aria-label="关闭会话" @click="emit('close', session.id)">
@@ -366,7 +382,11 @@ onBeforeUnmount(stopResize)
             </div>
           </div>
         </section>
-        <p v-if="!visibleGroups.length" class="session-manager-empty">没有匹配的设备或会话</p>
+        <div v-if="!visibleGroups.length" class="session-manager-empty">
+          <Search :size="17" />
+          <strong>没有匹配结果</strong>
+          <span>尝试设备名称、会话类型或设备 ID</span>
+        </div>
       </div>
       <div
         class="session-manager-resize-handle"

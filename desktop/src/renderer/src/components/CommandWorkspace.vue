@@ -13,6 +13,14 @@ import {
   X
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
+import {
+  clampContextMenuElement,
+  clampContextMenuPoint,
+  contextMenuTrigger,
+  focusFirstContextMenuItem,
+  handleContextMenuKeydown,
+  restoreContextMenuFocus
+} from '../contextMenu'
 
 const workspace = useWorkspaceStore()
 const commandWorkspace = ref<HTMLElement | null>(null)
@@ -20,6 +28,7 @@ const editor = ref<HTMLTextAreaElement | null>(null)
 const findInput = ref<HTMLInputElement | null>(null)
 const content = ref('')
 const renameValue = ref('')
+const renameInput = ref<HTMLInputElement | null>(null)
 const renameGroupId = ref('')
 const renaming = ref(false)
 const findOpen = ref(false)
@@ -29,7 +38,11 @@ const findStatus = ref('')
 const selectionStart = ref(0)
 const selectionEnd = ref(0)
 const commandGroupContextMenu = ref<{ groupId: string; name: string; x: number; y: number } | null>(null)
+const commandGroupContextMenuElement = ref<HTMLElement | null>(null)
+const commandGroupContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const editorContextMenu = ref<{ x: number; y: number; hasSelection: boolean; hasCommand: boolean } | null>(null)
+const editorContextMenuElement = ref<HTMLElement | null>(null)
+const editorContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const COMMAND_PANEL_HEIGHT_KEY = 'device-tui.desktop-v2.command-panel-height'
 const COMMAND_PANEL_MIN_HEIGHT = 180
 const COMMAND_PANEL_DEFAULT_HEIGHT = 300
@@ -58,6 +71,15 @@ const currentMatchIndex = computed(() => {
 })
 const matchLabel = computed(() =>
   currentMatchIndex.value ? `${currentMatchIndex.value}/${matchCount.value}` : `${matchCount.value} 处`
+)
+const dispatchScopeLabel = computed(() => {
+  if (selectionStart.value === selectionEnd.value) return '当前行'
+  const selected = content.value.slice(selectionStart.value, selectionEnd.value)
+  const lineCount = selected.split(/\r?\n/).length
+  return `${lineCount} 行已选中`
+})
+const dispatchTargetLabel = computed(() =>
+  workspace.activeSession?.title || '未选择终端'
 )
 
 function storedCommandPanelHeight(): number {
@@ -158,12 +180,15 @@ async function selectGroup(groupId: string): Promise<void> {
   editor.value?.focus()
 }
 
-function beginRename(group = currentGroup.value): void {
+async function beginRename(group = currentGroup.value): Promise<void> {
   if (!group) return
   renameGroupId.value = group.id
   renameValue.value = group.name
   renaming.value = true
   closeCommandGroupContextMenu()
+  await nextTick()
+  renameInput.value?.focus()
+  renameInput.value?.select()
 }
 
 async function commitRename(): Promise<void> {
@@ -187,8 +212,23 @@ function closeEditorContextMenu(): void {
   editorContextMenu.value = null
 }
 
+function closeCommandGroupContextMenuAndRestoreFocus(): void {
+  closeCommandGroupContextMenu()
+  restoreContextMenuFocus(commandGroupContextMenuReturnFocus.value)
+}
+
+function closeEditorContextMenuAndRestoreFocus(): void {
+  closeEditorContextMenu()
+  restoreContextMenuFocus(editorContextMenuReturnFocus.value)
+}
+
 function openCommandGroupContextMenu(event: MouseEvent, groupId: string, name: string): void {
-  commandGroupContextMenu.value = { groupId, name, x: event.clientX, y: event.clientY }
+  commandGroupContextMenuReturnFocus.value = contextMenuTrigger(event)
+  commandGroupContextMenu.value = {
+    groupId,
+    name,
+    ...clampContextMenuPoint(event.clientX, event.clientY)
+  }
 }
 
 function handleCommandGroupKeydown(event: KeyboardEvent, groupId: string, name: string): void {
@@ -199,6 +239,7 @@ function handleCommandGroupKeydown(event: KeyboardEvent, groupId: string, name: 
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
     const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+    commandGroupContextMenuReturnFocus.value = event.currentTarget as HTMLElement | null
     commandGroupContextMenu.value = {
       groupId,
       name,
@@ -294,13 +335,31 @@ function handleWorkspaceShortcut(event: KeyboardEvent): void {
 
 function openEditorContextMenu(event: MouseEvent): void {
   updateSelectionState()
+  editorContextMenuReturnFocus.value = contextMenuTrigger(event)
   editorContextMenu.value = {
-    x: event.clientX,
-    y: event.clientY,
+    ...clampContextMenuPoint(event.clientX, event.clientY),
     hasSelection: selectionStart.value !== selectionEnd.value,
     hasCommand: Boolean(selectedCommand())
   }
 }
+
+watch(commandGroupContextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (commandGroupContextMenu.value !== menu) return
+  const point = clampContextMenuElement(commandGroupContextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) commandGroupContextMenu.value = { ...menu, ...point }
+  focusFirstContextMenuItem(commandGroupContextMenuElement.value)
+})
+
+watch(editorContextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (editorContextMenu.value !== menu) return
+  const point = clampContextMenuElement(editorContextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) editorContextMenu.value = { ...menu, ...point }
+  focusFirstContextMenuItem(editorContextMenuElement.value)
+})
 
 async function dispatch(broadcast = false): Promise<void> {
   const command = selectedCommand()
@@ -319,6 +378,7 @@ function handleEditorKeydown(event: KeyboardEvent): void {
     event.preventDefault()
     const rect = editor.value?.getBoundingClientRect()
     updateSelectionState()
+    editorContextMenuReturnFocus.value = editor.value
     editorContextMenu.value = {
       x: rect ? rect.left + 36 : 220,
       y: rect ? rect.top + 36 : 220,
@@ -502,11 +562,12 @@ onBeforeUnmount(() => {
         </div>
         <div
           v-if="commandGroupContextMenu"
+          ref="commandGroupContextMenuElement"
           class="command-context-menu"
           role="menu"
           :style="{ left: `${commandGroupContextMenu.x}px`, top: `${commandGroupContextMenu.y}px` }"
           @click.stop
-          @keydown.esc.prevent="closeCommandGroupContextMenu"
+          @keydown="handleContextMenuKeydown($event, commandGroupContextMenuElement, closeCommandGroupContextMenuAndRestoreFocus)"
         >
           <p>{{ commandGroupContextMenu.name }}</p>
           <button
@@ -537,7 +598,7 @@ onBeforeUnmount(() => {
       </header>
 
       <form v-if="renaming" class="command-inline-form" @submit.prevent="commitRename">
-        <input v-model="renameValue" maxlength="160" aria-label="页签名称" autofocus @keydown.esc.prevent="renaming = false" />
+        <input ref="renameInput" v-model="renameValue" maxlength="160" aria-label="页签名称" @keydown.esc.prevent="renaming = false" />
         <button class="secondary-button" type="button" @click="renaming = false">取消</button>
         <button class="primary-button" type="submit">保存名称</button>
       </form>
@@ -573,11 +634,12 @@ onBeforeUnmount(() => {
         ></textarea>
         <div
           v-if="editorContextMenu"
+          ref="editorContextMenuElement"
           class="command-context-menu"
           role="menu"
           :style="{ left: `${editorContextMenu.x}px`, top: `${editorContextMenu.y}px` }"
           @click.stop
-          @keydown.esc.prevent="closeEditorContextMenu"
+          @keydown="handleContextMenuKeydown($event, editorContextMenuElement, closeEditorContextMenuAndRestoreFocus)"
         >
           <p>{{ currentGroup?.name || '常用命令' }}</p>
           <button
@@ -617,6 +679,10 @@ onBeforeUnmount(() => {
           >清空当前页签</button>
         </div>
         <div class="command-dispatch-actions">
+          <div class="command-dispatch-context" aria-live="polite">
+            <strong>{{ dispatchScopeLabel }}</strong>
+            <span :title="dispatchTargetLabel">{{ dispatchTargetLabel }}</span>
+          </div>
           <button
             class="primary-button"
             type="button"
@@ -629,7 +695,7 @@ onBeforeUnmount(() => {
             :disabled="!workspace.connectedSessions.length || workspace.commandBusy"
             @click="dispatch(true)"
           ><RadioTower :size="14" />广播 {{ workspace.connectedSessions.length }}</button>
-          <small>发送选中内容；未选择时发送当前行。</small>
+          <small>未选择文本时仅发送光标所在行。</small>
         </div>
       </div>
 

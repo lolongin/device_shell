@@ -5,6 +5,8 @@ import {
   Cable,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
+  CircleCheck,
   CircleHelp,
   FileUp,
   FolderPlus,
@@ -16,6 +18,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  SearchX,
   ServerCog,
   Settings,
   Moon,
@@ -35,16 +38,32 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import SessionManager from './components/SessionManager.vue'
 import TerminalSplitWorkspace from './components/TerminalSplitWorkspace.vue'
 import { useWorkspaceStore } from './stores/workspace'
+import {
+  aggregateSessionHealth,
+  sessionHealthLabel,
+  sessionHealthShortLabel,
+  sessionStatusLabel
+} from './sessionStatus'
+import {
+  clampContextMenuElement,
+  clampContextMenuPoint,
+  contextMenuTrigger,
+  focusFirstContextMenuItem,
+  handleContextMenuKeydown,
+  restoreContextMenuFocus
+} from './contextMenu'
 import type {
   ConnectionProfilePayload,
   ConnectionProfileSummary,
   DeviceSummary,
   ProfileType,
+  SessionKind,
   SessionSummary
 } from './types'
 
 const workspace = useWorkspaceStore()
 const backendFailure = ref('')
+const workspaceRecoveryBusy = ref(false)
 const activeSection = ref<'devices' | 'temporary' | 'server'>('devices')
 type ThemeMode = 'dark' | 'light'
 type SessionTabLayout = 'top' | 'side'
@@ -87,13 +106,26 @@ const dialogType = ref<ProfileType | ''>('')
 const savingProfile = ref(false)
 const groupDialogOpen = ref(false)
 const savingGroup = ref(false)
+const settingsReturnFocus = ref<HTMLElement | null>(null)
+const helpReturnFocus = ref<HTMLElement | null>(null)
+const profileDialogReturnFocus = ref<HTMLElement | null>(null)
+const groupDialogReturnFocus = ref<HTMLElement | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
 const collapsedProfileGroups = ref(new Set<string>(storedCollapsedProfileGroups()))
 const deviceContextMenu = ref<{ device: DeviceSummary; x: number; y: number } | null>(null)
+const deviceContextMenuElement = ref<HTMLElement | null>(null)
+const deviceContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const sessionContextMenu = ref<{ session: SessionSummary; x: number; y: number } | null>(null)
+const sessionContextMenuElement = ref<HTMLElement | null>(null)
+const sessionContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const sessionManagerDeviceContextMenu = ref<{ deviceId: string; x: number; y: number } | null>(null)
+const sessionManagerDeviceContextMenuElement = ref<HTMLElement | null>(null)
+const sessionManagerDeviceContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const terminalSplitWorkspace = ref<InstanceType<typeof TerminalSplitWorkspace> | null>(null)
 const terminalSplitActive = ref(false)
 const profileContextMenu = ref<{ profile: ConnectionProfileSummary; x: number; y: number } | null>(null)
+const profileContextMenuElement = ref<HTMLElement | null>(null)
+const profileContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const lastActiveSessionByDevice = ref<Record<string, string>>({})
 let unsubscribeBackendExit: (() => void) | null = null
 let unsubscribeBackendRecovered: (() => void) | null = null
@@ -136,9 +168,66 @@ const effectiveNavigatorWidth = computed(() => Math.max(
   Math.min(navigatorMaxWidth.value, navigatorWidth.value)
 ))
 
+const recommendedDeviceSessionKind = computed(() => recommendedSessionKind(workspace.selectedDevice))
+const availableDeviceProtocolLabels = computed(() => {
+  const device = workspace.selectedDevice
+  if (!device) return []
+  if (device.is_simulated) return ['模拟终端']
+  return [
+    device.can_connect_ssh ? 'SSH' : '',
+    device.can_connect_telnet ? 'Telnet' : '',
+    device.can_connect_serial ? '串口' : ''
+  ].filter(Boolean)
+})
+const emptyWorkspaceActionLabel = computed(() => {
+  const device = workspace.selectedDevice
+  const kind = recommendedDeviceSessionKind.value
+  if (!device) return '请先选择设备'
+  if (kind === 'simulated') return '打开模拟终端'
+  if (!kind) return '暂无可用连接'
+  return `打开 ${device.name} · ${kind === 'ssh' ? 'SSH' : kind === 'telnet' ? 'Telnet' : '串口'}`
+})
+
 const appShellStyle = computed<Record<string, string>>(() => ({
   '--navigator-width': `${effectiveNavigatorWidth.value}px`
 }))
+
+const noticeRequiresAttention = computed(() => /(?:失败|错误|没有|请先|未连接|不可用|已取消)/u.test(
+  workspace.notice
+))
+
+function clearWorkspaceNotice(): void {
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = null
+  workspace.notice = ''
+}
+
+async function retryWorkspaceRecovery(): Promise<void> {
+  if (workspaceRecoveryBusy.value) return
+  if (!window.desktopApi) {
+    window.location.reload()
+    return
+  }
+  workspaceRecoveryBusy.value = true
+  stopApplicationEvents?.()
+  stopApplicationEvents = null
+  await workspace.initialize()
+  if (!workspace.error) {
+    backendFailure.value = ''
+    workspace.notice = '工作区已恢复，设备与会话数据已重新载入。'
+    stopApplicationEvents = workspace.startApplicationEvents()
+  }
+  workspaceRecoveryBusy.value = false
+}
+
+watch(() => workspace.notice, (notice) => {
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = null
+  if (!notice || noticeRequiresAttention.value) return
+  noticeTimer = setTimeout(() => {
+    if (workspace.notice === notice) workspace.notice = ''
+  }, 6000)
+})
 
 function setNavigatorWidth(value: number, persist = true): void {
   navigatorWidth.value = Math.round(Math.max(
@@ -192,6 +281,7 @@ function resetNavigatorWidth(): void {
 function handleWindowResize(): void {
   windowWidth.value = window.innerWidth
   if (navigatorWidth.value > navigatorMaxWidth.value) setNavigatorWidth(navigatorMaxWidth.value)
+  closeAppContextMenus()
 }
 
 const visibleProfiles = computed(() => {
@@ -221,6 +311,14 @@ const groupedServerProfiles = computed(() => {
     .sort(([left], [right]) => left === '未分组' ? 1 : right === '未分组' ? -1 : left.localeCompare(right))
     .map(([name, profiles]) => ({ name, profiles }))
 })
+const visibleProfileCredentialCount = computed(() =>
+  visibleProfiles.value.filter((profile) =>
+    profile[profile.preferred_protocol].has_password
+  ).length
+)
+const visibleProfileGroupCount = computed(() =>
+  activeSection.value === 'server' ? groupedServerProfiles.value.length : 0
+)
 const selectedProfile = computed(
   () => workspace.profiles.find((profile) => profile.id === selectedProfileId.value) || null
 )
@@ -243,6 +341,7 @@ const sessionDeviceGroups = computed(() => {
     return {
       id: deviceId,
       label: device?.name || sessions[0]?.title.split(' · ').slice(1).join(' · ') || deviceId,
+      health: aggregateSessionHealth(sessions),
       sessions
     }
   })
@@ -382,21 +481,24 @@ function handleDeviceListKeydown(event: KeyboardEvent): void {
     event.preventDefault()
     const device = workspace.selectedDevice
     if (!device) return
-    if (device.is_simulated) {
-      void workspace.openSimulatedSession()
-      return
-    }
-    const kind = device.ssh_endpoint
-      ? 'ssh'
-      : device.telnet_endpoint
-        ? 'telnet'
-        : 'serial'
-    if (connectionDisabledReason(device, kind)) {
-      void workspace.openCustomDeviceSession(device, kind)
-    } else {
-      void workspace.openSession(kind)
-    }
+    openRecommendedDeviceSession(device)
   }
+}
+
+function recommendedSessionKind(device: DeviceSummary | null): SessionKind | '' {
+  if (!device) return ''
+  if (device.is_simulated) return 'simulated'
+  if (device.can_connect_ssh) return 'ssh'
+  if (device.can_connect_telnet) return 'telnet'
+  if (device.can_connect_serial) return 'serial'
+  return ''
+}
+
+function openRecommendedDeviceSession(device = workspace.selectedDevice): void {
+  const kind = recommendedSessionKind(device)
+  if (!device || !kind) return
+  if (kind === 'simulated') void workspace.openSimulatedSession()
+  else void workspace.openSession(kind)
 }
 
 function deviceRowCopyText(device: DeviceSummary): string {
@@ -451,12 +553,14 @@ async function copyDeviceText(text: string, message: string): Promise<void> {
 
 function openDeviceContextMenu(event: MouseEvent, device: DeviceSummary): void {
   selectDevice(device.row_id)
-  deviceContextMenu.value = { device, x: event.clientX, y: event.clientY }
+  deviceContextMenuReturnFocus.value = contextMenuTrigger(event)
+  deviceContextMenu.value = { device, ...clampContextMenuPoint(event.clientX, event.clientY) }
 }
 
 function openDeviceInspectorContextMenu(event: MouseEvent, device: DeviceSummary): void {
   selectDevice(device.row_id)
-  deviceContextMenu.value = { device, x: event.clientX, y: event.clientY }
+  deviceContextMenuReturnFocus.value = contextMenuTrigger(event)
+  deviceContextMenu.value = { device, ...clampContextMenuPoint(event.clientX, event.clientY) }
 }
 
 function closeDeviceContextMenu(): void {
@@ -475,12 +579,70 @@ function closeProfileContextMenu(): void {
   profileContextMenu.value = null
 }
 
+function closeDeviceContextMenuAndRestoreFocus(): void {
+  closeDeviceContextMenu()
+  restoreContextMenuFocus(deviceContextMenuReturnFocus.value)
+}
+
+function closeSessionContextMenuAndRestoreFocus(): void {
+  closeSessionContextMenu()
+  restoreContextMenuFocus(sessionContextMenuReturnFocus.value)
+}
+
+function closeSessionManagerDeviceContextMenuAndRestoreFocus(): void {
+  closeSessionManagerDeviceContextMenu()
+  restoreContextMenuFocus(sessionManagerDeviceContextMenuReturnFocus.value)
+}
+
+function closeProfileContextMenuAndRestoreFocus(): void {
+  closeProfileContextMenu()
+  restoreContextMenuFocus(profileContextMenuReturnFocus.value)
+}
+
 function closeAppContextMenus(): void {
   closeDeviceContextMenu()
   closeSessionContextMenu()
   closeSessionManagerDeviceContextMenu()
   closeProfileContextMenu()
 }
+
+watch(deviceContextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (deviceContextMenu.value !== menu) return
+  const point = clampContextMenuElement(deviceContextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) deviceContextMenu.value = { ...menu, ...point }
+  focusFirstContextMenuItem(deviceContextMenuElement.value)
+})
+
+watch(sessionContextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (sessionContextMenu.value !== menu) return
+  const point = clampContextMenuElement(sessionContextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) sessionContextMenu.value = { ...menu, ...point }
+  focusFirstContextMenuItem(sessionContextMenuElement.value)
+})
+
+watch(sessionManagerDeviceContextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (sessionManagerDeviceContextMenu.value !== menu) return
+  const point = clampContextMenuElement(sessionManagerDeviceContextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) {
+    sessionManagerDeviceContextMenu.value = { ...menu, ...point }
+  }
+  focusFirstContextMenuItem(sessionManagerDeviceContextMenuElement.value)
+})
+
+watch(profileContextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (profileContextMenu.value !== menu) return
+  const point = clampContextMenuElement(profileContextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) profileContextMenu.value = { ...menu, ...point }
+  focusFirstContextMenuItem(profileContextMenuElement.value)
+})
 
 function handleDeviceContextKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
@@ -498,6 +660,7 @@ function handleDeviceContextKeydown(event: KeyboardEvent): void {
       `[data-device-row-id="${CSS.escape(workspace.selectedDevice.row_id)}"]`
     )
     const rect = (selectedRow || target)?.getBoundingClientRect()
+    deviceContextMenuReturnFocus.value = selectedRow || target
     deviceContextMenu.value = {
       device: workspace.selectedDevice,
       x: rect ? rect.left + 28 : 96,
@@ -519,6 +682,7 @@ function handleDeviceInspectorKeydown(event: KeyboardEvent, device: DeviceSummar
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
     const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+    deviceContextMenuReturnFocus.value = event.currentTarget as HTMLElement | null
     deviceContextMenu.value = {
       device,
       x: rect ? rect.left + 28 : 160,
@@ -553,14 +717,15 @@ function sessionDevice(session: SessionSummary | null): DeviceSummary | null {
 
 function openSessionContextMenu(event: MouseEvent, session: SessionSummary): void {
   workspace.activeSessionId = session.id
-  sessionContextMenu.value = { session, x: event.clientX, y: event.clientY }
+  sessionContextMenuReturnFocus.value = contextMenuTrigger(event)
+  sessionContextMenu.value = { session, ...clampContextMenuPoint(event.clientX, event.clientY) }
 }
 
 function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string): void {
+  sessionManagerDeviceContextMenuReturnFocus.value = contextMenuTrigger(event)
   sessionManagerDeviceContextMenu.value = {
     deviceId,
-    x: event.clientX,
-    y: event.clientY
+    ...clampContextMenuPoint(event.clientX, event.clientY)
   }
 }
 
@@ -658,6 +823,7 @@ function handleSessionTabKeydown(event: KeyboardEvent, session: SessionSummary):
       `[data-session-tab-id="${CSS.escape(session.id)}"]`
     )
     const rect = (selectedTab || (event.currentTarget as HTMLElement | null))?.getBoundingClientRect()
+    sessionContextMenuReturnFocus.value = selectedTab || (event.currentTarget as HTMLElement | null)
     sessionContextMenu.value = {
       session,
       x: rect ? rect.left + 24 : 140,
@@ -769,7 +935,8 @@ async function copyProfileText(text: string, message: string): Promise<void> {
 
 function openProfileContextMenu(event: MouseEvent, profile: ConnectionProfileSummary): void {
   selectedProfileId.value = profile.id
-  profileContextMenu.value = { profile, x: event.clientX, y: event.clientY }
+  profileContextMenuReturnFocus.value = contextMenuTrigger(event)
+  profileContextMenu.value = { profile, ...clampContextMenuPoint(event.clientX, event.clientY) }
 }
 
 function handleProfileKeydown(event: KeyboardEvent, profile: ConnectionProfileSummary): void {
@@ -784,6 +951,7 @@ function handleProfileKeydown(event: KeyboardEvent, profile: ConnectionProfileSu
       `[data-profile-row-id="${CSS.escape(profile.id)}"]`
     )
     const rect = (row || (event.currentTarget as HTMLElement | null))?.getBoundingClientRect()
+    profileContextMenuReturnFocus.value = row || (event.currentTarget as HTMLElement | null)
     profileContextMenu.value = {
       profile,
       x: rect ? rect.left + 28 : 128,
@@ -858,8 +1026,8 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 }
 
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
+  if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   activeSection.value = section
-  workspace.automationPanelOpen = false
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
   if (section !== 'devices') {
@@ -869,9 +1037,10 @@ function setSection(section: 'devices' | 'temporary' | 'server'): void {
 }
 
 function toggleAutomationPanel(): void {
-  const open = !workspace.automationPanelOpen
-  workspace.automationPanelOpen = open
-  if (open) {
+  if (workspace.automationPanelOpen) {
+    workspace.closeAutomationPanel()
+  } else {
+    workspace.automationPanelOpen = true
     workspace.transferPanelOpen = false
     workspace.upgradePanelOpen = false
     workspace.aiPanelOpen = false
@@ -887,17 +1056,17 @@ function openSessionAutomation(sessionId: string): void {
 }
 
 function openSessionTransfer(sessionId: string): void {
+  if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.activeSessionId = sessionId
   workspace.transferPanelOpen = true
-  workspace.automationPanelOpen = false
   workspace.upgradePanelOpen = false
   workspace.aiPanelOpen = false
 }
 
 function openSessionUpgrade(sessionId: string): void {
+  if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.activeSessionId = sessionId
   workspace.upgradePanelOpen = true
-  workspace.automationPanelOpen = false
   workspace.transferPanelOpen = false
   workspace.aiPanelOpen = false
 }
@@ -910,18 +1079,18 @@ function openSessionToolbarContext(sessionId: string, event: MouseEvent): void {
 
 function toggleTransferPanel(): void {
   const open = !workspace.transferPanelOpen
+  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.transferPanelOpen = open
   if (open) {
-    workspace.automationPanelOpen = false
     workspace.upgradePanelOpen = false
   }
 }
 
 function toggleUpgradePanel(): void {
   const open = !workspace.upgradePanelOpen
+  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.upgradePanelOpen = open
   if (open) {
-    workspace.automationPanelOpen = false
     workspace.transferPanelOpen = false
   }
 }
@@ -970,19 +1139,37 @@ function toggleNavigatorDetail(): void {
   )
 }
 
-function showSettingsPanel(): void {
+function eventTrigger(event?: Event): HTMLElement | null {
+  return event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+}
+
+function showSettingsPanel(event?: Event): void {
+  settingsReturnFocus.value = eventTrigger(event)
   helpPanelOpen.value = false
   settingsPanelOpen.value = true
 }
 
-function showHelpPanel(): void {
+function showHelpPanel(event?: Event): void {
+  helpReturnFocus.value = eventTrigger(event)
   settingsPanelOpen.value = false
   helpPanelOpen.value = true
 }
 
-function showProfileDialog(profileType: ProfileType, profile: ConnectionProfileSummary | null = null): void {
+function showProfileDialog(
+  profileType: ProfileType,
+  profile: ConnectionProfileSummary | null = null,
+  event?: Event
+): void {
+  profileDialogReturnFocus.value = eventTrigger(event) || document.querySelector<HTMLElement>(
+    profile ? `[data-profile-row-id="${CSS.escape(profile.id)}"]` : '.navigator-actions button[title="新增连接"]'
+  )
   dialogType.value = profileType
   editingProfile.value = profile
+}
+
+function showGroupDialog(event?: Event): void {
+  groupDialogReturnFocus.value = eventTrigger(event)
+  groupDialogOpen.value = true
 }
 
 async function saveProfile(
@@ -1089,6 +1276,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (noticeTimer) clearTimeout(noticeTimer)
   stopNavigatorResize()
   window.removeEventListener('resize', handleWindowResize)
   unsubscribeBackendExit?.()
@@ -1156,7 +1344,7 @@ onBeforeUnmount(() => {
         type="button"
         title="帮助"
         :aria-pressed="helpPanelOpen"
-        @click="showHelpPanel"
+        @click="showHelpPanel($event)"
       >
         <CircleHelp :size="19" /><span class="sr-only">帮助</span>
       </button>
@@ -1166,7 +1354,7 @@ onBeforeUnmount(() => {
         type="button"
         title="设置"
         :aria-pressed="settingsPanelOpen"
-        @click="showSettingsPanel"
+        @click="showSettingsPanel($event)"
       >
         <Settings :size="19" /><span class="sr-only">设置</span>
       </button>
@@ -1207,10 +1395,10 @@ onBeforeUnmount(() => {
             <RefreshCw :size="15" /><span class="sr-only">刷新设备</span>
           </button>
           <template v-else>
-            <button v-if="activeSection === 'server'" class="icon-button" type="button" title="新建分组" @click="groupDialogOpen = true">
+            <button v-if="activeSection === 'server'" class="icon-button" type="button" title="新建分组" @click="showGroupDialog($event)">
               <FolderPlus :size="16" /><span class="sr-only">新建服务器分组</span>
             </button>
-            <button class="icon-button" type="button" title="新增连接" @click="showProfileDialog(activeSection)">
+            <button class="icon-button" type="button" title="新增连接" @click="showProfileDialog(activeSection, null, $event)">
               <Plus :size="16" /><span class="sr-only">新增连接</span>
             </button>
           </template>
@@ -1232,6 +1420,12 @@ onBeforeUnmount(() => {
           placeholder="搜索名称、地址、分组或备注"
         />
       </label>
+
+      <div v-if="activeSection !== 'devices'" class="profile-summary-row" aria-label="连接配置统计">
+        <span><b>{{ visibleProfiles.length }}</b> 个配置</span>
+        <span v-if="activeSection === 'server'"><b>{{ visibleProfileGroupCount }}</b> 个分组</span>
+        <span :class="visibleProfileCredentialCount ? 'ready' : 'attention'"><b>{{ visibleProfileCredentialCount }}</b> 凭据就绪</span>
+      </div>
 
       <div v-if="activeSection === 'devices'" class="device-filter-panel" aria-label="设备筛选">
         <select v-model="workspace.domainFilter" aria-label="领域">
@@ -1266,12 +1460,38 @@ onBeforeUnmount(() => {
         >清空</button>
       </div>
 
-      <div v-if="workspace.loading" class="navigator-state">正在载入设备…</div>
+      <div
+        v-if="workspace.loading"
+        class="navigator-loading"
+        role="status"
+        aria-live="polite"
+        aria-label="正在载入设备"
+      >
+        <span class="sr-only">正在载入设备…</span>
+        <div class="device-table-header" aria-hidden="true">
+          <span>序号</span>
+          <span>设备</span>
+          <span>板类型</span>
+          <span>CPU</span>
+          <span>Slot</span>
+          <span>状态</span>
+        </div>
+        <div class="device-loading-rows" aria-hidden="true">
+          <div v-for="index in 7" :key="index" class="device-loading-row">
+            <span><i></i></span>
+            <span><i></i><i></i></span>
+            <span><i></i></span>
+            <span><i></i></span>
+            <span><i></i></span>
+            <span><i></i></span>
+          </div>
+        </div>
+      </div>
       <div v-else-if="workspace.error" class="navigator-state error">{{ workspace.error }}</div>
       <div
         v-else-if="activeSection === 'devices'"
         class="device-list device-table-list"
-        role="table"
+        :role="workspace.filteredDevices.length ? 'table' : 'region'"
         aria-label="设备列表"
         tabindex="0"
         @keydown="handleDeviceTableKeydown"
@@ -1310,6 +1530,13 @@ onBeforeUnmount(() => {
             <span :title="device.tooltip || device.status_text">{{ device.status_text || device.status }}</span>
           </span>
         </button>
+        <div v-if="!workspace.filteredDevices.length" class="navigator-empty-state device-table-empty" role="status">
+          <SearchX :size="22" aria-hidden="true" />
+          <strong>{{ workspace.hasActiveDeviceFilters ? '没有匹配的设备' : '暂无设备数据' }}</strong>
+          <span>{{ workspace.hasActiveDeviceFilters ? '尝试名称、ID、站点、CPU 或调整筛选条件。' : '刷新设备列表以重新从后端加载数据。' }}</span>
+          <button v-if="workspace.hasActiveDeviceFilters" class="secondary-button" type="button" @click="workspace.clearDeviceFilters">清除全部筛选</button>
+          <button v-else class="secondary-button" type="button" @click="workspace.initialize"><RefreshCw :size="13" />刷新设备</button>
+        </div>
       </div>
       <div v-else class="device-list profile-list" role="listbox" aria-label="连接配置列表">
         <template v-if="activeSection === 'temporary'">
@@ -1386,8 +1613,13 @@ onBeforeUnmount(() => {
             <p v-if="!group.profiles.length" class="empty-group">空分组</p>
           </div>
         </section>
-        <div v-if="!visibleProfiles.length && (activeSection === 'temporary' || !groupedServerProfiles.length)" class="navigator-state">
-          {{ workspace.profileQuery ? '没有匹配的连接配置。' : '暂无配置，点击右上角新增。' }}
+        <div v-if="!visibleProfiles.length && (activeSection === 'temporary' || !groupedServerProfiles.length)" class="navigator-empty-state" role="status">
+          <SearchX v-if="workspace.profileQuery" :size="22" aria-hidden="true" />
+          <ServerCog v-else :size="22" aria-hidden="true" />
+          <strong>{{ workspace.profileQuery ? '没有匹配的连接配置' : '还没有连接配置' }}</strong>
+          <span>{{ workspace.profileQuery ? '尝试名称、地址、分组或备注中的关键词。' : '创建配置后，可直接打开 SSH、Telnet 或串口会话。' }}</span>
+          <button v-if="workspace.profileQuery" class="secondary-button" type="button" @click="workspace.profileQuery = ''">清除搜索</button>
+          <button v-else class="primary-button" type="button" @click="showProfileDialog(activeSection, null, $event)"><Plus :size="13" />新增连接</button>
         </div>
       </div>
       <section
@@ -1556,7 +1788,6 @@ onBeforeUnmount(() => {
                 @click="workspace.runDeviceAction('power_off')"
               >设备下电</button>
             </details>
-            <p v-if="workspace.notice" class="action-notice">{{ workspace.notice }}</p>
           </template>
           <template v-else-if="activeSection !== 'devices' && selectedProfile">
             <section class="device-identity">
@@ -1585,7 +1816,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div class="device-actions">
-              <button class="secondary-button" type="button" @click="showProfileDialog(selectedProfile.profile_type, selectedProfile)">
+              <button class="secondary-button" type="button" @click="showProfileDialog(selectedProfile.profile_type, selectedProfile, $event)">
                 <Pencil :size="14" />编辑
               </button>
               <button class="secondary-button danger-button" type="button" @click="deleteSelectedProfile">
@@ -1601,11 +1832,12 @@ onBeforeUnmount(() => {
       </section>
       <div
         v-if="profileContextMenu"
+        ref="profileContextMenuElement"
         class="profile-context-menu"
         role="menu"
         :style="{ left: `${profileContextMenu.x}px`, top: `${profileContextMenu.y}px` }"
         @click.stop
-        @keydown.esc.prevent="closeProfileContextMenu"
+        @keydown="handleContextMenuKeydown($event, profileContextMenuElement, closeProfileContextMenuAndRestoreFocus)"
       >
         <p>{{ profileContextMenu.profile.name }}</p>
         <button
@@ -1682,11 +1914,12 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-if="deviceContextMenu"
+        ref="deviceContextMenuElement"
         class="device-context-menu"
         role="menu"
         :style="{ left: `${deviceContextMenu.x}px`, top: `${deviceContextMenu.y}px` }"
         @click.stop
-        @keydown.esc.prevent="closeDeviceContextMenu"
+        @keydown="handleContextMenuKeydown($event, deviceContextMenuElement, closeDeviceContextMenuAndRestoreFocus)"
       >
         <p>{{ deviceContextMenu.device.name }}</p>
         <button
@@ -1831,13 +2064,17 @@ onBeforeUnmount(() => {
               class="device-session-tab-select"
               type="button"
               role="tab"
-              :title="`${group.label} · ${group.sessions.length} 个终端`"
-              :aria-label="`${group.label}，${group.sessions.length} 个终端`"
+              :title="`${group.label} · ${group.sessions.length} 个终端 · ${sessionHealthLabel(group.health)}`"
+              :aria-label="`${group.label}，${group.sessions.length} 个终端，${sessionHealthLabel(group.health)}`"
               :aria-selected="group.id === activeSessionDeviceId"
               @click="activateSessionDevice(group.id)"
             >
-              <MonitorDot :size="13" aria-hidden="true" />
+              <span class="device-session-health" :data-state="group.health" aria-hidden="true">
+                <MonitorDot :size="13" />
+                <i></i>
+              </span>
               <span :data-testid="group.id === activeSessionDeviceId ? 'live-workspace-title' : undefined">{{ group.label }}</span>
+              <em class="device-session-health-label" :data-state="group.health">{{ sessionHealthShortLabel(group.health) }}</em>
               <small>{{ group.sessions.length }}</small>
             </button>
             <button
@@ -1882,14 +2119,40 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div v-if="backendFailure" class="system-banner" role="alert">
-        {{ backendFailure }}。请重新启动应用恢复服务。
+      <div v-if="backendFailure" class="system-banner" data-state="backend" role="alert">
+        <CircleAlert :size="15" aria-hidden="true" />
+        <div>
+          <strong>Python 后端连接中断</strong>
+          <span>{{ backendFailure }}。应用正在自动恢复服务，也可以立即重试。</span>
+        </div>
+        <button type="button" title="立即重试工作区" :disabled="workspaceRecoveryBusy" @click="retryWorkspaceRecovery">
+          <RefreshCw :class="{ 'spinning-icon': workspaceRecoveryBusy }" :size="13" aria-hidden="true" />
+          {{ workspaceRecoveryBusy ? '重试中…' : '立即重试' }}
+        </button>
       </div>
       <div v-if="workspace.error && !backendFailure" class="system-banner" role="alert">
-        {{ workspace.error }}
+        <CircleAlert :size="15" aria-hidden="true" />
+        <div>
+          <strong>工作区载入失败</strong>
+          <span>{{ workspace.error }}</span>
+        </div>
+        <button type="button" title="立即重试工作区" :disabled="workspaceRecoveryBusy" @click="retryWorkspaceRecovery">
+          <RefreshCw :class="{ 'spinning-icon': workspaceRecoveryBusy }" :size="13" aria-hidden="true" />
+          {{ workspaceRecoveryBusy ? '重试中…' : '重新载入' }}
+        </button>
       </div>
-      <div v-if="workspace.notice" class="notice-banner" role="status">
-        {{ workspace.notice }}
+      <div
+        v-if="workspace.notice"
+        class="notice-banner"
+        :data-state="noticeRequiresAttention ? 'attention' : 'success'"
+        role="status"
+      >
+        <CircleAlert v-if="noticeRequiresAttention" :size="14" aria-hidden="true" />
+        <CircleCheck v-else :size="14" aria-hidden="true" />
+        <span>{{ workspace.notice }}</span>
+        <button type="button" title="关闭通知" aria-label="关闭通知" @click="clearWorkspaceNotice">
+          <X :size="13" aria-hidden="true" />
+        </button>
       </div>
 
       <div
@@ -1914,8 +2177,8 @@ onBeforeUnmount(() => {
             class="session-tab-select"
             type="button"
             role="tab"
-            :aria-label="`${liveWorkspaceTitle} ${activeProtocolLabels[session.id]}`"
-            :title="`${liveWorkspaceTitle} · ${activeProtocolLabels[session.id]}`"
+            :aria-label="`${liveWorkspaceTitle} ${activeProtocolLabels[session.id]}，${sessionStatusLabel(session.status)}`"
+            :title="`${liveWorkspaceTitle} · ${activeProtocolLabels[session.id]} · ${sessionStatusLabel(session.status)}`"
             :aria-selected="session.id === workspace.activeSessionId"
             @click="activateSession(session.id)"
             @keydown="handleSessionTabKeydown($event, session)"
@@ -1934,11 +2197,12 @@ onBeforeUnmount(() => {
       </template>
       <div
         v-if="sessionManagerDeviceContextMenu"
+        ref="sessionManagerDeviceContextMenuElement"
         class="session-context-menu session-device-context-menu"
         role="menu"
         :style="{ left: `${sessionManagerDeviceContextMenu.x}px`, top: `${sessionManagerDeviceContextMenu.y}px` }"
         @click.stop
-        @keydown.esc.prevent="closeSessionManagerDeviceContextMenu"
+        @keydown="handleContextMenuKeydown($event, sessionManagerDeviceContextMenuElement, closeSessionManagerDeviceContextMenuAndRestoreFocus)"
       >
         <p>{{ sessionManagerContextDevice()?.name || sessionManagerDeviceContextMenu.deviceId }}</p>
         <button
@@ -2016,11 +2280,12 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-if="sessionContextMenu"
+        ref="sessionContextMenuElement"
         class="session-context-menu"
         role="menu"
         :style="{ left: `${sessionContextMenu.x}px`, top: `${sessionContextMenu.y}px` }"
         @click.stop
-        @keydown.esc.prevent="closeSessionContextMenu"
+        @keydown="handleContextMenuKeydown($event, sessionContextMenuElement, closeSessionContextMenuAndRestoreFocus)"
       >
         <p>{{ sessionContextMenu.session.title }}</p>
         <button
@@ -2111,14 +2376,23 @@ onBeforeUnmount(() => {
         <h3>{{ activeSection === 'devices' ? '准备开始设备会话' : '准备打开连接配置' }}</h3>
         <p v-if="activeSection === 'devices'">从左侧选择设备并创建终端。连接由 Python SessionHub 持有，界面刷新不会销毁会话。</p>
         <p v-else>从左侧选择连接配置。凭据由 Python 后端从操作系统凭据库读取，不会随配置列表返回。</p>
+        <div v-if="activeSection === 'devices'" class="empty-workspace-context" aria-label="首个终端目标">
+          <span>当前目标</span>
+          <strong>{{ workspace.selectedDevice?.name || '尚未选择设备' }}</strong>
+          <div v-if="availableDeviceProtocolLabels.length" aria-label="可用连接协议">
+            <small v-for="label in availableDeviceProtocolLabels" :key="label">{{ label }}</small>
+          </div>
+          <em v-else>当前设备没有可用连接协议</em>
+        </div>
         <button
           v-if="activeSection === 'devices'"
           class="primary-button"
           type="button"
-          :disabled="!workspace.selectedDevice"
-          @click="workspace.openSimulatedSession"
+          :disabled="!recommendedDeviceSessionKind || Boolean(workspace.openingKind)"
+          :title="recommendedDeviceSessionKind ? `使用推荐协议打开 ${workspace.selectedDevice?.name}` : '当前设备没有可用连接协议'"
+          @click="openRecommendedDeviceSession()"
         >
-          <Plus :size="16" />创建首个终端
+          <Plus :size="16" />{{ workspace.openingKind ? '正在创建终端…' : emptyWorkspaceActionLabel }}
         </button>
         <button
           v-else
@@ -2159,12 +2433,14 @@ onBeforeUnmount(() => {
       :profile="editingProfile"
       :groups="workspace.profileGroups"
       :saving="savingProfile"
+      :return-focus="profileDialogReturnFocus"
       @close="dialogType = ''; editingProfile = null"
       @save="saveProfile"
     />
     <ConnectionGroupDialog
       v-if="groupDialogOpen"
       :saving="savingGroup"
+      :return-focus="groupDialogReturnFocus"
       @close="groupDialogOpen = false"
       @save="createGroup"
     />
@@ -2174,12 +2450,13 @@ onBeforeUnmount(() => {
       :always-on-top="alwaysOnTop"
       :session-tab-layout="sessionTabLayout"
       :session-tab-rail-collapsed="sessionTabRailCollapsed"
+      :return-focus="settingsReturnFocus"
       @close="settingsPanelOpen = false"
       @set-theme="applyRendererTheme"
       @set-always-on-top="setAlwaysOnTop"
       @set-session-tab-layout="setSessionTabLayout"
       @set-session-tab-rail-collapsed="setSessionTabRailCollapsed"
     />
-    <HelpPanel :open="helpPanelOpen" @close="helpPanelOpen = false" />
+    <HelpPanel :open="helpPanelOpen" :return-focus="helpReturnFocus" @close="helpPanelOpen = false" />
   </div>
 </template>

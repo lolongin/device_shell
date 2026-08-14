@@ -168,6 +168,10 @@ export const desktopApi = {
       method: 'PUT',
       body: JSON.stringify({ rule })
     }),
+  cloneAutomationRule: (ruleId: string): Promise<AutomationWorkspaceResponse> =>
+    request(`/api/v1/automation/rules/${encodeURIComponent(ruleId)}/clone`, {
+      method: 'POST'
+    }),
   setAutomationRuleEnabled: (
     ruleId: string,
     enabled: boolean

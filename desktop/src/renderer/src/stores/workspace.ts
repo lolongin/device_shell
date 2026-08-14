@@ -8,6 +8,7 @@ import type {
   CommandHistoryItem,
   CommandWorkspaceResponse,
   AutoResponseRulePayload,
+  AutomationActivityRecord,
   AutomationRuleRecord,
   AutomationSessionStatus,
   AutomationWorkspaceResponse,
@@ -57,14 +58,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const automationRules = ref<AutomationRuleRecord[]>([])
   const quickSendButtons = ref<QuickSendButtonRecord[]>([])
   const automationSessions = ref<AutomationSessionStatus[]>([])
+  const automationActivity = ref<AutomationActivityRecord[]>([])
   const automationPanelOpen = ref(
     localStorage.getItem('device-tui.desktop-v2.automation-open') === '1'
   )
   const automationBusy = ref(false)
+  let automationCloseGuard: (() => boolean) | null = null
   const transferSettings = ref<TransferSettings | null>(null)
   const transferServiceLog = ref<string[]>([])
   const transferClientCommand = ref('')
   const transferFiles = ref<SharedTransferFile[]>([])
+  const transferFilesLoading = ref(false)
   const operations = ref<OperationRecord[]>([])
   const transferPanelOpen = ref(
     localStorage.getItem('device-tui.desktop-v2.transfer-open') === '1'
@@ -191,6 +195,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     automationRules.value = response.rules
     automationSessions.value = response.sessions
     quickSendButtons.value = response.quick_send_buttons
+    automationActivity.value = response.activity || []
   }
 
   async function initialize(): Promise<void> {
@@ -280,7 +285,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const name = typeof data.name === 'string' ? data.name : '自动化规则'
       if (event.type === 'automation.rule.started') notice.value = `自动化已启动: ${name}`
       else if (event.type === 'automation.rule.completed') notice.value = `自动化已完成: ${name}`
-      else if (event.type === 'automation.rule.failed') notice.value = `自动化执行失败: ${name}`
+      else if (event.type === 'automation.rule.waiting') notice.value = `自动化等待下一步输出: ${name}`
+      else if (event.type === 'automation.rule.failed') {
+        const message = typeof data.message === 'string' ? data.message.trim() : ''
+        error.value = `自动化执行失败: ${name}${message ? ` · ${message}` : ''}`
+      }
       else if (event.type === 'automation.rule.cancelled') notice.value = `自动化已取消: ${name}`
       void refreshAutomation()
     }
@@ -631,6 +640,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  function registerAutomationCloseGuard(guard: () => boolean): () => void {
+    automationCloseGuard = guard
+    return () => {
+      if (automationCloseGuard === guard) automationCloseGuard = null
+    }
+  }
+
+  function closeAutomationPanel(): boolean {
+    if (!automationPanelOpen.value) return true
+    if (automationCloseGuard && !automationCloseGuard()) return false
+    automationPanelOpen.value = false
+    return true
+  }
+
   async function saveAutomationRule(
     rule: AutoResponseRulePayload,
     ruleId = ''
@@ -660,6 +683,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       applyAutomationWorkspace(await desktopApi.setAutomationRuleEnabled(ruleId, enabled))
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      automationBusy.value = false
+    }
+  }
+
+  async function cloneAutomationRule(ruleId: string): Promise<AutomationRuleRecord | null> {
+    automationBusy.value = true
+    error.value = ''
+    const previousIds = new Set(automationRules.value.map((record) => record.id))
+    try {
+      applyAutomationWorkspace(await desktopApi.cloneAutomationRule(ruleId))
+      const cloned = automationRules.value.find((record) => !previousIds.has(record.id)) || null
+      if (cloned) notice.value = `已创建停用副本: ${cloned.rule.name}`
+      return cloned
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return null
     } finally {
       automationBusy.value = false
     }
@@ -765,6 +805,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function loadTransferFiles(): Promise<void> {
+    transferFilesLoading.value = true
     error.value = ''
     try {
       const response = await desktopApi.sharedTransferFiles()
@@ -772,6 +813,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } catch (cause) {
       transferFiles.value = []
       error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      transferFilesLoading.value = false
     }
   }
 
@@ -1165,12 +1208,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     automationRules,
     quickSendButtons,
     automationSessions,
+    automationActivity,
     automationPanelOpen,
     automationBusy,
     transferSettings,
     transferServiceLog,
     transferClientCommand,
     transferFiles,
+    transferFilesLoading,
     operations,
     transferPanelOpen,
     transferBusy,
@@ -1223,7 +1268,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     fetchCommandSuggestions,
     dispatchCommand,
     refreshAutomation,
+    registerAutomationCloseGuard,
+    closeAutomationPanel,
     saveAutomationRule,
+    cloneAutomationRule,
     setAutomationRuleEnabled,
     deleteAutomationRule,
     triggerAutomationRule,

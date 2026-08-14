@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
-import { X } from 'lucide-vue-next'
+import { computed, reactive, ref, watch } from 'vue'
+import { CircleAlert, CircleCheck, X } from 'lucide-vue-next'
+import { useDialogFocus } from '../composables/useDialogFocus'
 import type {
   ConnectionProfilePayload,
   ConnectionProfileSummary,
@@ -12,11 +13,17 @@ const props = defineProps<{
   profile?: ConnectionProfileSummary | null
   groups: string[]
   saving?: boolean
+  returnFocus?: HTMLElement | null
 }>()
 const emit = defineEmits<{
   close: []
   save: [payload: ConnectionProfilePayload, connectAfterSave: boolean]
 }>()
+const dialog = ref<HTMLElement | null>(null)
+const { handleDialogKeydown } = useDialogFocus(dialog, {
+  initialFocus: '[data-dialog-initial-focus]',
+  restoreFocus: () => props.returnFocus || null
+})
 
 const form = reactive({
   name: '',
@@ -32,6 +39,23 @@ const form = reactive({
   serialHost: '',
   serialPort: 23,
   serialUsername: ''
+})
+const hasAnyEndpoint = computed(() => props.profileType === 'server'
+  ? Boolean(form.sshHost.trim())
+  : Boolean(form.sshHost.trim() || form.telnetHost.trim() || form.serialHost.trim())
+)
+const endpointUsernamesValid = computed(() =>
+  (!form.sshHost.trim() || Boolean(form.sshUsername.trim()) || props.profileType === 'server') &&
+  (!form.telnetHost.trim() || Boolean(form.telnetUsername.trim()))
+)
+const formReady = computed(() => Boolean(
+  form.name.trim() && hasAnyEndpoint.value && endpointUsernamesValid.value
+))
+const formReadinessText = computed(() => {
+  if (!form.name.trim()) return '请先填写连接名称'
+  if (!hasAnyEndpoint.value) return props.profileType === 'server' ? '请填写 SSH 主机地址' : '请至少配置一个连接地址'
+  if (!endpointUsernamesValid.value) return 'SSH 或 Telnet 配置主机地址后必须填写用户名'
+  return props.profile ? '连接配置已具备保存条件' : '连接配置已具备保存和连接条件'
 })
 
 watch(
@@ -83,7 +107,7 @@ function submit(connectAfterSave = false): void {
 
 <template>
   <div class="dialog-backdrop" role="presentation" @mousedown.self="emit('close')">
-    <form class="profile-dialog" :class="{ 'server-dialog': profileType === 'server' }" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" @submit.prevent="submit(!profile)">
+    <form ref="dialog" class="profile-dialog" :class="{ 'server-dialog': profileType === 'server' }" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" tabindex="-1" @submit.prevent="submit(!profile)" @keydown="handleDialogKeydown" @keydown.esc.prevent="emit('close')">
       <header>
         <div>
           <p class="eyebrow">CONNECTION PROFILE</p>
@@ -97,7 +121,7 @@ function submit(connectAfterSave = false): void {
       <div class="profile-form-body">
         <label class="form-field">
           <span>名称</span>
-          <input v-model="form.name" required maxlength="160" autofocus />
+          <input v-model="form.name" required maxlength="160" data-dialog-initial-focus />
         </label>
         <label v-if="profileType === 'server'" class="form-field">
           <span>分组</span>
@@ -117,25 +141,25 @@ function submit(connectAfterSave = false): void {
 
         <fieldset v-if="profileType === 'temporary'" class="protocol-form">
           <legend>Telnet</legend>
-          <input v-model="form.telnetHost" placeholder="主机地址" />
+          <label class="protocol-field protocol-host-field"><span>主机地址</span><input v-model="form.telnetHost" placeholder="例如 192.0.2.10" /></label>
           <input v-model.number="form.telnetPort" type="number" min="1" max="65535" aria-label="Telnet 端口" />
-          <input v-model="form.telnetUsername" placeholder="用户名" :required="Boolean(form.telnetHost)" />
+          <label class="protocol-field protocol-user-field"><span>用户名</span><input v-model="form.telnetUsername" placeholder="输入 Telnet 用户名" :required="Boolean(form.telnetHost)" /></label>
           <p class="protocol-secret-state">凭据：{{ profile?.telnet.has_password ? '已存于系统凭据库' : '保存后设置或连接时输入' }}</p>
         </fieldset>
 
         <fieldset class="protocol-form">
           <legend>SSH</legend>
-          <input v-model="form.sshHost" placeholder="主机地址" :required="profileType === 'server'" />
+          <label class="protocol-field protocol-host-field"><span>主机地址</span><input v-model="form.sshHost" placeholder="例如 192.0.2.10" :required="profileType === 'server'" /></label>
           <input v-model.number="form.sshPort" type="number" min="1" max="65535" aria-label="SSH 端口" />
-          <input v-model="form.sshUsername" placeholder="用户名" :required="profileType === 'temporary' && Boolean(form.sshHost)" />
+          <label class="protocol-field protocol-user-field"><span>用户名</span><input v-model="form.sshUsername" placeholder="输入 SSH 用户名" :required="profileType === 'temporary' && Boolean(form.sshHost)" /></label>
           <p class="protocol-secret-state">凭据：{{ profile?.ssh.has_password ? '已存于系统凭据库' : '保存后设置或连接时输入' }}</p>
         </fieldset>
 
         <fieldset v-if="profileType === 'temporary'" class="protocol-form">
           <legend>串口转 Telnet</legend>
-          <input v-model="form.serialHost" placeholder="串口服务器地址" />
+          <label class="protocol-field protocol-host-field"><span>串口服务器地址</span><input v-model="form.serialHost" placeholder="例如 192.0.2.20" /></label>
           <input v-model.number="form.serialPort" type="number" min="1" max="65535" aria-label="串口端口" />
-          <input v-model="form.serialUsername" placeholder="用户名（可选）" />
+          <label class="protocol-field protocol-user-field"><span>用户名（可选）</span><input v-model="form.serialUsername" placeholder="可留空" /></label>
           <p class="protocol-secret-state">凭据：{{ profile?.serial.has_password ? '已存于系统凭据库' : '保存后设置或连接时输入' }}</p>
         </fieldset>
 
@@ -147,11 +171,16 @@ function submit(connectAfterSave = false): void {
       </div>
 
       <footer>
+        <p class="profile-readiness" :data-ready="formReady" role="status">
+          <CircleCheck v-if="formReady" :size="14" aria-hidden="true" />
+          <CircleAlert v-else :size="14" aria-hidden="true" />
+          {{ formReadinessText }}
+        </p>
         <button class="secondary-button" type="button" @click="emit('close')">取消</button>
-        <button v-if="!profile" class="secondary-button" type="button" :disabled="saving || !form.name.trim()" @click="submit(false)">
+        <button v-if="!profile" class="secondary-button" type="button" :disabled="saving || !formReady" @click="submit(false)">
           仅保存
         </button>
-        <button class="primary-button" type="submit" :disabled="saving || !form.name.trim()">
+        <button class="primary-button" type="submit" :disabled="saving || !formReady">
           {{ saving ? '保存中…' : profile ? '保存' : '保存并连接' }}
         </button>
       </footer>

@@ -9,6 +9,8 @@ TERMINAL_QUICK_TOOLBAR = Path(
     "desktop/src/renderer/src/components/TerminalQuickToolbar.vue"
 )
 SESSION_MANAGER = Path("desktop/src/renderer/src/components/SessionManager.vue")
+SESSION_STATUS = Path("desktop/src/renderer/src/sessionStatus.ts")
+CONTEXT_MENU = Path("desktop/src/renderer/src/contextMenu.ts")
 COMMAND_WORKSPACE = Path("desktop/src/renderer/src/components/CommandWorkspace.vue")
 AUTOMATION_WORKSPACE = Path("desktop/src/renderer/src/components/AutomationWorkspace.vue")
 AUTOMATION_STEP_EDITOR = Path(
@@ -20,6 +22,9 @@ AUTOMATION_ACTION_LIST = Path(
 UPGRADE_WORKSPACE = Path("desktop/src/renderer/src/components/UpgradeWorkspace.vue")
 SETTINGS_PANEL = Path("desktop/src/renderer/src/components/SettingsPanel.vue")
 HELP_PANEL = Path("desktop/src/renderer/src/components/HelpPanel.vue")
+PROFILE_DIALOG = Path("desktop/src/renderer/src/components/ConnectionProfileDialog.vue")
+GROUP_DIALOG = Path("desktop/src/renderer/src/components/ConnectionGroupDialog.vue")
+DIALOG_FOCUS = Path("desktop/src/renderer/src/composables/useDialogFocus.ts")
 WORKSPACE_STORE = Path("desktop/src/renderer/src/stores/workspace.ts")
 TYPES_TS = Path("desktop/src/renderer/src/types.ts")
 MAIN_TS = Path("desktop/src/main/index.ts")
@@ -144,6 +149,9 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
 
 def test_electron_advanced_automation_editor_covers_python_action_model() -> None:
     workspace = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    assert "runActionHint" in workspace
+    assert "activeSessionConnected" in workspace
+    assert "automation-rule-count" in workspace
     steps = AUTOMATION_STEP_EDITOR.read_text(encoding="utf-8")
     actions = AUTOMATION_ACTION_LIST.read_text(encoding="utf-8")
     types = TYPES_TS.read_text(encoding="utf-8")
@@ -152,7 +160,16 @@ def test_electron_advanced_automation_editor_covers_python_action_model() -> Non
     for label in ("基础响应", "分步流程", "动作流"):
         assert label in workspace
     assert "automationTargets" in workspace
-    assert "session:${session.device_id}:${session.kind}:${session.title}" in workspace
+    assert "session-id:${session.id}" in workspace
+    assert "timeout_ms" in types
+    assert "automation-step-timeout" in steps
+    assert "等待超时（ms，0=不限）" in steps
+    assert "let pendingSteps: AutoResponseStep[] | null = null" in steps
+    assert "function commitSteps" in steps
+    assert "pendingSteps || props.steps" in steps
+    assert "let pendingActions: AutoResponseAction[] | null = null" in actions
+    assert "function commitActions" in actions
+    assert "pendingActions || props.actions" in actions
     assert "normalizeSteps" in workspace
     assert "normalizeActions" in workspace
     assert "validateActions" in workspace
@@ -282,8 +299,13 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert 'data-testid="operation-panel-resize-handle"' in app
     assert 'role="region"' in transfer
     assert 'aria-modal="true"' not in transfer
+    assert "transferActionHint" in transfer
+    assert "activeSessionConnected" in transfer
     assert 'role="region"' in upgrade
     assert 'aria-modal="true"' not in upgrade
+    assert "upgradeActionHint" in upgrade
+    assert "terminal session is not connected" in upgrade
+    assert ".operation-readiness" in styles
     assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
     assert ".workspace-stage { grid-column: 3;" in styles
     assert ".session-sidebar { grid-column: 4;" in styles
@@ -294,7 +316,9 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert "position: fixed" not in transfer_backdrop
     assert "position: fixed" not in upgrade_backdrop
     assert "managedTransferKeepsTerminalVisibleAndInteractive" in main
+    assert "managedTransferCardsRemainVisibleAndOrdered" in main
     assert "packageUpgradeKeepsTerminalVisibleAndInteractive" in main
+    assert "packageUpgradeCardsRemainVisibleAndOrdered" in main
     assert "overflow-x: auto" in styles[styles.index(".upgrade-stage-list {"):styles.index(".upgrade-stage-list > div {")]
     terminal_pane = Path("desktop/src/renderer/src/components/TerminalPane.vue").read_text(encoding="utf-8")
     assert ':data-session-id="session.id"' in terminal_pane
@@ -429,6 +453,10 @@ def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> N
     assert "selectedDeviceRowId.value = visibleDevices[0].row_id" in store
     assert ".summary-row .pipeline b" in styles
     assert ".summary-row .other b" in styles
+    assert 'class="navigator-empty-state device-table-empty"' in app
+    assert ":role=\"workspace.filteredDevices.length ? 'table' : 'region'\"" in app
+    assert '@click="workspace.clearDeviceFilters"' in app
+    assert ".navigator-empty-state" in styles
 
 
 def test_electron_connection_actions_use_backend_parity_rules() -> None:
@@ -448,6 +476,12 @@ def test_electron_connection_actions_use_backend_parity_rules() -> None:
         assert field in types
 
     assert "connectionDisabledReason" in app
+    assert "function recommendedSessionKind" in app
+    assert "function openRecommendedDeviceSession" in app
+    assert "recommendedDeviceSessionKind" in app
+    assert 'class="empty-workspace-context"' in app
+    assert "availableDeviceProtocolLabels" in app
+    assert "workspace.openSimulatedSession" not in app[app.index('<section v-else class="empty-workspace">'):]
     assert "device.can_connect_ssh" in app
     assert "device.can_connect_telnet" in app
     assert "device.can_connect_serial" in app
@@ -459,6 +493,7 @@ def test_electron_connection_actions_use_backend_parity_rules() -> None:
     assert "!device?.can_connect_ssh" in store
     assert "!device?.can_connect_telnet" in store
     assert "!device?.can_connect_serial" in store
+    assert ".empty-workspace-context" in STYLES_CSS.read_text(encoding="utf-8")
 
 
 def test_electron_session_creation_deduplicates_rest_and_realtime_results() -> None:
@@ -787,7 +822,8 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert ':sessions="activeDeviceSessions"' in app
     assert ':key="activeSessionDeviceId"' in app
     assert "const sessionDisplayLabels = computed" in manager
-    assert manager.count("sessionDisplayLabels[session.id]") >= 5
+    assert "function sessionAccessibleLabel" in manager
+    assert manager.count("sessionAccessibleLabel(session)") >= 4
 
     bottom_toolbar = terminal.split(
         '<footer class="terminal-bottom-toolbar"', 1
@@ -884,7 +920,14 @@ def test_electron_server_groups_remember_collapsed_state() -> None:
     assert ':aria-expanded="!profileGroupCollapsed(group.name)"' in app
     assert 'v-show="!profileGroupCollapsed(group.name)"' in app
     assert "workspace.profileQuery.trim()" in app
+    assert "workspace.profileQuery = ''" in app
+    assert 'class="navigator-empty-state" role="status"' in app
+    assert "visibleProfileCredentialCount" in app
+    assert "visibleProfileGroupCount" in app
+    assert 'class="profile-summary-row"' in app
+    assert "profile-summary-row .attention" in styles
     assert ".profile-group-toggle" in styles
+    assert ".profile-summary-row" in styles
     assert ".profile-group-toggle:focus-visible" in styles
     assert "serverGroupCollapsePersistsAndSearchTemporarilyExpands" in smoke
     assert "serverGroupMoveExpandsDestinationWithoutLosingProfile" in smoke
@@ -961,6 +1004,9 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
     assert ".command-context-menu" in styles
     assert ".command-context-menu button:disabled" in styles
     assert ".danger-menu-item" in styles
+    assert "dispatchScopeLabel" in command
+    assert "dispatchTargetLabel" in command
+    assert ".command-dispatch-context" in styles
 
 
 def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
@@ -1120,8 +1166,23 @@ def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
     assert "chooseSessionLogDirectory()" in settings
     assert "updateSessionLogSettings" in settings
     assert "device-tui:terminal-font-size" in settings
+    assert "settings-behavior-note" in settings
+    assert "logSettingsDirty" in settings
+    assert "settings-dirty-state" in settings
+    assert "settings-log-skeleton" in settings
+    assert "settings-action-bar" in settings
+    assert 'aria-label="正在读取日志设置"' in settings
     assert "操作帮助" in help_panel
     assert "安全边界" in help_panel
+    assert "shortcutGroups" in help_panel
+    assert "help-shortcut-group" in help_panel
+    assert "visibleGroups" in help_panel
+    assert 'aria-label="搜索操作帮助"' in help_panel
+    assert 'class="help-categories"' in help_panel
+    assert "没有匹配的操作" in help_panel
+    assert "启动 FTP/SFTP 服务" in help_panel
+    assert "拖动会话页签" in help_panel
+    assert "双击分隔线" in help_panel
     assert "async function createNewLog" in terminal
     assert "async function openCurrentLog" in terminal
     assert "createSessionLog(props.session.id)" in terminal
@@ -1136,13 +1197,47 @@ def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
     assert "折叠右侧会话栏" in SESSION_MANAGER.read_text(encoding="utf-8")
 
 
+def test_connection_profile_dialog_explains_and_enforces_readiness() -> None:
+    dialog = PROFILE_DIALOG.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const formReady = computed" in dialog
+    assert "const formReadinessText = computed" in dialog
+    assert 'class="profile-readiness"' in dialog
+    assert ':disabled="saving || !formReady"' in dialog
+    assert '@keydown.esc.prevent="emit(\'close\')"' in dialog
+    assert "protocol-host-field" in dialog
+    assert "protocol-user-field" in dialog
+    assert ".profile-readiness" in styles
+    assert ".protocol-field" in styles
+
+
+def test_electron_modal_dialogs_share_keyboard_focus_management() -> None:
+    focus = DIALOG_FOCUS.read_text(encoding="utf-8")
+    settings = SETTINGS_PANEL.read_text(encoding="utf-8")
+    help_panel = HELP_PANEL.read_text(encoding="utf-8")
+    profile = PROFILE_DIALOG.read_text(encoding="utf-8")
+    group = GROUP_DIALOG.read_text(encoding="utf-8")
+    quick_toolbar = TERMINAL_QUICK_TOOLBAR.read_text(encoding="utf-8")
+
+    assert "export function useDialogFocus" in focus
+    assert "event.key !== 'Tab'" in focus
+    assert "restoreTarget" in focus
+    assert "target?.isConnected" in focus
+    for component in (settings, help_panel, profile, group, quick_toolbar):
+        assert "useDialogFocus" in component
+        assert '@keydown="handleDialogKeydown"' in component
+        assert "data-dialog-initial-focus" in component
+
+
 def test_electron_terminal_connection_failures_stay_inline_and_actionable() -> None:
     terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    status = SESSION_STATUS.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "const connectionStatusLabel = computed" in terminal
     for label in ("正在连接", "已连接", "已断开", "通道已分离", "连接错误", "连接失败"):
-        assert label in terminal
+        assert label in terminal or label in status
     assert "[终端连接失败]" in terminal
     assert "[终端通道错误] 请重新连接。" in terminal
     assert "emit('status', props.session.id, 'error', lastSequence)" in terminal
@@ -1150,6 +1245,99 @@ def test_electron_terminal_connection_failures_stay_inline_and_actionable() -> N
     assert '.connection-state[data-state="connecting"]' in styles
     assert '.connection-state[data-state="detached"]' in styles
     assert '.connection-state[data-state="failed"]' in styles
+    assert '.connection-state[data-state="disconnected"]' in styles
+    assert '.session-tab-select > i[data-state="connecting"]' in styles
+    assert '.session-tab-select > i[data-state="disconnected"]' in styles
+    assert '.session-tab-select > i[data-state="failed"]' in styles
+    assert 'aria-label="`连接状态：${connectionStatusLabel}`"' in terminal
+    assert "sessionStatusLabel" in APP_VUE.read_text(encoding="utf-8")
+    session_manager = SESSION_MANAGER.read_text(encoding="utf-8")
+    assert "function sessionAccessibleLabel" in session_manager
+    for label in ("连接错误", "通道已分离", "已关闭"):
+        assert label in status
+    assert "const recoveryMessage = computed" in terminal
+    assert 'class="terminal-recovery-banner"' in terminal
+    assert ".terminal-pane.has-recovery" in styles
+    assert ".terminal-recovery-banner" in styles
+    assert 'class="terminal-recovery-action-label"' in terminal
+    assert "@container (max-width: 560px)" in styles
+
+
+def test_electron_device_session_groups_expose_aggregate_health() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    manager = SESSION_MANAGER.read_text(encoding="utf-8")
+    status = SESSION_STATUS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "export function aggregateSessionHealth" in status
+    assert "export function sessionHealthLabel" in status
+    assert "export function sessionHealthShortLabel" in status
+    assert status.index("statuses.has('failed')") < status.index("statuses.has('disconnected')")
+    assert status.index("statuses.has('disconnected')") < status.index("statuses.has('connecting')")
+    assert "health: aggregateSessionHealth(sessions)" in app
+    assert "sessionHealthLabel(group.health)" in app
+    assert "groupAccessibleLabel" in manager
+    assert 'class="device-session-health"' in app
+    assert 'class="device-session-health"' in manager
+    assert 'class="device-session-health-label"' in app
+    assert 'class="device-session-health-label"' in manager
+    for state in ("connected", "connecting", "disconnected", "failed"):
+        assert f'.device-session-health[data-state="{state}"]' in styles
+        assert f'.device-session-health-label[data-state="{state}"]' in styles
+
+
+def test_electron_context_menus_clamp_to_viewport_and_focus_first_action() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    context_menu = CONTEXT_MENU.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "export function clampContextMenuPoint" in context_menu
+    assert "export function clampContextMenuElement" in context_menu
+    assert "export function focusFirstContextMenuItem" in context_menu
+    assert "export function handleContextMenuKeydown" in context_menu
+    assert "export function restoreContextMenuFocus" in context_menu
+    assert "export function contextMenuTrigger" in context_menu
+    assert "window.innerWidth - width" in context_menu
+    assert "window.innerHeight - height" in context_menu
+    for key in ("ArrowDown", "ArrowUp", "Home", "End", "Escape"):
+        assert key in context_menu
+    for source in (app, terminal, command):
+        assert "clampContextMenuPoint" in source
+        assert "clampContextMenuElement" in source
+        assert "focusFirstContextMenuItem" in source
+    assert "max-height: calc(100vh - 16px)" in styles
+    assert "overflow-y: auto" in styles
+
+
+def test_electron_device_loading_state_uses_table_aligned_skeleton() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert 'class="navigator-loading"' in app
+    assert 'aria-label="正在载入设备"' in app
+    assert 'class="device-loading-row"' in app
+    assert ".device-loading-row" in styles
+    assert "@keyframes device-loading-shimmer" in styles
+
+
+def test_electron_transfer_files_are_height_bounded_and_show_loading_feedback() -> None:
+    transfer = Path(
+        "desktop/src/renderer/src/components/TransferWorkspace.vue"
+    ).read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const transferFilesLoading = ref(false)" in store
+    assert "transferFilesLoading.value = true" in store
+    assert "transferFilesLoading.value = false" in store
+    assert ':aria-busy="workspace.transferFilesLoading"' in transfer
+    assert 'class="transfer-file-loading"' in transfer
+    assert "正在读取共享目录" in transfer
+    assert ".transfer-files-card { max-height:" in styles
+    assert "scrollbar-gutter: stable" in styles
+    assert ".transfer-file-loading" in styles
 
 
 def test_electron_automation_workspace_keeps_runtime_feedback() -> None:
@@ -1160,24 +1348,136 @@ def test_electron_automation_workspace_keeps_runtime_feedback() -> None:
 
     assert "event.type.startsWith('automation.')" in store
     assert "void refreshAutomation()" in store
-    for message in ("自动化已启动", "自动化已完成", "自动化执行失败", "自动化已取消"):
+    for message in (
+        "自动化已启动",
+        "自动化已完成",
+        "自动化等待下一步输出",
+        "自动化执行失败",
+        "自动化已取消",
+    ):
         assert message in store
+    assert "typeof data.message === 'string'" in store
 
     assert "const activeTriggeredIds = computed" in automation
+    assert "const activeWaitingIds = computed" in automation
     assert "const runningRuleNames = computed" in automation
+    assert "const waitingRuleNames = computed" in automation
     assert "const triggeredRuleNames = computed" in automation
     assert "const automationStatusText = computed" in automation
     assert "当前会话暂无运行中的自动响应" in automation
     assert "已触发" in automation
     assert "automation-session-status" in automation
     assert "data-state=\"running\"" in styles
+    assert "data-state=\"waiting\"" in styles
     assert "data-state=\"triggered\"" in styles
 
     assert 'class="notice-banner"' in app
     assert 'role="status"' in app
+    assert "const noticeRequiresAttention = computed" in app
+    assert "function clearWorkspaceNotice" in app
+    assert "setTimeout" in app
+    assert 'title="关闭通知"' in app
+    assert 'class="action-notice"' not in app
     assert 'workspace.error && !backendFailure' in app
     assert 'role="alert"' in app
+    assert "async function retryWorkspaceRecovery" in app
+    assert 'title="立即重试工作区"' in app
+    assert "workspaceRecoveryBusy" in app
+    assert 'data-state="backend"' in app
     assert ".notice-banner" in styles
+    assert '.notice-banner[data-state="attention"]' in styles
+    assert ".system-banner > button" in styles
+
+
+def test_electron_automation_editor_protects_unsaved_drafts() -> None:
+    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    app = APP_VUE.read_text(encoding="utf-8")
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "const isDirty = computed" in automation
+    assert "const creatingNew = ref(false)" in automation
+    assert "record.id === loadedRuleId.value && isDirty.value" in automation
+    assert "当前规则有未保存修改" in automation
+    assert "registerAutomationCloseGuard(prepareClose)" in automation
+    assert "window.addEventListener('beforeunload', warnBeforeUnload)" in automation
+    assert 'class="automation-draft-state"' in automation
+
+    assert "function registerAutomationCloseGuard" in store
+    assert "function closeAutomationPanel(): boolean" in store
+    assert "automationCloseGuard && !automationCloseGuard()" in store
+    assert "workspace.closeAutomationPanel()" in app
+
+    assert "automationUnsavedDraftGuardsClose" in smoke
+    assert "unsavedCloseStayedOpen" in smoke
+    assert "confirmedCloseSucceeded" in smoke
+
+
+def test_electron_automation_rule_list_supports_search_and_status_filters() -> None:
+    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "const ruleQuery = ref('')" in automation
+    assert "const filteredAutomationRules = computed" in automation
+    assert "ruleStatusFilter.value === 'active'" in automation
+    assert "v-for=\"record in filteredAutomationRules\"" in automation
+    assert 'aria-label="搜索自动化规则"' in automation
+    assert 'aria-label="筛选自动化规则状态"' in automation
+    assert "event.key.toLocaleLowerCase() === 'f'" in automation
+    assert "ruleSearchInput.value?.focus()" in automation
+    assert "没有匹配的规则" in automation
+
+    assert ".automation-rule-tools" in styles
+    assert ".automation-rule-search:focus-within" in styles
+    assert "automationRuleSearchAndFilter" in smoke
+    assert "automationEscapeClearedSearch" in smoke
+
+
+def test_electron_automation_rules_can_be_safely_cloned() -> None:
+    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
+    backend = Path("src/desktop_backend/app.py").read_text(encoding="utf-8")
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+
+    assert 'data-testid="automation-clone"' in automation
+    assert "async function cloneSelected" in automation
+    assert "workspace.cloneAutomationRule(record.id)" in automation
+    assert "创建默认停用的独立副本" in automation
+
+    assert "async function cloneAutomationRule" in store
+    assert "desktopApi.cloneAutomationRule(ruleId)" in store
+    assert "cloneAutomationRule: (ruleId: string)" in api
+    assert '"/api/v1/automation/rules/{rule_id}/clone"' in backend
+
+    assert "automationCloneCreatesDisabledIndependentRule" in smoke
+    assert "cloneSmokeAssertions" in smoke
+
+
+def test_electron_automation_workspace_shows_recent_execution_activity() -> None:
+    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    backend = Path("src/desktop_backend/app.py").read_text(encoding="utf-8")
+    smoke = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "interface AutomationActivityRecord" in types
+    assert "activity: AutomationActivityRecord[]" in types
+    assert "const automationActivity = ref<AutomationActivityRecord[]>([])" in store
+    assert "automationActivity.value = response.activity || []" in store
+
+    assert "const recentActivity = computed" in automation
+    assert 'class="automation-activity-panel"' in automation
+    assert 'class="automation-activity-row"' in automation
+    assert "function activityLabel" in automation
+    assert "function activityTarget" in automation
+    assert ".automation-activity-list" in styles
+    assert '.automation-activity-row[data-event="failed"]' in styles
+
+    assert "desktop.automation.activities(limit=100)" in backend
+    assert "automationActivityShowsLifecycle" in smoke
 
 
 def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
@@ -1188,6 +1488,8 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
 
     assert '"smoke:ui-parity": "npm run build && node scripts/smoke-ui-parity.mjs"' in package
     assert "DEVICE_TUI_CAPTURE_UI_PARITY" in main
+    assert "DEVICE_TUI_CAPTURE_HELP_PATH" in main
+    assert "DEVICE_TUI_CAPTURE_HELP_LIGHT_PATH" in main
     assert "uiParityPassed" in main
     assert "uiRestorePassed" in main
     assert "backendRecoveryPassed" in main
@@ -1232,6 +1534,12 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
         "deviceDomainFilterUpdatesRowsAndClearAction",
         "deviceStatusFilterUpdatesRowsAndClearAction",
         "deviceCpuFilterUpdatesRowsAndClearAction",
+        "deviceSearchNoResultsIsActionable",
+        "emptyWorkspaceActionFollowsSelectedDevice",
+        "deviceSessionTabsSummarizeWorstSessionHealth",
+        "contextMenusStayInsideViewportAndFocusFirstAction",
+        "contextMenusSupportKeyboardNavigationAndRestoreFocus",
+        "globalNoticeIsSemanticAndDismissible",
         "deviceClearFiltersRestoresAllRows",
         "ownedDeviceCountUsesUniqueIdsWhileFilterKeepsBoardRows",
         "legacyStatusBucketsClassifyPipelineBeforeOccupied",
@@ -1240,6 +1548,7 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
         "simulatedTerminalOnlyOffersSimulatedSession",
         "simulatedTerminalDeviceActionsAreDisabledWithReason",
         "disabledConnectionActionsExplainReason",
+        "connectionProfileReadinessPreventsIncompleteSave",
         "复制设备行",
         "关闭当前页签",
         "复制选中文本",
@@ -1253,13 +1562,18 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
         "terminalLogExportCreatesSafeCopy",
         "terminalLogDirectoryActionWorks",
         "settingsPanelExposesLegacyControls",
+        "settingsDialogTrapsAndRestoresFocus",
         "settingsTerminalFontAppliesImmediately",
         "sessionTabSideLayoutAppliesAndPersists",
         "sessionTabCollapsedPreferenceAppliesAndPersists",
         "collapsedSessionRailRemainsAccessibleAndRestorable",
         "terminalAutomationQuickAccessTargetsCurrentSession",
         "settingsLogDirectoryAndRotationPersist",
+        "settingsUnsavedLogChangesAreVisible",
+        "settingsActionsRemainVisibleOutsideScrollRegion",
+        "quickSendDialogManagesKeyboardFocus",
         "helpPanelIsFunctional",
+        "modalPanelsKeepKeyboardFocusContained",
         "terminalCurrentLogNativeOpenWorks",
         "terminalManualNewLogWorks",
         "terminalDisconnectShowsInlineFeedback",
@@ -1268,6 +1582,8 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
         "sshFailureRetryStaysInline",
         "telnetFailureShowsInlineReasonAndRetry",
         "serialClaimAndFailureFlowStaysInline",
+        "connectionDialogsManageKeyboardFocus",
+        "connectionDialogRestoresTriggerFocus",
     ):
         assert label in main
 
@@ -1275,14 +1591,22 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
     assert "DEVICE_TUI_CAPTURE_UI_PARITY: '1'" in smoke
     assert "DEVICE_TUI_CAPTURE_LIGHT_PATH" in smoke
     assert "DEVICE_TUI_CAPTURE_SETTINGS_PATH" in smoke
+    assert "DEVICE_TUI_CAPTURE_SETTINGS_LIGHT_PATH" in smoke
+    assert "DEVICE_TUI_CAPTURE_HELP_PATH" in smoke
+    assert "DEVICE_TUI_CAPTURE_HELP_LIGHT_PATH" in smoke
     assert "DEVICE_TUI_CAPTURE_BACKEND_RECOVERY: '1'" in smoke
     assert "DEVICE_TUI_DISABLE_EXTERNAL_OPEN: '1'" in smoke
     assert "DEVICE_TUI_LOG_EXPORT_PATH" in smoke
     assert "DEVICE_TUI_LOG_DIRECTORY_SELECTION" in smoke
     assert "DEVICE_TUI_MOCK_PROTOCOL_FAILURE: '1'" in smoke
+    assert "DEVICE_TUI_UI_PARITY_TIMEOUT_MS || 90_000" in smoke
     assert "[renderer] uiParityPassed=true" in smoke
     assert "[renderer] uiRestorePassed=true" in smoke
     assert "[renderer] backendRecoveryPassed=true" in smoke
+    assert "recoveryActionSeen" in main
     assert "[renderer] tokenExposed=false" in smoke
     assert "ui-parity-light.png" in smoke
+    assert "ui-parity-help.png" in smoke
+    assert "ui-parity-settings-light.png" in smoke
+    assert "ui-parity-help-light.png" in smoke
     assert "session-log-export.log" in smoke

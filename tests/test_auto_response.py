@@ -784,6 +784,7 @@ def test_auto_response_workflow_steps_round_trip_desktop_state(
                     response_targets=["source", "title:SSH #1"],
                     response_delays=[0, 1200],
                     response_append_enters=[False, True],
+                    timeout_ms=15_000,
                 ),
                 AutoResponseStep(
                     pattern="ADMIN",
@@ -805,9 +806,11 @@ def test_auto_response_workflow_steps_round_trip_desktop_state(
     assert loaded_rule.steps[0].response_targets == ["source", "title:SSH #1"]
     assert loaded_rule.steps[0].response_delays == [0, 1200]
     assert loaded_rule.steps[0].response_append_enters == [False, True]
+    assert loaded_rule.steps[0].timeout_ms == 15_000
     assert loaded_rule.steps[1].pattern == "ADMIN"
     assert loaded_rule.steps[1].response_delays == [250]
     assert loaded_rule.steps[1].response_append_enters == [False]
+    assert loaded_rule.steps[1].timeout_ms == 0
 
 
 def test_quick_send_buttons_round_trip_desktop_state(

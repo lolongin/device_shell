@@ -14,6 +14,9 @@ const captureDir = path.join(desktopRoot, 'out', 'smoke')
 const capturePath = path.join(captureDir, 'ui-parity.png')
 const captureLightPath = path.join(captureDir, 'ui-parity-light.png')
 const captureSettingsPath = path.join(captureDir, 'ui-parity-settings.png')
+const captureSettingsLightPath = path.join(captureDir, 'ui-parity-settings-light.png')
+const captureHelpPath = path.join(captureDir, 'ui-parity-help.png')
+const captureHelpLightPath = path.join(captureDir, 'ui-parity-help-light.png')
 const captureSessionManagerPath = path.join(captureDir, 'ui-parity-session-manager.png')
 const captureSessionManagerLightPath = path.join(captureDir, 'ui-parity-session-manager-light.png')
 const captureAdvancedAutomationPath = path.join(captureDir, 'ui-parity-advanced-automation.png')
@@ -43,6 +46,9 @@ const env = {
   DEVICE_TUI_CAPTURE_PATH: capturePath,
   DEVICE_TUI_CAPTURE_LIGHT_PATH: captureLightPath,
   DEVICE_TUI_CAPTURE_SETTINGS_PATH: captureSettingsPath,
+  DEVICE_TUI_CAPTURE_SETTINGS_LIGHT_PATH: captureSettingsLightPath,
+  DEVICE_TUI_CAPTURE_HELP_PATH: captureHelpPath,
+  DEVICE_TUI_CAPTURE_HELP_LIGHT_PATH: captureHelpLightPath,
   DEVICE_TUI_CAPTURE_SESSION_MANAGER_PATH: captureSessionManagerPath,
   DEVICE_TUI_CAPTURE_SESSION_MANAGER_LIGHT_PATH: captureSessionManagerLightPath,
   DEVICE_TUI_CAPTURE_ADVANCED_AUTOMATION_PATH: captureAdvancedAutomationPath,
@@ -93,7 +99,7 @@ child.stderr.on('data', (chunk) => {
   process.stderr.write(text)
 })
 
-const timeoutMs = Number(process.env.DEVICE_TUI_UI_PARITY_TIMEOUT_MS || 60_000)
+const timeoutMs = Number(process.env.DEVICE_TUI_UI_PARITY_TIMEOUT_MS || 90_000)
 let timedOut = false
 const timer = setTimeout(() => {
   timedOut = true
@@ -152,6 +158,15 @@ if (!existsSync(captureLightPath)) {
 if (!existsSync(captureSettingsPath)) {
   throw new Error(`Electron settings parity capture was not written: ${captureSettingsPath}`)
 }
+if (!existsSync(captureSettingsLightPath)) {
+  throw new Error(`Electron light settings parity capture was not written: ${captureSettingsLightPath}`)
+}
+if (!existsSync(captureHelpPath)) {
+  throw new Error(`Electron help parity capture was not written: ${captureHelpPath}`)
+}
+if (!existsSync(captureHelpLightPath)) {
+  throw new Error(`Electron light help parity capture was not written: ${captureHelpLightPath}`)
+}
 if (!existsSync(captureSessionManagerPath)) {
   throw new Error(`Electron session-manager parity capture was not written: ${captureSessionManagerPath}`)
 }
@@ -200,6 +215,9 @@ console.log('Electron UI parity smoke passed')
 console.log(`Capture=${capturePath}`)
 console.log(`LightCapture=${captureLightPath}`)
 console.log(`SettingsCapture=${captureSettingsPath}`)
+console.log(`SettingsLightCapture=${captureSettingsLightPath}`)
+console.log(`HelpCapture=${captureHelpPath}`)
+console.log(`HelpLightCapture=${captureHelpLightPath}`)
 console.log(`SessionManagerCapture=${captureSessionManagerPath}`)
 console.log(`SessionManagerLightCapture=${captureSessionManagerLightPath}`)
 console.log(`AdvancedAutomationCapture=${captureAdvancedAutomationPath}`)

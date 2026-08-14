@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { watch } from 'vue'
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
 import type { AutoResponseStep, AutomationTargetOption } from '../types'
 
@@ -13,6 +14,11 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   update: [steps: AutoResponseStep[]]
 }>()
+let pendingSteps: AutoResponseStep[] | null = null
+
+watch(() => props.steps, () => {
+  pendingSteps = null
+}, { deep: true })
 
 function defaultStep(): AutoResponseStep {
   return {
@@ -21,18 +27,30 @@ function defaultStep(): AutoResponseStep {
     response_texts: [''],
     response_targets: ['source'],
     response_delays: [0],
-    response_append_enters: [true]
+    response_append_enters: [true],
+    timeout_ms: 0
   }
 }
 
 function cloneSteps(): AutoResponseStep[] {
-  return JSON.parse(JSON.stringify(props.steps)) as AutoResponseStep[]
+  return JSON.parse(JSON.stringify(pendingSteps || props.steps)) as AutoResponseStep[]
+}
+
+function commitSteps(steps: AutoResponseStep[]): void {
+  pendingSteps = steps
+  emit('update', steps)
 }
 
 function updateStepPattern(index: number, pattern: string): void {
   const next = cloneSteps()
   next[index].pattern = pattern
-  emit('update', next)
+  commitSteps(next)
+}
+
+function updateStepTimeout(index: number, timeoutMs: number): void {
+  const next = cloneSteps()
+  next[index].timeout_ms = Math.max(0, Math.min(3_600_000, Number(timeoutMs) || 0))
+  commitSteps(next)
 }
 
 function updateResponse(
@@ -53,26 +71,26 @@ function updateResponse(
   } else {
     step.response_append_enters[responseIndex] = Boolean(value)
   }
-  emit('update', next)
+  commitSteps(next)
 }
 
 function addStep(): void {
-  emit('update', [...cloneSteps(), defaultStep()])
+  commitSteps([...cloneSteps(), defaultStep()])
 }
 
 function removeStep(index: number): void {
   const next = cloneSteps()
   next.splice(index, 1)
-  emit('update', next)
+  commitSteps(next)
 }
 
 function moveStep(index: number, offset: number): void {
   const target = index + offset
-  if (target < 0 || target >= props.steps.length) return
   const next = cloneSteps()
+  if (target < 0 || target >= next.length) return
   const [step] = next.splice(index, 1)
   next.splice(target, 0, step)
-  emit('update', next)
+  commitSteps(next)
 }
 
 function addResponse(stepIndex: number): void {
@@ -83,7 +101,7 @@ function addResponse(stepIndex: number): void {
   step.response_targets.push('source')
   step.response_delays.push(0)
   step.response_append_enters.push(true)
-  emit('update', next)
+  commitSteps(next)
 }
 
 function removeResponse(stepIndex: number, responseIndex: number): void {
@@ -96,7 +114,7 @@ function removeResponse(stepIndex: number, responseIndex: number): void {
     step.response_delays,
     step.response_append_enters
   ]) values.splice(responseIndex, 1)
-  emit('update', next)
+  commitSteps(next)
 }
 
 function targetKnown(value: string): boolean {
@@ -120,6 +138,17 @@ function targetKnown(value: string): boolean {
       <label class="form-field form-field-wide">
         <span>等待终端输出（首步留空表示立即执行）</span>
         <input :value="step.pattern" maxlength="4000" placeholder="例如 Login: / Code:" @input="updateStepPattern(stepIndex, ($event.target as HTMLInputElement).value)" />
+      </label>
+      <label class="form-field automation-step-timeout-field">
+        <span>等待超时（ms，0=不限）</span>
+        <input
+          class="automation-step-timeout"
+          :value="step.timeout_ms || 0"
+          type="number"
+          min="0"
+          max="3600000"
+          @input="updateStepTimeout(stepIndex, Number(($event.target as HTMLInputElement).value))"
+        />
       </label>
       <div class="automation-step-responses">
         <div v-for="(responseText, responseIndex) in step.response_texts" :key="responseIndex" class="automation-step-response" :data-response-index="responseIndex">

@@ -325,6 +325,7 @@ class AutomationRuleModel(BaseModel):
 class AutomationSessionStatusModel(BaseModel):
     session_id: str
     running_rule_ids: list[str]
+    waiting_rule_ids: list[str]
     triggered_rule_ids: list[str]
 
 
@@ -336,11 +337,23 @@ class QuickSendButtonModel(BaseModel):
     sensitive: bool
 
 
+class AutomationActivityModel(BaseModel):
+    id: str
+    timestamp: str
+    event: str
+    session_id: str
+    rule_id: str
+    name: str
+    message: str
+    target_session_id: str = ""
+
+
 class AutomationWorkspaceResponse(BaseModel):
     api_version: int = API_VERSION
     rules: list[AutomationRuleModel]
     sessions: list[AutomationSessionStatusModel]
     quick_send_buttons: list[QuickSendButtonModel]
+    activity: list[AutomationActivityModel]
 
 
 class AutomationRuleUpsertRequest(BaseModel):

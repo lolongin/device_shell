@@ -172,6 +172,108 @@ def test_match_steps_and_next_target_are_backend_owned(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_next_target_requires_another_session_on_the_same_device(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        device_id = application.devices.list_inventory().devices[0].id
+        only = await application.sessions.create(device_id, "simulated", "Only session")
+        record = application.automation.create_rule(AutoResponseRule(
+            name="No next session",
+            pattern="",
+            response="display version\r",
+            trigger_type="manual",
+            once=False,
+            steps=[AutoResponseStep(
+                pattern="",
+                responses=["display version\r"],
+                response_targets=["next"],
+            )],
+        ))
+        queue, _replay = application.events.subscribe()
+
+        application.automation.trigger_rule(record.id, only.id)
+        await asyncio.sleep(0.01)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        failed = next(event for event in events if event.type == "automation.rule.failed")
+        assert "目标终端不存在" in failed.data["message"]
+        assert manager.writes == []
+        application.events.unsubscribe(queue)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_session_id_target_selects_exact_duplicate_named_session(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        device_id = application.devices.list_inventory().devices[0].id
+        first = await application.sessions.create(device_id, "simulated", "Duplicate")
+        second = await application.sessions.create(device_id, "simulated", "Duplicate")
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Exact target",
+            pattern="",
+            response="display version\r",
+            trigger_type="manual",
+            once=False,
+            actions=[AutoResponseAction(
+                kind="send",
+                text="display version",
+                append_enter=True,
+                target=f"session-id:{second.id}",
+            )],
+        ))
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+
+        assert manager.writes == [
+            (second.id, "display version\r", "automation"),
+        ]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_disconnected_exact_target_fails_without_writing(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        device_id = application.devices.list_inventory().devices[0].id
+        source = await application.sessions.create(device_id, "simulated", "Source")
+        target = await application.sessions.create(device_id, "simulated", "Offline target")
+        manager.records[target.id] = replace(target, status="disconnected")
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Offline target",
+            pattern="",
+            response="reboot\r",
+            trigger_type="manual",
+            once=False,
+            actions=[AutoResponseAction(
+                kind="send",
+                text="reboot",
+                append_enter=True,
+                target=f"session-id:{target.id}",
+            )],
+        ))
+        queue, _replay = application.events.subscribe()
+
+        application.automation.trigger_rule(record.id, source.id)
+        await asyncio.sleep(0.01)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        failed = next(event for event in events if event.type == "automation.rule.failed")
+        assert "目标终端未连接" in failed.data["message"]
+        assert manager.writes == []
+        application.events.unsubscribe(queue)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
 def test_step_editor_text_is_decoded_at_execution_without_rewriting_state(
     tmp_path: Path,
 ) -> None:
@@ -207,6 +309,96 @@ def test_step_editor_text_is_decoded_at_execution_without_rewriting_state(
     asyncio.run(scenario())
 
 
+def test_manual_multi_step_run_waits_for_each_following_prompt(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Manual staged login",
+            pattern="LOGIN>",
+            response="admin\r",
+            trigger_type="manual",
+            once=False,
+            steps=[
+                AutoResponseStep(pattern="LOGIN>", responses=["admin\r"]),
+                AutoResponseStep(pattern="CODE>", responses=["123456\r"]),
+                AutoResponseStep(pattern="", responses=["display version\r"]),
+            ],
+        ))
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+
+        assert [data for _session_id, data, _origin in manager.writes] == ["admin\r"]
+        status = next(item for item in application.automation.statuses() if item.session_id == first.id)
+        assert status.waiting_rule_ids == (record.id,)
+
+        manager.emit("terminal.output", first.id, data="CODE>")
+        await asyncio.sleep(0.01)
+
+        assert [data for _session_id, data, _origin in manager.writes] == [
+            "admin\r",
+            "123456\r",
+            "display version\r",
+        ]
+        assert all(
+            record.id not in status.waiting_rule_ids
+            for status in application.automation.statuses()
+        )
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_manual_multi_step_loop_waits_again_before_next_iteration(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Manual repeated handshake",
+            pattern="ROUND>",
+            response="begin\r",
+            trigger_type="manual",
+            loop_count=2,
+            once=False,
+            steps=[
+                AutoResponseStep(pattern="ROUND>", responses=["begin\r"]),
+                AutoResponseStep(pattern="DONE>", responses=["confirm\r"]),
+            ],
+        ))
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+        manager.emit("terminal.output", first.id, data="DONE>")
+        await asyncio.sleep(0.01)
+
+        assert [data for _session_id, data, _origin in manager.writes] == [
+            "begin\r",
+            "confirm\r",
+        ]
+        status = next(item for item in application.automation.statuses() if item.session_id == first.id)
+        assert status.waiting_rule_ids == (record.id,)
+
+        manager.emit("terminal.output", first.id, data="ROUND>")
+        await asyncio.sleep(0.01)
+        manager.emit("terminal.output", first.id, data="DONE>")
+        await asyncio.sleep(0.01)
+
+        assert [data for _session_id, data, _origin in manager.writes] == [
+            "begin\r",
+            "confirm\r",
+            "begin\r",
+            "confirm\r",
+        ]
+        assert all(
+            record.id not in status.waiting_rule_ids
+            for status in application.automation.statuses()
+        )
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
 def test_manual_input_cancels_delayed_automation(tmp_path: Path) -> None:
     async def scenario() -> None:
         application, manager, _store, _secrets = _application(tmp_path)
@@ -230,6 +422,408 @@ def test_manual_input_cancels_delayed_automation(tmp_path: Path) -> None:
             record.id not in status.running_rule_ids
             for status in application.automation.statuses()
         )
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_one_terminal_event_starts_every_matching_rule(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        records = [
+            application.automation.create_rule(AutoResponseRule(
+                name=name,
+                pattern="",
+                response=response,
+                trigger_type="connected",
+                once=False,
+            ))
+            for name, response in (
+                ("Prepare terminal", "screen-length 0 temporary\r"),
+                ("Show version", "display version\r"),
+            )
+        ]
+
+        manager.emit("terminal.status", first.id, status="connected")
+        assert {
+            rule_id
+            for status in application.automation.statuses()
+            for rule_id in status.running_rule_ids
+        } == {record.id for record in records}
+        await asyncio.sleep(0.01)
+
+        assert {data for _session_id, data, origin in manager.writes if origin == "automation"} == {
+            "screen-length 0 temporary\r",
+            "display version\r",
+        }
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_reconnect_discards_partial_output_and_step_progress(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        application.automation.create_rule(AutoResponseRule(
+            name="Two-step prompt",
+            pattern="READY>",
+            response="first\r",
+            once=False,
+            steps=[
+                AutoResponseStep(pattern="READY>", responses=["first\r"]),
+                AutoResponseStep(pattern="NEXT>", responses=["second\r"]),
+            ],
+        ))
+
+        manager.emit("terminal.input", first.id)
+        manager.emit("terminal.output", first.id, data="READY>")
+        await asyncio.sleep(0.01)
+        assert [data for _session_id, data, _origin in manager.writes] == ["first\r"]
+
+        manager.emit("terminal.output", first.id, data="REA")
+        manager.emit("terminal.status", first.id, status="disconnected")
+        manager.emit("terminal.status", first.id, status="connected")
+        manager.emit("terminal.output", first.id, data="DY>")
+        await asyncio.sleep(0.01)
+        assert [data for _session_id, data, _origin in manager.writes] == ["first\r"]
+
+        manager.emit("terminal.input", first.id)
+        manager.emit("terminal.output", first.id, data="READY>")
+        await asyncio.sleep(0.01)
+        assert [data for _session_id, data, _origin in manager.writes] == [
+            "first\r",
+            "first\r",
+        ]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_waiting_step_is_visible_and_manual_input_cancels_it(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Visible waiting flow",
+            pattern="FIRST>",
+            response="one\r",
+            once=False,
+            steps=[
+                AutoResponseStep(pattern="FIRST>", responses=["one\r"]),
+                AutoResponseStep(pattern="SECOND>", responses=["two\r"]),
+            ],
+        ))
+
+        manager.emit("terminal.input", first.id)
+        manager.emit("terminal.output", first.id, data="FIRST>")
+        await asyncio.sleep(0.01)
+
+        status = next(item for item in application.automation.statuses() if item.session_id == first.id)
+        assert status.running_rule_ids == ()
+        assert status.waiting_rule_ids == (record.id,)
+
+        manager.emit("terminal.input", first.id)
+        assert all(
+            record.id not in status.waiting_rule_ids
+            for status in application.automation.statuses()
+        )
+        manager.emit("terminal.output", first.id, data="SECOND>")
+        await asyncio.sleep(0.01)
+        assert [data for _session_id, data, _origin in manager.writes] == ["one\r"]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_waiting_step_timeout_fails_and_clears_progress(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Timed handshake",
+            pattern="FIRST>",
+            response="one\r",
+            trigger_type="manual",
+            once=False,
+            steps=[
+                AutoResponseStep(pattern="FIRST>", responses=["one\r"]),
+                AutoResponseStep(pattern="SECOND>", responses=["two\r"], timeout_ms=20),
+            ],
+        ))
+        queue, _replay = application.events.subscribe()
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.05)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        failed = next(event for event in events if event.type == "automation.rule.failed")
+        assert failed.data["name"] == "Timed handshake"
+        assert failed.data["reason"] == "step_timeout"
+        assert "第 2 步" in failed.data["message"]
+        assert manager.writes == [(first.id, "one\r", "automation")]
+        assert all(
+            record.id not in status.waiting_rule_ids
+            for status in application.automation.statuses()
+        )
+        assert application.automation.activities()[0].event == "failed"
+        assert "第 2 步" in application.automation.activities()[0].message
+        application.events.unsubscribe(queue)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_matching_prompt_cancels_waiting_step_timeout(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Prompt before timeout",
+            pattern="FIRST>",
+            response="one\r",
+            trigger_type="manual",
+            once=False,
+            steps=[
+                AutoResponseStep(pattern="FIRST>", responses=["one\r"]),
+                AutoResponseStep(pattern="SECOND>", responses=["two\r"], timeout_ms=40),
+            ],
+        ))
+        queue, _replay = application.events.subscribe()
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+        manager.emit("terminal.output", first.id, data="SECOND>")
+        await asyncio.sleep(0.06)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        assert not any(event.type == "automation.rule.failed" for event in events)
+        assert manager.writes == [
+            (first.id, "one\r", "automation"),
+            (first.id, "two\r", "automation"),
+        ]
+        application.events.unsubscribe(queue)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_regex_match_spanning_large_output_chunks_triggers_only_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        application.automation.create_rule(AutoResponseRule(
+            name="Chunked regex",
+            pattern=r"BEGIN.{80}END",
+            response="matched\r",
+            match_type="regex",
+            once=False,
+        ))
+
+        manager.emit("terminal.input", first.id)
+        manager.emit("terminal.output", first.id, data="BEGIN" + ("x" * 80))
+        manager.emit("terminal.output", first.id, data="END")
+        await asyncio.sleep(0.01)
+        manager.emit("terminal.output", first.id, data="unrelated output")
+        await asyncio.sleep(0.01)
+
+        assert [data for _session_id, data, _origin in manager.writes] == ["matched\r"]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_visible_prompt_matching_handles_split_ansi_and_backspace(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        application.automation.create_rule(AutoResponseRule(
+            name="Decorated prompt",
+            pattern="Password:",
+            response="{{secret:test-visible-password}}",
+            once=False,
+        ))
+        _secrets.set("test-visible-password", "secret\r")
+
+        manager.emit("terminal.input", first.id)
+        manager.emit("terminal.output", first.id, data="\x1b[3")
+        manager.emit("terminal.output", first.id, data="1mPassworX\b")
+        manager.emit("terminal.output", first.id, data="d:\x1b[0m")
+        await asyncio.sleep(0.01)
+        manager.emit("terminal.output", first.id, data="\x1b[2K")
+        await asyncio.sleep(0.01)
+
+        assert manager.writes == [(first.id, "secret\r", "automation")]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_action_conditions_match_visible_text_across_ansi_sequences(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Visible condition",
+            pattern="",
+            response="display version\r",
+            trigger_type="manual",
+            once=False,
+            actions=[AutoResponseAction(
+                kind="condition",
+                condition_pattern="READY>",
+                actions=[AutoResponseAction(
+                    kind="send",
+                    text="display version",
+                    append_enter=True,
+                )],
+            )],
+        ))
+
+        manager.emit("terminal.output", first.id, data="RE\x1b[32mADY\x1b[0m>")
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+
+        assert manager.writes == [(first.id, "display version\r", "automation")]
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("rule", "field"),
+    [
+        (
+            AutoResponseRule(
+                name="Broken trigger",
+                pattern="(",
+                response="never\r",
+                match_type="regex",
+            ),
+            "触发文本",
+        ),
+        (
+            AutoResponseRule(
+                name="Broken condition",
+                pattern="",
+                response="",
+                trigger_type="manual",
+                actions=[AutoResponseAction(
+                    kind="condition",
+                    condition_pattern="[",
+                    condition_match_type="regex",
+                    actions=[AutoResponseAction(kind="send", text="never")],
+                )],
+            ),
+            "条件文本",
+        ),
+    ],
+)
+def test_invalid_regex_is_rejected_before_rule_is_saved(
+    tmp_path: Path,
+    rule: AutoResponseRule,
+    field: str,
+) -> None:
+    application, _manager, _store, _secrets = _application(tmp_path)
+
+    with pytest.raises(UnsupportedOperationError, match=field):
+        application.automation.create_rule(rule)
+
+    assert application.automation.list_rules() == []
+
+
+def test_manual_trigger_rejects_disconnected_session(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Connected only",
+            pattern="",
+            response="display version\r",
+            trigger_type="manual",
+            once=False,
+        ))
+        manager.records[first.id] = replace(first, status="disconnected")
+
+        with pytest.raises(UnsupportedOperationError, match="未连接"):
+            application.automation.trigger_rule(record.id, first.id)
+
+        assert manager.writes == []
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_missing_target_fails_instead_of_silently_completing_or_misdirecting(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Missing target",
+            pattern="",
+            response="",
+            trigger_type="manual",
+            once=False,
+            actions=[AutoResponseAction(
+                kind="send",
+                text="reboot",
+                append_enter=True,
+                target="session:missing:telnet:Closed terminal",
+            )],
+        ))
+        queue, _replay = application.events.subscribe()
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        failed = next(event for event in events if event.type == "automation.rule.failed")
+        assert "目标终端不存在" in failed.data["message"]
+        assert manager.writes == []
+        assert all(
+            record.id not in status.waiting_rule_ids
+            for status in application.automation.statuses()
+        )
+        application.events.unsubscribe(queue)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_missing_secret_reference_reports_failure_without_sending_empty_input(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Missing credential",
+            pattern="",
+            response="{{secret:missing-login}}",
+            trigger_type="manual",
+            once=False,
+        ))
+        queue, _replay = application.events.subscribe()
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        failed = next(event for event in events if event.type == "automation.rule.failed")
+        assert "凭据不可用" in failed.data["message"]
+        assert manager.writes == []
+        application.events.unsubscribe(queue)
         await application.automation.close()
 
     asyncio.run(scenario())
@@ -266,6 +860,42 @@ def test_action_loop_manual_trigger_and_explicit_cancel(tmp_path: Path) -> None:
         assert count_after_cancel >= 2
         assert len(manager.writes) == count_after_cancel
         assert all(write[2] == "automation" for write in manager.writes)
+        await application.automation.close()
+
+    asyncio.run(scenario())
+
+
+def test_automation_activity_records_execution_lifecycle_and_target(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, _secrets = _application(tmp_path)
+        first, second = await _sessions(application)
+        record = application.automation.create_rule(AutoResponseRule(
+            name="Audited dispatch",
+            pattern="",
+            response="display version\r",
+            trigger_type="manual",
+            once=False,
+            actions=[AutoResponseAction(
+                kind="send",
+                text="display version",
+                append_enter=True,
+                target=f"session-id:{second.id}",
+            )],
+        ))
+
+        application.automation.trigger_rule(record.id, first.id)
+        await asyncio.sleep(0.01)
+
+        activity = application.automation.activities()
+        assert [item.event for item in activity[:3]] == [
+            "completed",
+            "sent",
+            "started",
+        ]
+        assert all(item.rule_id == record.id for item in activity[:3])
+        assert activity[1].target_session_id == second.id
+        assert activity[1].session_id == first.id
+        assert manager.writes == [(second.id, "display version\r", "automation")]
         await application.automation.close()
 
     asyncio.run(scenario())
@@ -315,6 +945,73 @@ def test_generic_rule_editor_rejects_plaintext_credentials(tmp_path: Path) -> No
             response="plaintext-secret\r",
             once=False,
         ))
+
+
+def test_clone_rule_resets_runtime_state_and_starts_disabled(tmp_path: Path) -> None:
+    application, _manager, _store, _secrets = _application(tmp_path)
+    source = application.automation.create_rule(AutoResponseRule(
+        name="Reusable workflow",
+        pattern="READY>",
+        response="display version\r",
+        enabled=True,
+        once=False,
+        trigger_count=7,
+        steps=[AutoResponseStep(
+            pattern="READY>",
+            responses=["display version\r"],
+            timeout_ms=12_000,
+        )],
+    ))
+
+    cloned = application.automation.clone_rule(source.id)
+
+    assert cloned.id != source.id
+    assert cloned.rule.name == "Reusable workflow 副本"
+    assert cloned.rule.enabled is False
+    assert cloned.rule.trigger_count == 0
+    assert cloned.rule.steps[0].timeout_ms == 12_000
+    assert application.automation.get_rule(source.id).rule.enabled is True
+    assert application.automation.get_rule(source.id).rule.trigger_count == 7
+
+
+def test_clone_rule_copies_secret_before_original_is_deleted(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application, manager, _store, secrets = _application(tmp_path)
+        first, _second = await _sessions(application)
+        source_secret_id = "automation/source/login"
+        secrets.set(source_secret_id, "device-password\r")
+        source = application.automation.create_rule(AutoResponseRule(
+            name="Secure login",
+            pattern="",
+            response=f"{{{{secret:{source_secret_id}}}}}",
+            response_text=f"{{{{secret:{source_secret_id}}}}}",
+            trigger_type="manual",
+            enabled=True,
+            once=False,
+        ))
+
+        cloned = application.automation.clone_rule(source.id)
+        cloned_secret_id = (
+            cloned.rule.response.removeprefix("{{secret:").removesuffix("}}")
+        )
+
+        assert cloned_secret_id != source_secret_id
+        assert secrets.get(cloned_secret_id) == "device-password\r"
+        assert application.automation.public_rule(cloned).response == "••••••"
+
+        application.automation.delete_rule(source.id)
+        assert secrets.get(source_secret_id) is None
+        assert secrets.get(cloned_secret_id) == "device-password\r"
+
+        application.automation.set_enabled(cloned.id, True)
+        application.automation.trigger_rule(cloned.id, first.id)
+        await asyncio.sleep(0.01)
+        assert manager.writes == [
+            (first.id, "device-password\r", "automation"),
+        ]
+        await application.automation.close()
+
+    asyncio.run(scenario())
 
 
 def test_quick_send_buttons_are_persistent_and_write_through_session_service(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import {
   Box,
+  CircleAlert,
   Clipboard,
   ExternalLink,
   FilePlus2,
@@ -24,6 +25,15 @@ import {
 } from 'lucide-vue-next'
 import { desktopApi, terminalSocketUrl } from '../transport/api'
 import type { SessionSummary, TerminalEvent } from '../types'
+import { sessionStatusLabel } from '../sessionStatus'
+import {
+  clampContextMenuElement,
+  clampContextMenuPoint,
+  contextMenuTrigger,
+  focusFirstContextMenuItem,
+  handleContextMenuKeydown,
+  restoreContextMenuFocus
+} from '../contextMenu'
 
 const props = defineProps<{ session: SessionSummary }>()
 const emit = defineEmits<{
@@ -49,6 +59,8 @@ const fontSize = ref(readFontSize())
 const reconnecting = ref(false)
 const disconnecting = ref(false)
 const contextMenu = ref<{ x: number; y: number; hasSelection: boolean } | null>(null)
+const contextMenuElement = ref<HTMLElement | null>(null)
+const contextMenuReturnFocus = ref<HTMLElement | null>(null)
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let searchAddon: SearchAddon | null = null
@@ -66,15 +78,15 @@ const canDisconnect = computed(() =>
   !disconnecting.value && !['disconnected', 'detached', 'closed'].includes(connectionStatus.value)
 )
 const canPaste = computed(() => socket?.readyState === WebSocket.OPEN)
-const connectionStatusLabel = computed(() => ({
-  connecting: '正在连接',
-  connected: '已连接',
-  disconnected: '已断开',
-  detached: '通道已分离',
-  error: '连接错误',
-  failed: '连接失败',
-  closed: '已关闭'
-})[connectionStatus.value] || connectionStatus.value)
+const connectionStatusLabel = computed(() =>
+  connectionStatus.value === 'connecting' ? '正在连接' : sessionStatusLabel(connectionStatus.value)
+)
+const recoveryMessage = computed(() => ({
+  disconnected: '会话已断开，可按 Enter 或点击重新连接',
+  detached: '终端通道已分离，重新连接可继续接收输出',
+  error: '终端通道发生错误，请检查网络后重试',
+  failed: '连接失败，请检查地址、端口或凭据后重试'
+})[connectionStatus.value] || '')
 
 function readFontSize(): number {
   const value = Number(localStorage.getItem('device-tui.desktop-v2.terminal-font-size') || 13)
@@ -282,9 +294,9 @@ async function pasteFromClipboard(): Promise<void> {
 }
 
 function openContextMenu(event: MouseEvent): void {
+  contextMenuReturnFocus.value = contextMenuTrigger(event)
   contextMenu.value = {
-    x: event.clientX,
-    y: event.clientY,
+    ...clampContextMenuPoint(event.clientX, event.clientY),
     hasSelection: Boolean(terminal?.hasSelection())
   }
 }
@@ -292,6 +304,20 @@ function openContextMenu(event: MouseEvent): void {
 function closeContextMenu(): void {
   contextMenu.value = null
 }
+
+function closeContextMenuAndRestoreFocus(): void {
+  closeContextMenu()
+  restoreContextMenuFocus(contextMenuReturnFocus.value)
+}
+
+watch(contextMenu, async (menu) => {
+  if (!menu) return
+  await nextTick()
+  if (contextMenu.value !== menu) return
+  const point = clampContextMenuElement(contextMenuElement.value, menu.x, menu.y)
+  if (point.x !== menu.x || point.y !== menu.y) contextMenu.value = { ...menu, ...point }
+  focusFirstContextMenuItem(contextMenuElement.value)
+})
 
 function handleTerminalContextKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
@@ -301,6 +327,7 @@ function handleTerminalContextKeydown(event: KeyboardEvent): void {
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
     const rect = container.value?.getBoundingClientRect()
+    contextMenuReturnFocus.value = container.value
     contextMenu.value = {
       x: rect ? rect.left + 36 : 160,
       y: rect ? rect.top + 36 : 160,
@@ -506,6 +533,7 @@ onBeforeUnmount(() => {
     class="terminal-pane"
     :data-session-id="session.id"
     :data-session-kind="session.kind"
+    :class="{ 'has-recovery': Boolean(recoveryMessage) }"
     :aria-label="`终端会话：${session.title}`"
     @click="closeContextMenu"
   >
@@ -516,6 +544,20 @@ onBeforeUnmount(() => {
       @contextmenu.prevent="openContextMenu"
       @keydown="handleTerminalContextKeydown"
     ></div>
+    <div v-if="recoveryMessage" class="terminal-recovery-banner" :data-state="connectionStatus" role="status">
+      <CircleAlert :size="14" aria-hidden="true" />
+      <span>{{ recoveryMessage }}</span>
+      <button
+        type="button"
+        :disabled="reconnecting"
+        :aria-label="reconnecting ? '正在重新连接' : '重新连接当前会话'"
+        title="从提示条重新连接"
+        @click="reconnect"
+      >
+        <RotateCcw :class="{ 'spinning-icon': reconnecting }" :size="13" aria-hidden="true" />
+        <span class="terminal-recovery-action-label">{{ reconnecting ? '重连中…' : '重新连接' }}</span>
+      </button>
+    </div>
     <footer class="terminal-bottom-toolbar" role="toolbar" aria-label="终端辅助操作">
       <div class="terminal-bottom-leading">
         <slot name="bottom-leading"></slot>
@@ -551,7 +593,12 @@ onBeforeUnmount(() => {
       </button>
       <span class="terminal-bottom-divider" aria-hidden="true"></span>
       <div class="terminal-actions" :aria-label="`${session.title} 会话控制`">
-        <span class="connection-state" :data-state="connectionStatus" :title="connectionStatus">
+        <span
+          class="connection-state"
+          :data-state="connectionStatus"
+          :title="connectionStatusLabel"
+          :aria-label="`连接状态：${connectionStatusLabel}`"
+        >
           <i aria-hidden="true"></i>{{ connectionStatusLabel }}
         </span>
         <button class="icon-button" type="button" title="当前会话与设备操作" @click.stop="emit('context', session.id, $event)">
@@ -582,11 +629,12 @@ onBeforeUnmount(() => {
     </footer>
     <div
       v-if="contextMenu"
+      ref="contextMenuElement"
       class="terminal-context-menu"
       role="menu"
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
-      @keydown.esc.prevent="closeContextMenu"
+      @keydown="handleContextMenuKeydown($event, contextMenuElement, closeContextMenuAndRestoreFocus)"
     >
       <p>{{ session.title }}</p>
       <button

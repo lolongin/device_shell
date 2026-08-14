@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from ..auto_response import (
     deserialize_auto_response_rule,
     serialize_auto_response_rule,
 )
+from ..terminal_execution import ANSI_ESCAPE_RE
 from .errors import ResourceNotFoundError, UnsupportedOperationError
 from .events import EventBus
 from .secrets import SecretStore
@@ -34,6 +36,7 @@ _SECRET_REFERENCE = re.compile(r"\{\{secret:([^{}]+)}}")
 _SENSITIVE_PROMPT = re.compile(
     r"(?i)(password|passwd|passphrase|secret|community|token|密码|口令|密钥)"
 )
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +51,7 @@ class AutomationRuleRecord:
 class AutomationSessionStatus:
     session_id: str
     running_rule_ids: tuple[str, ...]
+    waiting_rule_ids: tuple[str, ...]
     triggered_rule_ids: tuple[str, ...]
 
 
@@ -58,6 +62,18 @@ class QuickSendButtonRecord:
     response_text: str
     append_enter: bool
     sensitive: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationActivityRecord:
+    id: str
+    timestamp: str
+    event: str
+    session_id: str
+    rule_id: str
+    name: str
+    message: str
+    target_session_id: str = ""
 
 
 class AutomationStore(Protocol):
@@ -114,6 +130,7 @@ class _SessionRuntime:
     triggered: set[str] = field(default_factory=set)
     running: set[str] = field(default_factory=set)
     tasks: dict[str, set[asyncio.Task[None]]] = field(default_factory=dict)
+    waiting_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
 
 
 class AutomationService:
@@ -135,6 +152,7 @@ class AutomationService:
         self._secrets = secrets
         self._events = events
         self._runtimes: dict[str, _SessionRuntime] = {}
+        self._activities: deque[AutomationActivityRecord] = deque(maxlen=300)
         self._event_source: Any = None
         self._event_listener: Callable[[Any], None] | None = None
 
@@ -171,6 +189,7 @@ class AutomationService:
         now = self._now()
         rule_id = f"AUTOMATION-{uuid4().hex[:12].upper()}"
         candidate = deepcopy(rule)
+        self._validate_regex_patterns(candidate)
         self._validate_plaintext_secrets(candidate)
         record = AutomationRuleRecord(rule_id, candidate, now, now)
         self._store.upsert_automation_rule(record)
@@ -185,12 +204,38 @@ class AutomationService:
         current = self.get_rule(rule_id)
         candidate = deepcopy(rule)
         self._restore_masked_secrets(candidate, current.rule)
+        self._validate_regex_patterns(candidate)
         self._validate_plaintext_secrets(candidate)
         updated = replace(current, rule=candidate, updated_at=self._now())
         self.cancel_rule(rule_id)
         self._store.upsert_automation_rule(updated)
         self._publish("automation.rule.updated", updated)
         return self.get_rule(rule_id)
+
+    def clone_rule(self, rule_id: str) -> AutomationRuleRecord:
+        source = self.get_rule(rule_id)
+        now = self._now()
+        clone_id = f"AUTOMATION-{uuid4().hex[:12].upper()}"
+        candidate = deepcopy(source.rule)
+        candidate.name = f"{candidate.name} 副本"
+        candidate.enabled = False
+        candidate.trigger_count = 0
+        created_secret_ids: list[str] = []
+        try:
+            self._clone_rule_secrets(candidate, clone_id, created_secret_ids)
+            cloned = AutomationRuleRecord(clone_id, candidate, now, now)
+            self._store.upsert_automation_rule(cloned)
+        except Exception:
+            for secret_id in created_secret_ids:
+                self._secrets.delete(secret_id)
+            raise
+        self._publish(
+            "automation.rule.created",
+            cloned,
+            source_rule_id=source.id,
+            cloned=True,
+        )
+        return self.get_rule(clone_id)
 
     def set_enabled(self, rule_id: str, enabled: bool) -> AutomationRuleRecord:
         current = self.get_rule(rule_id)
@@ -229,11 +274,17 @@ class AutomationService:
             AutomationSessionStatus(
                 session_id=session_id,
                 running_rule_ids=tuple(sorted(runtime.running)),
+                waiting_rule_ids=tuple(
+                    sorted(set(runtime.step_indexes) - runtime.running)
+                ),
                 triggered_rule_ids=tuple(sorted(runtime.triggered)),
             )
             for session_id, runtime in sorted(self._runtimes.items())
-            if runtime.running or runtime.triggered
+            if runtime.running or runtime.step_indexes or runtime.triggered
         ]
+
+    def activities(self, limit: int = 100) -> list[AutomationActivityRecord]:
+        return list(self._activities)[: max(0, min(300, int(limit)))]
 
     def list_quick_send_buttons(self) -> list[QuickSendButtonRecord]:
         raw = self._store.get_meta(self.QUICK_SEND_META_KEY)
@@ -503,15 +554,22 @@ class AutomationService:
         if event_type == "terminal.status":
             status = str(getattr(event, "status", "")).lower()
             if status == "connected":
+                self._reset_transient_session_state(session_id)
                 self._process_event(session_id, "connected", "")
             elif status in {"disconnected", "failed", "closed"}:
                 self.cancel_session(session_id, reason=status)
+                self._reset_transient_session_state(session_id)
 
     def trigger_rule(self, rule_id: str, session_id: str) -> None:
         record = self.get_rule(rule_id)
-        self._require_session(session_id)
+        session = self._require_session(session_id)
+        if session.status != "connected":
+            raise UnsupportedOperationError(
+                "当前终端会话未连接，无法启动自动化规则。",
+                details={"session_id": session_id, "status": session.status},
+            )
         runtime = self._runtime(session_id)
-        if rule_id in runtime.running:
+        if rule_id in runtime.running or rule_id in runtime.step_indexes:
             raise UnsupportedOperationError("The automation rule is already running.")
         if not record.rule.enabled:
             raise UnsupportedOperationError("The automation rule is disabled.")
@@ -525,14 +583,23 @@ class AutomationService:
         runtime = self._runtimes.get(session_id)
         if runtime is None:
             return
-        for rule_id in list(runtime.tasks):
+        rule_ids = (
+            set(runtime.tasks)
+            | runtime.running
+            | set(runtime.step_indexes)
+            | set(runtime.loop_indexes)
+            | set(runtime.waiting_tasks)
+        )
+        for rule_id in rule_ids:
             self._cancel_tasks(session_id, runtime, rule_id, reason)
 
     async def close(self) -> None:
         self.unbind_event_source()
         tasks: list[asyncio.Task[None]] = []
         for session_id, runtime in self._runtimes.items():
-            for rule_id in list(runtime.tasks):
+            tasks.extend(runtime.waiting_tasks.values())
+            rule_ids = set(runtime.tasks) | set(runtime.waiting_tasks)
+            for rule_id in rule_ids:
                 tasks.extend(runtime.tasks.get(rule_id, ()))
                 self._cancel_tasks(session_id, runtime, rule_id, "shutdown")
         if tasks:
@@ -541,6 +608,14 @@ class AutomationService:
     def _process_event(self, session_id: str, event_type: str, data: str) -> None:
         runtime = self._runtime(session_id)
         previous_buffer = runtime.buffer
+        previous_visible = self._visible_terminal_text(previous_buffer)
+        combined_visible = self._visible_terminal_text(previous_buffer + data)
+        stable_prefix_length = self._common_prefix_length(
+            previous_visible,
+            combined_visible,
+        )
+        stable_visible = combined_visible[:stable_prefix_length]
+        visible_message = combined_visible[stable_prefix_length:]
         if data:
             runtime.buffer = (runtime.buffer + data)[-4096:]
         for record in self.list_rules():
@@ -555,12 +630,11 @@ class AutomationService:
                 record.id,
                 rule,
                 runtime,
-                previous_buffer,
-                data,
+                stable_visible,
+                visible_message,
                 event_type,
             ):
-                self._start_rule(session_id, record, runtime.buffer)
-                return
+                self._start_rule(session_id, record, combined_visible)
 
     def _rule_ready(
         self,
@@ -571,7 +645,7 @@ class AutomationService:
         data: str,
         event_type: str,
     ) -> bool:
-        if rule.trigger_type == "manual":
+        if rule.trigger_type == "manual" and rule_id not in runtime.step_indexes:
             return False
         if rule.trigger_type in {"immediate", "connected", "delay"}:
             return event_type == "connected"
@@ -582,12 +656,13 @@ class AutomationService:
             if index >= len(steps):
                 index = 0
             pattern = steps[index].pattern
-        if event_type != "output" or not pattern:
+        if event_type != "output" or not pattern or not data:
             return False
-        return self._pattern_matches(
+        return self._incremental_pattern_matches(
             rule,
             pattern,
-            self._scan_text(previous_buffer, data, pattern),
+            previous_buffer,
+            data,
         )
 
     def _start_rule(
@@ -601,6 +676,7 @@ class AutomationService:
         runtime = self._runtime(session_id)
         if record.id in runtime.running:
             return
+        self._cancel_waiting_task(runtime, record.id)
         rule = record.rule
         rule.trigger_count += 1
         if rule.max_triggers and rule.trigger_count >= rule.max_triggers:
@@ -614,6 +690,13 @@ class AutomationService:
         runtime.tasks.setdefault(record.id, set()).add(task)
         task.add_done_callback(
             lambda done, sid=session_id, rid=record.id: self._task_finished(sid, rid, done)
+        )
+        self._record_activity(
+            "started",
+            session_id=session_id,
+            rule_id=record.id,
+            name=rule.name,
+            message="规则开始执行",
         )
         self._events.publish(
             "automation.rule.started",
@@ -652,6 +735,8 @@ class AutomationService:
                 rule,
                 force=force,
             )
+            if not completed:
+                self._schedule_step_timeout(session_id, rule_id, rule)
         latest = self.get_rule(rule_id)
         if exit_scope == "rule":
             latest.rule.enabled = False
@@ -660,8 +745,24 @@ class AutomationService:
             runtime.triggered.add(rule_id)
             latest.rule.enabled = False
         self._store.upsert_automation_rule(replace(latest, updated_at=self._now()))
+        activity_event = "completed" if completed else "waiting"
+        activity_message = "规则执行完成"
+        if not completed:
+            step_index = runtime.step_indexes.get(rule_id, 0)
+            steps = self._effective_steps(rule)
+            timeout_ms = steps[step_index].timeout_ms if step_index < len(steps) else 0
+            activity_message = f"等待第 {step_index + 1} 步终端输出"
+            if timeout_ms:
+                activity_message += f"（超时 {timeout_ms} ms）"
+        self._record_activity(
+            activity_event,
+            session_id=session_id,
+            rule_id=rule_id,
+            name=rule.name,
+            message=activity_message,
+        )
         self._events.publish(
-            "automation.rule.completed",
+            f"automation.rule.{activity_event}",
             resource_id=rule_id,
             data={"session_id": session_id, "rule_id": rule_id, "name": rule.name},
         )
@@ -683,34 +784,33 @@ class AutomationService:
                 delay = step.response_delays[index] if index < len(step.response_delays) else 0
                 await self._sleep(delay)
                 target = step.response_targets[index] if index < len(step.response_targets) else "source"
-                target_id = self._resolve_target(session_id, target)
-                if target_id:
-                    response = stored_response
-                    if (
-                        _SECRET_REFERENCE.search(stored_response) is None
-                        and index < len(step.response_texts)
-                    ):
-                        response_text = step.response_texts[index]
-                        append_enter = (
-                            step.response_append_enters[index]
-                            if index < len(step.response_append_enters)
-                            else False
-                        )
-                        if stored_response == response_text or append_enter:
-                            response = decode_response_text(
-                                response_text,
-                                append_enter=append_enter,
-                            )
-                    protected = _SECRET_REFERENCE.search(response) is not None
-                    payload = self._resolve_secret_text(response)
-                    if protected:
-                        self._sessions.protect_sensitive_output(target_id, payload)
-                    await self._sessions.write(
-                        target_id,
-                        payload,
-                        origin="automation",
+                target_id = self._require_target(session_id, target)
+                response = stored_response
+                if (
+                    _SECRET_REFERENCE.search(stored_response) is None
+                    and index < len(step.response_texts)
+                ):
+                    response_text = step.response_texts[index]
+                    append_enter = (
+                        step.response_append_enters[index]
+                        if index < len(step.response_append_enters)
+                        else False
                     )
-                    self._publish_send(rule_id, session_id, target_id)
+                    if stored_response == response_text or append_enter:
+                        response = decode_response_text(
+                            response_text,
+                            append_enter=append_enter,
+                        )
+                protected = _SECRET_REFERENCE.search(response) is not None
+                payload = self._resolve_secret_text(response)
+                if protected:
+                    self._sessions.protect_sensitive_output(target_id, payload)
+                await self._sessions.write(
+                    target_id,
+                    payload,
+                    origin="automation",
+                )
+                self._publish_send(rule_id, session_id, target_id)
             step_index += 1
             if step_index >= len(steps):
                 loops = runtime.loop_indexes.get(rule_id, 0) + 1
@@ -724,7 +824,7 @@ class AutomationService:
                     runtime.loop_indexes.pop(rule_id, None)
                     return True
             runtime.step_indexes[rule_id] = step_index
-            if steps[step_index].pattern and not force:
+            if steps[step_index].pattern:
                 return False
         return step_index >= len(steps)
 
@@ -741,7 +841,9 @@ class AutomationService:
                 await self._sleep(action.delay_ms)
                 continue
             if action.kind == "exit":
-                current = self._runtime(session_id).buffer or scan_text
+                current = self._visible_terminal_text(
+                    self._runtime(session_id).buffer
+                ) or scan_text
                 if action.exit_pattern and self._pattern_matches(
                     rule, action.exit_pattern, current
                 ):
@@ -749,19 +851,20 @@ class AutomationService:
                 continue
             if action.kind == "send":
                 await self._sleep(action.delay_ms)
-                target_id = self._resolve_target(session_id, action.target)
-                if target_id:
-                    protected = _SECRET_REFERENCE.search(action.text) is not None
-                    text = self._resolve_secret_text(action.text)
-                    payload = decode_response_text(text, append_enter=action.append_enter)
-                    if payload:
-                        if protected:
-                            self._sessions.protect_sensitive_output(target_id, payload)
-                        await self._sessions.write(target_id, payload, origin="automation")
-                        self._publish_send(rule_id, session_id, target_id)
+                target_id = self._require_target(session_id, action.target)
+                protected = _SECRET_REFERENCE.search(action.text) is not None
+                text = self._resolve_secret_text(action.text)
+                payload = decode_response_text(text, append_enter=action.append_enter)
+                if payload:
+                    if protected:
+                        self._sessions.protect_sensitive_output(target_id, payload)
+                    await self._sessions.write(target_id, payload, origin="automation")
+                    self._publish_send(rule_id, session_id, target_id)
                 continue
             if action.kind == "condition":
-                current = self._runtime(session_id).buffer or scan_text
+                current = self._visible_terminal_text(
+                    self._runtime(session_id).buffer
+                ) or scan_text
                 if self._condition_matches(rule, action, current):
                     scope = await self._run_actions(
                         session_id,
@@ -781,7 +884,9 @@ class AutomationService:
                         rule_id,
                         rule,
                         action.actions,
-                        self._runtime(session_id).buffer or scan_text,
+                        self._visible_terminal_text(
+                            self._runtime(session_id).buffer
+                        ) or scan_text,
                     )
                     if scope == "rule":
                         return "rule"
@@ -810,15 +915,99 @@ class AutomationService:
             return
         error = task.exception()
         if error is not None:
+            runtime.step_indexes.pop(rule_id, None)
+            runtime.loop_indexes.pop(rule_id, None)
+            rule_name = self._rule_name(rule_id)
+            self._record_activity(
+                "failed",
+                session_id=session_id,
+                rule_id=rule_id,
+                name=rule_name,
+                message=str(error),
+            )
             self._events.publish(
                 "automation.rule.failed",
                 resource_id=rule_id,
                 data={
                     "session_id": session_id,
                     "rule_id": rule_id,
+                    "name": rule_name,
                     "message": str(error),
                 },
             )
+
+    def _schedule_step_timeout(
+        self,
+        session_id: str,
+        rule_id: str,
+        rule: AutoResponseRule,
+    ) -> None:
+        runtime = self._runtime(session_id)
+        step_index = runtime.step_indexes.get(rule_id)
+        steps = self._effective_steps(rule)
+        if step_index is None or step_index >= len(steps):
+            return
+        timeout_ms = max(0, int(steps[step_index].timeout_ms or 0))
+        self._cancel_waiting_task(runtime, rule_id)
+        if timeout_ms <= 0:
+            return
+        task = asyncio.create_task(
+            self._expire_step_wait(
+                session_id,
+                rule_id,
+                rule.name,
+                step_index,
+                timeout_ms,
+            ),
+            name=f"automation-wait-{rule_id}-{session_id}",
+        )
+        runtime.waiting_tasks[rule_id] = task
+
+    async def _expire_step_wait(
+        self,
+        session_id: str,
+        rule_id: str,
+        rule_name: str,
+        step_index: int,
+        timeout_ms: int,
+    ) -> None:
+        await self._sleep(timeout_ms)
+        runtime = self._runtimes.get(session_id)
+        if runtime is None:
+            return
+        current_task = asyncio.current_task()
+        if runtime.waiting_tasks.get(rule_id) is not current_task:
+            return
+        runtime.waiting_tasks.pop(rule_id, None)
+        if runtime.step_indexes.get(rule_id) != step_index:
+            return
+        runtime.step_indexes.pop(rule_id, None)
+        runtime.loop_indexes.pop(rule_id, None)
+        message = f"等待第 {step_index + 1} 步终端输出超时（{timeout_ms} ms）"
+        self._record_activity(
+            "failed",
+            session_id=session_id,
+            rule_id=rule_id,
+            name=rule_name,
+            message=message,
+        )
+        self._events.publish(
+            "automation.rule.failed",
+            resource_id=rule_id,
+            data={
+                "session_id": session_id,
+                "rule_id": rule_id,
+                "name": rule_name,
+                "message": message,
+                "reason": "step_timeout",
+            },
+        )
+
+    @staticmethod
+    def _cancel_waiting_task(runtime: _SessionRuntime, rule_id: str) -> None:
+        task = runtime.waiting_tasks.pop(rule_id, None)
+        if task is not None:
+            task.cancel()
 
     def _cancel_tasks(
         self,
@@ -828,11 +1017,30 @@ class AutomationService:
         reason: str,
     ) -> None:
         tasks = runtime.tasks.pop(rule_id, set())
-        if not tasks:
+        waiting_task = runtime.waiting_tasks.pop(rule_id, None)
+        had_progress = bool(
+            tasks
+            or waiting_task
+            or rule_id in runtime.running
+            or rule_id in runtime.step_indexes
+            or rule_id in runtime.loop_indexes
+        )
+        runtime.step_indexes.pop(rule_id, None)
+        runtime.loop_indexes.pop(rule_id, None)
+        runtime.running.discard(rule_id)
+        if not had_progress:
             return
         for task in tasks:
             task.cancel()
-        runtime.running.discard(rule_id)
+        if waiting_task is not None:
+            waiting_task.cancel()
+        self._record_activity(
+            "cancelled",
+            session_id=session_id,
+            rule_id=rule_id,
+            name=self._rule_name(rule_id),
+            message=f"规则已取消（{reason}）",
+        )
         self._events.publish(
             "automation.rule.cancelled",
             resource_id=rule_id,
@@ -848,9 +1056,13 @@ class AutomationService:
         if normalized in {"source", "current"}:
             return source_id
         if normalized == "next":
-            same_device = [item for item in sessions if item.device_id == source.device_id]
-            if not same_device:
-                return source_id
+            same_device = [
+                item
+                for item in sessions
+                if item.device_id == source.device_id and item.status == "connected"
+            ]
+            if len(same_device) < 2:
+                return ""
             index = next(
                 (position for position, item in enumerate(same_device) if item.id == source_id),
                 0,
@@ -862,6 +1074,10 @@ class AutomationService:
                 (item for item in sessions if needle in item.title.casefold()),
                 None,
             )
+            return match.id if match is not None else ""
+        if normalized.startswith("session-id:"):
+            session_id = normalized.removeprefix("session-id:").strip()
+            match = next((item for item in sessions if item.id == session_id), None)
             return match.id if match is not None else ""
         if normalized.startswith("session:"):
             parts = normalized.split(":", 3)
@@ -879,7 +1095,25 @@ class AutomationService:
                 None,
             )
             return match.id if match is not None else ""
-        return source_id
+        return ""
+
+    def _require_target(self, source_id: str, target: str) -> str:
+        target_id = self._resolve_target(source_id, target)
+        if target_id:
+            target_session = next(
+                (item for item in self._sessions.list_sessions() if item.id == target_id),
+                None,
+            )
+            if target_session is not None and target_session.status == "connected":
+                return target_id
+            raise UnsupportedOperationError(
+                f"自动化目标终端未连接：{target}",
+                details={"source_session_id": source_id, "target": target},
+            )
+        raise UnsupportedOperationError(
+            f"自动化目标终端不存在或已关闭：{target}",
+            details={"source_session_id": source_id, "target": target},
+        )
 
     def _require_session(self, session_id: str) -> SessionRecord:
         session = next(
@@ -893,8 +1127,22 @@ class AutomationService:
             )
         return session
 
+    def _rule_name(self, rule_id: str) -> str:
+        record = self._store.get_automation_rule(rule_id)
+        return record.rule.name if record is not None else "自动化规则"
+
     def _runtime(self, session_id: str) -> _SessionRuntime:
         return self._runtimes.setdefault(session_id, _SessionRuntime())
+
+    def _reset_transient_session_state(self, session_id: str) -> None:
+        runtime = self._runtime(session_id)
+        for waiting_task in runtime.waiting_tasks.values():
+            waiting_task.cancel()
+        runtime.waiting_tasks.clear()
+        runtime.buffer = ""
+        runtime.user_input_seen = False
+        runtime.step_indexes.clear()
+        runtime.loop_indexes.clear()
 
     @staticmethod
     def _effective_steps(rule: AutoResponseRule) -> list[AutoResponseStep]:
@@ -926,6 +1174,32 @@ class AutomationService:
         return needle in haystack
 
     @classmethod
+    def _incremental_pattern_matches(
+        cls,
+        rule: AutoResponseRule,
+        pattern: str,
+        previous: str,
+        message: str,
+    ) -> bool:
+        if rule.match_type != "regex":
+            return cls._pattern_matches(
+                rule,
+                pattern,
+                cls._scan_text(previous, message, pattern),
+            )
+        flags = 0 if rule.case_sensitive else re.IGNORECASE
+        scan_text = previous + message
+        boundary = len(previous)
+        try:
+            return any(
+                match.end() > boundary
+                or (match.start() == match.end() and match.start() >= boundary)
+                for match in re.finditer(pattern, scan_text, flags)
+            )
+        except re.error:
+            return False
+
+    @classmethod
     def _condition_matches(
         cls,
         rule: AutoResponseRule,
@@ -952,6 +1226,35 @@ class AutomationService:
         return previous[-overlap:] + message if message else previous
 
     @staticmethod
+    def _visible_terminal_text(text: str) -> str:
+        value = _ANSI_OSC_RE.sub("", ANSI_ESCAPE_RE.sub("", text))
+        visible: list[str] = []
+        for character in value:
+            if character == "\b":
+                if visible and visible[-1] != "\n":
+                    visible.pop()
+                continue
+            if character == "\r":
+                if not visible or visible[-1] != "\n":
+                    visible.append("\n")
+                continue
+            if character == "\n":
+                if not visible or visible[-1] != "\n":
+                    visible.append("\n")
+                continue
+            if character == "\t" or character >= " ":
+                visible.append(character)
+        return "".join(visible)[-4096:]
+
+    @staticmethod
+    def _common_prefix_length(first: str, second: str) -> int:
+        limit = min(len(first), len(second))
+        index = 0
+        while index < limit and first[index] == second[index]:
+            index += 1
+        return index
+
+    @staticmethod
     def _loop_count(rule: AutoResponseRule) -> int:
         try:
             return max(1, min(10, int(rule.loop_count)))
@@ -971,7 +1274,13 @@ class AutomationService:
     def _resolve_secret_text(self, value: str) -> str:
         def replace_secret(match: re.Match[str]) -> str:
             secret_id = match.group(1)
-            return self._secrets.get(secret_id) or ""
+            secret = self._secrets.get(secret_id)
+            if secret is None:
+                raise UnsupportedOperationError(
+                    f"自动化所需凭据不可用：{secret_id}",
+                    details={"secret_id": secret_id},
+                )
+            return secret
 
         return _SECRET_REFERENCE.sub(replace_secret, value)
 
@@ -1043,6 +1352,78 @@ class AutomationService:
             for response in step.responses:
                 validate(step.pattern, response)
         self._validate_action_secrets(rule.pattern, rule.actions, validate)
+
+    def _clone_rule_secrets(
+        self,
+        rule: AutoResponseRule,
+        clone_rule_id: str,
+        created_secret_ids: list[str],
+    ) -> None:
+        mapping: dict[str, str] = {}
+
+        def clone_text(value: str) -> str:
+            def replace_secret(match: re.Match[str]) -> str:
+                source_secret_id = match.group(1)
+                cloned_secret_id = mapping.get(source_secret_id)
+                if cloned_secret_id is None:
+                    secret = self._secrets.get(source_secret_id)
+                    if secret is None:
+                        raise UnsupportedOperationError(
+                            f"无法复制规则，所需凭据不可用：{source_secret_id}",
+                            details={"secret_id": source_secret_id},
+                        )
+                    cloned_secret_id = (
+                        f"automation/{clone_rule_id}/secret-{len(mapping) + 1}"
+                    )
+                    self._secrets.set(cloned_secret_id, secret)
+                    mapping[source_secret_id] = cloned_secret_id
+                    created_secret_ids.append(cloned_secret_id)
+                return f"{{{{secret:{cloned_secret_id}}}}}"
+
+            return _SECRET_REFERENCE.sub(replace_secret, value)
+
+        rule.response = clone_text(rule.response)
+        rule.response_text = clone_text(rule.response_text)
+        for step in rule.steps:
+            step.responses = [clone_text(value) for value in step.responses]
+            step.response_texts = [clone_text(value) for value in step.response_texts]
+
+        def clone_actions(actions: list[AutoResponseAction]) -> None:
+            for action in actions:
+                action.text = clone_text(action.text)
+                clone_actions(action.actions)
+
+        clone_actions(rule.actions)
+
+    def _validate_regex_patterns(self, rule: AutoResponseRule) -> None:
+        flags = 0 if rule.case_sensitive else re.IGNORECASE
+
+        def validate(pattern: str, field: str) -> None:
+            if not pattern:
+                return
+            try:
+                re.compile(pattern, flags)
+            except re.error as error:
+                raise UnsupportedOperationError(
+                    f"正则表达式无效（{field}）：{error}",
+                    details={"field": field, "pattern": pattern},
+                ) from error
+
+        if rule.match_type == "regex":
+            validate(rule.pattern, "触发文本")
+            for index, step in enumerate(rule.steps):
+                validate(step.pattern, f"第 {index + 1} 步等待文本")
+
+        def validate_actions(actions: list[AutoResponseAction], prefix: str) -> None:
+            for index, action in enumerate(actions):
+                field = f"{prefix}第 {index + 1} 个动作"
+                if rule.match_type == "regex" and action.kind == "exit":
+                    validate(action.exit_pattern, f"{field}的退出文本")
+                if action.kind == "condition" and action.condition_match_type == "regex":
+                    validate(action.condition_pattern, f"{field}的条件文本")
+                validate_actions(action.actions, field)
+
+        validate_actions(rule.actions, "动作流")
 
     def _validate_action_secrets(
         self,
@@ -1124,6 +1505,14 @@ class AutomationService:
         return values
 
     def _publish_send(self, rule_id: str, source_id: str, target_id: str) -> None:
+        self._record_activity(
+            "sent",
+            session_id=source_id,
+            rule_id=rule_id,
+            name=self._rule_name(rule_id),
+            message="已发送自动化响应",
+            target_session_id=target_id,
+        )
         self._events.publish(
             "automation.response.sent",
             resource_id=rule_id,
@@ -1145,6 +1534,27 @@ class AutomationService:
             resource_id=record.id,
             data={"rule_id": record.id, "name": record.rule.name, **data},
         )
+
+    def _record_activity(
+        self,
+        event: str,
+        *,
+        session_id: str,
+        rule_id: str,
+        name: str,
+        message: str,
+        target_session_id: str = "",
+    ) -> None:
+        self._activities.appendleft(AutomationActivityRecord(
+            id=f"ACTIVITY-{uuid4().hex[:12].upper()}",
+            timestamp=self._now(),
+            event=event,
+            session_id=session_id,
+            rule_id=rule_id,
+            name=name,
+            message=message,
+            target_session_id=target_session_id,
+        ))
 
     @staticmethod
     def serialize_rule(rule: AutoResponseRule) -> dict[str, object]:

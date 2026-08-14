@@ -1,6 +1,7 @@
 """UI-independent application services shared by desktop clients and MCP."""
 
 from .automation import (
+    AutomationActivityRecord,
     AutomationRuleRecord,
     AutomationService,
     AutomationSessionStatus,
@@ -63,6 +64,7 @@ __all__ = [
     "AiPlan",
     "ApplicationConflictError",
     "ApplicationEvent",
+    "AutomationActivityRecord",
     "AutomationRuleRecord",
     "AutomationService",
     "AutomationSessionStatus",

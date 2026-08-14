@@ -8,6 +8,7 @@ import {
   File,
   FileUp,
   FolderOpen,
+  LoaderCircle,
   Play,
   RefreshCw,
   Save,
@@ -38,6 +39,14 @@ let pollingTimer: ReturnType<typeof setInterval> | null = null
 const activeOperations = computed(() =>
   workspace.operations.filter((operation) => operation.status === 'running')
 )
+const activeSessionConnected = computed(() => workspace.activeSession?.status === 'connected')
+const transferActionHint = computed(() => {
+  if (!workspace.activeSession) return '请先打开并选择一个终端会话'
+  if (!activeSessionConnected.value) return '当前终端未连接，请先重连终端'
+  if (!sourcePath.value.trim()) return direction.value === 'upload' ? '请先从共享文件列表选择源文件' : '请输入设备源文件路径'
+  if (!destinationPath.value.trim()) return '请输入目标路径'
+  return '提交后可在操作记录中查看进度'
+})
 
 watch(
   () => workspace.transferSettings,
@@ -170,7 +179,12 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="transfer-body">
-        <form class="transfer-settings-card" data-testid="transfer-settings" @submit.prevent="saveSettings">
+        <form
+          class="transfer-settings-card"
+          data-testid="transfer-settings"
+          :aria-busy="workspace.transferBusy"
+          @submit.prevent="saveSettings"
+        >
           <header>
             <div><Server :size="15" /><strong>本机文件服务</strong></div>
             <span class="service-state" :data-running="workspace.transferSettings?.service_running">
@@ -215,10 +229,16 @@ onBeforeUnmount(() => {
             <button class="secondary-button" type="submit" :disabled="workspace.transferBusy || workspace.transferSettings?.service_running">
               <Save :size="13" />保存设置
             </button>
-            <button class="primary-button" type="button" :disabled="workspace.transferBusy" @click="workspace.toggleTransferService">
-              <CircleStop v-if="workspace.transferSettings?.service_running" :size="13" />
+            <button
+              :class="workspace.transferSettings?.service_running ? 'secondary-button danger-button' : 'primary-button'"
+              type="button"
+              :disabled="workspace.transferBusy"
+              @click="workspace.toggleTransferService"
+            >
+              <LoaderCircle v-if="workspace.transferBusy" class="spinning-icon" :size="13" />
+              <CircleStop v-else-if="workspace.transferSettings?.service_running" :size="13" />
               <Play v-else :size="13" />
-              {{ workspace.transferSettings?.service_running ? '停止服务' : '启动服务' }}
+              {{ workspace.transferBusy ? '处理中…' : workspace.transferSettings?.service_running ? '停止服务' : '启动服务' }}
             </button>
           </footer>
           <div class="transfer-client-hint" data-testid="transfer-client-command">
@@ -231,10 +251,24 @@ onBeforeUnmount(() => {
         <section class="transfer-content-grid">
           <div class="transfer-files-card">
             <header>
-              <div><FolderOpen :size="14" /><strong>共享文件</strong><span>{{ workspace.transferFiles.length }}</span></div>
-              <button class="icon-button" type="button" title="刷新文件" @click="workspace.loadTransferFiles"><RefreshCw :size="14" /></button>
+              <div>
+                <FolderOpen :size="14" />
+                <strong>共享文件</strong>
+                <span>{{ workspace.transferFiles.length }}</span>
+                <em v-if="workspace.transferFilesLoading" class="transfer-file-refresh-status" role="status">
+                  <LoaderCircle class="spinning-icon" :size="11" />刷新中
+                </em>
+              </div>
+              <button
+                class="icon-button"
+                type="button"
+                title="刷新文件"
+                aria-label="刷新共享文件"
+                :disabled="workspace.transferFilesLoading"
+                @click="workspace.loadTransferFiles"
+              ><RefreshCw :class="{ 'spinning-icon': workspace.transferFilesLoading }" :size="14" /></button>
             </header>
-            <div class="transfer-file-list">
+            <div class="transfer-file-list" :aria-busy="workspace.transferFilesLoading">
               <button
                 v-for="file in workspace.transferFiles"
                 :key="file.relative_path"
@@ -247,7 +281,15 @@ onBeforeUnmount(() => {
                 <span><strong>{{ file.name }}</strong><small>{{ file.relative_path }}</small></span>
                 <b>{{ formatBytes(file.size_bytes) }}</b>
               </button>
-              <p v-if="!workspace.transferFiles.length" class="transfer-empty">共享目录中没有文件。</p>
+              <div v-if="workspace.transferFilesLoading && !workspace.transferFiles.length" class="transfer-file-loading" role="status">
+                <span></span><span></span><span></span>
+                <small>正在读取共享目录…</small>
+              </div>
+              <div v-else-if="!workspace.transferFiles.length" class="transfer-empty transfer-empty-files">
+                <FolderOpen :size="20" />
+                <strong>共享目录为空</strong>
+                <span>将升级包或配置文件放入共享目录后，点击右上角刷新。</span>
+              </div>
             </div>
           </div>
 
@@ -271,7 +313,10 @@ onBeforeUnmount(() => {
             </label>
             <label class="transfer-write-toggle"><input v-model="overwrite" type="checkbox" />允许覆盖已存在文件</label>
             <p v-if="localError || workspace.error" class="transfer-error" role="alert">{{ localError || workspace.error }}</p>
-            <button class="primary-button" data-testid="transfer-start" type="submit" :disabled="workspace.transferBusy || !workspace.activeSession">
+            <p class="operation-readiness" :data-ready="activeSessionConnected && Boolean(sourcePath.trim()) && Boolean(destinationPath.trim())">
+              <i aria-hidden="true"></i>{{ transferActionHint }}
+            </p>
+            <button class="primary-button transfer-start-button" data-testid="transfer-start" type="submit" :disabled="workspace.transferBusy || !activeSessionConnected || !sourcePath.trim() || !destinationPath.trim()">
               <FileUp :size="14" />开始托管传输
             </button>
           </form>
@@ -311,7 +356,11 @@ onBeforeUnmount(() => {
                 @click="workspace.cancelOperation(operation.id)"
               ><CircleStop :size="14" /></button>
             </article>
-            <p v-if="!workspace.operations.length" class="transfer-empty">暂无文件传输记录。</p>
+            <div v-if="!workspace.operations.length" class="transfer-empty">
+              <FileUp :size="19" />
+              <strong>暂无传输记录</strong>
+              <span>选择文件并设置目标路径后，可在这里查看执行进度。</span>
+            </div>
           </div>
         </section>
       </div>

@@ -71,6 +71,7 @@ from .models import (
     CommandBroadcastRequest,
     CommandDispatchResponse,
     AutomationRuleModel,
+    AutomationActivityModel,
     AutomationSessionStatusModel,
     QuickSendButtonModel,
     AutomationWorkspaceResponse,
@@ -278,6 +279,7 @@ def _automation_workspace(desktop: DesktopApplication) -> AutomationWorkspaceRes
             AutomationSessionStatusModel(
                 session_id=status.session_id,
                 running_rule_ids=list(status.running_rule_ids),
+                waiting_rule_ids=list(status.waiting_rule_ids),
                 triggered_rule_ids=list(status.triggered_rule_ids),
             )
             for status in desktop.automation.statuses()
@@ -285,6 +287,10 @@ def _automation_workspace(desktop: DesktopApplication) -> AutomationWorkspaceRes
         quick_send_buttons=[
             QuickSendButtonModel(**asdict(record))
             for record in desktop.automation.list_quick_send_buttons()
+        ],
+        activity=[
+            AutomationActivityModel(**asdict(record))
+            for record in desktop.automation.activities(limit=100)
         ],
     )
 
@@ -1193,6 +1199,15 @@ def create_app(
             rule_id,
             desktop.automation.deserialize_rule(request.rule),
         )
+        return _automation_workspace(desktop)
+
+    @app.post(
+        "/api/v1/automation/rules/{rule_id}/clone",
+        response_model=AutomationWorkspaceResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def clone_automation_rule(rule_id: str) -> AutomationWorkspaceResponse:
+        desktop.automation.clone_rule(rule_id)
         return _automation_workspace(desktop)
 
     @app.put(

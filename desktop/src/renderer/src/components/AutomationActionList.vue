@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { watch } from 'vue'
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
 import type { AutoResponseAction, AutomationTargetOption } from '../types'
 
@@ -17,9 +18,19 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   update: [actions: AutoResponseAction[]]
 }>()
+let pendingActions: AutoResponseAction[] | null = null
+
+watch(() => props.actions, () => {
+  pendingActions = null
+}, { deep: true })
 
 function cloneActions(): AutoResponseAction[] {
-  return JSON.parse(JSON.stringify(props.actions)) as AutoResponseAction[]
+  return JSON.parse(JSON.stringify(pendingActions || props.actions)) as AutoResponseAction[]
+}
+
+function commitActions(actions: AutoResponseAction[]): void {
+  pendingActions = actions
+  emit('update', actions)
 }
 
 function defaultAction(kind: AutoResponseAction['kind']): AutoResponseAction {
@@ -42,7 +53,7 @@ function defaultAction(kind: AutoResponseAction['kind']): AutoResponseAction {
 }
 
 function addAction(kind: AutoResponseAction['kind']): void {
-  emit('update', [...cloneActions(), defaultAction(kind)])
+  commitActions([...cloneActions(), defaultAction(kind)])
 }
 
 function updateField<K extends keyof AutoResponseAction>(
@@ -52,7 +63,7 @@ function updateField<K extends keyof AutoResponseAction>(
 ): void {
   const next = cloneActions()
   next[index][field] = value
-  emit('update', next)
+  commitActions(next)
 }
 
 function updateChildren(index: number, actions: AutoResponseAction[]): void {
@@ -62,16 +73,16 @@ function updateChildren(index: number, actions: AutoResponseAction[]): void {
 function removeAction(index: number): void {
   const next = cloneActions()
   next.splice(index, 1)
-  emit('update', next)
+  commitActions(next)
 }
 
 function moveAction(index: number, offset: number): void {
   const target = index + offset
-  if (target < 0 || target >= props.actions.length) return
   const next = cloneActions()
+  if (target < 0 || target >= next.length) return
   const [action] = next.splice(index, 1)
   next.splice(target, 0, action)
-  emit('update', next)
+  commitActions(next)
 }
 
 function targetKnown(value: string): boolean {
