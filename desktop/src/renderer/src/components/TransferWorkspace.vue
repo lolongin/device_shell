@@ -22,6 +22,7 @@ import {
   Server,
   Settings2,
   ShieldCheck,
+  TriangleAlert,
   Trash2,
   X
 } from 'lucide-vue-next'
@@ -64,6 +65,20 @@ const historyOperations = computed(() => workspace.operations.filter((operation)
   if (!['completed', 'failed', 'cancelled', 'interrupted'].includes(operation.status)) return false
   return historyFilter.value === 'all' || operation.status === historyFilter.value
 }))
+const latestTransferOutcome = computed(() =>
+  workspace.operations.find((operation) => ['completed', 'failed', 'cancelled', 'interrupted'].includes(operation.status)) || null
+)
+const latestFailedOperation = computed(() =>
+  latestTransferOutcome.value?.status === 'failed' || latestTransferOutcome.value?.status === 'interrupted'
+    ? latestTransferOutcome.value
+    : null
+)
+const latestFailureSessionConnected = computed(() => {
+  const operation = latestFailedOperation.value
+  return Boolean(operation && workspace.sessions.some(
+    (session) => session.id === operation.session_id && session.status === 'connected'
+  ))
+})
 const pausedSessionIds = computed(() => [...new Set(
   currentOperations.value.filter((operation) => operation.stage === 'paused').map((operation) => operation.session_id)
 )])
@@ -252,6 +267,26 @@ function operationStatus(operation: OperationRecord): string {
   return labels[operation.status] || operation.status
 }
 
+function recoveryHint(operation: OperationRecord): string {
+  const hints: Record<string, string> = {
+    service_endpoint_unavailable: '无法确定设备可访问的本机地址。请填写“设备访问地址”，并确认它与设备管理网互通。',
+    transfer_client_unavailable: `设备缺少 ${workspace.transferSettings?.protocol.toUpperCase() || 'FTP/SFTP'} 客户端。请安装客户端或切换传输协议。`,
+    transfer_timeout: '设备未在超时前完成交互。请检查本机防火墙、端口放行、设备到本机的路由，以及终端是否停在正常提示符。',
+    transfer_command_failed: '设备返回了非预期提示。请展开服务日志，并确认终端环境和设备路径类型选择正确。',
+    transfer_verification_failed: '传输命令已结束，但设备端文件大小不匹配。请检查中间网络、磁盘空间后重试。',
+    insufficient_space: '设备可用空间不足。请清理目标存储，或改用其他目标路径。',
+    destination_exists: '目标文件已经存在。确认可覆盖后勾选“允许覆盖已存在文件”再重试。',
+    session_unavailable: '原终端会话已断开。请重连并选中目标终端后重新提交任务。'
+  }
+  return hints[operation.error_code] || '请查看任务消息和文件服务日志；确认终端连接、协议、设备路径与网络可达性后重试。'
+}
+
+function openTransferDiagnostics(): void {
+  advancedOpen.value = true
+  logsOpen.value = true
+  void workspace.loadTransferServiceLog()
+}
+
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer)
 })
@@ -353,6 +388,20 @@ onBeforeUnmount(() => {
               <b>{{ operationStatus(operation) }}</b>
               <button v-if="operation.cancellable" class="icon-button" type="button" title="取消任务" @click="workspace.cancelOperation(operation.id)"><CircleStop :size="14" /></button>
             </article>
+          </div>
+        </section>
+
+        <section v-if="latestFailedOperation" class="transfer-recovery-card" role="alert" data-testid="transfer-recovery">
+          <TriangleAlert :size="17" />
+          <div>
+            <strong>最近一次传输未完成</strong>
+            <span>{{ latestFailedOperation.message }}</span>
+            <small>{{ recoveryHint(latestFailedOperation) }}</small>
+            <code v-if="latestFailedOperation.error_code">{{ latestFailedOperation.error_code }}</code>
+          </div>
+          <div class="transfer-recovery-actions">
+            <button class="secondary-button" type="button" @click="openTransferDiagnostics"><Settings2 :size="12" />检查设置与日志</button>
+            <button class="secondary-button" type="button" :title="latestFailureSessionConnected ? '使用原终端会话重新执行' : '原终端会话未连接，请重连后重新提交任务'" :disabled="workspace.transferBusy || !latestFailureSessionConnected" @click="workspace.retryManagedTransfer(latestFailedOperation.id)"><RotateCcw :size="12" />重新预检并重试</button>
           </div>
         </section>
 

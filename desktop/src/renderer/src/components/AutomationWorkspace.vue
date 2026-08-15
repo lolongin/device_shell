@@ -104,13 +104,21 @@ const selectedWaiting = computed(
 )
 const selectedInProgress = computed(() => selectedRunning.value || selectedWaiting.value)
 const activeSessionConnected = computed(() => workspace.activeSession?.status === 'connected')
+const draftRuleEnabled = computed(() => selectedRecord.value?.rule.enabled ?? draft.value.enabled)
+const runButtonLabel = computed(() => {
+  if (selectedRunning.value) return '运行中'
+  if (selectedWaiting.value) return '等待中'
+  if (!selectedRecord.value || isDirty.value) return '保存并运行'
+  return '运行一次'
+})
 const runActionHint = computed(() => {
   if (!workspace.activeSession) return '请先打开并选择一个终端会话'
   if (!activeSessionConnected.value) return '当前终端未连接，请先重连终端'
-  if (!selectedRecord.value) return '请先选择或保存一条规则'
-  if (!selectedRecord.value.rule.enabled) return '当前规则已停用，请先启用规则'
+  if (!draftRuleEnabled.value) return '当前规则已停用，请先启用规则'
   if (selectedRunning.value) return '规则正在当前终端执行'
   if (selectedWaiting.value) return '规则正在等待下一步终端输出'
+  if (!selectedRecord.value) return '将先保存当前草稿，再在当前终端运行一次'
+  if (isDirty.value) return '将先保存当前修改，再运行最新版本'
   return '可在当前终端运行一次'
 })
 const activeTriggeredIds = computed(
@@ -295,8 +303,19 @@ function focusActiveTerminal(): void {
 }
 
 async function runSelectedRule(): Promise<void> {
-  if (!selectedRecord.value) return
-  if (await workspace.triggerAutomationRule(selectedRecord.value.id)) {
+  let record = selectedRecord.value
+  if (!record || isDirty.value) {
+    const value = buildNormalizedDraft()
+    if (!value) return
+    record = await workspace.saveAutomationRule(value, record?.id || '')
+    if (!record) return
+    loadRecord(record)
+  }
+  if (!record.rule.enabled) {
+    localError.value = '当前规则已停用，请先启用规则。'
+    return
+  }
+  if (await workspace.triggerAutomationRule(record.id)) {
     focusActiveTerminal()
   }
 }
@@ -787,15 +806,14 @@ onBeforeUnmount(() => {
                 @click="toggleLivePreview"
               ><Eye :size="13" />实时预览</button>
               <button
-                v-if="selectedRecord"
                 class="secondary-button"
                 type="button"
                 data-testid="automation-run"
                 :title="runActionHint"
                 aria-describedby="automation-run-hint"
-                :disabled="!activeSessionConnected || !selectedRecord.rule.enabled || selectedInProgress || workspace.automationBusy"
+                :disabled="!activeSessionConnected || !draftRuleEnabled || selectedInProgress || workspace.automationBusy"
                 @click="runSelectedRule"
-              ><Play :size="13" />{{ selectedRunning ? '运行中' : selectedWaiting ? '等待中' : '运行一次' }}</button>
+              ><Play :size="13" />{{ runButtonLabel }}</button>
               <button
                 v-if="workspace.activeAutomationStatus?.running_rule_ids.length || workspace.activeAutomationStatus?.waiting_rule_ids.length"
                 class="secondary-button danger-button"
@@ -803,7 +821,7 @@ onBeforeUnmount(() => {
                 :disabled="workspace.automationBusy"
                 @click="cancelAutomationAndFocusTerminal"
               ><CircleStop :size="13" />停止</button>
-              <span id="automation-run-hint" class="automation-run-hint" :data-ready="activeSessionConnected && Boolean(selectedRecord?.rule.enabled)">
+              <span id="automation-run-hint" class="automation-run-hint" :data-ready="activeSessionConnected && draftRuleEnabled && !selectedInProgress">
                 <i aria-hidden="true"></i>{{ runActionHint }}
               </span>
             </div>

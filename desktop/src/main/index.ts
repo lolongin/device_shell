@@ -965,6 +965,34 @@ async function createWindow(): Promise<void> {
                 && Math.abs(storedNavigatorWidth - navigatorWidthAfter) <= 1,
               navigatorWidthBefore + '->' + navigatorWidthAfter + ' stored=' + storedNavigatorWidth
             )
+            const workspaceBeforeNavigatorHide = document.querySelector('.workspace-stage')?.getBoundingClientRect()
+            clickButtonByTitle('隐藏设备工作台')
+            await sleep(60)
+            const hiddenNavigator = document.querySelector('.navigator')
+            const navigatorWasHidden = hiddenNavigator?.getClientRects().length === 0
+            const workspaceWithNavigatorHidden = document.querySelector('.workspace-stage')?.getBoundingClientRect()
+            const navigatorHiddenPersisted = localStorage.getItem('device-tui.desktop-v2.navigator-visible') === '0'
+            const navigatorRestoreButton = [...document.querySelectorAll('.activity-rail button')]
+              .find((button) => button.getAttribute('title') === '显示设备工作台')
+            navigatorRestoreButton?.click()
+            await sleep(60)
+            const workspaceAfterNavigatorRestore = document.querySelector('.workspace-stage')?.getBoundingClientRect()
+            setCheck(
+              'deviceNavigatorCanHideRestoreAndPersist',
+              navigatorWasHidden
+                && navigatorHiddenPersisted
+                && Boolean(navigatorRestoreButton)
+                && Boolean(workspaceBeforeNavigatorHide && workspaceWithNavigatorHidden && workspaceAfterNavigatorRestore
+                  && workspaceWithNavigatorHidden.left <= 53
+                  && workspaceWithNavigatorHidden.width >= workspaceBeforeNavigatorHide.width + navigatorWidthAfter - 2
+                  && Math.abs(workspaceAfterNavigatorRestore.left - workspaceBeforeNavigatorHide.left) <= 1
+                  && Math.abs(workspaceAfterNavigatorRestore.width - workspaceBeforeNavigatorHide.width) <= 1)
+                && localStorage.getItem('device-tui.desktop-v2.navigator-visible') === '1',
+              'hidden=' + navigatorWasHidden
+                + ' before=' + JSON.stringify(workspaceBeforeNavigatorHide?.toJSON() || {})
+                + ' hiddenWorkspace=' + JSON.stringify(workspaceWithNavigatorHidden?.toJSON() || {})
+                + ' restored=' + JSON.stringify(workspaceAfterNavigatorRestore?.toJSON() || {})
+            )
             const emptySessionWorkspace = document.querySelector('.session-workspace')
             const collapsedCommandWorkspace = document.querySelector('.command-workspace:not(.open)')
             const workspaceStage = document.querySelector('.workspace-stage')
@@ -2283,9 +2311,14 @@ async function createWindow(): Promise<void> {
             const commandEditorSurface = document.querySelector('.command-editor-row textarea')
             const commandDispatchBar = document.querySelector('.command-dispatch-actions')
             const commandTabsBar = document.querySelector('.command-header')
+            const commandTabs = document.querySelector('.command-tabs')
+            const commandHeaderActions = document.querySelector('.command-header-actions')
+            const commandTabLabels = [...document.querySelectorAll('.command-tab > button:first-child')]
             const commandEditorRect = commandEditorSurface?.getBoundingClientRect()
             const commandDispatchRect = commandDispatchBar?.getBoundingClientRect()
             const commandTabsRect = commandTabsBar?.getBoundingClientRect()
+            const commandTabsContentRect = commandTabs?.getBoundingClientRect()
+            const commandHeaderActionsRect = commandHeaderActions?.getBoundingClientRect()
             setCheck(
               'commandWorkspaceHasScannableEditorAndDispatchHierarchy',
               Boolean(document.querySelector('.command-editor-meta'))
@@ -2300,6 +2333,18 @@ async function createWindow(): Promise<void> {
               'meta=' + text('.command-editor-meta')
                 + ' tabs=' + JSON.stringify(commandTabsRect?.toJSON() || {})
                 + ' actions=' + text('.command-dispatch-buttons')
+            )
+            setCheck(
+              'commandTabsUseAvailableWidthAndKeepLabelsComplete',
+              Boolean(commandTabsContentRect && commandHeaderActionsRect
+                && commandTabsContentRect.width >= 320
+                && commandTabsContentRect.right <= commandHeaderActionsRect.left
+                && commandTabLabels.length > 0
+                && commandTabLabels.every((label) => label.scrollWidth <= label.clientWidth + 1)
+                && getComputedStyle(commandTabs).maxWidth === 'none'),
+              'tabs=' + JSON.stringify(commandTabsContentRect?.toJSON() || {})
+                + ' actions=' + JSON.stringify(commandHeaderActionsRect?.toJSON() || {})
+                + ' labels=' + commandTabLabels.map((label) => label.clientWidth + '/' + label.scrollWidth).join(',')
             )
             const commandLineNumberEditor = commandEditorSurface
             const commandLineNumberGutter = document.querySelector('.command-line-numbers')

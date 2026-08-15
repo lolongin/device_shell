@@ -598,6 +598,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               role="tab"
+              :title="group.name"
               :aria-selected="group.id === workspace.currentCommandGroupId"
               @click="selectGroup(group.id)"
               @contextmenu.prevent="openCommandGroupContextMenu($event, group.id, group.name)"

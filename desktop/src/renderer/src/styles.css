@@ -56,6 +56,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-shell.has-session-sidebar {
   grid-template-columns: 52px var(--navigator-width, 500px) minmax(520px, 1fr) auto;
 }
+.app-shell.navigator-hidden {
+  grid-template-columns: 52px minmax(520px, 1fr);
+}
+.app-shell.navigator-hidden.has-session-sidebar {
+  grid-template-columns: 52px minmax(520px, 1fr) auto;
+}
+.app-shell.navigator-hidden .workspace-stage { grid-column: 2; }
+.app-shell.navigator-hidden .session-sidebar { grid-column: 3; }
 
 :root[data-theme="light"] .app-shell {
   background:
@@ -126,6 +134,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   color: #991b1b;
 }
 :root[data-theme="light"] .operation-readiness[data-ready="true"] { color: #166534; }
+:root[data-theme="light"] .transfer-recovery-card { color: #92400e; border-color: rgba(217, 119, 6, 0.3); background: #fffbeb; }
+:root[data-theme="light"] .transfer-recovery-card strong { color: #78350f; }
+:root[data-theme="light"] .transfer-recovery-card span { color: #854d0e; }
+:root[data-theme="light"] .transfer-recovery-card code { color: #92400e; background: rgba(217, 119, 6, 0.1); }
 :root[data-theme="light"] .profile-summary-row .ready { color: #166534; }
 :root[data-theme="light"] .terminal-recovery-banner { color: #991b1b; background: #fff1f2; }
 :root[data-theme="light"] .terminal-recovery-banner > button { color: #991b1b; background: #ffffff; }
@@ -1137,8 +1149,8 @@ h3 { margin-bottom: 8px; font-size: 16px; }
   min-height: 33px; order: 3; padding: 2px 7px; display: flex; align-items: center; justify-content: space-between; gap: 7px;
   border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-raised) 48%, var(--surface));
 }
-.command-tabs { min-width: 90px; max-width: 34%; flex: 0 1 320px; display: flex; align-items: center; gap: 3px; overflow-x: auto; }
-.command-tab { height: 27px; display: flex; align-items: center; border: 1px solid transparent; border-radius: 6px; color: var(--soft); transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease; }
+.command-tabs { min-width: 0; max-width: none; flex: 1 1 auto; display: flex; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: thin; }
+.command-tab { height: 27px; flex: 0 0 auto; display: flex; align-items: center; border: 1px solid transparent; border-radius: 6px; color: var(--soft); transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease; }
 .command-tab:hover { color: var(--muted); background: var(--surface-raised); }
 .command-tab.active { color: var(--text); border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.08); }
 .command-tab > button:first-child { height: 100%; padding: 0 8px; color: inherit; border: 0; background: transparent; cursor: pointer; white-space: nowrap; }
@@ -1230,7 +1242,7 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 
 @container (max-width: 520px) {
   .command-collapsed-trigger > span:last-child { display: none; }
-  .command-tabs { min-width: 72px; max-width: 22%; }
+  .command-tabs { min-width: 0; max-width: none; }
   .command-header { gap: 4px; padding-inline: 5px; }
   .command-header-actions { gap: 1px; }
   .command-mode-button { max-width: 78px; padding-inline: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1893,6 +1905,19 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .operation-readiness[data-ready="true"] { color: #86efac; border-color: rgba(34, 197, 94, 0.25); background: rgba(34, 197, 94, 0.06); }
 .operation-readiness[data-ready="true"] > i { background: var(--accent); box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.12); }
 .transfer-error { color: #fecaca; font-size: 10.5px; }
+.transfer-recovery-card {
+  min-width: 0; padding: 11px 12px; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start; gap: 9px; color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.32);
+  border-radius: 10px; background: rgba(120, 53, 15, 0.15);
+}
+.transfer-recovery-card > svg { margin-top: 1px; color: #fbbf24; }
+.transfer-recovery-card > div:not(.transfer-recovery-actions) { min-width: 0; display: grid; gap: 3px; }
+.transfer-recovery-card strong { color: #fef3c7; font-size: 11px; }
+.transfer-recovery-card span { color: var(--soft); font-size: 10px; line-height: 1.4; }
+.transfer-recovery-card small { color: var(--muted); font-size: 9.5px; line-height: 1.45; }
+.transfer-recovery-card code { width: fit-content; margin-top: 2px; padding: 2px 5px; color: #fcd34d; border-radius: 4px; background: rgba(245, 158, 11, 0.1); font-size: 9px; }
+.transfer-recovery-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.transfer-recovery-actions .secondary-button { min-height: 29px; white-space: nowrap; }
 .transfer-operation-card { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .transfer-service-log-card { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .transfer-service-log-card { min-height: 150px; max-height: 240px; }
@@ -2339,6 +2364,9 @@ h3 { margin-bottom: 8px; font-size: 16px; }
   .transfer-settings-card > footer > button { flex: 1 1 130px; }
   .transfer-client-hint { grid-template-columns: minmax(0, 1fr) auto; }
   .transfer-content-grid { grid-template-columns: 1fr; }
+  .transfer-recovery-card { grid-template-columns: 22px minmax(0, 1fr); }
+  .transfer-recovery-actions { grid-column: 1 / -1; justify-content: stretch; }
+  .transfer-recovery-actions .secondary-button { flex: 1 1 140px; justify-content: center; }
   .automation-header { padding: 0 10px; }
   .automation-header-actions > span:first-child { display: none; }
   .automation-session-status { max-width: 120px; }

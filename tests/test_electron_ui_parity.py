@@ -287,6 +287,10 @@ def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
     assert "handleTerminalFocusRequest" in terminal
     assert "document.querySelector('.automation-workspace')" in terminal
     assert "runSelectedRule" in automation
+    assert "保存并运行" in automation
+    assert "await workspace.saveAutomationRule" in automation
+    assert "await workspace.triggerAutomationRule(record.id)" in automation
+    assert 'v-if="selectedRecord"\n                class="secondary-button"\n                type="button"\n                data-testid="automation-run"' not in automation
     assert "cancelAutomationAndFocusTerminal" in automation
     assert "terminalFocusedAfterAutomationRun" in main
     assert "terminalClipboardShortcutsPreserveTerminalInput" in main
@@ -368,7 +372,7 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
 
     assert "operationPanelOpen" in app
     assert "showSessionSidebar" in app
-    assert 'v-show="!operationPanelOpen" class="navigator"' in app
+    assert 'v-show="navigatorVisible && !operationPanelOpen" class="navigator"' in app
     assert 'data-testid="operation-panel-resize-handle"' in app
     assert 'role="region"' in transfer
     assert 'aria-modal="true"' not in transfer
@@ -376,6 +380,12 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert "sourceError" in transfer
     assert "destinationError" in transfer
     assert "activeSessionConnected" in transfer
+    assert 'data-testid="transfer-recovery"' in transfer
+    assert "function recoveryHint" in transfer
+    assert "service_endpoint_unavailable" in transfer
+    assert "transfer_client_unavailable" in transfer
+    assert "检查设置与日志" in transfer
+    assert ".transfer-recovery-card" in styles
     assert 'role="region"' in upgrade
     assert 'aria-modal="true"' not in upgrade
     assert "upgradeActionHint" in upgrade
@@ -1192,6 +1202,10 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
     assert 'class="command-dispatch-buttons"' in command
     assert "order: 3" in styles
     assert "commandTabsRect.top >= commandEditorRect.bottom" in MAIN_TS.read_text(encoding="utf-8")
+    assert "commandTabsUseAvailableWidthAndKeepLabelsComplete" in MAIN_TS.read_text(encoding="utf-8")
+    assert "max-width: none; flex: 1 1 auto" in styles
+    assert ".command-tab { height: 27px; flex: 0 0 auto" in styles
+    assert ':title="group.name"' in command
     assert "@container (max-width: 700px)" in styles
     assert "commandWorkspaceHasScannableEditorAndDispatchHierarchy" in MAIN_TS.read_text(encoding="utf-8")
     assert "commandEditorShowsSynchronizedLineNumbers" in MAIN_TS.read_text(encoding="utf-8")
@@ -1263,6 +1277,22 @@ def test_electron_device_navigator_width_is_resizable_and_persistent() -> None:
     assert ".navigator-resize-handle:focus-visible" in styles
     assert "navigatorWidthResizePersists" in main
     assert "navigatorWidthRestored" in main
+
+
+def test_electron_device_navigator_can_hide_restore_and_persist() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
+
+    assert "device-tui.desktop-v2.navigator-visible" in app
+    assert "const navigatorVisible = ref" in app
+    assert "function setNavigatorVisible" in app
+    assert 'title="隐藏设备工作台"' in app
+    assert "'显示设备工作台'" in app
+    assert 'v-show="navigatorVisible && !operationPanelOpen"' in app
+    assert "'navigator-hidden': !operationPanelOpen && !navigatorVisible" in app
+    assert ".app-shell.navigator-hidden .workspace-stage { grid-column: 2; }" in styles
+    assert "deviceNavigatorCanHideRestoreAndPersist" in main
 
 
 def test_electron_session_manager_uses_a_non_overlay_grid_column() -> None:

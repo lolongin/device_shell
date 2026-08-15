@@ -13,6 +13,7 @@ import {
   KeyRound,
   MonitorDot,
   Network,
+  PanelLeftClose,
   Pencil,
   Pin,
   Plus,
@@ -77,6 +78,7 @@ const ALWAYS_ON_TOP_KEY = 'device-tui.desktop-v2.always-on-top'
 const SESSION_TAB_LAYOUT_KEY = 'device-tui.desktop-v2.session-tab-layout'
 const SESSION_TAB_RAIL_COLLAPSED_KEY = 'device-tui.desktop-v2.session-tab-rail-collapsed'
 const NAVIGATOR_DETAIL_COLLAPSED_KEY = 'device-tui.desktop-v2.navigator-detail-collapsed'
+const NAVIGATOR_VISIBLE_KEY = 'device-tui.desktop-v2.navigator-visible'
 const NAVIGATOR_WIDTH_KEY = 'device-tui.desktop-v2.navigator-width'
 const PROFILE_GROUP_COLLAPSE_KEY = 'device-tui.desktop-v2.profile-collapsed-groups'
 const NAVIGATOR_MIN_WIDTH = 400
@@ -99,6 +101,7 @@ const sessionTabRailCollapsed = ref(
 const navigatorDetailCollapsed = ref(
   localStorage.getItem(NAVIGATOR_DETAIL_COLLAPSED_KEY) === '1'
 )
+const navigatorVisible = ref(localStorage.getItem(NAVIGATOR_VISIBLE_KEY) !== '0')
 const navigatorWidth = ref(readStoredNavigatorWidth())
 const navigatorResizing = ref(false)
 const operationPanelOpen = computed(() =>
@@ -293,6 +296,12 @@ function handleNavigatorResizeKeydown(event: KeyboardEvent): void {
 
 function resetNavigatorWidth(): void {
   setNavigatorWidth(defaultNavigatorWidth(windowWidth.value))
+}
+
+function setNavigatorVisible(visible: boolean): void {
+  navigatorVisible.value = visible
+  localStorage.setItem(NAVIGATOR_VISIBLE_KEY, visible ? '1' : '0')
+  if (!visible) stopNavigatorResize()
 }
 
 function handleWindowResize(): void {
@@ -1195,6 +1204,7 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   activeSection.value = section
+  setNavigatorVisible(true)
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
   if (section !== 'devices') {
@@ -1463,6 +1473,7 @@ onBeforeUnmount(() => {
     :class="{
       'has-session-sidebar': showSessionSidebar,
       'session-sidebar-collapsed': showSessionSidebar && sessionTabRailCollapsed,
+      'navigator-hidden': !operationPanelOpen && !navigatorVisible,
       'navigator-resizing': navigatorResizing
     }"
     :style="appShellStyle"
@@ -1470,13 +1481,13 @@ onBeforeUnmount(() => {
   >
     <nav class="activity-rail" aria-label="主功能">
       <div class="brand-mark" title="Device TUI"><Network :size="20" /></div>
-      <button class="rail-button" :class="{ active: !operationPanelOpen && activeSection === 'devices' }" type="button" title="设备与终端" @click="setSection('devices')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'devices' }" type="button" :title="!navigatorVisible && activeSection === 'devices' ? '显示设备工作台' : '设备与终端'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'devices'" @click="setSection('devices')">
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
       </button>
-      <button class="rail-button" :class="{ active: !operationPanelOpen && activeSection === 'temporary' }" type="button" title="临时连接" @click="setSection('temporary')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'temporary' }" type="button" :title="!navigatorVisible && activeSection === 'temporary' ? '显示设备工作台' : '临时连接'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'temporary'" @click="setSection('temporary')">
         <Cable :size="19" /><span class="sr-only">临时连接</span>
       </button>
-      <button class="rail-button" :class="{ active: !operationPanelOpen && activeSection === 'server' }" type="button" title="服务器" @click="setSection('server')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'server' }" type="button" :title="!navigatorVisible && activeSection === 'server' ? '显示设备工作台' : '服务器'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'server'" @click="setSection('server')">
         <ServerCog :size="19" /><span class="sr-only">服务器</span>
       </button>
       <button
@@ -1556,7 +1567,7 @@ onBeforeUnmount(() => {
       </button>
     </nav>
 
-    <aside v-show="!operationPanelOpen" class="navigator">
+    <aside v-show="navigatorVisible && !operationPanelOpen" class="navigator">
       <header class="navigator-header">
         <div>
           <p class="eyebrow">DEVICE OPERATIONS</p>
@@ -1574,6 +1585,9 @@ onBeforeUnmount(() => {
               <Plus :size="16" /><span class="sr-only">新增连接</span>
             </button>
           </template>
+          <button class="icon-button" type="button" title="隐藏设备工作台" aria-label="隐藏设备工作台" @click="setNavigatorVisible(false)">
+            <PanelLeftClose :size="16" aria-hidden="true" />
+          </button>
         </div>
       </header>
 
