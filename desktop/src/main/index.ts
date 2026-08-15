@@ -2304,14 +2304,18 @@ async function createWindow(): Promise<void> {
             const renderedCommandLineNumbers = (commandLineNumberGutter?.textContent || '')
               .trim()
               .split(String.fromCharCode(10))
+            const commandLineNumberRect = commandLineNumberGutter?.getBoundingClientRect()
             setCheck(
               'commandEditorShowsSynchronizedLineNumbers',
               renderedCommandLineNumbers.length === 30
                 && renderedCommandLineNumbers[0] === '1'
                 && renderedCommandLineNumbers[29] === '30'
                 && Boolean(commandLineNumberEditor && commandLineNumberGutter
-                  && commandLineNumberGutter.scrollTop === commandLineNumberEditor.scrollTop),
+                  && commandLineNumberGutter.scrollTop === commandLineNumberEditor.scrollTop
+                  && commandLineNumberRect && commandLineNumberRect.width <= 33
+                  && getComputedStyle(commandLineNumberGutter).borderRightWidth === '0px'),
               'lines=' + renderedCommandLineNumbers.length
+                + ' gutter=' + commandLineNumberRect?.width
                 + ' scroll=' + commandLineNumberGutter?.scrollTop + '/' + commandLineNumberEditor?.scrollTop
             )
             if (commandLineNumberEditor) {
@@ -2507,6 +2511,28 @@ async function createWindow(): Promise<void> {
               commandModeButton?.click()
               await sleep(100)
             }
+            const ctrlEnterText = 'display version'
+            setValue('.command-editor-row textarea', ctrlEnterText)
+            commandEditor?.focus()
+            commandEditor?.setSelectionRange(ctrlEnterText.length, ctrlEnterText.length)
+            commandEditor?.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter',
+              ctrlKey: true,
+              bubbles: true,
+              cancelable: true
+            }))
+            await sleep(50)
+            setCheck(
+              'commandCtrlEnterInsertsLineBreak',
+              commandEditor?.value === ctrlEnterText + String.fromCharCode(10)
+                && commandEditor.selectionStart === ctrlEnterText.length + 1
+                && commandEditor.selectionEnd === ctrlEnterText.length + 1,
+              JSON.stringify({
+                value: commandEditor?.value,
+                selectionStart: commandEditor?.selectionStart,
+                selectionEnd: commandEditor?.selectionEnd
+              })
+            )
             const enterCommand = 'display version'
             setValue('.command-editor-row textarea', enterCommand)
             commandEditor?.focus()

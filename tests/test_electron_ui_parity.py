@@ -1083,6 +1083,7 @@ def test_electron_command_workspace_keeps_find_replace_feedback() -> None:
     assert ':class="{ success: dispatchFeedback }"' in command
     assert "notice.value = broadcast" not in store
     assert "commandEnterSendDoesNotReflowWorkspace" in main
+    assert "commandCtrlEnterInsertsLineBreak" in main
 
 
 def test_electron_shortcuts_are_scoped_and_discoverable() -> None:
@@ -1159,6 +1160,9 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
     assert '@scroll="syncEditorScroll"' in command
     assert 'wrap="off"' in command
     assert ".command-line-numbers" in styles
+    assert "grid-template-columns: 32px minmax(0, 1fr)" in styles
+    assert "border-right: 0; background: transparent" in styles
+    assert ".command-editor-surface:focus-within .command-line-numbers" in styles
     assert 'class="command-target-badge"' in command
     assert 'class="command-dispatch-buttons"' in command
     assert "order: 3" in styles

@@ -433,9 +433,21 @@ function handleEditorKeydown(event: KeyboardEvent): void {
   }
   if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey) return
   const shouldSend = workspace.commandEnterSends ? !event.ctrlKey : event.ctrlKey
-  if (!shouldSend) return
   event.preventDefault()
-  void dispatch(false)
+  if (shouldSend) {
+    void dispatch(false)
+    return
+  }
+  const element = editor.value
+  if (!element) return
+  const start = element.selectionStart
+  const cursor = start + 1
+  content.value = `${content.value.slice(0, start)}\n${content.value.slice(element.selectionEnd)}`
+  void nextTick(() => {
+    element.focus()
+    element.setSelectionRange(cursor, cursor)
+    updateSelectionState()
+  })
 }
 
 function handleEditorActivity(): void {
