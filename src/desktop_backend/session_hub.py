@@ -33,10 +33,18 @@ class TerminalEvent:
     status: str = ""
     generation: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    _size_bytes: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_size_bytes",
+            len(self.data.encode("utf-8", errors="replace")) + 128,
+        )
 
     @property
     def size_bytes(self) -> int:
-        return len(self.data.encode("utf-8", errors="replace")) + 128
+        return self._size_bytes
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -153,6 +161,9 @@ class SessionHub:
             return self._sessions[session_id]
         except KeyError as exc:
             raise KeyError(f"Unknown session: {session_id}") from exc
+
+    def target_for(self, session_id: str) -> ConnectionTarget:
+        return self.get(session_id).target
 
     async def create(
         self,
@@ -659,18 +670,22 @@ class SessionHub:
         queue: asyncio.Queue[TerminalEvent],
         current: TerminalEvent,
     ) -> None:
-        dropped: list[TerminalEvent] = []
+        first_dropped: TerminalEvent | None = None
+        last_dropped: TerminalEvent | None = None
         while not queue.empty():
             try:
-                dropped.append(queue.get_nowait())
+                dropped = queue.get_nowait()
+                if first_dropped is None:
+                    first_dropped = dropped
+                last_dropped = dropped
             except asyncio.QueueEmpty:
                 break
-        if dropped:
+        if first_dropped is not None and last_dropped is not None:
             queue.put_nowait(
                 self._gap_event(
                     managed,
-                    dropped[0].sequence,
-                    max(dropped[-1].sequence, current.sequence - 1),
+                    first_dropped.sequence,
+                    max(last_dropped.sequence, current.sequence - 1),
                     sequence=current.sequence - 1,
                 )
             )

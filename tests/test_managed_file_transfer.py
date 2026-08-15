@@ -8,12 +8,21 @@ import pytest
 
 from src.managed_file_transfer import (
     ManagedTransferError,
+    build_linux_inspection_command,
     build_managed_transfer_steps,
     destination_matches,
+    infer_terminal_environment,
     list_shared_files,
+    linux_client_available,
+    linux_directory_available,
+    linux_file_size,
+    linux_free_space_bytes,
     resolve_shared_file,
+    validate_linux_file_path,
     validate_destination_path,
+    validate_transfer_device_path,
 )
+from src.terminal_orchestration import parse_terminal_plan
 
 
 def test_shared_file_catalog_returns_only_relative_metadata(tmp_path: Path) -> None:
@@ -73,6 +82,35 @@ def test_shared_file_catalog_does_not_mark_exact_limit_as_truncated(
     assert not catalog.truncated
 
 
+def test_shared_file_catalog_search_sort_and_pagination(tmp_path: Path) -> None:
+    (tmp_path / "alpha.cfg").write_bytes(b"a")
+    (tmp_path / "beta.cfg").write_bytes(b"bbb")
+    (tmp_path / "ignore.txt").write_bytes(b"xx")
+
+    first = list_shared_files(
+        tmp_path,
+        query=".cfg",
+        sort="size",
+        order="desc",
+        limit=1,
+    )
+    second = list_shared_files(
+        tmp_path,
+        query=".cfg",
+        sort="size",
+        order="desc",
+        offset=first.next_offset or 0,
+        limit=1,
+    )
+
+    assert first.total == 2
+    assert first.truncated
+    assert first.next_offset == 1
+    assert [item.name for item in first.files] == ["beta.cfg"]
+    assert [item.name for item in second.files] == ["alpha.cfg"]
+    assert second.next_offset is None
+
+
 @pytest.mark.parametrize(
     "destination",
     ["target.cc", "flash:/", "flash:/../target.cc", "/flash/target.cc", "flash:\\target.cc"],
@@ -117,3 +155,78 @@ def test_managed_plan_uses_local_secrets_and_device_side_get() -> None:
     assert "put " not in text
     assert "binary" in text
     assert timeout >= 120
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["tmp/image.cc", "/", "/tmp/../image.cc", "/tmp/./image.cc", "/tmp//image.cc"],
+)
+def test_linux_transfer_path_requires_clean_absolute_file_path(path: str) -> None:
+    with pytest.raises(ManagedTransferError) as error:
+        validate_linux_file_path(path)
+
+    assert error.value.code == "invalid_destination_path"
+
+
+def test_auto_terminal_environment_accepts_vrp_and_linux_paths() -> None:
+    assert validate_transfer_device_path("flash:/image.cc", "auto") == "flash:/image.cc"
+    assert validate_transfer_device_path("/tmp/image.cc", "auto") == "/tmp/image.cc"
+    assert infer_terminal_environment("flash:/image.cc", session_kind="ssh") == "vrp"
+    assert infer_terminal_environment("/tmp/image.cc", session_kind="telnet") == "linux"
+    assert infer_terminal_environment("relative.bin", session_kind="ssh") == "linux"
+
+
+def test_linux_inspection_command_and_markers_cover_client_file_and_space() -> None:
+    command = build_linux_inspection_command("/tmp/target image.cc", "ftp")
+    output = """
+__DEVICE_TUI_TRANSFER_CLIENT__=1
+__DEVICE_TUI_TRANSFER_SIZE__=1024
+__DEVICE_TUI_TRANSFER_FREE__=4096
+"""
+
+    assert "command -v ftp" in command
+    assert "'/tmp/target image.cc'" in command
+    assert linux_client_available(output)
+    assert linux_directory_available(output)
+    assert linux_file_size(output) == 1024
+    assert linux_free_space_bytes(output) == 4096
+    assert not linux_directory_available("__DEVICE_TUI_TRANSFER_DIRECTORY__=0\n")
+
+
+def test_linux_ftp_plan_uses_standard_interactive_client_and_posix_path() -> None:
+    steps, _ = build_managed_transfer_steps(
+        protocol="ftp",
+        host="192.0.2.10",
+        port=2121,
+        source_path="packages/target.cc",
+        destination_path="/tmp/target.cc",
+        source_size=1024,
+        terminal_environment="linux",
+    )
+
+    assert steps[0]["text"] == "ftp 192.0.2.10 2121"
+    assert any(step.get("text") == "get packages/target.cc /tmp/target.cc" for step in steps)
+    assert any(step.get("text") == "binary" for step in steps)
+
+
+def test_linux_sftp_plan_keeps_connect_identity_in_runtime_secret() -> None:
+    reference = "managed_transfer.12345678-1234-1234-1234-123456789abc.username"
+    steps, _ = build_managed_transfer_steps(
+        protocol="sftp",
+        host="192.0.2.10",
+        port=2222,
+        source_path="packages/target.cc",
+        destination_path="/tmp/target.cc",
+        source_size=1024,
+        terminal_environment="linux",
+        connect_secret_ref=reference,
+    )
+
+    assert steps[0] == {
+        "type": "send",
+        "secret_ref": reference,
+        "secret_prefix": "sftp -P 2222 ",
+        "secret_suffix": "@192.0.2.10",
+        "label": "连接 SFTP 服务",
+    }
+    assert parse_terminal_plan(steps).steps[0].secret_ref == reference

@@ -261,6 +261,7 @@ export interface TransferSettings {
   api_version: number
   protocol: 'ftp' | 'sftp'
   host: string
+  advertised_host: string
   port: number
   root: string
   username: string
@@ -268,6 +269,7 @@ export interface TransferSettings {
   has_password: boolean
   service_running: boolean
   bound_port: number
+  idle_stop_at: string
 }
 
 export interface TransferServiceLogResponse {
@@ -289,6 +291,8 @@ export interface SharedFileListResponse {
   files: SharedTransferFile[]
   count: number
   truncated: boolean
+  total: number
+  next_offset: number | null
 }
 
 export interface OperationRecord {
@@ -297,10 +301,16 @@ export interface OperationRecord {
   direction: string
   device_id: string
   session_id: string
-  status: string
+  status: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
   stage: string
   message: string
   progress_percent: number
+  bytes_transferred: number
+  total_bytes: number
+  bytes_per_second: number
+  eta_seconds: number | null
+  queue_position: number | null
+  retry_of: string | null
   cancellable: boolean
   error_code: string
   revision: number

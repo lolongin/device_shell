@@ -5,8 +5,6 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Clock3,
-  CornerDownLeft,
   Pencil,
   Plus,
   RadioTower,
@@ -29,6 +27,7 @@ import {
 const workspace = useWorkspaceStore()
 const commandWorkspace = ref<HTMLElement | null>(null)
 const editor = ref<HTMLTextAreaElement | null>(null)
+const lineNumberGutter = ref<HTMLElement | null>(null)
 const findInput = ref<HTMLInputElement | null>(null)
 const content = ref('')
 const renameValue = ref('')
@@ -42,6 +41,7 @@ const findStatus = ref('')
 const selectionStart = ref(0)
 const selectionEnd = ref(0)
 const saveState = ref<'saved' | 'dirty' | 'saving' | 'error'>('saved')
+const dispatchFeedback = ref('')
 const commandGroupContextMenu = ref<{ groupId: string; name: string; x: number; y: number } | null>(null)
 const commandGroupContextMenuElement = ref<HTMLElement | null>(null)
 const commandGroupContextMenuReturnFocus = ref<HTMLElement | null>(null)
@@ -55,7 +55,7 @@ const commandPanelMaxHeight = ref(680)
 const preferredCommandPanelHeight = ref(storedCommandPanelHeight())
 const commandPanelHeight = ref(preferredCommandPanelHeight.value)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-let suggestionTimer: ReturnType<typeof setTimeout> | null = null
+let dispatchFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 let resizeStartY = 0
 let resizeStartHeight = 0
 let panelResizing = false
@@ -87,6 +87,9 @@ const dispatchTargetLabel = computed(() =>
   workspace.activeSession?.title || '未选择终端'
 )
 const totalLineCount = computed(() => Math.max(1, content.value.split(/\r?\n/).length))
+const lineNumberText = computed(() =>
+  Array.from({ length: totalLineCount.value }, (_, index) => String(index + 1)).join('\n')
+)
 const currentLineNumber = computed(() =>
   Math.max(1, content.value.slice(0, selectionStart.value).split(/\r?\n/).length)
 )
@@ -96,15 +99,6 @@ const hasDispatchCommand = computed(() => {
   selectionEnd.value
   return Boolean(selectedCommand())
 })
-const visibleCommandSuggestions = computed(() => {
-  const commands = workspace.commandSuggestions.length
-    ? workspace.commandSuggestions
-    : workspace.commandHistory.map((item) => item.command)
-  return [...new Set(commands.filter(Boolean))].slice(0, 6)
-})
-const suggestionSourceLabel = computed(() =>
-  workspace.commandSuggestions.length ? '匹配建议' : '最近使用'
-)
 const saveStateLabel = computed(() => ({
   saved: '已保存',
   dirty: '待保存',
@@ -197,7 +191,6 @@ watch(content, () => {
   saveState.value = 'dirty'
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void saveContent(), 650)
-  scheduleSuggestions()
 })
 
 async function saveContent(): Promise<void> {
@@ -405,7 +398,18 @@ async function dispatch(broadcast = false): Promise<void> {
   const command = selectedCommand()
   if (!command) return
   await saveContent()
-  await workspace.dispatchCommand(command, broadcast)
+  const targetLabel = dispatchTargetLabel.value
+  const targetCount = workspace.connectedSessions.length
+  const sent = await workspace.dispatchCommand(command, broadcast)
+  if (sent) {
+    dispatchFeedback.value = broadcast
+      ? `已广播到 ${targetCount} 个终端`
+      : `已发送到 ${targetLabel}`
+    if (dispatchFeedbackTimer) clearTimeout(dispatchFeedbackTimer)
+    dispatchFeedbackTimer = setTimeout(() => {
+      dispatchFeedback.value = ''
+    }, 2_400)
+  }
   editor.value?.focus()
 }
 
@@ -434,36 +438,13 @@ function handleEditorKeydown(event: KeyboardEvent): void {
   void dispatch(false)
 }
 
-function currentLineQuery(): string {
-  const element = editor.value
-  if (!element) return ''
-  const before = content.value.lastIndexOf('\n', Math.max(0, element.selectionStart - 1)) + 1
-  return content.value.slice(before, element.selectionStart).trim()
-}
-
-function scheduleSuggestions(): void {
-  if (suggestionTimer) clearTimeout(suggestionTimer)
-  suggestionTimer = setTimeout(() => {
-    void workspace.fetchCommandSuggestions(currentLineQuery())
-  }, 180)
-}
-
 function handleEditorActivity(): void {
   updateSelectionState()
-  scheduleSuggestions()
 }
 
-function applySuggestion(command: string): void {
-  const element = editor.value
-  if (!element) return
-  const start = content.value.lastIndexOf('\n', Math.max(0, element.selectionStart - 1)) + 1
-  const nextBreak = content.value.indexOf('\n', element.selectionStart)
-  const end = nextBreak < 0 ? content.value.length : nextBreak
-  content.value = `${content.value.slice(0, start)}${command}${content.value.slice(end)}`
-  void nextTick(() => {
-    element.setSelectionRange(start + command.length, start + command.length)
-    element.focus()
-  })
+function syncEditorScroll(): void {
+  if (!editor.value || !lineNumberGutter.value) return
+  lineNumberGutter.value.scrollTop = editor.value.scrollTop
 }
 
 function findNext(): void {
@@ -533,7 +514,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
-  if (suggestionTimer) clearTimeout(suggestionTimer)
+  if (dispatchFeedbackTimer) clearTimeout(dispatchFeedbackTimer)
   stopCommandPanelResize()
   window.removeEventListener('resize', clampCommandPanelHeight)
   void saveContent()
@@ -559,7 +540,7 @@ onBeforeUnmount(() => {
       @click="workspace.commandPanelOpen = true"
     >
       <span><BookOpenText :size="14" />常用命令 <strong>{{ currentGroup?.name || '终端' }}</strong></span>
-      <span>{{ dispatchTargetLabel }} · {{ workspace.commandHistory.length }} 条历史 <ChevronUp :size="14" /></span>
+      <span>{{ dispatchTargetLabel }} <ChevronUp :size="14" /></span>
     </button>
     <template v-else>
       <div
@@ -672,25 +653,55 @@ onBeforeUnmount(() => {
             <span>第 {{ currentLineNumber }} / {{ totalLineCount }} 行</span>
             <span>{{ dispatchScopeLabel }}</span>
           </div>
-          <span
-            class="command-target-badge"
-            :data-state="workspace.activeSession ? 'ready' : 'empty'"
-            :title="dispatchTargetLabel"
-          ><Target :size="12" /><small>目标</small>{{ dispatchTargetLabel }}</span>
+          <div class="command-dispatch-actions command-editor-controls">
+            <div class="command-dispatch-context" aria-live="polite">
+              <span :class="{ success: dispatchFeedback }">{{ dispatchFeedback || (hasDispatchCommand ? '可发送' : '选择命令') }}</span>
+            </div>
+            <span
+              class="command-target-badge"
+              :data-state="workspace.activeSession ? 'ready' : 'empty'"
+              :title="dispatchTargetLabel"
+            ><Target :size="12" />{{ dispatchTargetLabel }}</span>
+            <div class="command-dispatch-buttons">
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="!hasDispatchCommand || !workspace.connectedSessions.length || workspace.commandBusy"
+                :title="`广播到 ${workspace.connectedSessions.length} 个终端`"
+                @click="dispatch(true)"
+              ><RadioTower :size="13" />广播 {{ workspace.connectedSessions.length }}</button>
+              <button
+                class="primary-button command-primary-send"
+                type="button"
+                :disabled="!hasDispatchCommand || !workspace.activeSession || workspace.commandBusy"
+                :title="`发送到 ${dispatchTargetLabel}`"
+                @click="dispatch(false)"
+              ><Send :size="13" />发送</button>
+            </div>
+          </div>
         </div>
-        <textarea
-          ref="editor"
-          v-model="content"
-          aria-label="常用命令"
-          spellcheck="false"
-          placeholder="每行一条命令；选择多行可批量发送"
-          @click="handleEditorActivity"
-          @keyup="handleEditorActivity"
-          @select="updateSelectionState"
-          @mouseup="updateSelectionState"
-          @keydown="handleEditorKeydown"
-          @contextmenu.prevent="openEditorContextMenu"
-        ></textarea>
+        <div class="command-editor-surface">
+          <div
+            ref="lineNumberGutter"
+            class="command-line-numbers"
+            aria-hidden="true"
+          >{{ lineNumberText }}</div>
+          <textarea
+            ref="editor"
+            v-model="content"
+            aria-label="常用命令"
+            spellcheck="false"
+            wrap="off"
+            placeholder="每行一条命令；选择多行可批量发送"
+            @click="handleEditorActivity"
+            @keyup="handleEditorActivity"
+            @select="updateSelectionState"
+            @mouseup="updateSelectionState"
+            @scroll="syncEditorScroll"
+            @keydown="handleEditorKeydown"
+            @contextmenu.prevent="openEditorContextMenu"
+          ></textarea>
+        </div>
         <div
           v-if="editorContextMenu"
           ref="editorContextMenuElement"
@@ -737,43 +748,6 @@ onBeforeUnmount(() => {
             @click="clearCurrentCommandGroup"
           >清空当前页签</button>
         </div>
-        <div class="command-suggestions" aria-label="命令建议">
-          <span class="command-suggestions-label">
-            <Clock3 :size="12" />{{ suggestionSourceLabel }}
-          </span>
-          <button
-            v-for="suggestion in visibleCommandSuggestions"
-            :key="suggestion"
-            type="button"
-            :title="`填入命令：${suggestion}`"
-            @click="applySuggestion(suggestion)"
-          >{{ suggestion }}</button>
-          <span v-if="!visibleCommandSuggestions.length" class="command-suggestion-empty">输入内容后显示匹配命令</span>
-        </div>
-        <footer class="command-dispatch-actions">
-          <div class="command-dispatch-context" aria-live="polite">
-            <strong>{{ dispatchScopeLabel }}</strong>
-            <span>{{ hasDispatchCommand ? '已准备好发送' : '将光标放到一条命令上' }}</span>
-          </div>
-          <span class="command-dispatch-shortcut">
-            <CornerDownLeft :size="12" />
-            {{ workspace.commandEnterSends ? 'Enter 发送' : 'Ctrl+Enter 发送' }}
-          </span>
-          <div class="command-dispatch-buttons">
-          <button
-            class="secondary-button"
-            type="button"
-            :disabled="!hasDispatchCommand || !workspace.connectedSessions.length || workspace.commandBusy"
-            @click="dispatch(true)"
-          ><RadioTower :size="14" /><span class="command-button-long">广播到 {{ workspace.connectedSessions.length }} 个终端</span><span class="command-button-short">广播 {{ workspace.connectedSessions.length }}</span></button>
-          <button
-            class="primary-button command-primary-send"
-            type="button"
-            :disabled="!hasDispatchCommand || !workspace.activeSession || workspace.commandBusy"
-            @click="dispatch(false)"
-          ><Send :size="14" /><span class="command-button-long">发送到当前终端</span><span class="command-button-short">发送</span></button>
-          </div>
-        </footer>
       </div>
     </template>
   </section>

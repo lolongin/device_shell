@@ -126,6 +126,60 @@ def test_interactive_plan_handles_split_prompts_and_local_secrets() -> None:
     assert "super-secret" not in str(result)
 
 
+def test_secret_send_affixes_build_linux_sftp_command_and_redact_username() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {
+                "type": "send",
+                "secret_ref": "transfer.username",
+                "secret_prefix": "sftp -P 2222 ",
+                "secret_suffix": "@192.0.2.10",
+                "label": "connect sftp",
+            },
+            {
+                "type": "expect",
+                "success": ["sftp_prompt"],
+                "responses": [
+                    {"match": "password_prompt", "secret_ref": "transfer.password"}
+                ],
+            },
+        ]
+    )
+
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    assert harness.sent[0][1].text == "sftp -P 2222 device-user@192.0.2.10\r"
+    assert harness.sent[0][1].sensitive
+    assert coordinator.redact_output("tab-1", "device-user@192.0.2.10's password:") == "***@192.0.2.10's password:"
+
+    coordinator.on_output("tab-1", "device-user@192.0.2.10's password: ")
+    coordinator.on_output("tab-1", "Connected\nsftp> ")
+    assert runner.public_dict()["status"] == "completed"
+
+
+def test_linux_ftp_name_prompt_with_default_user_is_detected() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 2121"},
+            {
+                "type": "expect",
+                "success": ["ftp_prompt"],
+                "responses": [
+                    {"match": "username_prompt", "secret_ref": "transfer.username"},
+                ],
+            },
+        ]
+    )
+
+    coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    coordinator.on_output("tab-1", "Name (192.0.2.10:local-user): ")
+
+    assert harness.sent[-1][1].text == "device-user\r"
+
+
 def test_response_limit_stops_repeated_prompt() -> None:
     harness = Harness()
     coordinator = harness.coordinator()

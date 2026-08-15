@@ -123,11 +123,20 @@ array/object access, read-only session/device context, and templates such as
 optional simulated terminal output without waiting or writing to a terminal.
 Credential-like legacy automation responses are moved to the operating-
 system vault; echoed values are redacted before WebSocket replay and logging.
-The managed file-transfer workspace starts backend-owned FTP/SFTP services, browses
-a user-selected shared directory, runs PC-to-device or device-to-PC terminal plans,
-and exposes progress/cancellation with overwrite, space, source-change, and exact-
-byte verification gates. Its generated service password stays in the operating-
-system credential vault and never enters Vue or SQLite.
+The managed file-transfer workspace starts backend-owned FTP/SFTP services on
+demand, browses and searches a user-selected shared directory, and queues
+PC-to-device or device-to-PC terminal plans per session. It reports actual bytes,
+speed, ETA, cancellation, retry, and persisted recent history while retaining
+overwrite, space, source-change, and exact-byte verification gates. The service
+supports auto-selected or explicit Linux Shell and Huawei VRP command adapters;
+POSIX paths such as `/tmp/image.cc` select Linux semantics, while storage paths
+such as `flash:/image.cc` select VRP semantics. The service stops after five idle
+minutes. A wildcard listen address remains separate from the device-facing
+address: by default Device TUI asks the operating-system route to the active
+terminal's remote host for its source IPv4, with an explicit device-access IP
+override for VPN and multi-adapter environments. The fixed manual-service password stays in the
+operating-system credential vault; per-task credentials are memory-only and never
+enter Vue or SQLite.
 Existing PySide6 state is imported once without modifying its source file. The
 legacy `device-tui` entry point remains unchanged.
 

@@ -750,25 +750,32 @@ async function createWindow(): Promise<void> {
               checks[name] = Boolean(value)
               details[name] = detail
             }
-            const text = (selector) => document.querySelector(selector)?.textContent?.trim() || ''
+            const visibleElement = (selector) => [...document.querySelectorAll(selector)]
+              .find((element) => element.isConnected && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden')
+              || document.querySelector(selector)
+            const activeTerminalWorkspace = () => visibleElement('.terminal-workspace-stack.active')
+            const activeTerminalPane = () => visibleElement('.terminal-workspace-stack.active .terminal-pane')
+            const text = (selector) => visibleElement(selector)?.textContent?.trim() || ''
             const labels = (selector) => [...document.querySelectorAll(selector)].map((item) => item.textContent?.trim() || '').filter(Boolean)
             const deviceRows = () => [...(document.querySelector('.device-list.device-table-list')?.querySelectorAll(':scope > .device-table-row') || [])]
               .filter((row) => row.isConnected && row.getClientRects().length > 0 && getComputedStyle(row).visibility !== 'hidden')
             const selectedDeviceRow = () => deviceRows().find((row) => row.classList.contains('selected')) || null
             const click = (selector) => {
-              const element = document.querySelector(selector)
+              const element = visibleElement(selector)
               if (!element) return false
               element.click()
               return true
             }
             const clickButtonByTitle = (title) => {
-              const button = [...document.querySelectorAll('button')].find((item) => item.getAttribute('title') === title)
+              const candidates = [...document.querySelectorAll('button')]
+                .filter((item) => item.getAttribute('title') === title)
+              const button = candidates.find((item) => item.getClientRects().length > 0) || candidates[0]
               if (!button) return false
               button.click()
               return true
             }
             const setValue = (selector, value) => {
-              const element = document.querySelector(selector)
+              const element = visibleElement(selector)
               if (!element) return false
               element.value = value
               element.dispatchEvent(new Event('input', { bubbles: true }))
@@ -800,7 +807,7 @@ async function createWindow(): Promise<void> {
               await sleep(80)
             }
             const openContextMenu = (selector) => {
-              const element = document.querySelector(selector)
+              const element = visibleElement(selector)
               if (!element) return false
               const rect = element.getBoundingClientRect()
               element.dispatchEvent(new MouseEvent('contextmenu', {
@@ -2027,57 +2034,84 @@ async function createWindow(): Promise<void> {
               'terminal=' + (transferTerminalRect?.left || 0) + '-' + (transferTerminalRect?.right || 0)
                 + ' panel=' + (transferWorkspaceRect?.left || 0) + '-' + (transferWorkspaceRect?.right || 0)
             )
-            const transferSettingsRect = document.querySelector('.transfer-settings-card')?.getBoundingClientRect()
             const transferFilesRect = document.querySelector('.transfer-files-card')?.getBoundingClientRect()
             const transferRunRect = document.querySelector('.transfer-run-card')?.getBoundingClientRect()
             const transferFileList = document.querySelector('.transfer-file-list')
+            const transferFileToolsRect = document.querySelector('.transfer-file-tools')?.getBoundingClientRect()
+            const firstTransferFileRect = document.querySelector('[data-testid="transfer-file"]')?.getBoundingClientRect()
+            const transferEnvironmentSelect = document.querySelector('[data-testid="transfer-terminal-environment"]')
+            const transferEnvironmentOptions = [...(transferEnvironmentSelect?.querySelectorAll('option') || [])]
+              .map((option) => option.value)
+            const transferAdvancedToggle = [...document.querySelectorAll('.transfer-section-toggle')]
+              .find((button) => button.textContent?.includes('高级设置'))
+            const transferAdvancedInitiallyCollapsed = !document.querySelector('.transfer-settings-card')
             setCheck(
               'managedTransferCardsRemainVisibleAndOrdered',
-              Boolean(transferSettingsRect)
+              transferAdvancedInitiallyCollapsed
                 && Boolean(transferFilesRect)
                 && Boolean(transferRunRect)
-                && transferSettingsRect.height >= 250
                 && transferFilesRect.height >= 80
                 && transferFilesRect.height <= Math.min(332, window.innerHeight * 0.38 + 2)
                 && transferRunRect.height >= 250
                 && Boolean(transferFileList)
                 && getComputedStyle(transferFileList).overflowY === 'auto'
-                && transferSettingsRect.bottom <= transferFilesRect.top + 1
+                && Boolean(transferFileToolsRect)
+                && (!firstTransferFileRect || transferFileToolsRect.bottom <= firstTransferFileRect.top + 1)
+                && transferEnvironmentSelect?.value === 'auto'
+                && ['auto', 'linux', 'vrp'].every((value) => transferEnvironmentOptions.includes(value))
                 && transferFilesRect.bottom <= transferRunRect.top + 1,
-              'settings=' + (transferSettingsRect?.top || 0) + '-' + (transferSettingsRect?.bottom || 0)
+              'advancedCollapsed=' + transferAdvancedInitiallyCollapsed
                 + ' files=' + (transferFilesRect?.top || 0) + '-' + (transferFilesRect?.bottom || 0)
                 + ' run=' + (transferRunRect?.top || 0) + '-' + (transferRunRect?.bottom || 0)
+                + ' toolsBottom=' + (transferFileToolsRect?.bottom || 0)
+                + ' firstFileTop=' + (firstTransferFileRect?.top || 0)
+                + ' environments=' + transferEnvironmentOptions.join(',')
                 + ' fileScroll=' + (transferFileList?.scrollHeight || 0) + '/' + (transferFileList?.clientHeight || 0)
             )
+            transferAdvancedToggle?.click()
+            await sleep(80)
             setValue('[data-testid="transfer-root"]', ${JSON.stringify(manualUpgradeRoot)})
             document.querySelector('[data-testid="transfer-settings"]')?.requestSubmit()
             await sleep(700)
             const initialClientCommand = text('[data-testid="transfer-client-command"]')
             const startFileServiceButton = [...document.querySelectorAll('.transfer-settings-card button')]
-              .find((button) => button.textContent?.trim() === '启动服务')
-            startFileServiceButton?.click()
+              .find((button) => button.textContent?.trim() === '手动启动')
+            const startTransferServiceResponse = await window.desktopApi.request({
+              path: '/api/v1/file-transfer/service/start',
+              method: 'POST'
+            })
             for (let attempt = 0; attempt < 50; attempt += 1) {
               if (document.querySelector('.service-state[data-running="true"]')) break
               await sleep(100)
             }
+            const transferLogToggle = [...document.querySelectorAll('.transfer-log-disclosure > button')][0]
+            transferLogToggle?.click()
             for (let attempt = 0; attempt < 30; attempt += 1) {
               if (document.querySelector('[data-testid="transfer-service-log"] pre')?.textContent?.includes('服务已启动')) break
               await sleep(100)
             }
             const runningClientCommand = text('[data-testid="transfer-client-command"]')
+            const transferPasswordInput = document.querySelector('.transfer-password-input input')
+            const transferPasswordStatus = text('.transfer-password-label em')
             setCheck(
               'fileServiceLogAndClientCommandAreVisibleAndSafe',
               Boolean(startFileServiceButton)
+                && startTransferServiceResponse.status === 200
                 && Boolean(document.querySelector('.service-state[data-running="true"]'))
+                && transferPasswordInput?.getAttribute('type') === 'password'
+                && transferPasswordInput?.getAttribute('autocomplete') === 'new-password'
+                && ['已安全保存', '未设置'].includes(transferPasswordStatus)
                 && text('[data-testid="transfer-service-log"] pre').includes('服务已启动')
                 && runningClientCommand.includes('ftp ')
-                && runningClientCommand.includes('<本机IP>')
+                && runningClientCommand.includes('<按设备路由自动选择>')
                 && !runningClientCommand.toLocaleLowerCase().includes('password')
                 && Boolean(document.querySelector('button[title="复制客户端命令"]'))
-                && Boolean(document.querySelector('button[title="复制服务日志"]')),
-              'initial=' + initialClientCommand + ' running=' + runningClientCommand + ' log=' + text('[data-testid="transfer-service-log"] pre')
+                && Boolean(document.querySelector('button[title="复制日志"]')),
+              'start=' + startTransferServiceResponse.status
+                + ' password=' + transferPasswordInput?.getAttribute('type') + '/' + transferPasswordStatus
+                + ' initial=' + initialClientCommand + ' running=' + runningClientCommand + ' log=' + text('[data-testid="transfer-service-log"] pre')
             )
-            document.querySelector('button[title="清空服务日志"]')?.click()
+            document.querySelector('button[title="清空日志"]')?.click()
             await sleep(100)
             const clearedTransferLogResponse = await window.desktopApi.request({ path: '/api/v1/file-transfer/service/log' })
             let clearedTransferLogEntries = ['unread']
@@ -2090,11 +2124,11 @@ async function createWindow(): Promise<void> {
               'fileServiceLogClearPersistsThroughPythonService',
               clearedTransferLogResponse.status === 200
                 && clearedTransferLogEntries.length === 0
-                && text('[data-testid="transfer-service-log"] pre').includes('服务启动、登录、上传和下载事件'),
+                && text('[data-testid="transfer-service-log"] pre').includes('暂无服务日志'),
               clearedTransferLogResponse.body
             )
             const stopFileServiceButton = [...document.querySelectorAll('.transfer-settings-card button')]
-              .find((button) => button.textContent?.trim() === '停止服务')
+              .find((button) => button.textContent?.trim() === '立即停止')
             stopFileServiceButton?.click()
             await sleep(120)
             document.querySelector('button[aria-label="关闭文件传输"]')?.click()
@@ -2236,20 +2270,57 @@ async function createWindow(): Promise<void> {
             const commandResizeHandle = document.querySelector('[data-testid="command-resize-handle"]')
             const commandEditorSurface = document.querySelector('.command-editor-row textarea')
             const commandDispatchBar = document.querySelector('.command-dispatch-actions')
+            const commandTabsBar = document.querySelector('.command-header')
             const commandEditorRect = commandEditorSurface?.getBoundingClientRect()
             const commandDispatchRect = commandDispatchBar?.getBoundingClientRect()
+            const commandTabsRect = commandTabsBar?.getBoundingClientRect()
             setCheck(
               'commandWorkspaceHasScannableEditorAndDispatchHierarchy',
               Boolean(document.querySelector('.command-editor-meta'))
                 && Boolean(document.querySelector('.command-target-badge'))
                 && Boolean(document.querySelector('.command-save-state'))
-                && Boolean(document.querySelector('.command-suggestions-label'))
+                && !document.querySelector('.command-suggestions')
                 && document.querySelectorAll('.command-dispatch-buttons button').length === 2
-                && Boolean(commandEditorRect && commandDispatchRect && commandDispatchRect.top >= commandEditorRect.bottom - 1),
+                && Boolean(commandEditorRect && commandDispatchRect && commandTabsRect
+                  && commandDispatchRect.bottom <= commandEditorRect.top + 1
+                  && commandTabsRect.top >= commandEditorRect.bottom - 1
+                  && commandTabsRect.height <= 35),
               'meta=' + text('.command-editor-meta')
-                + ' suggestions=' + text('.command-suggestions-label')
+                + ' tabs=' + JSON.stringify(commandTabsRect?.toJSON() || {})
                 + ' actions=' + text('.command-dispatch-buttons')
             )
+            const commandLineNumberEditor = commandEditorSurface
+            const commandLineNumberGutter = document.querySelector('.command-line-numbers')
+            const originalCommandContent = commandLineNumberEditor?.value || ''
+            if (commandLineNumberEditor) {
+              commandLineNumberEditor.value = Array.from({ length: 30 }, (_, index) => 'command ' + (index + 1)).join(String.fromCharCode(10))
+              commandLineNumberEditor.dispatchEvent(new Event('input', { bubbles: true }))
+            }
+            await sleep(60)
+            if (commandLineNumberEditor) {
+              commandLineNumberEditor.scrollTop = 90
+              commandLineNumberEditor.dispatchEvent(new Event('scroll', { bubbles: true }))
+            }
+            const renderedCommandLineNumbers = (commandLineNumberGutter?.textContent || '')
+              .trim()
+              .split(String.fromCharCode(10))
+            setCheck(
+              'commandEditorShowsSynchronizedLineNumbers',
+              renderedCommandLineNumbers.length === 30
+                && renderedCommandLineNumbers[0] === '1'
+                && renderedCommandLineNumbers[29] === '30'
+                && Boolean(commandLineNumberEditor && commandLineNumberGutter
+                  && commandLineNumberGutter.scrollTop === commandLineNumberEditor.scrollTop),
+              'lines=' + renderedCommandLineNumbers.length
+                + ' scroll=' + commandLineNumberGutter?.scrollTop + '/' + commandLineNumberEditor?.scrollTop
+            )
+            if (commandLineNumberEditor) {
+              commandLineNumberEditor.value = originalCommandContent
+              commandLineNumberEditor.dispatchEvent(new Event('input', { bubbles: true }))
+              commandLineNumberEditor.scrollTop = 0
+              commandLineNumberEditor.dispatchEvent(new Event('scroll', { bubbles: true }))
+            }
+            await sleep(40)
             const commandInitialHeight = commandPanel?.getBoundingClientRect().height || 0
             if (commandResizeHandle) {
               const rect = commandResizeHandle.getBoundingClientRect()
@@ -2431,6 +2502,45 @@ async function createWindow(): Promise<void> {
                 || logPanelText.includes(smokeCommandOutput),
               'terminal=' + terminalTextAfterCommand.slice(-160) + ' log=' + logPanelText.slice(-160)
             )
+            const commandModeButton = document.querySelector('.command-mode-button')
+            if (commandModeButton?.getAttribute('aria-pressed') !== 'true') {
+              commandModeButton?.click()
+              await sleep(100)
+            }
+            const enterCommand = 'display version'
+            setValue('.command-editor-row textarea', enterCommand)
+            commandEditor?.focus()
+            commandEditor?.setSelectionRange(0, enterCommand.length)
+            const workspaceRectBeforeEnter = document.querySelector('.session-workspace')?.getBoundingClientRect()
+            commandEditor?.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter',
+              bubbles: true,
+              cancelable: true
+            }))
+            const enterLayoutSamples = []
+            for (let attempt = 0; attempt < 16; attempt += 1) {
+              await sleep(40)
+              const rect = document.querySelector('.session-workspace')?.getBoundingClientRect()
+              if (rect) enterLayoutSamples.push({ top: rect.top, height: rect.height })
+            }
+            const routineCommandNotice = [...document.querySelectorAll('.notice-banner')]
+              .some((notice) => /命令已发送|已广播到/u.test(notice.textContent || ''))
+            const enterFeedback = text('.command-dispatch-context span.success')
+            setCheck(
+              'commandEnterSendDoesNotReflowWorkspace',
+              Boolean(workspaceRectBeforeEnter)
+                && enterLayoutSamples.length > 0
+                && enterLayoutSamples.every((sample) =>
+                  Math.abs(sample.top - workspaceRectBeforeEnter.top) <= 1
+                    && Math.abs(sample.height - workspaceRectBeforeEnter.height) <= 1
+                )
+                && !routineCommandNotice
+                && enterFeedback.includes('已发送到'),
+              'before=' + JSON.stringify(workspaceRectBeforeEnter?.toJSON() || {})
+                + ' samples=' + JSON.stringify(enterLayoutSamples)
+                + ' notice=' + routineCommandNotice
+                + ' feedback=' + enterFeedback
+            )
             setCheck(
               'terminalLogPanelShowsSessionLog',
               Boolean(document.querySelector('.terminal-log-panel')) &&
@@ -2490,29 +2600,29 @@ async function createWindow(): Promise<void> {
               .find((button) => button.textContent?.trim() === '打开 Linux 后台')
             sshButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
-              const terminalText = document.querySelector('.xterm-rows')?.textContent || ''
+              const terminalText = activeTerminalPane()?.querySelector('.xterm-rows')?.textContent || ''
               const failedTab = document.querySelector('.session-tab.active .session-tab-select > i[data-state="failed"]')
               const failedTabLabel = document.querySelector('.session-tab.active .session-tab-select')?.getAttribute('aria-label') || ''
               if (
-                document.querySelector('.connection-state[data-state="failed"]')
+                activeTerminalPane()?.querySelector('.connection-state[data-state="failed"]')
                 && terminalText.includes('Connection failed')
                 && failedTab
                 && failedTabLabel.includes('连接失败')
               ) break
               await sleep(100)
             }
-            const failedSshText = document.querySelector('.xterm-rows')?.textContent || ''
+            const failedSshText = activeTerminalPane()?.querySelector('.xterm-rows')?.textContent || ''
             setCheck(
               'sshFailureShowsInlineReasonAndRetry',
               Boolean(sshButton)
-                && Boolean(document.querySelector('.connection-state[data-state="failed"]'))
-                && text('.connection-state') === '连接失败'
+                && Boolean(activeTerminalPane()?.querySelector('.connection-state[data-state="failed"]'))
+                && (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') === '连接失败'
                 && failedSshText.includes('Connection failed')
                 && Boolean(document.querySelector('.session-tab.active .session-tab-select > i[data-state="failed"]'))
                 && (document.querySelector('.session-tab.active .session-tab-select')?.getAttribute('aria-label') || '').includes('连接失败')
-                && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
-              (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
-                + text('.connection-state') + ' ' + failedSshText.slice(-180)
+                && Boolean(activeTerminalPane()?.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
+              (activeTerminalPane()?.getAttribute('data-session-kind') || '') + ' '
+                + (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') + ' ' + failedSshText.slice(-180)
             )
             const activeSshSessionId = document.querySelector('.session-tab.active')?.getAttribute('data-session-tab-id') || ''
             const readSessionSnapshot = async (sessionId) => {
@@ -2530,23 +2640,23 @@ async function createWindow(): Promise<void> {
             for (let attempt = 0; attempt < 80; attempt += 1) {
               afterSshRetry = await readSessionSnapshot(activeSshSessionId)
               if (
-                document.querySelector('.connection-state[data-state="failed"]')
+                activeTerminalPane()?.querySelector('.connection-state[data-state="failed"]')
                 && Number(afterSshRetry.generation || 0) > Number(beforeSshRetry.generation || 0)
                 && afterSshRetry.status === 'failed'
-                && document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')
+                && activeTerminalPane()?.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')
               ) break
               await sleep(100)
             }
-            const failedSshRetryText = document.querySelector('.xterm-rows')?.textContent || ''
+            const failedSshRetryText = activeTerminalPane()?.querySelector('.xterm-rows')?.textContent || ''
             setCheck(
               'sshFailureRetryStaysInline',
-              Boolean(document.querySelector('.connection-state[data-state="failed"]'))
+              Boolean(activeTerminalPane()?.querySelector('.connection-state[data-state="failed"]'))
                 && Number(afterSshRetry.generation || 0) > Number(beforeSshRetry.generation || 0)
                 && afterSshRetry.status === 'failed'
                 && failedSshRetryText.includes('Connection failed')
-                && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
+                && Boolean(activeTerminalPane()?.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
               'generation=' + beforeSshRetry.generation + '->' + afterSshRetry.generation + ' '
-                + text('.connection-state') + ' ' + failedSshRetryText.slice(-220)
+                + (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') + ' ' + failedSshRetryText.slice(-220)
             )
             openContextMenu('.device-table-row.selected')
             await sleep(40)
@@ -2555,21 +2665,21 @@ async function createWindow(): Promise<void> {
             telnetButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
               if (
-                document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'telnet'
-                && document.querySelector('.connection-state[data-state="failed"]')
+                activeTerminalPane()?.getAttribute('data-session-kind') === 'telnet'
+                && activeTerminalPane()?.querySelector('.connection-state[data-state="failed"]')
               ) break
               await sleep(100)
             }
-            const failedTelnetText = document.querySelector('.xterm-rows')?.textContent || ''
+            const failedTelnetText = activeTerminalPane()?.querySelector('.xterm-rows')?.textContent || ''
             setCheck(
               'telnetFailureShowsInlineReasonAndRetry',
               Boolean(telnetButton)
-                && document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'telnet'
-                && text('.connection-state') === '连接失败'
+                && activeTerminalPane()?.getAttribute('data-session-kind') === 'telnet'
+                && (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') === '连接失败'
                 && failedTelnetText.includes('Connection failed')
-                && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
-              (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
-                + text('.connection-state') + ' ' + failedTelnetText.slice(-180)
+                && Boolean(activeTerminalPane()?.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
+              (activeTerminalPane()?.getAttribute('data-session-kind') || '') + ' '
+                + (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') + ' ' + failedTelnetText.slice(-180)
             )
 
             const activeTitleResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
@@ -2593,6 +2703,10 @@ async function createWindow(): Promise<void> {
             const sessionsOnDifferentDevices = activeTitleSessions.filter((session, index, items) =>
               items.findIndex((candidate) => candidate.device_id === session.device_id) === index
             ).slice(0, 2)
+            const retainedTerminalPanes = new Map(activeTitleSessions.map((session) => [
+              session.id,
+              document.querySelector('.terminal-pane[data-session-id="' + session.id + '"]')
+            ]))
             const followedTitles = []
             for (const session of sessionsOnDifferentDevices) {
               document.querySelector('.device-session-tab[data-device-tab-id="' + session.device_id + '"] .device-session-tab-select')?.click()
@@ -2607,6 +2721,33 @@ async function createWindow(): Promise<void> {
               sessionsOnDifferentDevices.length >= 2
                 && followedTitles.every((entry) => entry.actual === entry.expected),
               followedTitles.map((entry) => entry.expected + '=' + entry.actual).join('|')
+            )
+            const multiSessionDeviceId = activeTitleSessions.find((session, index, items) =>
+              items.filter((candidate) => candidate.device_id === session.device_id).length > 1
+                && items.findIndex((candidate) => candidate.device_id === session.device_id) === index
+            )?.device_id || ''
+            if (multiSessionDeviceId) {
+              document.querySelector('.device-session-tab[data-device-tab-id="' + multiSessionDeviceId + '"] .device-session-tab-select')?.click()
+              await sleep(50)
+              for (const session of activeTitleSessions.filter((candidate) => candidate.device_id === multiSessionDeviceId)) {
+                document.querySelector('.session-tab[data-session-tab-id="' + session.id + '"] .session-tab-select')?.click()
+                await sleep(30)
+              }
+            }
+            const retainedTerminalDetails = activeTitleSessions.map((session) => {
+              const retained = retainedTerminalPanes.get(session.id)
+              const current = document.querySelector('.terminal-pane[data-session-id="' + session.id + '"]')
+              return {
+                sessionId: session.id,
+                retained: Boolean(retained && retained.isConnected && current === retained),
+                hasXterm: Boolean(current?.querySelector('.xterm'))
+              }
+            })
+            setCheck(
+              'terminalTabSwitchPreservesMountedTerminalBuffer',
+              retainedTerminalDetails.length >= 3
+                && retainedTerminalDetails.every((entry) => entry.retained && entry.hasXterm),
+              JSON.stringify(retainedTerminalDetails)
             )
             const deviceTabIds = [...document.querySelectorAll('.device-session-tab')]
               .map((tab) => tab.getAttribute('data-device-tab-id') || '')
@@ -2673,19 +2814,23 @@ async function createWindow(): Promise<void> {
                 && !document.querySelector('.terminal-toolbar'),
               'actions=' + terminalConnectionActions.join('|') + ' bottom=' + terminalBottomToolbarTitles.join('|')
             )
-            const focusedTerminalRect = document.querySelector('.terminal-split-pane.focused .terminal-pane')?.getBoundingClientRect()
-              || document.querySelector('.terminal-pane')?.getBoundingClientRect()
-            const quickSendRect = document.querySelector('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore')?.getBoundingClientRect()
-            const quickSendToolbarRect = document.querySelector('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore')
+            const focusedTerminalRect = visibleElement('.terminal-workspace-stack.active .terminal-split-pane.focused .terminal-pane')?.getBoundingClientRect()
+              || activeTerminalPane()?.getBoundingClientRect()
+            const visibleQuickSend = visibleElement('.terminal-workspace-stack.active [data-testid="terminal-quick-toolbar"], .terminal-workspace-stack.active .quick-toolbar-restore')
+            const quickSendRect = visibleQuickSend?.getBoundingClientRect()
+            const quickSendToolbarRect = visibleQuickSend
               ?.closest('.terminal-bottom-toolbar')?.getBoundingClientRect()
             const commandWorkspaceRect = document.querySelector('.command-workspace')?.getBoundingClientRect()
-            const splitActiveForQuickSend = document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') !== 'none'
-            const terminalSplitRect = document.querySelector('.terminal-split-layout')?.getBoundingClientRect()
+            const activeSplitLayout = activeTerminalWorkspace()?.querySelector('.terminal-split-layout')
+            const splitActiveForQuickSend = activeSplitLayout?.getAttribute('data-split-direction') !== 'none'
+            const terminalSplitRect = activeSplitLayout?.getBoundingClientRect()
+            const visibleQuickToolbarCount = [...document.querySelectorAll('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore')]
+              .filter((element) => element.getClientRects().length > 0).length
             setCheck(
               'quickSendLivesInFocusedTerminalBottomToolbar',
               Boolean(focusedTerminalRect)
                 && Boolean(quickSendRect)
-                && document.querySelectorAll('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore').length === 1
+                && visibleQuickToolbarCount === 1
                 && (splitActiveForQuickSend
                   ? Boolean(terminalSplitRect)
                     && !quickSendToolbarRect
@@ -2713,22 +2858,22 @@ async function createWindow(): Promise<void> {
             serialButton?.click()
             for (let attempt = 0; attempt < 80; attempt += 1) {
               if (
-                document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'serial'
-                && document.querySelector('.connection-state[data-state="failed"]')
+                activeTerminalPane()?.getAttribute('data-session-kind') === 'serial'
+                && activeTerminalPane()?.querySelector('.connection-state[data-state="failed"]')
               ) break
               await sleep(100)
             }
-            const failedSerialText = document.querySelector('.xterm-rows')?.textContent || ''
+            const failedSerialText = activeTerminalPane()?.querySelector('.xterm-rows')?.textContent || ''
             setCheck(
               'serialClaimAndFailureFlowStaysInline',
               serialEnabledAfterClaim
-                && document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') === 'serial'
-                && text('.connection-state') === '连接失败'
+                && activeTerminalPane()?.getAttribute('data-session-kind') === 'serial'
+                && (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') === '连接失败'
                 && failedSerialText.includes('Connection failed')
-                && Boolean(document.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
+                && Boolean(activeTerminalPane()?.querySelector('button[title="重新连接 (Ctrl+Shift+R)"]:not(:disabled)')),
               'enabledAfterClaim=' + serialEnabledAfterClaim + ' '
-                + (document.querySelector('.terminal-pane')?.getAttribute('data-session-kind') || '') + ' '
-                + text('.connection-state') + ' ' + failedSerialText.slice(-180)
+                + (activeTerminalPane()?.getAttribute('data-session-kind') || '') + ' '
+                + (activeTerminalPane()?.querySelector('.connection-state')?.textContent?.trim() || '') + ' ' + failedSerialText.slice(-180)
             )
 
             const smokeServerGroup = '折叠烟测组'
@@ -2911,13 +3056,17 @@ async function createWindow(): Promise<void> {
               if (temporaryProfile?.ssh?.has_password) break
               await sleep(100)
             }
-            const temporarySessionsResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
             let temporarySessionCreated = false
-            try {
-              temporarySessionCreated = JSON.parse(temporarySessionsResponse.body).sessions
-                ?.some((session) => session.device_id === temporaryProfile?.id && session.kind === 'ssh') || false
-            } catch {
-              temporarySessionCreated = false
+            for (let attempt = 0; attempt < 50; attempt += 1) {
+              const temporarySessionsResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
+              try {
+                temporarySessionCreated = JSON.parse(temporarySessionsResponse.body).sessions
+                  ?.some((session) => session.device_id === temporaryProfile?.id && session.kind === 'ssh') || false
+              } catch {
+                temporarySessionCreated = false
+              }
+              if (temporarySessionCreated && !document.querySelector('.profile-dialog')) break
+              await sleep(100)
             }
             setCheck(
               'temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup',
@@ -2993,26 +3142,27 @@ async function createWindow(): Promise<void> {
             setCheck(
               'terminalSplitCreatesTwoPanesWithoutDuplicatingBackendSessions',
               Boolean(splitRightButton)
-                && document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') === 'right'
-                && document.querySelectorAll('.terminal-split-pane').length === 2
-                && document.querySelectorAll('.terminal-split-pane .terminal-pane').length === 2
+                && activeTerminalWorkspace()?.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') === 'right'
+                && activeTerminalWorkspace()?.querySelectorAll('.terminal-split-pane').length === 2
+                && [...(activeTerminalWorkspace()?.querySelectorAll('.terminal-split-pane .terminal-pane') || [])]
+                  .filter((pane) => pane.getClientRects().length > 0).length === 2
                 && sessionsAfterSplit.length === sessionsBeforeSplit.length,
-              'direction=' + (document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') || '')
-                + ' panes=' + document.querySelectorAll('.terminal-split-pane').length
+              'direction=' + (activeTerminalWorkspace()?.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') || '')
+                + ' panes=' + (activeTerminalWorkspace()?.querySelectorAll('.terminal-split-pane').length || 0)
                 + ' backend=' + sessionsBeforeSplit.length + '->' + sessionsAfterSplit.length
             )
             setCheck(
               'splitPaneUsesCompactCurrentSessionHeader',
-              document.querySelectorAll('.split-pane-tabs').length === 2
-                && document.querySelectorAll('.split-pane-tabs .split-session-tab').length === 0
-                && document.querySelectorAll('.split-pane-tabs .split-pane-session-title').length === 2,
-              'headers=' + document.querySelectorAll('.split-pane-tabs').length
-                + ' repeatedTabs=' + document.querySelectorAll('.split-pane-tabs .split-session-tab').length
-                + ' titles=' + document.querySelectorAll('.split-pane-tabs .split-pane-session-title').length
+              activeTerminalWorkspace()?.querySelectorAll('.split-pane-tabs').length === 2
+                && activeTerminalWorkspace()?.querySelectorAll('.split-pane-tabs .split-session-tab').length === 0
+                && activeTerminalWorkspace()?.querySelectorAll('.split-pane-tabs .split-pane-session-title').length === 2,
+              'headers=' + (activeTerminalWorkspace()?.querySelectorAll('.split-pane-tabs').length || 0)
+                + ' repeatedTabs=' + (activeTerminalWorkspace()?.querySelectorAll('.split-pane-tabs .split-session-tab').length || 0)
+                + ' titles=' + (activeTerminalWorkspace()?.querySelectorAll('.split-pane-tabs .split-pane-session-title').length || 0)
             )
             const draggableTabs = [...document.querySelectorAll('.session-tab')]
-            const secondaryPane = document.querySelector('.terminal-split-pane[data-pane-id="secondary"]')
-            const secondarySessionIds = [...document.querySelectorAll('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')]
+            const secondaryPane = activeTerminalWorkspace()?.querySelector('.terminal-split-pane[data-pane-id="secondary"]')
+            const secondarySessionIds = [...(activeTerminalWorkspace()?.querySelectorAll('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title') || [])]
               .map((title) => title.getAttribute('data-session-id') || '')
             const primaryCandidate = draggableTabs.find((tab) => {
               const id = tab.getAttribute('data-session-tab-id') || ''
@@ -3038,7 +3188,7 @@ async function createWindow(): Promise<void> {
                 dataTransfer: transfer
               }))
               await sleep(160)
-              dragDropWorked = document.querySelector('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')
+              dragDropWorked = activeTerminalWorkspace()?.querySelector('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')
                 ?.getAttribute('data-session-id') === primaryCandidate.getAttribute('data-session-tab-id')
             }
             const sessionsAfterDragResponse = await window.desktopApi.request({ path: '/api/v1/sessions' })
@@ -3051,9 +3201,82 @@ async function createWindow(): Promise<void> {
             setCheck(
               'terminalTabDragDropMovesExistingSessionOnly',
               dragDropWorked && sessionsAfterDrag.length === sessionsBeforeSplit.length,
-              'secondarySession=' + (document.querySelector('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')?.getAttribute('data-session-id') || '')
+              'secondarySession=' + (activeTerminalWorkspace()?.querySelector('.terminal-split-pane[data-pane-id="secondary"] .split-pane-session-title')?.getAttribute('data-session-id') || '')
                 + ' backend=' + sessionsBeforeSplit.length + '->' + sessionsAfterDrag.length
             )
+
+            const activeSessionBeforeLru = document.querySelector('.session-tab.active')?.getAttribute('data-session-tab-id') || ''
+            const activeDeviceBeforeLru = document.querySelector('.device-session-tab.active')?.getAttribute('data-device-tab-id') || ''
+            const fallbackSimulatedSession = sessionsBeforeSplit.find((session) => session.device_id === 'SIM-TERMINAL')?.id || ''
+            const lruSessionIds = []
+            for (let index = 0; index < 8; index += 1) {
+              const response = await window.desktopApi.request({
+                path: '/api/v1/sessions',
+                method: 'POST',
+                body: JSON.stringify({
+                  device_id: 'SIM-TERMINAL',
+                  kind: 'simulated',
+                  title: 'LRU smoke ' + (index + 1)
+                })
+              })
+              try {
+                const created = JSON.parse(response.body)
+                if (created.id) lruSessionIds.push(created.id)
+              } catch {
+                // Preserve the failure in the final bounded-instance check.
+              }
+            }
+            await sleep(300)
+            document.querySelector('.device-session-tab[data-device-tab-id="SIM-TERMINAL"] .device-session-tab-select')?.click()
+            await sleep(100)
+            let maximumWarmTerminalPanes = 0
+            for (const sessionId of lruSessionIds) {
+              document.querySelector('.session-tab[data-session-tab-id="' + CSS.escape(sessionId) + '"] .session-tab-select')?.click()
+              await sleep(35)
+              maximumWarmTerminalPanes = Math.max(
+                maximumWarmTerminalPanes,
+                activeTerminalWorkspace()?.querySelectorAll('.terminal-pane').length || 0
+              )
+            }
+            const finalWarmTerminalPanes = activeTerminalWorkspace()?.querySelectorAll('.terminal-pane').length || 0
+            setCheck(
+              'terminalWarmLruBoundsMountedXtermInstances',
+              lruSessionIds.length === 8
+                && maximumWarmTerminalPanes <= 6
+                && finalWarmTerminalPanes <= 6,
+              'created=' + lruSessionIds.length
+                + ' max=' + maximumWarmTerminalPanes
+                + ' final=' + finalWarmTerminalPanes
+            )
+            if (fallbackSimulatedSession) {
+              document.querySelector('.session-tab[data-session-tab-id="' + CSS.escape(fallbackSimulatedSession) + '"] .session-tab-select')?.click()
+              await sleep(80)
+            }
+            for (const sessionId of lruSessionIds) {
+              await window.desktopApi.request({
+                path: '/api/v1/sessions/' + encodeURIComponent(sessionId),
+                method: 'DELETE'
+              })
+            }
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+              const response = await window.desktopApi.request({ path: '/api/v1/sessions' })
+              let remaining = []
+              try {
+                remaining = JSON.parse(response.body).sessions || []
+              } catch {
+                remaining = []
+              }
+              if (remaining.length <= sessionsBeforeSplit.length) break
+              await sleep(50)
+            }
+            if (activeDeviceBeforeLru) {
+              document.querySelector('.device-session-tab[data-device-tab-id="' + CSS.escape(activeDeviceBeforeLru) + '"] .device-session-tab-select')?.click()
+              await sleep(60)
+            }
+            if (activeSessionBeforeLru) {
+              document.querySelector('.session-tab[data-session-tab-id="' + CSS.escape(activeSessionBeforeLru) + '"] .session-tab-select')?.click()
+              await sleep(100)
+            }
 
             const failed = Object.entries(checks).filter(([, value]) => !value).map(([name]) => name)
             return {
@@ -3348,8 +3571,8 @@ async function createWindow(): Promise<void> {
             navigatorDetailCollapsed: localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '1',
             navigatorWidth: localStorage.getItem('device-tui.desktop-v2.navigator-width') || '',
             commandPanelHeight: localStorage.getItem('device-tui.desktop-v2.command-panel-height') || '',
-            terminalSplitDirection: document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') || '',
-            terminalSplitPaneCount: document.querySelectorAll('.terminal-split-pane').length
+            terminalSplitDirection: document.querySelector('.terminal-workspace-stack.active .terminal-split-layout')?.getAttribute('data-split-direction') || '',
+            terminalSplitPaneCount: document.querySelectorAll('.terminal-workspace-stack.active .terminal-split-pane').length
           })`,
           true
         )
@@ -3389,8 +3612,8 @@ async function createWindow(): Promise<void> {
               rightSessionSidebarPresent: Boolean(document.querySelector('.app-shell > .session-sidebar > .session-manager')),
               commandPanelHeight: localStorage.getItem('device-tui.desktop-v2.command-panel-height') || '',
               commandPanelDomHeight: document.querySelector('.command-workspace.open')?.getAttribute('data-panel-height') || '',
-              terminalSplitDirection: document.querySelector('.terminal-split-layout')?.getAttribute('data-split-direction') || '',
-              terminalSplitPaneCount: document.querySelectorAll('.terminal-split-pane').length,
+              terminalSplitDirection: document.querySelector('.terminal-workspace-stack.active .terminal-split-layout')?.getAttribute('data-split-direction') || '',
+              terminalSplitPaneCount: document.querySelectorAll('.terminal-workspace-stack.active .terminal-split-pane').length,
               tokenExposed: 'token' in runtime
             }
             const serverSectionButton = [...document.querySelectorAll('button')]
@@ -3535,10 +3758,16 @@ async function createWindow(): Promise<void> {
         )
         await new Promise((resolve) => setTimeout(resolve, 400))
         const transferPanelReady = await mainWindow.webContents.executeJavaScript(
-          "Boolean(document.querySelector('[data-testid=\"transfer-settings\"]'))",
+          `(() => {
+            const toggle = [...document.querySelectorAll('.transfer-section-toggle')]
+              .find((button) => button.textContent?.includes('高级设置'))
+            if (!document.querySelector('[data-testid="transfer-settings"]')) toggle?.click()
+            return Boolean(document.querySelector('[data-testid="transfer-run"]'))
+          })()`,
           true
         )
         console.log(`[renderer] transferPanelReady=${transferPanelReady}`)
+        await new Promise((resolve) => setTimeout(resolve, 80))
         await mainWindow.webContents.executeJavaScript(
           `(() => {
             const root = document.querySelector('[data-testid="transfer-root"]')
@@ -3609,6 +3838,15 @@ async function createWindow(): Promise<void> {
           true
         )
         await new Promise((resolve) => setTimeout(resolve, 350))
+        await mainWindow.webContents.executeJavaScript(
+          `(() => {
+            const toggle = [...document.querySelectorAll('.transfer-section-toggle')]
+              .find((button) => button.textContent?.includes('高级设置'))
+            if (!document.querySelector('[data-testid="transfer-settings"]')) toggle?.click()
+          })()`,
+          true
+        )
+        await new Promise((resolve) => setTimeout(resolve, 80))
         await mainWindow.webContents.executeJavaScript(
           `(() => {
             const root = document.querySelector('[data-testid="transfer-root"]')

@@ -17,6 +17,7 @@ interface StoredSplitLayout {
 }
 
 const props = defineProps<{
+  active: boolean
   deviceId: string
   sessions: SessionSummary[]
   activeSessionId: string
@@ -33,6 +34,7 @@ const emit = defineEmits<{
 
 const STORAGE_KEY = 'device-tui.desktop-v2.terminal-split-layout'
 const SESSION_DRAG_TYPE = 'application/x-device-tui-session'
+const MAX_WARM_TERMINAL_PANES = 6
 const restored = readStoredLayout()
 const splitDirection = ref<SplitDirection | null>(restored.direction)
 const assignments = ref<Record<string, PaneId>>(restored.assignments)
@@ -43,6 +45,7 @@ const splitContainer = ref<HTMLElement | null>(null)
 const focusedPane = ref<PaneId>('primary')
 const dropDirection = ref<SplitDirection | null>(null)
 const dropPane = ref<PaneId>('secondary')
+const warmSessionIds = ref<string[]>([])
 
 function splitStorageKey(): string {
   return `${STORAGE_KEY}.${props.deviceId}`
@@ -97,16 +100,40 @@ function sessionsForPane(pane: PaneId): SessionSummary[] {
   return props.sessions.filter((session) => (assignments.value[session.id] || 'primary') === pane)
 }
 
+function touchWarmSession(sessionId: string): void {
+  if (!sessionId) return
+  const currentIds = new Set(props.sessions.map((session) => session.id))
+  warmSessionIds.value = [
+    sessionId,
+    ...warmSessionIds.value.filter((id) => id !== sessionId && currentIds.has(id))
+  ].slice(0, MAX_WARM_TERMINAL_PANES)
+}
+
+function warmSessionsForPane(pane: PaneId): SessionSummary[] {
+  return sessionsForPane(pane).filter((session) => mountedSessionIds.value.has(session.id))
+}
+
 function activeSessionFor(pane: PaneId): SessionSummary | null {
   const sessions = pane === 'primary' ? primarySessions.value : secondarySessions.value
   const activeId = pane === 'primary' ? primaryActiveId.value : secondaryActiveId.value
   return sessions.find((session) => session.id === activeId) || sessions[0] || null
 }
 
+const mountedSessionIds = computed(() => {
+  const activeIds = visiblePanes.value
+    .map((pane) => activeSessionFor(pane)?.id || '')
+    .filter(Boolean)
+  return new Set([
+    ...activeIds,
+    ...warmSessionIds.value.filter((id) => !activeIds.includes(id))
+  ].slice(0, MAX_WARM_TERMINAL_PANES))
+})
+
 function activateSession(sessionId: string, pane: PaneId): void {
   if (pane === 'primary') primaryActiveId.value = sessionId
   else secondaryActiveId.value = sessionId
   focusedPane.value = pane
+  touchWarmSession(sessionId)
   emit('activate', sessionId)
 }
 
@@ -128,6 +155,7 @@ function splitSession(
   nextAssignments[sessionId] = targetPane
   assignments.value = nextAssignments
   splitDirection.value = direction
+  touchWarmSession(sessionId)
   if (targetPane === 'primary') primaryActiveId.value = sessionId
   else secondaryActiveId.value = sessionId
   activateSession(sessionId, targetPane)
@@ -216,6 +244,7 @@ function handleDrop(event: DragEvent, pane: PaneId): void {
 function reconcileSessions(): void {
   const ids = new Set(props.sessions.map((session) => session.id))
   const nextAssignments: Record<string, PaneId> = {}
+  warmSessionIds.value = warmSessionIds.value.filter((id) => ids.has(id))
   for (const session of props.sessions) {
     const storedPane = assignments.value[session.id]
     nextAssignments[session.id] = splitDirection.value && storedPane === 'secondary'
@@ -241,6 +270,7 @@ watch(
   () => props.activeSessionId,
   (sessionId) => {
     if (!sessionId) return
+    touchWarmSession(sessionId)
     const pane = assignments.value[sessionId] || 'primary'
     if (pane === 'primary') primaryActiveId.value = sessionId
     else secondaryActiveId.value = sessionId
@@ -270,7 +300,7 @@ defineExpose({ splitSession, resetSplit })
 </script>
 
 <template>
-  <div class="terminal-workspace-stack" :class="{ split: Boolean(splitDirection) }">
+  <div class="terminal-workspace-stack" :class="{ split: Boolean(splitDirection), active }">
     <div
       ref="splitContainer"
       class="terminal-split-layout"
@@ -313,20 +343,22 @@ defineExpose({ splitSession, resetSplit })
       </header>
 
       <TerminalPane
-        v-if="activeSessionFor(pane)"
-        :key="activeSessionFor(pane)!.id"
-        :session="activeSessionFor(pane)!"
+        v-for="session in warmSessionsForPane(pane)"
+        v-show="activeSessionFor(pane)?.id === session.id"
+        :key="session.id"
+        :session="session"
+        :active="active && focusedPane === pane && activeSessionFor(pane)?.id === session.id"
         @status="(sessionId, status, sequence) => emit('status', sessionId, status, sequence)"
         @automation="emit('automation', $event)"
         @transfer="emit('transfer', $event)"
         @upgrade="emit('upgrade', $event)"
         @context="(sessionId, event) => emit('context', sessionId, event)"
       >
-        <template v-if="!splitDirection && focusedPane === pane" #bottom-leading>
+        <template v-if="!splitDirection && focusedPane === pane && activeSessionFor(pane)?.id === session.id" #bottom-leading>
           <TerminalQuickToolbar />
         </template>
       </TerminalPane>
-      <div v-else class="split-empty-pane">
+      <div v-if="!sessionsForPane(pane).length" class="split-empty-pane">
         <Columns2 :size="24" />
         <strong>空窗格</strong>
         <span>将另一个会话页签拖到这里，或通过页签菜单选择分屏方向。</span>

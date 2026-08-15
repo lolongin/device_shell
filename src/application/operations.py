@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Protocol
 from uuid import uuid4
 
 from .errors import ResourceNotFoundError, UnsupportedOperationError
 from .events import EventBus
 
 
-TERMINAL_OPERATION_STATUSES = {"completed", "failed", "cancelled"}
+TERMINAL_OPERATION_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +25,12 @@ class OperationRecord:
     stage: str
     message: str
     progress_percent: int = 0
+    bytes_transferred: int = 0
+    total_bytes: int = 0
+    bytes_per_second: int = 0
+    eta_seconds: int | None = None
+    queue_position: int | None = None
+    retry_of: str | None = None
     cancellable: bool = True
     error_code: str = ""
     revision: int = 0
@@ -33,11 +39,65 @@ class OperationRecord:
     data: dict[str, object] = field(default_factory=dict)
 
 
+class OperationStore(Protocol):
+    def list_operations(self, *, kind: str, limit: int) -> list[OperationRecord]: ...
+
+    def upsert_operation(self, record: OperationRecord) -> None: ...
+
+    def delete_terminal_operations(self, *, kind: str) -> int: ...
+
+    def prune_terminal_operations(self, *, kind: str, keep: int) -> None: ...
+
+
+class MemoryOperationStore:
+    def __init__(self) -> None:
+        self._records: dict[str, OperationRecord] = {}
+
+    def list_operations(self, *, kind: str, limit: int) -> list[OperationRecord]:
+        records = [record for record in self._records.values() if record.kind == kind]
+        records.sort(key=lambda record: (record.created_at, record.id), reverse=True)
+        return [replace(record, data=dict(record.data)) for record in records[:limit]]
+
+    def upsert_operation(self, record: OperationRecord) -> None:
+        self._records[record.id] = replace(record, data=dict(record.data))
+
+    def delete_terminal_operations(self, *, kind: str) -> int:
+        targets = [
+            operation_id
+            for operation_id, record in self._records.items()
+            if record.kind == kind and record.status in TERMINAL_OPERATION_STATUSES
+        ]
+        for operation_id in targets:
+            self._records.pop(operation_id, None)
+        return len(targets)
+
+    def prune_terminal_operations(self, *, kind: str, keep: int) -> None:
+        terminal = [
+            record
+            for record in self._records.values()
+            if record.kind == kind and record.status in TERMINAL_OPERATION_STATUSES
+        ]
+        terminal.sort(key=lambda record: (record.created_at, record.id), reverse=True)
+        for record in terminal[max(0, keep):]:
+            self._records.pop(record.id, None)
+
+
 class OperationManager:
-    def __init__(self, events: EventBus) -> None:
+    def __init__(
+        self,
+        events: EventBus,
+        store: OperationStore | None = None,
+        *,
+        persistent_kinds: set[str] | None = None,
+        history_limit: int = 200,
+    ) -> None:
         self._events = events
+        self._store = store or MemoryOperationStore()
+        self._persistent_kinds = set(persistent_kinds or set())
+        self._history_limit = max(1, int(history_limit))
         self._records: dict[str, OperationRecord] = {}
         self._cancellers: dict[str, Callable[[], None]] = {}
+        self._restore()
 
     def create(
         self,
@@ -48,6 +108,9 @@ class OperationManager:
         session_id: str,
         stage: str,
         message: str,
+        status: str = "running",
+        total_bytes: int = 0,
+        retry_of: str | None = None,
         data: dict[str, object] | None = None,
     ) -> OperationRecord:
         now = self._now()
@@ -57,14 +120,19 @@ class OperationManager:
             direction=direction,
             device_id=device_id,
             session_id=session_id,
-            status="running",
+            status=status,
             stage=stage,
             message=message,
+            total_bytes=max(0, int(total_bytes)),
+            retry_of=retry_of,
             created_at=now,
             updated_at=now,
             data=dict(data or {}),
         )
+        if status in TERMINAL_OPERATION_STATUSES:
+            record = replace(record, cancellable=False)
         self._records[record.id] = record
+        self._persist(record)
         self._publish("operation.created", record)
         return self.get(record.id)
 
@@ -95,6 +163,13 @@ class OperationManager:
         stage: str | None = None,
         message: str | None = None,
         progress_percent: int | None = None,
+        bytes_transferred: int | None = None,
+        total_bytes: int | None = None,
+        bytes_per_second: int | None = None,
+        eta_seconds: int | None = None,
+        clear_eta: bool = False,
+        queue_position: int | None = None,
+        clear_queue_position: bool = False,
         cancellable: bool | None = None,
         error_code: str | None = None,
         data: dict[str, object] | None = None,
@@ -114,6 +189,27 @@ class OperationManager:
                 if progress_percent is None
                 else max(0, min(100, int(progress_percent)))
             ),
+            bytes_transferred=(
+                current.bytes_transferred
+                if bytes_transferred is None
+                else max(0, int(bytes_transferred))
+            ),
+            total_bytes=(
+                current.total_bytes if total_bytes is None else max(0, int(total_bytes))
+            ),
+            bytes_per_second=(
+                current.bytes_per_second
+                if bytes_per_second is None
+                else max(0, int(bytes_per_second))
+            ),
+            eta_seconds=(
+                None if clear_eta else current.eta_seconds if eta_seconds is None else max(0, int(eta_seconds))
+            ),
+            queue_position=(
+                None
+                if clear_queue_position
+                else current.queue_position if queue_position is None else max(1, int(queue_position))
+            ),
             cancellable=(
                 current.cancellable
                 if cancellable is None
@@ -128,6 +224,7 @@ class OperationManager:
             updated = replace(updated, cancellable=False)
             self._cancellers.pop(operation_id, None)
         self._records[operation_id] = updated
+        self._persist(updated)
         self._publish("operation.updated", updated)
         return self.get(operation_id)
 
@@ -162,6 +259,48 @@ class OperationManager:
                 error_code="operation_cancelled",
             )
         return latest
+
+    def delete_terminal(self, *, kind: str) -> int:
+        targets = [
+            operation_id
+            for operation_id, record in self._records.items()
+            if record.kind == kind and record.status in TERMINAL_OPERATION_STATUSES
+        ]
+        for operation_id in targets:
+            self._records.pop(operation_id, None)
+            self._cancellers.pop(operation_id, None)
+        if kind in self._persistent_kinds:
+            self._store.delete_terminal_operations(kind=kind)
+        return len(targets)
+
+    def _restore(self) -> None:
+        for kind in self._persistent_kinds:
+            for stored in self._store.list_operations(kind=kind, limit=self._history_limit + 500):
+                record = stored
+                if record.status not in TERMINAL_OPERATION_STATUSES:
+                    record = replace(
+                        record,
+                        status="interrupted",
+                        stage="interrupted",
+                        message="应用重启，传输任务已中断。",
+                        cancellable=False,
+                        error_code="operation_interrupted",
+                        queue_position=None,
+                        bytes_per_second=0,
+                        eta_seconds=None,
+                        revision=record.revision + 1,
+                        updated_at=self._now(),
+                    )
+                    self._store.upsert_operation(record)
+                self._records[record.id] = self._clone(record)
+            self._store.prune_terminal_operations(kind=kind, keep=self._history_limit)
+
+    def _persist(self, record: OperationRecord) -> None:
+        if record.kind not in self._persistent_kinds:
+            return
+        self._store.upsert_operation(record)
+        if record.status in TERMINAL_OPERATION_STATUSES:
+            self._store.prune_terminal_operations(kind=record.kind, keep=self._history_limit)
 
     def _publish(self, event_type: str, record: OperationRecord) -> None:
         payload = asdict(record)

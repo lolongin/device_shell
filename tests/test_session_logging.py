@@ -108,3 +108,28 @@ def test_file_session_log_sink_preserves_destination_collision_on_move(tmp_path:
     assert len(archives) == 1
     assert archives[0].read_text(encoding="utf-8") == "older destination\n"
     assert "active source" in tail
+
+
+def test_file_session_log_sink_reads_only_utf8_tail_for_large_logs(tmp_path: Path) -> None:
+    sink = FileSessionLogSink(tmp_path)
+    path = sink.path_for("session-1", "device-1")
+    path.write_text("前" * 20_000 + "尾" * 1_024, encoding="utf-8")
+
+    tail, truncated = sink.read_tail("session-1", "device-1", 1_024)
+    sink.shutdown()
+
+    assert truncated is True
+    assert tail == "尾" * 1_024
+
+
+def test_file_session_log_sink_flushes_complete_output_bursts(tmp_path: Path) -> None:
+    sink = FileSessionLogSink(tmp_path)
+
+    for index in range(1_000):
+        sink.record("session-1", "device-1", "OUT", f"line-{index}\n")
+    tail, truncated = sink.read_tail("session-1", "device-1", 100_000)
+    sink.shutdown()
+
+    assert truncated is False
+    assert tail.count("line-") == 1_000
+    assert tail.endswith("line-999\n")

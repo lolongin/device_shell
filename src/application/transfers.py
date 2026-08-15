@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timedelta, timezone
 from functools import partial
+import ipaddress
 import json
 from pathlib import Path
 import secrets as random_secrets
 import shutil
+import socket
 from threading import Lock
+import time
 from typing import Callable, Protocol
 
 from ..file_transfer_service import TransferServiceConfig, TransferServiceController
@@ -18,15 +22,22 @@ from ..managed_file_transfer import (
     ManagedTransferError,
     SharedFileCatalog,
     _validate_relative_path,
+    build_linux_inspection_command,
     build_managed_transfer_download_steps,
     build_managed_transfer_steps,
     destination_entry,
     destination_matches,
+    infer_terminal_environment,
     list_shared_files,
+    linux_client_available,
+    linux_directory_available,
+    linux_file_size,
+    linux_free_space_bytes,
+    normalize_terminal_environment,
     resolve_shared_file,
     resolve_shared_root,
     source_fingerprint,
-    validate_destination_path,
+    validate_transfer_device_path,
 )
 from ..package_upgrade import parse_free_space_bytes
 from ..terminal_orchestration import TerminalExecutionPlan, TerminalPlanError, parse_terminal_plan
@@ -46,6 +57,7 @@ from .sessions import SessionRecord, SessionService
 class TransferSettings:
     protocol: str
     host: str
+    advertised_host: str
     port: int
     root: str
     username: str
@@ -53,6 +65,55 @@ class TransferSettings:
     has_password: bool
     service_running: bool
     bound_port: int
+    idle_stop_at: str = ""
+
+
+def normalize_advertised_host(value: str) -> str:
+    raw = value.strip()
+    if not raw or raw.casefold() == "auto":
+        return ""
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise UnsupportedOperationError("设备访问地址必须是 IPv4 地址或留空自动选择。") from exc
+    if not isinstance(address, ipaddress.IPv4Address):
+        raise UnsupportedOperationError("设备访问地址目前仅支持 IPv4。")
+    if address.is_unspecified or address.is_loopback or address.is_multicast:
+        raise UnsupportedOperationError("设备访问地址必须是设备可达的本机 IPv4 地址。")
+    return str(address)
+
+
+def select_route_local_ipv4(remote_host: str, remote_port: int = 0) -> str:
+    target = remote_host.strip()
+    if not target:
+        raise OSError("终端没有可用的远端地址。")
+    port = int(remote_port) if 0 < int(remote_port) <= 65535 else 9
+    errors: list[OSError] = []
+    for family, socktype, protocol, _canonical, sockaddr in socket.getaddrinfo(
+        target,
+        port,
+        family=socket.AF_INET,
+        type=socket.SOCK_DGRAM,
+    ):
+        probe = socket.socket(family, socktype, protocol)
+        try:
+            probe.connect(sockaddr)
+            local_host = str(probe.getsockname()[0]).strip()
+            address = ipaddress.ip_address(local_host)
+            if (
+                isinstance(address, ipaddress.IPv4Address)
+                and not address.is_unspecified
+                and not address.is_loopback
+                and not address.is_multicast
+            ):
+                return str(address)
+        except OSError as exc:
+            errors.append(exc)
+        finally:
+            probe.close()
+    if errors:
+        raise OSError(str(errors[-1]))
+    raise OSError(f"无法确定到 {target} 的本机 IPv4 路由。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +200,7 @@ class ManagedTransferService:
     CONFIG_KEY = "file_transfer_config_v1"
     LEGACY_IMPORT_KEY = "legacy_file_transfer_v1"
     PASSWORD_SECRET_ID = "file-transfer:service-password"
+    IDLE_STOP_SECONDS = 300
 
     def __init__(
         self,
@@ -159,6 +221,16 @@ class ManagedTransferService:
         self._executor = terminal_executor or UnavailableTerminalPlanExecutor()
         self._default_root = (default_root or Path.cwd()).resolve()
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._queues: dict[str, deque[str]] = {}
+        self._workers: dict[str, asyncio.Task[None]] = {}
+        self._paused_sessions: set[str] = set()
+        self._cancelling: set[str] = set()
+        self._progress_samples: dict[str, deque[tuple[float, int]]] = {}
+        self._last_progress_emit: dict[str, float] = {}
+        self._runtime_secrets: dict[str, str] = {}
+        self._idle_stop_task: asyncio.Task[None] | None = None
+        self._idle_stop_at = ""
+        self._service_lifecycle_lock = asyncio.Lock()
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._service_log: deque[str] = deque(maxlen=300)
         self._service_log_lock = Lock()
@@ -169,6 +241,7 @@ class ManagedTransferService:
         return TransferSettings(
             protocol=config["protocol"],
             host=config["host"],
+            advertised_host=str(config.get("advertised_host") or ""),
             port=int(config["port"]),
             root=config["root"],
             username=config["username"],
@@ -176,6 +249,7 @@ class ManagedTransferService:
             has_password=self._secrets.get(self.PASSWORD_SECRET_ID) is not None,
             service_running=self._controller.is_running,
             bound_port=self._controller.bound_port,
+            idle_stop_at=self._idle_stop_at,
         )
 
     def update_settings(
@@ -187,6 +261,7 @@ class ManagedTransferService:
         root: str,
         username: str,
         writable: bool,
+        advertised_host: str = "",
     ) -> TransferSettings:
         if self._controller.is_running:
             raise ApplicationConflictError(
@@ -204,12 +279,42 @@ class ManagedTransferService:
         payload = {
             "protocol": normalized_protocol,
             "host": host.strip() or "0.0.0.0",
+            "advertised_host": normalize_advertised_host(advertised_host),
             "port": int(port),
             "root": str(resolved_root),
             "username": normalized_username,
             "writable": bool(writable),
         }
         self._store.set_meta(self.CONFIG_KEY, json.dumps(payload, ensure_ascii=False))
+        return self.settings()
+
+    async def reconfigure(
+        self,
+        *,
+        protocol: str,
+        host: str,
+        port: int,
+        root: str,
+        username: str,
+        writable: bool,
+        password: str | None = None,
+        advertised_host: str = "",
+    ) -> TransferSettings:
+        if self._tasks:
+            raise ApplicationConflictError("活动传输期间不能修改文件服务配置。")
+        if self._controller.is_running:
+            await self.stop_service()
+        self.update_settings(
+            protocol=protocol,
+            host=host,
+            port=port,
+            root=root,
+            username=username,
+            writable=writable,
+            advertised_host=advertised_host,
+        )
+        if password is not None:
+            self.set_password(password)
         return self.settings()
 
     def set_password(self, value: str) -> TransferSettings:
@@ -220,34 +325,53 @@ class ManagedTransferService:
         return self.settings()
 
     def resolve_secret(self, secret_ref: str) -> str:
+        if secret_ref in self._runtime_secrets:
+            return self._runtime_secrets[secret_ref]
         if secret_ref == "file_transfer.username":
             return str(self._saved_config()["username"])
         if secret_ref == "file_transfer.password":
             return self._secrets.get(self.PASSWORD_SECRET_ID) or ""
         return self._secrets.get(secret_ref) or ""
 
-    async def start_service(self) -> TransferSettings:
-        if self._controller.is_running:
-            return self.settings()
-        self._event_loop = asyncio.get_running_loop()
-        config = self._runtime_config(ensure_password=True)
-        try:
-            await asyncio.to_thread(self._controller.start, config)
-        except RuntimeError as exc:
-            raise TransferOperationError(str(exc)) from exc
-        self._events.publish(
-            "transfer.service.started",
-            data={
-                "protocol": self._controller.protocol,
-                "bound_port": self._controller.bound_port,
-            },
-        )
+    def _register_runtime_credentials(
+        self,
+        operation_id: str,
+        username: str,
+        password: str,
+    ) -> tuple[str, str]:
+        username_ref = f"managed_transfer.{operation_id}.username"
+        password_ref = f"managed_transfer.{operation_id}.password"
+        self._runtime_secrets[username_ref] = username
+        self._runtime_secrets[password_ref] = password
+        return username_ref, password_ref
+
+    def _clear_runtime_credentials(self, operation_id: str) -> None:
+        self._runtime_secrets.pop(f"managed_transfer.{operation_id}.username", None)
+        self._runtime_secrets.pop(f"managed_transfer.{operation_id}.password", None)
+
+    async def start_service(self, *, auto_stop_when_idle: bool = True) -> TransferSettings:
+        self._cancel_idle_stop()
+        async with self._service_lifecycle_lock:
+            if not self._controller.is_running:
+                self._event_loop = asyncio.get_running_loop()
+                config = self._runtime_config(ensure_password=True)
+                try:
+                    await asyncio.to_thread(self._controller.start, config)
+                except RuntimeError as exc:
+                    raise TransferOperationError(str(exc)) from exc
+                self._publish_service_state("transfer.service.started")
+        if auto_stop_when_idle:
+            self._schedule_idle_stop()
         return self.settings()
 
     async def stop_service(self) -> TransferSettings:
-        if self._controller.is_running:
-            await asyncio.to_thread(self._controller.stop)
-            self._events.publish("transfer.service.stopped")
+        if self._tasks:
+            raise ApplicationConflictError("活动传输期间不能停止文件服务。")
+        self._cancel_idle_stop()
+        async with self._service_lifecycle_lock:
+            if self._controller.is_running:
+                await asyncio.to_thread(self._controller.stop)
+                self._publish_service_state("transfer.service.stopped")
         return self.settings()
 
     def service_log(self, limit: int = 300) -> list[str]:
@@ -262,7 +386,10 @@ class ManagedTransferService:
     def client_command_hint(self) -> str:
         settings = self.settings()
         host = settings.host.strip()
-        target = host if host not in {"", "0.0.0.0", "::"} else "<本机IP>"
+        advertised_host = settings.advertised_host.strip()
+        target = advertised_host or (
+            host if host not in {"", "0.0.0.0", "::"} else "<按设备路由自动选择>"
+        )
         port = settings.bound_port or settings.port
         if settings.protocol == "sftp":
             return f"sftp -P {port} {settings.username}@{target}"
@@ -274,6 +401,10 @@ class ManagedTransferService:
         relative_path: str = "",
         recursive: bool = True,
         limit: int = 200,
+        query: str = "",
+        sort: str = "name",
+        order: str = "asc",
+        offset: int = 0,
     ) -> SharedFileCatalog:
         try:
             return list_shared_files(
@@ -281,6 +412,10 @@ class ManagedTransferService:
                 relative_path=relative_path,
                 recursive=recursive,
                 limit=limit,
+                query=query,
+                sort=sort,
+                order=order,
+                offset=offset,
             )
         except ManagedTransferError as exc:
             raise self._application_error(exc) from exc
@@ -334,6 +469,8 @@ class ManagedTransferService:
         source_path: str,
         destination_path: str,
         overwrite: bool = False,
+        terminal_environment: str = "auto",
+        retry_of: str | None = None,
     ) -> OperationRecord:
         session = self._connected_session(session_id)
         try:
@@ -341,7 +478,17 @@ class ManagedTransferService:
                 Path(str(self._saved_config()["root"])),
                 source_path,
             )
-            destination = validate_destination_path(destination_path)
+            requested_environment = normalize_terminal_environment(terminal_environment)
+            destination = validate_transfer_device_path(
+                destination_path,
+                requested_environment,
+            )
+            resolved_environment = (
+                infer_terminal_environment(destination, session_kind=session.kind)
+                if requested_environment == "auto"
+                else requested_environment
+            )
+            destination = validate_transfer_device_path(destination, resolved_environment)
             fingerprint = source_fingerprint(source)
         except ManagedTransferError as exc:
             raise self._application_error(exc) from exc
@@ -350,26 +497,23 @@ class ManagedTransferService:
             direction="upload",
             device_id=session.device_id,
             session_id=session.id,
+            status="queued",
             stage="queued",
-            message="文件传输已排队。",
+            message="文件传输已加入队列。",
+            total_bytes=info.size_bytes,
+            retry_of=retry_of,
             data={
                 "source_path": info.relative_path,
                 "source_name": info.name,
                 "source_size": info.size_bytes,
                 "destination_path": destination,
                 "overwrite": bool(overwrite),
+                "terminal_environment_requested": requested_environment,
+                "terminal_environment": resolved_environment,
             },
         )
-        task = asyncio.create_task(
-            self._run_upload(
-                record.id,
-                session,
-                source,
-                fingerprint,
-            ),
-            name=f"managed-transfer-{record.id}",
-        )
-        self._attach_task(record.id, session.id, task)
+        del source, fingerprint
+        self._enqueue(record)
         return self._operations.get(record.id)
 
     def start_download(
@@ -379,10 +523,19 @@ class ManagedTransferService:
         source_path: str,
         destination_path: str,
         overwrite: bool = False,
+        terminal_environment: str = "auto",
+        retry_of: str | None = None,
     ) -> OperationRecord:
         session = self._connected_session(session_id)
         try:
-            source = validate_destination_path(source_path)
+            requested_environment = normalize_terminal_environment(terminal_environment)
+            source = validate_transfer_device_path(source_path, requested_environment)
+            resolved_environment = (
+                infer_terminal_environment(source, session_kind=session.kind)
+                if requested_environment == "auto"
+                else requested_environment
+            )
+            source = validate_transfer_device_path(source, resolved_environment)
             destination = _validate_relative_path(
                 destination_path,
                 label="destination_path",
@@ -394,34 +547,82 @@ class ManagedTransferService:
             direction="download",
             device_id=session.device_id,
             session_id=session.id,
+            status="queued",
             stage="queued",
-            message="文件传输已排队。",
+            message="文件传输已加入队列。",
+            retry_of=retry_of,
             data={
                 "source_path": source,
                 "source_name": Path(source).name,
                 "source_size": 0,
                 "destination_path": destination,
                 "overwrite": bool(overwrite),
+                "terminal_environment_requested": requested_environment,
+                "terminal_environment": resolved_environment,
             },
         )
-        task = asyncio.create_task(
-            self._run_download(record.id, session),
-            name=f"managed-transfer-{record.id}",
-        )
-        self._attach_task(record.id, session.id, task)
+        self._enqueue(record)
         return self._operations.get(record.id)
 
     def cancel(self, operation_id: str) -> OperationRecord:
         return self._operations.cancel(operation_id)
 
+    def retry(self, operation_id: str) -> OperationRecord:
+        original = self._operations.get(operation_id)
+        if original.kind != "managed_file_transfer" or original.status not in {
+            "failed",
+            "cancelled",
+            "interrupted",
+        }:
+            raise ApplicationConflictError("当前传输状态不允许重试。")
+        payload = original.data
+        starter = self.start_download if original.direction == "download" else self.start_upload
+        return starter(
+            session_id=original.session_id,
+            source_path=str(payload.get("source_path") or ""),
+            destination_path=str(payload.get("destination_path") or ""),
+            overwrite=bool(payload.get("overwrite")),
+            terminal_environment=str(
+                payload.get("terminal_environment_requested")
+                or payload.get("terminal_environment")
+                or "auto"
+            ),
+            retry_of=original.id,
+        )
+
+    def resume_queue(self, session_id: str) -> int:
+        self._connected_session(session_id)
+        self._paused_sessions.discard(session_id)
+        queue = self._queues.get(session_id, deque())
+        resumed = 0
+        for operation_id in queue:
+            record = self._operations.get(operation_id)
+            if record.status != "queued":
+                continue
+            self._operations.update(
+                operation_id,
+                stage="queued",
+                message="文件传输等待执行。",
+            )
+            resumed += 1
+        self._refresh_queue_positions(session_id)
+        self._ensure_worker(session_id)
+        return resumed
+
+    def clear_history(self) -> int:
+        return self._operations.delete_terminal(kind="managed_file_transfer")
+
     def cancel_session(self, session_id: str) -> int:
         cancelled = 0
-        for operation_id in tuple(self._tasks):
+        operation_ids = set(self._tasks)
+        operation_ids.update(self._queues.get(session_id, ()))
+        for operation_id in tuple(operation_ids):
             record = self._operations.get(operation_id)
             if record.session_id != session_id or record.status in TERMINAL_OPERATION_STATUSES:
                 continue
             self.cancel(operation_id)
             cancelled += 1
+        self._paused_sessions.discard(session_id)
         return cancelled
 
     def import_legacy_state(self, state_path: Path) -> dict[str, int]:
@@ -465,6 +666,13 @@ class ManagedTransferService:
         return result
 
     async def close(self) -> None:
+        self._cancel_idle_stop()
+        session_ids = set(self._queues)
+        session_ids.update(
+            self._operations.get(operation_id).session_id for operation_id in self._tasks
+        )
+        for session_id in session_ids:
+            self.cancel_session(session_id)
         for operation_id in list(self._tasks):
             try:
                 self.cancel(operation_id)
@@ -472,46 +680,70 @@ class ManagedTransferService:
                 continue
         if self._tasks:
             await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        if self._workers:
+            await asyncio.gather(*self._workers.values(), return_exceptions=True)
         await self.stop_service()
 
     async def _run_upload(
         self,
         operation_id: str,
         session: SessionRecord,
-        source: Path,
-        initial_fingerprint: tuple[int, int],
     ) -> None:
         owner_id = f"managed-transfer:{operation_id}"
         acquired = False
+        managed_username = ""
         try:
+            current = self._operations.get(operation_id)
+            source, info = resolve_shared_file(
+                Path(str(self._saved_config()["root"])),
+                str(current.data["source_path"]),
+            )
+            initial_fingerprint = source_fingerprint(source)
             self._executor.acquire(
                 session.id,
                 owner_id,
-                on_cancel=lambda: self._cancel_task(operation_id, session.id),
+                on_cancel=lambda: self._cancel_active(operation_id, session.id, pause_queue=True),
             )
             acquired = True
             operation = self._operations.update(
                 operation_id,
                 stage="prechecking",
                 message="正在检查设备目标路径和可用空间。",
-                progress_percent=10,
+                progress_percent=0,
+                total_bytes=info.size_bytes,
+                bytes_transferred=0,
+                bytes_per_second=0,
+                clear_eta=True,
             )
             destination = str(operation.data["destination_path"])
+            terminal_environment = str(
+                operation.data.get("terminal_environment") or "vrp"
+            )
             precheck = await self._run_plan(
                 session,
                 owner_id,
-                self._directory_plan(destination),
+                self._inspection_plan(
+                    destination,
+                    terminal_environment,
+                    str(self._saved_config()["protocol"]),
+                ),
             )
             output = self._require_completed(precheck, "prechecking")
-            existing = destination_entry(output, destination)
-            if existing is not None and not bool(operation.data["overwrite"]):
+            if terminal_environment == "linux":
+                self._require_linux_inspection(output, str(self._saved_config()["protocol"]))
+                existing_size = linux_file_size(output)
+                free_bytes = linux_free_space_bytes(output)
+            else:
+                existing = destination_entry(output, destination)
+                existing_size = existing.size_bytes if existing is not None else None
+                free_bytes = parse_free_space_bytes(output)
+            if existing_size is not None and not bool(operation.data["overwrite"]):
                 raise _TransferRunError(
                     "destination_exists",
-                    f"设备目标文件已存在，大小为 {existing.size_bytes} 字节。",
+                    f"设备目标文件已存在，大小为 {existing_size} 字节。",
                 )
             source_size = int(operation.data["source_size"])
-            required = max(0, source_size - (existing.size_bytes if existing else 0))
-            free_bytes = parse_free_space_bytes(output)
+            required = max(0, source_size - (existing_size or 0))
             if free_bytes < required:
                 raise _TransferRunError(
                     "insufficient_space",
@@ -521,10 +753,24 @@ class ManagedTransferService:
                 raise _TransferRunError("transfer_source_changed", "传输前源文件发生变化。")
             config = await self._ensure_service()
             host = self._device_host(session, config)
+            self._operations.update(operation_id, data={"service_host": host})
+            managed_username, managed_password = self._controller.register_managed_transfer(
+                operation_id,
+                total_bytes=source_size,
+                on_progress=self._queue_progress_from_thread,
+            )
+            username_ref, password_ref = self._register_runtime_credentials(
+                operation_id,
+                managed_username,
+                managed_password,
+            )
+            connect_secret_ref = ""
+            if terminal_environment == "linux" and config.protocol == "sftp":
+                connect_secret_ref = username_ref
             self._executor.configure_managed_transfer(
                 session.id,
-                username=config.username,
-                password=config.password,
+                username=managed_username,
+                password=managed_password,
                 source_path=str(operation.data["source_path"]),
                 source_size=source_size,
                 destination_path=destination,
@@ -536,12 +782,16 @@ class ManagedTransferService:
                 source_path=str(operation.data["source_path"]),
                 destination_path=destination,
                 source_size=source_size,
+                username_secret_ref=username_ref,
+                password_secret_ref=password_ref,
+                terminal_environment=terminal_environment,
+                connect_secret_ref=connect_secret_ref,
             )
             self._operations.update(
                 operation_id,
                 stage="transferring",
-                message=f"正在通过 {config.protocol.upper()} 传输文件。",
-                progress_percent=45,
+                message=f"正在通过 {config.protocol.upper()}（{self._environment_label(terminal_environment)}）传输文件。",
+                progress_percent=0,
             )
             transferred = await self._run_plan(
                 session,
@@ -549,21 +799,34 @@ class ManagedTransferService:
                 parse_terminal_plan(steps, total_timeout_seconds=timeout),
             )
             self._require_completed(transferred, "transferring")
+            self._record_progress(operation_id, source_size, force=True)
             if source_fingerprint(source) != initial_fingerprint:
                 raise _TransferRunError("transfer_source_changed", "传输期间源文件发生变化。")
             self._operations.update(
                 operation_id,
                 stage="verifying",
                 message="正在核对设备端文件名和精确字节数。",
-                progress_percent=90,
+                progress_percent=100,
+                bytes_per_second=0,
+                clear_eta=True,
             )
             verified = await self._run_plan(
                 session,
                 owner_id,
-                self._directory_plan(destination),
+                self._inspection_plan(destination, terminal_environment, config.protocol),
             )
             verify_output = self._require_completed(verified, "verifying")
-            if not destination_matches(verify_output, destination, source_size):
+            verified_size = (
+                linux_file_size(verify_output)
+                if terminal_environment == "linux"
+                else None
+            )
+            verified_matches = (
+                verified_size == source_size
+                if terminal_environment == "linux"
+                else destination_matches(verify_output, destination, source_size)
+            )
+            if not verified_matches:
                 raise _TransferRunError(
                     "transfer_verification_failed",
                     "设备端文件不存在，或字节数与源文件不一致。",
@@ -574,42 +837,64 @@ class ManagedTransferService:
                 stage="completed",
                 message=f"文件已传到 {destination}，并确认 {source_size} 字节完全匹配。",
                 progress_percent=100,
+                bytes_transferred=source_size,
+                total_bytes=source_size,
+                bytes_per_second=0,
+                clear_eta=True,
                 error_code="",
             )
         except asyncio.CancelledError:
             self._mark_cancelled(operation_id)
-        except (ManagedTransferError, TerminalPlanError, TransferOperationError, _TransferRunError) as exc:
+        except (ManagedTransferError, TerminalPlanError, TransferOperationError, _TransferRunError, RuntimeError, OSError) as exc:
             self._mark_failed(operation_id, getattr(exc, "code", "transfer_failed"), str(exc))
         finally:
+            if managed_username:
+                self._controller.unregister_managed_transfer(managed_username)
+                self._clear_runtime_credentials(operation_id)
             if acquired:
                 self._executor.release(session.id, owner_id)
-            self._tasks.pop(operation_id, None)
 
     async def _run_download(self, operation_id: str, session: SessionRecord) -> None:
         owner_id = f"managed-transfer:{operation_id}"
         acquired = False
+        managed_username = ""
         try:
             self._executor.acquire(
                 session.id,
                 owner_id,
-                on_cancel=lambda: self._cancel_task(operation_id, session.id),
+                on_cancel=lambda: self._cancel_active(operation_id, session.id, pause_queue=True),
             )
             acquired = True
             operation = self._operations.update(
                 operation_id,
                 stage="prechecking",
                 message="正在检查设备源文件和 PC 目标空间。",
-                progress_percent=10,
+                progress_percent=0,
+                bytes_transferred=0,
+                bytes_per_second=0,
+                clear_eta=True,
             )
             source_path = str(operation.data["source_path"])
+            terminal_environment = str(
+                operation.data.get("terminal_environment") or "vrp"
+            )
             precheck = await self._run_plan(
                 session,
                 owner_id,
-                self._directory_plan(source_path),
+                self._inspection_plan(
+                    source_path,
+                    terminal_environment,
+                    str(self._saved_config()["protocol"]),
+                ),
             )
             output = self._require_completed(precheck, "prechecking")
-            entry = destination_entry(output, source_path)
-            if entry is None:
+            if terminal_environment == "linux":
+                self._require_linux_inspection(output, str(self._saved_config()["protocol"]))
+                source_size = linux_file_size(output)
+            else:
+                entry = destination_entry(output, source_path)
+                source_size = entry.size_bytes if entry is not None else None
+            if source_size is None:
                 raise _TransferRunError("transfer_source_not_found", "设备端源文件不存在。")
             root = Path(str(self._saved_config()["root"]))
             relative = str(operation.data["destination_path"])
@@ -617,12 +902,13 @@ class ManagedTransferService:
             existing_size = destination.stat().st_size if destination.is_file() else 0
             if destination.exists() and not bool(operation.data["overwrite"]):
                 raise _TransferRunError("destination_exists", "PC 目标文件已存在。")
-            required = max(0, entry.size_bytes - existing_size)
+            required = max(0, source_size - existing_size)
             if shutil.disk_usage(root).free < required:
                 raise _TransferRunError("insufficient_space", "PC 共享目录可用空间不足。")
             operation = self._operations.update(
                 operation_id,
-                data={"source_size": entry.size_bytes},
+                total_bytes=source_size,
+                data={"source_size": source_size},
             )
             config = await self._ensure_service()
             if not config.writable:
@@ -631,12 +917,26 @@ class ManagedTransferService:
                     "设备下载到 PC 时文件服务必须允许写入。",
                 )
             host = self._device_host(session, config)
+            self._operations.update(operation_id, data={"service_host": host})
+            managed_username, managed_password = self._controller.register_managed_transfer(
+                operation_id,
+                total_bytes=source_size,
+                on_progress=self._queue_progress_from_thread,
+            )
+            username_ref, password_ref = self._register_runtime_credentials(
+                operation_id,
+                managed_username,
+                managed_password,
+            )
+            connect_secret_ref = ""
+            if terminal_environment == "linux" and config.protocol == "sftp":
+                connect_secret_ref = username_ref
             self._executor.configure_managed_transfer(
                 session.id,
-                username=config.username,
-                password=config.password,
+                username=managed_username,
+                password=managed_password,
                 source_path=source_path,
-                source_size=entry.size_bytes,
+                source_size=source_size,
                 destination_path=relative,
             )
             steps, timeout = build_managed_transfer_download_steps(
@@ -645,13 +945,17 @@ class ManagedTransferService:
                 port=self._controller.bound_port or config.port,
                 source_path=source_path,
                 destination_path=relative,
-                source_size=entry.size_bytes,
+                source_size=source_size,
+                username_secret_ref=username_ref,
+                password_secret_ref=password_ref,
+                terminal_environment=terminal_environment,
+                connect_secret_ref=connect_secret_ref,
             )
             self._operations.update(
                 operation_id,
                 stage="transferring",
-                message=f"正在通过 {config.protocol.upper()} 下载文件。",
-                progress_percent=45,
+                message=f"正在通过 {config.protocol.upper()}（{self._environment_label(terminal_environment)}）下载文件。",
+                progress_percent=0,
             )
             result = await self._run_plan(
                 session,
@@ -659,7 +963,16 @@ class ManagedTransferService:
                 parse_terminal_plan(steps, total_timeout_seconds=timeout),
             )
             self._require_completed(result, "transferring")
-            if not destination.is_file() or destination.stat().st_size != entry.size_bytes:
+            self._record_progress(operation_id, source_size, force=True)
+            self._operations.update(
+                operation_id,
+                stage="verifying",
+                message="正在核对 PC 端文件名和精确字节数。",
+                progress_percent=100,
+                bytes_per_second=0,
+                clear_eta=True,
+            )
+            if not destination.is_file() or destination.stat().st_size != source_size:
                 raise _TransferRunError(
                     "transfer_verification_failed",
                     "PC 目标文件不存在，或字节数与设备源文件不一致。",
@@ -668,21 +981,28 @@ class ManagedTransferService:
                 operation_id,
                 status="completed",
                 stage="completed",
-                message=f"文件已下载到 {relative}，并确认 {entry.size_bytes} 字节完全匹配。",
+                message=f"文件已下载到 {relative}，并确认 {source_size} 字节完全匹配。",
                 progress_percent=100,
+                bytes_transferred=source_size,
+                total_bytes=source_size,
+                bytes_per_second=0,
+                clear_eta=True,
                 error_code="",
             )
         except asyncio.CancelledError:
             self._mark_cancelled(operation_id)
-        except (ManagedTransferError, TerminalPlanError, TransferOperationError, _TransferRunError, OSError) as exc:
+        except (ManagedTransferError, TerminalPlanError, TransferOperationError, _TransferRunError, RuntimeError, OSError) as exc:
             self._mark_failed(operation_id, getattr(exc, "code", "transfer_failed"), str(exc))
         finally:
+            if managed_username:
+                self._controller.unregister_managed_transfer(managed_username)
+                self._clear_runtime_credentials(operation_id)
             if acquired:
                 self._executor.release(session.id, owner_id)
-            self._tasks.pop(operation_id, None)
 
     async def _ensure_service(self) -> TransferServiceConfig:
-        await self.start_service()
+        self._cancel_idle_stop()
+        await self.start_service(auto_stop_when_idle=False)
         config = self._controller.config
         if config is None:
             raise TransferOperationError("The file-transfer service did not start.")
@@ -702,7 +1022,29 @@ class ManagedTransferService:
         )
 
     @staticmethod
-    def _directory_plan(path: str) -> TerminalExecutionPlan:
+    def _inspection_plan(
+        path: str,
+        terminal_environment: str,
+        protocol: str,
+    ) -> TerminalExecutionPlan:
+        if terminal_environment == "linux":
+            return parse_terminal_plan(
+                [
+                    {
+                        "type": "send",
+                        "text": build_linux_inspection_command(path, protocol),
+                        "label": "检查 Linux 文件、空间和传输客户端",
+                    },
+                    {
+                        "type": "expect",
+                        "success": ["device_prompt"],
+                        "timeout_seconds": 30,
+                        "label": "等待 Linux 检查结果",
+                        "max_output_chars": 32_768,
+                    },
+                ],
+                total_timeout_seconds=45,
+            )
         return parse_terminal_plan(
             [
                 {"type": "send", "text": f"dir {path}", "label": "读取目录"},
@@ -717,6 +1059,23 @@ class ManagedTransferService:
             ],
             total_timeout_seconds=45,
         )
+
+    @staticmethod
+    def _require_linux_inspection(output: str, protocol: str) -> None:
+        if not linux_client_available(output):
+            raise _TransferRunError(
+                "transfer_client_unavailable",
+                f"Linux Shell 中未找到 {protocol.upper()} 客户端，请安装后重试或切换传输协议。",
+            )
+        if not linux_directory_available(output):
+            raise _TransferRunError(
+                "transfer_directory_not_found",
+                "Linux 文件路径的父目录不存在。",
+            )
+
+    @staticmethod
+    def _environment_label(terminal_environment: str) -> str:
+        return "Linux Shell" if terminal_environment == "linux" else "Huawei VRP"
 
     @staticmethod
     def _require_completed(result: dict[str, object], stage: str) -> str:
@@ -736,25 +1095,217 @@ class ManagedTransferService:
             if isinstance(step, dict)
         )
 
-    def _attach_task(
+    def _enqueue(self, record: OperationRecord) -> None:
+        self._event_loop = asyncio.get_running_loop()
+        self._cancel_idle_stop()
+        queue = self._queues.setdefault(record.session_id, deque())
+        queue.append(record.id)
+        self._operations.register_canceller(
+            record.id,
+            lambda: self._cancel_queued(record.id, record.session_id),
+        )
+        self._refresh_queue_positions(record.session_id)
+        self._ensure_worker(record.session_id)
+
+    def _ensure_worker(self, session_id: str) -> None:
+        if session_id in self._paused_sessions:
+            return
+        current = self._workers.get(session_id)
+        if current is not None and not current.done():
+            return
+        worker = asyncio.create_task(
+            self._run_session_queue(session_id),
+            name=f"managed-transfer-queue-{session_id}",
+        )
+        self._workers[session_id] = worker
+
+    async def _run_session_queue(self, session_id: str) -> None:
+        try:
+            while session_id not in self._paused_sessions:
+                queue = self._queues.get(session_id)
+                if not queue:
+                    break
+                operation_id = queue.popleft()
+                self._refresh_queue_positions(session_id)
+                record = self._operations.get(operation_id)
+                if record.status != "queued":
+                    continue
+                try:
+                    session = self._connected_session(session_id)
+                except (ResourceNotFoundError, ApplicationConflictError) as exc:
+                    self._mark_failed(operation_id, "session_unavailable", str(exc))
+                    continue
+                self._operations.update(
+                    operation_id,
+                    status="running",
+                    stage="prechecking",
+                    message="正在准备传输。",
+                    clear_queue_position=True,
+                )
+                runner = self._run_download if record.direction == "download" else self._run_upload
+                task = asyncio.create_task(
+                    runner(operation_id, session),
+                    name=f"managed-transfer-{operation_id}",
+                )
+                self._tasks[operation_id] = task
+                self._operations.register_canceller(
+                    operation_id,
+                    lambda oid=operation_id, sid=session_id: self._cancel_active(
+                        oid,
+                        sid,
+                        pause_queue=False,
+                    ),
+                )
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._tasks.pop(operation_id, None)
+                    self._progress_samples.pop(operation_id, None)
+                    self._last_progress_emit.pop(operation_id, None)
+        finally:
+            self._workers.pop(session_id, None)
+            if not self._queues.get(session_id):
+                self._queues.pop(session_id, None)
+            elif session_id not in self._paused_sessions:
+                self._ensure_worker(session_id)
+            self._schedule_idle_stop()
+
+    def _cancel_queued(self, operation_id: str, session_id: str) -> None:
+        queue = self._queues.get(session_id)
+        if queue is not None:
+            try:
+                queue.remove(operation_id)
+            except ValueError:
+                pass
+        self._mark_cancelled(operation_id)
+        self._refresh_queue_positions(session_id)
+        self._schedule_idle_stop()
+
+    def _cancel_active(
         self,
         operation_id: str,
         session_id: str,
-        task: asyncio.Task[None],
+        *,
+        pause_queue: bool,
     ) -> None:
-        self._tasks[operation_id] = task
-        self._operations.register_canceller(
+        if operation_id in self._cancelling:
+            return
+        self._cancelling.add(operation_id)
+        try:
+            if pause_queue:
+                self._pause_queue_for_takeover(session_id)
+            self._executor.cancel_active(session_id)
+            self._executor.release(session_id, f"managed-transfer:{operation_id}")
+            task = self._tasks.get(operation_id)
+            if task is not None and not task.done():
+                task.cancel()
+            self._mark_cancelled(operation_id)
+        finally:
+            self._cancelling.discard(operation_id)
+
+    def _pause_queue_for_takeover(self, session_id: str) -> None:
+        self._paused_sessions.add(session_id)
+        for operation_id in self._queues.get(session_id, ()):
+            record = self._operations.get(operation_id)
+            if record.status == "queued":
+                self._operations.update(
+                    operation_id,
+                    stage="paused",
+                    message="手工输入已接管终端，队列暂停。",
+                )
+
+    def _refresh_queue_positions(self, session_id: str) -> None:
+        queue = self._queues.get(session_id, deque())
+        paused = session_id in self._paused_sessions
+        for position, operation_id in enumerate(queue, start=1):
+            record = self._operations.get(operation_id)
+            if record.status != "queued":
+                continue
+            self._operations.update(
+                operation_id,
+                queue_position=position,
+                stage="paused" if paused else "queued",
+            )
+
+    def _queue_progress_from_thread(self, operation_id: str, transferred: int) -> None:
+        loop = self._event_loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._record_progress, operation_id, transferred)
+
+    def _record_progress(
+        self,
+        operation_id: str,
+        transferred: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        record = self._operations.get(operation_id)
+        if record.status != "running" or record.stage not in {"transferring", "verifying"}:
+            return
+        now = time.monotonic()
+        safe_bytes = max(record.bytes_transferred, int(transferred))
+        samples = self._progress_samples.setdefault(operation_id, deque())
+        samples.append((now, safe_bytes))
+        while len(samples) > 1 and now - samples[0][0] > 5:
+            samples.popleft()
+        last_emit = self._last_progress_emit.get(operation_id, 0.0)
+        if not force and now - last_emit < 0.25:
+            return
+        speed = 0
+        if len(samples) > 1 and samples[-1][0] > samples[0][0]:
+            speed = max(0, int((samples[-1][1] - samples[0][1]) / (samples[-1][0] - samples[0][0])))
+        total = record.total_bytes
+        percent = min(100, int(safe_bytes * 100 / total)) if total else 0
+        eta = max(0, int((total - safe_bytes) / speed)) if total and speed else None
+        self._last_progress_emit[operation_id] = now
+        self._operations.update(
             operation_id,
-            lambda: self._cancel_task(operation_id, session_id),
+            bytes_transferred=safe_bytes,
+            bytes_per_second=speed,
+            eta_seconds=eta,
+            clear_eta=eta is None,
+            progress_percent=percent,
         )
 
-    def _cancel_task(self, operation_id: str, session_id: str) -> None:
-        self._executor.cancel_active(session_id)
-        self._executor.release(session_id, f"managed-transfer:{operation_id}")
-        task = self._tasks.get(operation_id)
-        if task is not None and not task.done():
+    def _cancel_idle_stop(self) -> None:
+        task = self._idle_stop_task
+        self._idle_stop_task = None
+        self._idle_stop_at = ""
+        if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
-        self._mark_cancelled(operation_id)
+
+    def _schedule_idle_stop(self) -> None:
+        if self._tasks or not self._controller.is_running:
+            return
+        if self._idle_stop_task is not None and not self._idle_stop_task.done():
+            return
+        self._idle_stop_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=self.IDLE_STOP_SECONDS)
+        ).isoformat()
+        self._publish_service_state("transfer.service.updated")
+        self._idle_stop_task = asyncio.create_task(
+            self._stop_service_when_idle(),
+            name="managed-transfer-idle-stop",
+        )
+
+    async def _stop_service_when_idle(self) -> None:
+        try:
+            await asyncio.sleep(self.IDLE_STOP_SECONDS)
+            async with self._service_lifecycle_lock:
+                if self._tasks or not self._controller.is_running:
+                    return
+                await asyncio.to_thread(self._controller.stop)
+                self._idle_stop_task = None
+                self._idle_stop_at = ""
+                self._publish_service_state("transfer.service.stopped")
+        except asyncio.CancelledError:
+            return
+
+    def _publish_service_state(self, event_type: str) -> None:
+        self._events.publish(event_type, data=asdict(self.settings()))
 
     def _mark_cancelled(self, operation_id: str) -> None:
         record = self._operations.get(operation_id)
@@ -765,6 +1316,9 @@ class ManagedTransferService:
             status="cancelled",
             stage="cancelled",
             message="文件传输已取消。",
+            bytes_per_second=0,
+            clear_eta=True,
+            clear_queue_position=True,
             error_code="transfer_cancelled",
         )
 
@@ -780,6 +1334,9 @@ class ManagedTransferService:
             status="failed",
             stage=record.stage,
             message=message,
+            bytes_per_second=0,
+            clear_eta=True,
+            clear_queue_position=True,
             error_code=code,
         )
 
@@ -811,12 +1368,14 @@ class ManagedTransferService:
             username=str(config["username"]),
             password=password,
             writable=bool(config["writable"]),
+            advertised_host=str(config.get("advertised_host") or ""),
         )
 
     def _saved_config(self) -> dict[str, object]:
         defaults: dict[str, object] = {
             "protocol": "ftp",
             "host": "0.0.0.0",
+            "advertised_host": "",
             "port": 0,
             "root": str(self._default_root),
             "username": "device",
@@ -833,17 +1392,28 @@ class ManagedTransferService:
             return defaults
         return {**defaults, **payload}
 
-    @staticmethod
-    def _device_host(session: SessionRecord, config: TransferServiceConfig) -> str:
+    def _device_host(self, session: SessionRecord, config: TransferServiceConfig) -> str:
+        advertised_host = config.advertised_host.strip()
+        if advertised_host:
+            return advertised_host
         host = config.host.strip()
         if session.kind == "simulated" and host in {"", "0.0.0.0", "::"}:
             return "192.0.2.10"
-        if host in {"", "0.0.0.0", "::"}:
+        if host not in {"", "0.0.0.0", "::"}:
+            return host
+        target = self._sessions.connection_target(session.id)
+        if target is None or not target.host.strip():
             raise _TransferRunError(
                 "service_endpoint_unavailable",
-                "请把文件传输监听地址设置为设备可访问的本机 IP。",
+                "当前终端没有可用的远端 IP，请在高级设置中填写设备访问地址。",
             )
-        return host
+        try:
+            return select_route_local_ipv4(target.host, target.port)
+        except OSError as exc:
+            raise _TransferRunError(
+                "service_endpoint_unavailable",
+                f"无法根据到 {target.host} 的系统路由选择本机 IP，请在高级设置中手动指定设备访问地址。",
+            ) from exc
 
     @staticmethod
     def _application_error(exc: ManagedTransferError) -> TransferOperationError:

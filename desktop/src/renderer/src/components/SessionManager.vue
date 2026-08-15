@@ -48,6 +48,9 @@ const manager = ref<HTMLElement | null>(null)
 const query = ref('')
 const managerWidth = ref(readManagerWidth())
 const collapsedGroups = ref<Set<string>>(readCollapsedGroups())
+const deviceById = computed(() => new Map(
+  props.devices.map((device) => [device.id, device])
+))
 
 const groups = computed<SessionDeviceGroup[]>(() => {
   const byDevice = new Map<string, SessionSummary[]>()
@@ -57,7 +60,7 @@ const groups = computed<SessionDeviceGroup[]>(() => {
     byDevice.set(session.device_id, current)
   }
   return [...byDevice.entries()].map(([deviceId, sessions]) => {
-    const device = props.devices.find((candidate) => candidate.id === deviceId) || null
+    const device = deviceById.value.get(deviceId) || null
     return {
       id: deviceId,
       label: device?.name || sessions[0]?.title.split(' · ')[0] || deviceId,

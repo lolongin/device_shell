@@ -247,7 +247,9 @@ export const desktopApi = {
   transferSettings: (): Promise<TransferSettings> =>
     request('/api/v1/file-transfer/settings'),
   updateTransferSettings: (
-    settings: Pick<TransferSettings, 'protocol' | 'host' | 'port' | 'root' | 'username' | 'writable'>
+    settings: Pick<TransferSettings, 'protocol' | 'host' | 'advertised_host' | 'port' | 'root' | 'username' | 'writable'> & {
+      password?: string
+    }
   ): Promise<TransferSettings> =>
     request('/api/v1/file-transfer/settings', {
       method: 'PUT',
@@ -261,8 +263,22 @@ export const desktopApi = {
     request('/api/v1/file-transfer/service/log'),
   clearTransferServiceLog: (): Promise<TransferServiceLogResponse> =>
     request('/api/v1/file-transfer/service/log', { method: 'DELETE' }),
-  sharedTransferFiles: (): Promise<SharedFileListResponse> =>
-    request('/api/v1/file-transfer/files?limit=500'),
+  sharedTransferFiles: (options: {
+    query?: string
+    sort?: 'name' | 'size' | 'modified'
+    order?: 'asc' | 'desc'
+    offset?: number
+    limit?: number
+  } = {}): Promise<SharedFileListResponse> => {
+    const params = new URLSearchParams({
+      limit: String(options.limit ?? 100),
+      offset: String(options.offset ?? 0),
+      query: options.query ?? '',
+      sort: options.sort ?? 'name',
+      order: options.order ?? 'asc'
+    })
+    return request(`/api/v1/file-transfer/files?${params.toString()}`)
+  },
   operations: (kind = ''): Promise<OperationListResponse> => {
     const query = kind ? `?kind=${encodeURIComponent(kind)}` : ''
     return request(`/api/v1/operations${query}`)
@@ -280,11 +296,18 @@ export const desktopApi = {
     source_path: string
     destination_path: string
     overwrite: boolean
+    terminal_environment: 'auto' | 'linux' | 'vrp'
   }): Promise<OperationResponse> =>
     request('/api/v1/file-transfers', {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
+  retryManagedTransfer: (operationId: string): Promise<OperationResponse> =>
+    request(`/api/v1/file-transfers/${encodeURIComponent(operationId)}/retry`, { method: 'POST' }),
+  resumeTransferQueue: (sessionId: string): Promise<{ api_version: number; session_id: string; resumed_count: number }> =>
+    request(`/api/v1/file-transfers/queues/${encodeURIComponent(sessionId)}/resume`, { method: 'POST' }),
+  clearTransferHistory: (): Promise<{ api_version: number; deleted_count: number }> =>
+    request('/api/v1/file-transfers/history', { method: 'DELETE' }),
   startPackageUpgrade: (payload: {
     session_id: string
     package_path: string

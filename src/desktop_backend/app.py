@@ -98,6 +98,8 @@ from .models import (
     OperationModel,
     OperationResponse,
     OperationListResponse,
+    TransferQueueResumeResponse,
+    DeleteHistoryResponse,
     ConnectionProfileSummary,
     ConnectionProfileUpsertRequest,
     ProfileEndpointModel,
@@ -130,6 +132,69 @@ from .mcp_service import DesktopMcpService
 from .data_migration import PersistenceMigrationStatus, prepare_persistent_data, sqlite_user_version
 from .session_logging import FileSessionLogSink
 from .ws_tickets import WebSocketTicketStore
+
+
+TERMINAL_SOCKET_BATCH_EVENTS = 128
+TERMINAL_SOCKET_BATCH_CHARS = 64 * 1024
+
+
+def _coalesce_terminal_events(
+    events: list[TerminalEvent],
+    *,
+    max_events: int = TERMINAL_SOCKET_BATCH_EVENTS,
+    max_chars: int = TERMINAL_SOCKET_BATCH_CHARS,
+) -> list[TerminalEvent]:
+    """Merge contiguous output events without crossing status or gap boundaries."""
+    result: list[TerminalEvent] = []
+    pending: list[TerminalEvent] = []
+    pending_chars = 0
+
+    def flush() -> None:
+        nonlocal pending_chars
+        if not pending:
+            return
+        if len(pending) == 1:
+            result.append(pending[0])
+        else:
+            first = pending[0]
+            last = pending[-1]
+            result.append(TerminalEvent(
+                type="terminal.output",
+                session_id=first.session_id,
+                sequence=last.sequence,
+                data="".join(event.data for event in pending),
+                generation=first.generation,
+                metadata=dict(first.metadata),
+            ))
+        pending.clear()
+        pending_chars = 0
+
+    for event in events:
+        can_merge = (
+            event.type == "terminal.output"
+            and (
+                not pending
+                or (
+                    event.session_id == pending[-1].session_id
+                    and event.generation == pending[-1].generation
+                    and event.metadata == pending[-1].metadata
+                    and event.sequence == pending[-1].sequence + 1
+                )
+            )
+        )
+        would_exceed = pending and (
+            len(pending) >= max_events
+            or pending_chars + len(event.data) > max_chars
+        )
+        if not can_merge or would_exceed:
+            flush()
+        if event.type == "terminal.output":
+            pending.append(event)
+            pending_chars += len(event.data)
+        else:
+            result.append(event)
+    flush()
+    return result
 
 
 SESSION_LOG_DIRECTORY_SETTING = "session_logs.directory"
@@ -542,6 +607,7 @@ def create_app(
         command_store=command_store,
         automation_store=automation_store,
         transfer_store=transfer_store,
+        operation_store=desktop_store,
         settings_store=settings_store,
         terminal_executor=terminal_executor,
         transfer_root=transfer_root,
@@ -1350,12 +1416,14 @@ def create_app(
     async def update_file_transfer_settings(
         request: TransferSettingsUpdateRequest,
     ) -> TransferSettingsModel:
-        desktop.transfers.update_settings(
+        await desktop.transfers.reconfigure(
             protocol=request.protocol,
             host=request.host,
+            advertised_host=request.advertised_host,
             port=request.port,
             root=request.root,
             username=request.username,
+            password=request.password,
             writable=request.writable,
         )
         return _transfer_settings(desktop)
@@ -1413,16 +1481,26 @@ def create_app(
         path: str = Query(default="", max_length=4_096),
         recursive: bool = Query(default=True),
         limit: int = Query(default=200, ge=1, le=1_000),
+        query: str = Query(default="", max_length=512),
+        sort: str = Query(default="name", pattern="^(name|size|modified)$"),
+        order: str = Query(default="asc", pattern="^(asc|desc)$"),
+        offset: int = Query(default=0, ge=0),
     ) -> SharedFileListResponse:
         catalog = desktop.transfers.list_files(
             relative_path=path,
             recursive=recursive,
             limit=limit,
+            query=query,
+            sort=sort,
+            order=order,
+            offset=offset,
         )
         return SharedFileListResponse(
             files=[SharedFileModel(**item.public_dict()) for item in catalog.files],
             count=len(catalog.files),
             truncated=catalog.truncated,
+            total=catalog.total,
+            next_offset=catalog.next_offset,
         )
 
     @app.post(
@@ -1439,6 +1517,7 @@ def create_app(
                 source_path=request.source_path,
                 destination_path=request.destination_path,
                 overwrite=request.overwrite,
+                terminal_environment=request.terminal_environment,
             )
         else:
             operation = desktop.transfers.start_upload(
@@ -1446,8 +1525,40 @@ def create_app(
                 source_path=request.source_path,
                 destination_path=request.destination_path,
                 overwrite=request.overwrite,
+                terminal_environment=request.terminal_environment,
             )
         return OperationResponse(operation=_operation_model(operation))
+
+    @app.post(
+        "/api/v1/file-transfers/{operation_id}/retry",
+        response_model=OperationResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def retry_managed_file_transfer(operation_id: str) -> OperationResponse:
+        return OperationResponse(
+            operation=_operation_model(desktop.transfers.retry(operation_id))
+        )
+
+    @app.post(
+        "/api/v1/file-transfers/queues/{session_id}/resume",
+        response_model=TransferQueueResumeResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def resume_managed_file_transfer_queue(
+        session_id: str,
+    ) -> TransferQueueResumeResponse:
+        return TransferQueueResumeResponse(
+            session_id=session_id,
+            resumed_count=desktop.transfers.resume_queue(session_id),
+        )
+
+    @app.delete(
+        "/api/v1/file-transfers/history",
+        response_model=DeleteHistoryResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def clear_managed_file_transfer_history() -> DeleteHistoryResponse:
+        return DeleteHistoryResponse(deleted_count=desktop.transfers.clear_history())
 
     @app.post(
         "/api/v1/package-upgrades",
@@ -1735,28 +1846,38 @@ def create_app(
             await websocket.close(code=4404, reason="Unknown session")
             return
         await websocket.accept()
-        for event in replay:
+        for event in _coalesce_terminal_events(replay):
             await websocket.send_json(event.to_payload())
 
         async def send_events() -> None:
             while True:
-                event: TerminalEvent = await queue.get()
-                await websocket.send_json(event.to_payload())
+                events: list[TerminalEvent] = [await queue.get()]
+                for _ in range(TERMINAL_SOCKET_BATCH_EVENTS - 1):
+                    try:
+                        events.append(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                for event in _coalesce_terminal_events(events):
+                    await websocket.send_json(event.to_payload())
 
         async def receive_commands() -> None:
             while True:
                 message = await websocket.receive_json()
                 kind = str(message.get("type") or "")
-                if kind == "terminal.input":
-                    await hub.write(session_id, str(message.get("data") or ""))
-                elif kind == "terminal.resize":
-                    await hub.resize(
-                        session_id,
-                        int(message.get("cols") or 80),
-                        int(message.get("rows") or 24),
-                    )
-                elif kind == "terminal.reconnect":
-                    await hub.reconnect(session_id)
+                try:
+                    if kind == "terminal.input":
+                        await hub.write(session_id, str(message.get("data") or ""))
+                    elif kind == "terminal.resize":
+                        await hub.resize(
+                            session_id,
+                            int(message.get("cols") or 80),
+                            int(message.get("rows") or 24),
+                        )
+                    elif kind == "terminal.reconnect":
+                        await hub.reconnect(session_id)
+                except KeyError:
+                    await websocket.close(code=4404, reason="Session closed")
+                    return
 
         sender = asyncio.create_task(send_events())
         receiver = asyncio.create_task(receive_commands())

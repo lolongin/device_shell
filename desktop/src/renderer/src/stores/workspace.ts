@@ -71,6 +71,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const transferClientCommand = ref('')
   const transferFiles = ref<SharedTransferFile[]>([])
   const transferFilesLoading = ref(false)
+  const transferFileTotal = ref(0)
+  const transferFileNextOffset = ref<number | null>(null)
   const operations = ref<OperationRecord[]>([])
   const transferPanelOpen = ref(
     localStorage.getItem('device-tui.desktop-v2.transfer-open') === '1'
@@ -103,8 +105,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const notice = ref('')
   let eventSocket: WebSocket | null = null
   let eventReconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let automationRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  let automationRefreshPromise: Promise<void> | null = null
+  let automationRefreshQueued = false
   let lastEventSequence = 0
   let eventStreamWanted = false
+  let eventConnectedOnce = false
 
   const selectedDevice = computed(
     () => devices.value.find((device) => device.row_id === selectedDeviceRowId.value)
@@ -124,34 +130,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeAutomationStatus = computed(() =>
     automationSessions.value.find((status) => status.session_id === activeSessionId.value) || null
   )
+  const ownedDeviceIdSet = computed(() => new Set(ownedDeviceIds.value))
+  const deviceFilterIndex = computed(() => new Map(
+    devices.value.map((device) => [device.row_id, {
+      searchText: [
+        device.name,
+        device.id,
+        device.row_id,
+        device.board_id,
+        device.domain,
+        device.model,
+        device.site,
+        device.cpu,
+        device.board_type,
+        device.slot,
+        device.status_text,
+        device.tooltip
+      ].join(' ').toLocaleLowerCase(),
+      cpu: device.cpu.toLocaleLowerCase()
+    }])
+  ))
   const filteredDevices = computed(() => {
     const needle = query.value.trim().toLocaleLowerCase()
     const cpuNeedle = cpuFilter.value.trim().toLocaleLowerCase()
     return devices.value.filter((device) => {
-      if (
-        needle &&
-        ![
-          device.name,
-          device.id,
-          device.row_id,
-          device.board_id,
-          device.domain,
-          device.model,
-          device.site,
-          device.cpu,
-          device.board_type,
-          device.slot,
-          device.status_text,
-          device.tooltip
-        ]
-          .join(' ')
-          .toLocaleLowerCase()
-          .includes(needle)
-      ) return false
+      const index = deviceFilterIndex.value.get(device.row_id)
+      if (needle && !index?.searchText.includes(needle)) return false
       if (domainFilter.value && device.domain !== domainFilter.value) return false
       if (statusFilter.value && device.status !== statusFilter.value) return false
-      if (cpuNeedle && !device.cpu.toLocaleLowerCase().includes(cpuNeedle)) return false
-      if (mineOnly.value && !ownedDeviceIds.value.includes(device.id)) return false
+      if (cpuNeedle && !index?.cpu.includes(cpuNeedle)) return false
+      if (mineOnly.value && !ownedDeviceIdSet.value.has(device.id)) return false
       return true
     })
   })
@@ -270,9 +278,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const operation = data as unknown as OperationRecord
       const target = operation.kind === 'package_upgrade' ? upgradeOperations : operations
       const index = target.value.findIndex((item) => item.id === operation.id)
+      if (index >= 0 && target.value[index].revision >= operation.revision) return
       if (index >= 0) target.value[index] = operation
       else target.value.unshift(operation)
-      if (operation.status !== 'running') notice.value = operation.message
+      if (['completed', 'failed', 'cancelled', 'interrupted'].includes(operation.status)) {
+        notice.value = operation.message
+      }
+      return
+    }
+    if (event.type.startsWith('transfer.service.') && event.type !== 'transfer.service.log') {
+      transferSettings.value = {
+        ...(transferSettings.value || {} as TransferSettings),
+        ...(data as unknown as Partial<TransferSettings>)
+      }
       return
     }
     if (event.type === 'transfer.service.log' && typeof data.message === 'string') {
@@ -293,7 +311,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         error.value = `自动化执行失败: ${name}${message ? ` · ${message}` : ''}`
       }
       else if (event.type === 'automation.rule.cancelled') notice.value = `自动化已取消: ${name}`
-      void refreshAutomation()
+      scheduleAutomationRefresh()
     }
   }
 
@@ -301,6 +319,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (eventSocket || !eventStreamWanted) return
     try {
       eventSocket = new WebSocket(await applicationEventSocketUrl(lastEventSequence))
+      eventSocket.onopen = () => {
+        if (eventConnectedOnce) {
+          void refreshOperations()
+          void loadTransferServiceLog()
+        }
+        eventConnectedOnce = true
+      }
       eventSocket.onmessage = (message) => {
         try {
           applyApplicationEvent(JSON.parse(String(message.data)) as ApplicationEvent)
@@ -328,6 +353,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       eventStreamWanted = false
       if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
       eventReconnectTimer = null
+      if (automationRefreshTimer) clearTimeout(automationRefreshTimer)
+      automationRefreshTimer = null
       eventSocket?.close()
       eventSocket = null
     }
@@ -620,12 +647,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     error.value = ''
     notice.value = ''
     try {
-      const response = broadcast
-        ? await desktopApi.broadcastCommand(command)
-        : await desktopApi.sendCommand(activeSessionId.value, command)
-      notice.value = broadcast
-        ? `已广播到 ${response.session_ids.length} 个会话`
-        : '命令已发送'
+      if (broadcast) await desktopApi.broadcastCommand(command)
+      else await desktopApi.sendCommand(activeSessionId.value, command)
       const refreshed = await desktopApi.commandWorkspace()
       applyCommandWorkspace(refreshed)
       return true
@@ -637,11 +660,35 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  function scheduleAutomationRefresh(): void {
+    if (automationRefreshTimer) clearTimeout(automationRefreshTimer)
+    automationRefreshTimer = setTimeout(() => {
+      automationRefreshTimer = null
+      void refreshAutomation()
+    }, 40)
+  }
+
   async function refreshAutomation(): Promise<void> {
+    if (automationRefreshTimer) clearTimeout(automationRefreshTimer)
+    automationRefreshTimer = null
+    if (automationRefreshPromise) {
+      automationRefreshQueued = true
+      return automationRefreshPromise
+    }
+    automationRefreshPromise = (async () => {
+      do {
+        automationRefreshQueued = false
+        try {
+          applyAutomationWorkspace(await desktopApi.automationWorkspace())
+        } catch (cause) {
+          error.value = cause instanceof Error ? cause.message : String(cause)
+        }
+      } while (automationRefreshQueued)
+    })()
     try {
-      applyAutomationWorkspace(await desktopApi.automationWorkspace())
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      await automationRefreshPromise
+    } finally {
+      automationRefreshPromise = null
     }
   }
 
@@ -829,14 +876,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function loadTransferFiles(): Promise<void> {
+  async function loadTransferFiles(options: {
+    query?: string
+    sort?: 'name' | 'size' | 'modified'
+    order?: 'asc' | 'desc'
+    offset?: number
+    append?: boolean
+  } = {}): Promise<void> {
     transferFilesLoading.value = true
     error.value = ''
     try {
-      const response = await desktopApi.sharedTransferFiles()
-      transferFiles.value = response.files
+      const response = await desktopApi.sharedTransferFiles({
+        query: options.query,
+        sort: options.sort,
+        order: options.order,
+        offset: options.offset,
+        limit: 100
+      })
+      transferFiles.value = options.append
+        ? [...transferFiles.value, ...response.files]
+        : response.files
+      transferFileTotal.value = response.total
+      transferFileNextOffset.value = response.next_offset
     } catch (cause) {
       transferFiles.value = []
+      transferFileTotal.value = 0
+      transferFileNextOffset.value = null
       error.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       transferFilesLoading.value = false
@@ -878,7 +943,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function saveTransferSettings(
-    settings: Pick<TransferSettings, 'protocol' | 'host' | 'port' | 'root' | 'username' | 'writable'>
+    settings: Pick<TransferSettings, 'protocol' | 'host' | 'advertised_host' | 'port' | 'root' | 'username' | 'writable'> & {
+      password?: string
+    }
   ): Promise<boolean> {
     transferBusy.value = true
     error.value = ''
@@ -915,6 +982,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     source_path: string
     destination_path: string
     overwrite: boolean
+    terminal_environment: 'auto' | 'linux' | 'vrp'
   }): Promise<boolean> {
     if (!activeSessionId.value) return false
     transferBusy.value = true
@@ -948,6 +1016,50 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (index >= 0) operations.value[index] = response.operation
       const upgradeIndex = upgradeOperations.value.findIndex((record) => record.id === operationId)
       if (upgradeIndex >= 0) upgradeOperations.value[upgradeIndex] = response.operation
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      transferBusy.value = false
+    }
+  }
+
+  async function retryManagedTransfer(operationId: string): Promise<boolean> {
+    transferBusy.value = true
+    error.value = ''
+    try {
+      const response = await desktopApi.retryManagedTransfer(operationId)
+      operations.value = [response.operation, ...operations.value]
+      notice.value = '传输已重新加入队列'
+      return true
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      transferBusy.value = false
+    }
+  }
+
+  async function resumeTransferQueue(sessionId: string): Promise<void> {
+    transferBusy.value = true
+    error.value = ''
+    try {
+      const response = await desktopApi.resumeTransferQueue(sessionId)
+      notice.value = `已恢复 ${response.resumed_count} 个排队任务`
+      await refreshOperations()
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      transferBusy.value = false
+    }
+  }
+
+  async function clearTransferHistory(): Promise<void> {
+    transferBusy.value = true
+    error.value = ''
+    try {
+      const response = await desktopApi.clearTransferHistory()
+      operations.value = operations.value.filter((operation) => !['completed', 'failed', 'cancelled', 'interrupted'].includes(operation.status))
+      notice.value = `已清理 ${response.deleted_count} 条传输历史`
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
@@ -1241,9 +1353,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     transferClientCommand,
     transferFiles,
     transferFilesLoading,
+    transferFileTotal,
+    transferFileNextOffset,
     operations,
     transferPanelOpen,
     transferBusy,
+    retryManagedTransfer,
+    resumeTransferQueue,
+    clearTransferHistory,
     upgradeOperations,
     upgradePanelOpen,
     upgradeBusy,

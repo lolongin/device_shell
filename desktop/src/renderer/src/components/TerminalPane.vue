@@ -35,7 +35,7 @@ import {
   restoreContextMenuFocus
 } from '../contextMenu'
 
-const props = defineProps<{ session: SessionSummary }>()
+const props = defineProps<{ session: SessionSummary; active: boolean }>()
 const emit = defineEmits<{
   status: [sessionId: string, status: string, sequence: number]
   automation: [sessionId: string]
@@ -70,6 +70,10 @@ let themeObserver: MutationObserver | null = null
 let lastSequence = 0
 let pendingCommand = ''
 let outputTail = ''
+let pendingOutput = ''
+let outputFlushTimer: ReturnType<typeof setTimeout> | null = null
+const TERMINAL_OUTPUT_BATCH_MS = 8
+const TERMINAL_OUTPUT_BATCH_MAX_CHARS = 64 * 1024
 
 const canReconnect = computed(() =>
   !reconnecting.value && ['disconnected', 'detached', 'error', 'failed'].includes(connectionStatus.value)
@@ -93,6 +97,27 @@ function readFontSize(): number {
   return Math.max(9, Math.min(28, Number.isFinite(value) ? value : 13))
 }
 
+function flushTerminalOutput(): void {
+  if (outputFlushTimer) clearTimeout(outputFlushTimer)
+  outputFlushTimer = null
+  if (!pendingOutput) return
+  const output = pendingOutput
+  pendingOutput = ''
+  terminal?.write(output)
+  outputTail = `${outputTail}${output}`.slice(-512)
+}
+
+function queueTerminalOutput(output: string): void {
+  pendingOutput += output
+  if (pendingOutput.length >= TERMINAL_OUTPUT_BATCH_MAX_CHARS) {
+    flushTerminalOutput()
+    return
+  }
+  if (!outputFlushTimer) {
+    outputFlushTimer = setTimeout(flushTerminalOutput, TERMINAL_OUTPUT_BATCH_MS)
+  }
+}
+
 async function connect(): Promise<void> {
   try {
     socket?.close()
@@ -103,28 +128,32 @@ async function connect(): Promise<void> {
       const event = JSON.parse(String(message.data)) as TerminalEvent
       lastSequence = Math.max(lastSequence, event.sequence)
       if (event.type === 'terminal.output' && event.data) {
-        terminal?.write(event.data)
-        outputTail = `${outputTail}${event.data}`.slice(-512)
+        queueTerminalOutput(event.data)
       }
       if (event.type === 'terminal.error') {
+        flushTerminalOutput()
         terminal?.writeln(`\r\n\x1b[31m[${event.code || 'terminal_error'}] ${event.data || ''}\x1b[0m`)
       }
       if (event.type === 'terminal.gap') {
+        flushTerminalOutput()
         terminal?.writeln(
           `\r\n\x1b[33m[输出缺失：${event.fromSequence || '?'}-${event.toSequence || '?'}]\x1b[0m`
         )
       }
       if (event.type === 'terminal.status' && event.status) {
+        flushTerminalOutput()
         connectionStatus.value = event.status
         emit('status', props.session.id, event.status, event.sequence)
       }
     })
     socket.addEventListener('close', () => {
+      flushTerminalOutput()
       if (!['disconnected', 'error', 'failed', 'closed'].includes(connectionStatus.value)) {
         connectionStatus.value = 'detached'
       }
     })
     socket.addEventListener('error', () => {
+      flushTerminalOutput()
       connectionStatus.value = 'error'
       terminal?.writeln('\r\n\x1b[31m[终端通道错误] 请重新连接。\x1b[0m')
     })
@@ -504,6 +533,17 @@ watch(() => props.session.status, (status) => {
   if (status) connectionStatus.value = status
 })
 
+watch(() => props.active, async (active) => {
+  if (!active) return
+  await nextTick()
+  window.requestAnimationFrame(() => {
+    if (!props.active) return
+    fitAddon?.fit()
+    sendResize()
+    terminal?.focus()
+  })
+})
+
 onMounted(async () => {
   await nextTick()
   if (!container.value) return
@@ -523,7 +563,7 @@ onMounted(async () => {
   terminal.loadAddon(searchAddon)
   terminal.open(container.value)
   terminal.attachCustomKeyEventHandler(handleTerminalClipboardShortcut)
-  fitAddon.fit()
+  if (props.active) fitAddon.fit()
   terminal.onData((data) => {
     if ((data === '\r' || data === '\n') && canReconnect.value) {
       void reconnect()
@@ -545,7 +585,7 @@ onMounted(async () => {
   window.addEventListener('device-tui:terminal-font-size', handleSharedFontSize)
   window.addEventListener('device-tui:focus-terminal', handleTerminalFocusRequest)
   await connect()
-  terminal.focus()
+  if (props.active) terminal.focus()
 })
 
 onBeforeUnmount(() => {
@@ -554,6 +594,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleShortcut, true)
   window.removeEventListener('device-tui:terminal-font-size', handleSharedFontSize)
   window.removeEventListener('device-tui:focus-terminal', handleTerminalFocusRequest)
+  flushTerminalOutput()
   socket?.close()
   terminal?.dispose()
 })

@@ -17,7 +17,7 @@ from .profiles import (
     ConnectionProfileStore,
     MemoryConnectionProfileStore,
 )
-from .operations import OperationManager
+from .operations import MemoryOperationStore, OperationManager, OperationStore
 from .secrets import MemorySecretStore, SecretStore
 from .sessions import SessionManager, SessionService
 from .settings import MemorySettingsStore, SettingsStore
@@ -56,6 +56,7 @@ def build_desktop_application(
     command_store: CommandStore | None = None,
     automation_store: AutomationStore | None = None,
     transfer_store: TransferStore | None = None,
+    operation_store: OperationStore | None = None,
     settings_store: SettingsStore | None = None,
     terminal_executor: TerminalPlanExecutor | None = None,
     transfer_root: Path | None = None,
@@ -79,7 +80,12 @@ def build_desktop_application(
         events,
     )
     automation.bind_event_source(session_manager)
-    operations = OperationManager(events)
+    operations = OperationManager(
+        events,
+        operation_store or MemoryOperationStore(),
+        persistent_kinds={"managed_file_transfer"},
+        history_limit=200,
+    )
     executor = terminal_executor or UnavailableTerminalPlanExecutor()
     transfers = ManagedTransferService(
         transfer_store or MemoryTransferStore(),

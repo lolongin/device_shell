@@ -8,13 +8,14 @@ from pathlib import Path
 
 from ..application.automation import AutomationRuleRecord
 from ..application.commands import CommandGroup
+from ..application.operations import OperationRecord, TERMINAL_OPERATION_STATUSES
 from ..auto_response import deserialize_auto_response_rule, serialize_auto_response_rule
 from ..command_suggestions import CommandHistoryItem
 from .sqlite_profiles import SQLiteConnectionProfileStore
 
 
 class SQLiteDesktopStore(SQLiteConnectionProfileStore):
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(self, path: Path) -> None:
         super().__init__(path)
@@ -148,6 +149,99 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                 (rule_id,),
             )
 
+    def list_operations(self, *, kind: str, limit: int) -> list[OperationRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM operations
+                WHERE kind = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (kind, max(0, int(limit))),
+            ).fetchall()
+        return [self._operation(row) for row in rows]
+
+    def upsert_operation(self, record: OperationRecord) -> None:
+        payload = json.dumps(record.data, ensure_ascii=False, separators=(",", ":"))
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO operations (
+                    id, kind, direction, device_id, session_id, status, stage,
+                    message, progress_percent, bytes_transferred, total_bytes,
+                    bytes_per_second, eta_seconds, queue_position, retry_of,
+                    cancellable, error_code, revision, created_at, updated_at, data_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    stage=excluded.stage,
+                    message=excluded.message,
+                    progress_percent=excluded.progress_percent,
+                    bytes_transferred=excluded.bytes_transferred,
+                    total_bytes=excluded.total_bytes,
+                    bytes_per_second=excluded.bytes_per_second,
+                    eta_seconds=excluded.eta_seconds,
+                    queue_position=excluded.queue_position,
+                    retry_of=excluded.retry_of,
+                    cancellable=excluded.cancellable,
+                    error_code=excluded.error_code,
+                    revision=excluded.revision,
+                    updated_at=excluded.updated_at,
+                    data_json=excluded.data_json
+                """,
+                (
+                    record.id,
+                    record.kind,
+                    record.direction,
+                    record.device_id,
+                    record.session_id,
+                    record.status,
+                    record.stage,
+                    record.message,
+                    record.progress_percent,
+                    record.bytes_transferred,
+                    record.total_bytes,
+                    record.bytes_per_second,
+                    record.eta_seconds,
+                    record.queue_position,
+                    record.retry_of,
+                    int(record.cancellable),
+                    record.error_code,
+                    record.revision,
+                    record.created_at,
+                    record.updated_at,
+                    payload,
+                ),
+            )
+
+    def delete_terminal_operations(self, *, kind: str) -> int:
+        statuses = tuple(sorted(TERMINAL_OPERATION_STATUSES))
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM operations WHERE kind = ? AND status IN ({placeholders})",
+                (kind, *statuses),
+            )
+            return max(0, int(cursor.rowcount))
+
+    def prune_terminal_operations(self, *, kind: str, keep: int) -> None:
+        statuses = tuple(sorted(TERMINAL_OPERATION_STATUSES))
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connect() as connection:
+            connection.execute(
+                f"""
+                DELETE FROM operations
+                WHERE kind = ? AND status IN ({placeholders}) AND id NOT IN (
+                    SELECT id FROM operations
+                    WHERE kind = ? AND status IN ({placeholders})
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                )
+                """,
+                (kind, *statuses, kind, *statuses, max(0, int(keep))),
+            )
+
     def _migrate_desktop_schema(self) -> None:
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -180,7 +274,34 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                PRAGMA user_version = 3;
+                CREATE TABLE IF NOT EXISTS operations (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    direction TEXT NOT NULL DEFAULT '',
+                    device_id TEXT NOT NULL DEFAULT '',
+                    session_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    message TEXT NOT NULL DEFAULT '',
+                    progress_percent INTEGER NOT NULL DEFAULT 0,
+                    bytes_transferred INTEGER NOT NULL DEFAULT 0,
+                    total_bytes INTEGER NOT NULL DEFAULT 0,
+                    bytes_per_second INTEGER NOT NULL DEFAULT 0,
+                    eta_seconds INTEGER,
+                    queue_position INTEGER,
+                    retry_of TEXT,
+                    cancellable INTEGER NOT NULL DEFAULT 0,
+                    error_code TEXT NOT NULL DEFAULT '',
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_operations_kind_created
+                    ON operations(kind, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_operations_kind_status_updated
+                    ON operations(kind, status, updated_at DESC);
+                PRAGMA user_version = 4;
                 """
             )
 
@@ -209,4 +330,36 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
             rule=rule,
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _operation(row: sqlite3.Row) -> OperationRecord:
+        try:
+            data = json.loads(str(row["data_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return OperationRecord(
+            id=str(row["id"]),
+            kind=str(row["kind"]),
+            direction=str(row["direction"]),
+            device_id=str(row["device_id"]),
+            session_id=str(row["session_id"]),
+            status=str(row["status"]),
+            stage=str(row["stage"]),
+            message=str(row["message"]),
+            progress_percent=int(row["progress_percent"]),
+            bytes_transferred=int(row["bytes_transferred"]),
+            total_bytes=int(row["total_bytes"]),
+            bytes_per_second=int(row["bytes_per_second"]),
+            eta_seconds=(None if row["eta_seconds"] is None else int(row["eta_seconds"])),
+            queue_position=(None if row["queue_position"] is None else int(row["queue_position"])),
+            retry_of=(None if row["retry_of"] is None else str(row["retry_of"])),
+            cancellable=bool(row["cancellable"]),
+            error_code=str(row["error_code"]),
+            revision=int(row["revision"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            data={str(key): value for key, value in data.items()},
         )

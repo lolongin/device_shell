@@ -5,14 +5,49 @@ import time
 
 from fastapi.testclient import TestClient
 
-from src.desktop_backend.app import create_app
+from src.desktop_backend.app import _coalesce_terminal_events, create_app
 from src.desktop_backend.session_logging import FileSessionLogSink
-from src.desktop_backend.session_hub import SessionHub
+from src.desktop_backend.session_hub import SessionHub, TerminalEvent
 from src.repository import SampleDeviceRepository
 from pathlib import Path
 
 
 TOKEN = "desktop-test-token"
+
+
+def test_terminal_output_bursts_are_coalesced_without_crossing_boundaries() -> None:
+    output = [
+        TerminalEvent(
+            type="terminal.output",
+            session_id="session-1",
+            sequence=index,
+            data="x",
+            generation=2,
+        )
+        for index in range(1, 301)
+    ]
+    status = TerminalEvent(
+        type="terminal.status",
+        session_id="session-1",
+        sequence=301,
+        status="connected",
+        generation=2,
+    )
+    tail = TerminalEvent(
+        type="terminal.output",
+        session_id="session-1",
+        sequence=302,
+        data="tail",
+        generation=2,
+    )
+
+    coalesced = _coalesce_terminal_events([*output, status, tail])
+
+    assert len(coalesced) == 5
+    assert [event.sequence for event in coalesced] == [128, 256, 300, 301, 302]
+    assert "".join(event.data for event in coalesced if event.type == "terminal.output") == "x" * 300 + "tail"
+    assert coalesced[3] is status
+    assert coalesced[4] is tail
 
 
 def _client() -> TestClient:

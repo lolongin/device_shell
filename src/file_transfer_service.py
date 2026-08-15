@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import re
+import secrets
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +13,7 @@ from typing import Callable
 
 
 LogCallback = Callable[[str], None]
+ProgressCallback = Callable[[str, int], None]
 
 
 @dataclass(slots=True)
@@ -21,6 +25,16 @@ class TransferServiceConfig:
     username: str
     password: str
     writable: bool = True
+    advertised_host: str = ""
+
+
+@dataclass(slots=True)
+class _ManagedTransferRegistration:
+    operation_id: str
+    username: str
+    password: str
+    total_bytes: int
+    on_progress: ProgressCallback
 
 
 class TransferServiceController:
@@ -36,6 +50,9 @@ class TransferServiceController:
         self._lock = threading.Lock()
         self._bound_port = 0
         self._config: TransferServiceConfig | None = None
+        self._progress_lock = threading.Lock()
+        self._managed_transfers: dict[str, _ManagedTransferRegistration] = {}
+        self._ftp_authorizer = None
 
     @property
     def is_running(self) -> bool:
@@ -62,6 +79,7 @@ class TransferServiceController:
             username=config.username,
             password=config.password,
             writable=config.writable,
+            advertised_host=config.advertised_host,
         )
 
     def start(self, config: TransferServiceConfig) -> None:
@@ -87,6 +105,7 @@ class TransferServiceController:
                 username=config.username,
                 password=config.password,
                 writable=config.writable,
+                advertised_host=config.advertised_host,
             )
 
     def stop(self) -> None:
@@ -115,16 +134,76 @@ class TransferServiceController:
             self._protocol = ""
             self._bound_port = 0
             self._config = None
+            self._ftp_authorizer = None
+
+        with self._progress_lock:
+            self._managed_transfers.clear()
 
         if thread is not None:
             thread.join(timeout=3)
         self._thread = None
         self._on_log("文件传输服务已停止。")
 
+    def register_managed_transfer(
+        self,
+        operation_id: str,
+        *,
+        total_bytes: int,
+        on_progress: ProgressCallback,
+    ) -> tuple[str, str]:
+        config = self._config
+        if config is None or not self.is_running:
+            raise RuntimeError("文件传输服务尚未运行。")
+        username_base = re.sub(r"[^A-Za-z0-9_.-]", "_", config.username).strip("._-")
+        username = f"{(username_base or 'device')[:48]}_{operation_id.replace('-', '')[:12]}"
+        password = secrets.token_urlsafe(24)
+        registration = _ManagedTransferRegistration(
+            operation_id=operation_id,
+            username=username,
+            password=password,
+            total_bytes=max(0, int(total_bytes)),
+            on_progress=on_progress,
+        )
+        with self._progress_lock:
+            self._managed_transfers[username] = registration
+        authorizer = self._ftp_authorizer
+        if authorizer is not None:
+            permissions = "elradfmwMT" if config.writable else "elr"
+            authorizer.add_user(username, password, str(config.root), perm=permissions)
+        return username, password
+
+    def unregister_managed_transfer(self, username: str) -> None:
+        with self._progress_lock:
+            self._managed_transfers.pop(username, None)
+        authorizer = self._ftp_authorizer
+        if authorizer is not None and authorizer.has_user(username):
+            authorizer.remove_user(username)
+
+    def _managed_auth(self, username: str, password: str) -> bool:
+        with self._progress_lock:
+            registration = self._managed_transfers.get(username)
+            return bool(registration and secrets.compare_digest(registration.password, password))
+
+    def _display_username(self, username: str) -> str:
+        with self._progress_lock:
+            return "托管任务" if username in self._managed_transfers else username
+
+    def _report_progress(self, username: str, transferred: int) -> None:
+        with self._progress_lock:
+            registration = self._managed_transfers.get(username)
+        if registration is None:
+            return
+        registration.on_progress(
+            registration.operation_id,
+            min(registration.total_bytes, max(0, int(transferred)))
+            if registration.total_bytes
+            else max(0, int(transferred)),
+        )
+
     def _start_ftp(self, config: TransferServiceConfig) -> None:
         try:
             from pyftpdlib.authorizers import DummyAuthorizer
-            from pyftpdlib.handlers import FTPHandler
+            from pyftpdlib.handlers import DTPHandler, FTPHandler
             from pyftpdlib.servers import FTPServer
         except ModuleNotFoundError as exc:
             raise RuntimeError("FTP 服务需要安装 pyftpdlib。请运行: python -m pip install pyftpdlib") from exc
@@ -132,7 +211,27 @@ class TransferServiceController:
         permissions = "elradfmwMT" if config.writable else "elr"
         authorizer = DummyAuthorizer()
         authorizer.add_user(config.username, config.password, str(config.root), perm=permissions)
+        self._ftp_authorizer = authorizer
         on_log = self._on_log
+        report_progress = self._report_progress
+        display_username = self._display_username
+
+        class ProgressDTPHandler(DTPHandler):
+            def send(self, data):
+                result = super().send(data)
+                report_progress(
+                    str(getattr(self.cmd_channel, "username", "")),
+                    self.get_transmitted_bytes(),
+                )
+                return result
+
+            def recv(self, buffer_size):
+                data = super().recv(buffer_size)
+                report_progress(
+                    str(getattr(self.cmd_channel, "username", "")),
+                    self.get_transmitted_bytes() + len(data),
+                )
+                return data
 
         class LoggingFTPHandler(FTPHandler):
             def on_connect(self) -> None:
@@ -142,7 +241,7 @@ class TransferServiceController:
                 on_log(f"FTP 断开: {self.remote_ip}:{self.remote_port}")
 
             def on_login(self, username: str) -> None:
-                on_log(f"FTP 登录: {username}")
+                on_log(f"FTP 登录: {display_username(username)}")
 
             def on_file_sent(self, file: str) -> None:
                 on_log(f"FTP 下载: {file}")
@@ -151,6 +250,7 @@ class TransferServiceController:
                 on_log(f"FTP 上传: {file}")
 
         LoggingFTPHandler.authorizer = authorizer
+        LoggingFTPHandler.dtp_handler = ProgressDTPHandler
         try:
             server = FTPServer((config.host, config.port), LoggingFTPHandler)
         except OSError as exc:
@@ -175,6 +275,8 @@ class TransferServiceController:
             raise RuntimeError("SFTP 服务需要安装 asyncssh。") from exc
 
         on_log = self._on_log
+        managed_auth = self._managed_auth
+        report_progress = self._report_progress
 
         class PasswordSFTPServer(asyncssh.SSHServer):
             def connection_made(self, conn) -> None:
@@ -194,11 +296,19 @@ class TransferServiceController:
                 return True
 
             def validate_password(self, username: str, password: str) -> bool:
-                ok = username == config.username and password == config.password
-                on_log(f"SFTP {'登录成功' if ok else '登录失败'}: {username}")
+                ok = (
+                    username == config.username and password == config.password
+                ) or managed_auth(username, password)
+                display_user = config.username if username == config.username else "托管任务"
+                on_log(f"SFTP {'登录成功' if ok else '登录失败'}: {display_user}")
                 return ok
 
         class SharedDirectorySFTPServer(asyncssh.SFTPServer):
+            def __init__(self, chan, *args, **kwargs):
+                super().__init__(chan, *args, **kwargs)
+                get_extra_info = getattr(chan, "get_extra_info", None)
+                self._managed_username = str(get_extra_info("username") or "") if get_extra_info else ""
+
             def _ensure_writable(self) -> None:
                 if not config.writable:
                     raise asyncssh.SFTPPermissionDenied("共享目录为只读")
@@ -232,7 +342,27 @@ class TransferServiceController:
 
             def write(self, file_obj, offset, data):
                 self._ensure_writable()
-                return super().write(file_obj, offset, data)
+                result = super().write(file_obj, offset, data)
+                transferred = int(offset) + len(data)
+                if inspect.isawaitable(result):
+                    async def finish_write():
+                        value = await result
+                        report_progress(self._managed_username, transferred)
+                        return value
+                    return finish_write()
+                report_progress(self._managed_username, transferred)
+                return result
+
+            def read(self, file_obj, offset, size):
+                result = super().read(file_obj, offset, size)
+                if inspect.isawaitable(result):
+                    async def finish_read():
+                        value = await result
+                        report_progress(self._managed_username, int(offset) + len(value))
+                        return value
+                    return finish_read()
+                report_progress(self._managed_username, int(offset) + len(result))
+                return result
 
             def setstat(self, path, attrs):
                 self._ensure_writable()

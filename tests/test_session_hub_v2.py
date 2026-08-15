@@ -4,7 +4,7 @@ import asyncio
 
 from src.application.credentials import ConnectionTarget, SessionCredential
 from src.application.errors import SessionBusyError
-from src.desktop_backend.session_hub import ReplayBuffer, SessionHub
+from src.desktop_backend.session_hub import ReplayBuffer, SessionHub, TerminalEvent
 from src.session_protocol import SessionCallbacks
 
 
@@ -83,6 +83,18 @@ def _target(protocol: str = "ssh") -> ConnectionTarget:
         port=22,
         credentials=(SessionCredential("tester", "secret"),),
     )
+
+
+def test_terminal_event_caches_encoded_size_for_replay_accounting() -> None:
+    event = TerminalEvent(
+        type="terminal.output",
+        session_id="session-1",
+        sequence=1,
+        data="中文-output",
+    )
+
+    assert event.size_bytes == len("中文-output".encode("utf-8")) + 128
+    assert event._size_bytes == event.size_bytes
 
 
 def test_hub_connects_writes_resizes_and_reconnects_through_adapter() -> None:

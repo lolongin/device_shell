@@ -83,6 +83,16 @@ class SessionService:
     def list_sessions(self) -> list[SessionRecord]:
         return self._manager.list_sessions()
 
+    def connection_target(self, session_id: str) -> ConnectionTarget | None:
+        target_for = getattr(self._manager, "target_for", None)
+        if not callable(target_for):
+            return None
+        try:
+            target = target_for(session_id)
+        except KeyError as exc:
+            raise self._not_found(session_id) from exc
+        return target if isinstance(target, ConnectionTarget) else None
+
     async def create(
         self,
         device_id: str,

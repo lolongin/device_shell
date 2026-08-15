@@ -306,15 +306,35 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     for label in (
-        "设备侧客户端命令",
+        "手工客户端命令",
         "复制客户端命令",
         "文件服务运行日志",
-        "刷新服务日志",
-        "复制服务日志",
-        "清空服务日志",
+        "刷新日志",
+        "复制日志",
+        "清空日志",
     ):
         assert label in transfer
     assert "workspace.transferClientCommand" in transfer
+    assert ":type=\"passwordVisible ? 'text' : 'password'\"" in transfer
+    assert "settingsDraft.password" in transfer
+    assert "passwordDirty" in transfer
+    assert "has_password" in transfer
+    assert "登录账号" in transfer
+    assert "登录密码" in transfer
+    assert "手工服务用户" not in transfer
+    assert "手工服务密码" not in transfer
+    assert "password?: string" in transport
+    assert "transferPasswordInput?.getAttribute('type') === 'password'" in MAIN_TS.read_text(encoding="utf-8")
+    assert 'data-testid="transfer-terminal-environment"' in transfer
+    assert '<option value="auto">自动判断</option>' in transfer
+    assert '<option value="linux">Linux Shell</option>' in transfer
+    assert '<option value="vrp">Huawei VRP</option>' in transfer
+    assert "terminal_environment: terminalEnvironment.value" in transfer
+    assert "terminal_environment: 'auto' | 'linux' | 'vrp'" in transport
+    assert "transferEnvironmentSelect?.value === 'auto'" in MAIN_TS.read_text(encoding="utf-8")
+    assert "设备访问地址" in transfer
+    assert "settingsDraft.advertised_host" in transfer
+    assert "advertised_host: string" in TYPES_TS.read_text(encoding="utf-8")
     assert "workspace.transferServiceLog.join('\\n')" in transfer
     assert "navigator.clipboard.writeText" in transfer
     assert 'data-testid="transfer-service-log"' in transfer
@@ -346,13 +366,17 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert 'data-testid="operation-panel-resize-handle"' in app
     assert 'role="region"' in transfer
     assert 'aria-modal="true"' not in transfer
-    assert "transferActionHint" in transfer
+    assert "加入传输队列" in transfer
+    assert "sourceError" in transfer
+    assert "destinationError" in transfer
     assert "activeSessionConnected" in transfer
     assert 'role="region"' in upgrade
     assert 'aria-modal="true"' not in upgrade
     assert "upgradeActionHint" in upgrade
     assert "terminal session is not connected" in upgrade
     assert ".operation-readiness" in styles
+    assert "grid-template-rows: auto auto minmax(0, 1fr)" in styles
+    assert "transferFileToolsRect.bottom <= firstTransferFileRect.top + 1" in main
     assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
     assert ".workspace-stage { grid-column: 3;" in styles
     assert ".session-sidebar { grid-column: 4;" in styles
@@ -393,14 +417,17 @@ def test_terminal_toolbar_exposes_current_session_operations_without_navigation(
     assert ".terminal-operation-button" in styles
 
 
-def test_transfer_workspace_polls_service_log_while_open() -> None:
+def test_transfer_workspace_uses_realtime_events_without_polling() -> None:
     transfer = Path(
         "desktop/src/renderer/src/components/TransferWorkspace.vue"
     ).read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
 
-    assert "pollingTimer = setInterval" in transfer
+    assert "setInterval" not in transfer
     assert "void workspace.refreshOperations()" in transfer
     assert "void workspace.loadTransferServiceLog()" in transfer
+    assert "eventConnectedOnce" in store
+    assert "target.value[index].revision >= operation.revision" in store
 
 
 def test_electron_package_upgrade_has_python_owned_manual_fallback() -> None:
@@ -484,7 +511,7 @@ def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> N
     assert "const myOccupancyCount = computed" in store
     assert "owned_device_ids: string[]" in types
     assert "ownedDeviceIds.value = deviceResponse.owned_device_ids" in store
-    assert "ownedDeviceIds.value.includes(device.id)" in store
+    assert "ownedDeviceIdSet.value.has(device.id)" in store
     assert "ownedDeviceIds.value.length" in store
     assert "workspace.myOccupancyCount" in app
     assert "workspace.filteredDevices.length" in app
@@ -528,7 +555,7 @@ def test_electron_connection_actions_use_backend_parity_rules() -> None:
     assert "recommendedDeviceSessionKind" in app
     assert 'class="empty-workspace-context"' in app
     assert "availableDeviceProtocolLabels" in app
-    assert "workspace.openSimulatedSession" not in app[app.index('<section v-else class="empty-workspace">'):]
+    assert "workspace.openSimulatedSession" not in app[app.index('<section v-if="!workspace.activeSession" class="empty-workspace">'):]
     assert "device.can_connect_ssh" in app
     assert "device.can_connect_telnet" in app
     assert "device.can_connect_serial" in app
@@ -593,6 +620,13 @@ def test_electron_terminal_supports_split_context_actions_and_drag_drop() -> Non
     assert '@keydown="handleSplitResizeKeydown"' in split
     assert "desktopApi.createSession" not in split
     assert 'data-split-direction="splitDirection || \'none\'"' in split
+    assert 'v-for="session in warmSessionsForPane(pane)"' in split
+    assert 'v-show="activeSessionFor(pane)?.id === session.id"' in split
+    assert ':active="active && focusedPane === pane' in split
+    assert "MAX_WARM_TERMINAL_PANES = 6" in split
+    assert "function touchWarmSession" in split
+    assert "function warmSessionsForPane" in split
+    assert "const mountedSessionIds = computed" in split
     assert '.terminal-split-layout[data-split-direction="left"]' in styles
     assert '.terminal-split-layout[data-split-direction="top"]' in styles
 
@@ -857,11 +891,13 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
 
     assert "const liveWorkspaceTitle = computed" in app
     assert "const session = workspace.activeSession" in app
-    assert "workspace.devices.find((device) => device.id === session.device_id)?.name" in app
+    assert "deviceById.value.get(session.device_id)?.name" in app
     assert 'data-testid="live-workspace-title"' in app
     assert 'v-if="!workspace.sessions.length || sessionTabLayout !== \'top\'"' in app
     assert ":data-testid=\"group.id === activeSessionDeviceId ? 'live-workspace-title' : undefined\"" in app
     assert "const sessionDeviceGroups = computed" in app
+    assert "const sessionsByDevice = computed" in app
+    assert "const deviceById = computed" in app
     assert "const activeDeviceSessions = computed" in app
     assert "const activeProtocolLabels = computed" in app
     assert "const lastActiveSessionByDevice = ref" in app
@@ -870,8 +906,17 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert 'class="device-session-tabs"' in app
     assert 'class="session-tabs session-child-tabs"' in app
     assert 'v-for="session in activeDeviceSessions"' in app
-    assert ':sessions="activeDeviceSessions"' in app
-    assert ':key="activeSessionDeviceId"' in app
+    assert 'v-for="group in sessionDeviceGroups"' in app
+    assert 'v-for="group in warmSessionDeviceGroups"' in app
+    assert 'v-show="group.id === activeSessionDeviceId"' in app
+    assert ':sessions="group.sessions"' in app
+    assert ':key="group.id"' in app
+    assert "terminalSplitWorkspaces = new Map" in app
+    assert "MAX_WARM_DEVICE_WORKSPACES = 3" in app
+    assert "const warmSessionDeviceGroups = computed" in app
+    assert "activeSessionIdForDevice" in app
+    assert "terminalTabSwitchPreservesMountedTerminalBuffer" in MAIN_TS.read_text(encoding="utf-8")
+    assert "terminalWarmLruBoundsMountedXtermInstances" in MAIN_TS.read_text(encoding="utf-8")
     assert "const sessionDisplayLabels = computed" in manager
     assert "function sessionAccessibleLabel" in manager
     assert manager.count("sessionAccessibleLabel(session)") >= 4
@@ -902,7 +947,7 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert 'class="terminal-toolbar"' not in terminal
     assert ".terminal-bottom-toolbar" in styles
     assert "bottom: 34px" in styles
-    assert '<template v-if="!splitDirection && focusedPane === pane" #bottom-leading>' in split
+    assert '<template v-if="!splitDirection && focusedPane === pane && activeSessionFor(pane)?.id === session.id" #bottom-leading>' in split
     assert '<TerminalQuickToolbar v-if="splitDirection" />' in split
     assert "<TerminalQuickToolbar />" in split
     assert '<slot name="bottom-leading"></slot>' in terminal
@@ -911,6 +956,41 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert ".terminal-bottom-leading" in styles
     assert ".device-session-tabs" in styles
     assert ".session-child-tabs" in styles
+    assert "TERMINAL_OUTPUT_BATCH_MS = 8" in terminal
+    assert "TERMINAL_OUTPUT_BATCH_MAX_CHARS = 64 * 1024" in terminal
+    assert "function queueTerminalOutput" in terminal
+    assert "function flushTerminalOutput" in terminal
+    assert "queueTerminalOutput(event.data)" in terminal
+    assert "terminal?.write(event.data)" not in terminal
+
+
+def test_electron_realtime_automation_refreshes_are_coalesced() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert "function scheduleAutomationRefresh" in store
+    assert "let automationRefreshPromise: Promise<void> | null = null" in store
+    assert "let automationRefreshQueued = false" in store
+    assert "scheduleAutomationRefresh()" in store
+    assert "void refreshAutomation()" in store
+    assert "if (automationRefreshPromise)" in store
+    assert "const deviceFilterIndex = computed" in store
+    assert "const ownedDeviceIdSet = computed" in store
+    assert "ownedDeviceIdSet.value.has(device.id)" in store
+
+
+def test_electron_secondary_workspaces_are_lazy_loaded() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+
+    assert "defineAsyncComponent" in app
+    for component in (
+        "AutomationWorkspace",
+        "TransferWorkspace",
+        "UpgradeWorkspace",
+    ):
+        assert f"const {component} = defineAsyncComponent" in app
+    assert '<AutomationWorkspace v-if="workspace.automationPanelOpen" />' in app
+    assert '<TransferWorkspace v-if="workspace.transferPanelOpen" />' in app
+    assert '<UpgradeWorkspace v-if="workspace.upgradePanelOpen" />' in app
 
 
 def test_electron_profile_list_keeps_legacy_context_menu_actions() -> None:
@@ -987,6 +1067,8 @@ def test_electron_server_groups_remember_collapsed_state() -> None:
 
 def test_electron_command_workspace_keeps_find_replace_feedback() -> None:
     command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8")
 
     assert "const findStatus = ref('')" in command
     assert "const currentMatchIndex = computed" in command
@@ -996,6 +1078,11 @@ def test_electron_command_workspace_keeps_find_replace_feedback() -> None:
     assert "已替换当前匹配。" in command
     assert "@select=\"updateSelectionState\"" in command
     assert "findStatus || matchLabel" in command
+    assert "const dispatchFeedback = ref('')" in command
+    assert "dispatchFeedback.value = broadcast" in command
+    assert ':class="{ success: dispatchFeedback }"' in command
+    assert "notice.value = broadcast" not in store
+    assert "commandEnterSendDoesNotReflowWorkspace" in main
 
 
 def test_electron_shortcuts_are_scoped_and_discoverable() -> None:
@@ -1058,13 +1145,27 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
     assert "dispatchScopeLabel" in command
     assert "dispatchTargetLabel" in command
     assert ".command-dispatch-context" in styles
-    assert "visibleCommandSuggestions" in command
+    assert "visibleCommandSuggestions" not in command
+    assert "最近使用" not in command
+    assert 'class="command-suggestions"' not in command
+    assert ".command-suggestions" not in styles
     assert "saveStateLabel" in command
     assert 'class="command-editor-meta"' in command
+    assert 'class="command-editor-surface"' in command
+    assert 'class="command-line-numbers"' in command
+    assert "const lineNumberText = computed" in command
+    assert 'v-for="line in lineNumbers"' not in command
+    assert 'aria-hidden="true"' in command
+    assert '@scroll="syncEditorScroll"' in command
+    assert 'wrap="off"' in command
+    assert ".command-line-numbers" in styles
     assert 'class="command-target-badge"' in command
     assert 'class="command-dispatch-buttons"' in command
+    assert "order: 3" in styles
+    assert "commandTabsRect.top >= commandEditorRect.bottom" in MAIN_TS.read_text(encoding="utf-8")
     assert "@container (max-width: 700px)" in styles
     assert "commandWorkspaceHasScannableEditorAndDispatchHierarchy" in MAIN_TS.read_text(encoding="utf-8")
+    assert "commandEditorShowsSynchronizedLineNumbers" in MAIN_TS.read_text(encoding="utf-8")
     assert "commandWorkspaceFitsNarrowStage" in MAIN_TS.read_text(encoding="utf-8")
 
 
@@ -1399,7 +1500,8 @@ def test_electron_transfer_files_are_height_bounded_and_show_loading_feedback() 
     assert ':aria-busy="workspace.transferFilesLoading"' in transfer
     assert 'class="transfer-file-loading"' in transfer
     assert "正在读取共享目录" in transfer
-    assert ".transfer-files-card { max-height:" in styles
+    assert "height: min(330px, 38vh); max-height: min(330px, 38vh)" in styles
+    assert "grid-template-rows: auto auto minmax(0, 1fr)" in styles
     assert "scrollbar-gutter: stable" in styles
     assert ".transfer-file-loading" in styles
 

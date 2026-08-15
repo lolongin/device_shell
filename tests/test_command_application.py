@@ -180,12 +180,13 @@ def test_sqlite_desktop_schema_version_and_command_tables(tmp_path: Path) -> Non
             )
         }
 
-    assert version == 3
+    assert version == SQLiteDesktopStore.SCHEMA_VERSION
     assert {
         "connection_profiles",
         "command_groups",
         "command_history",
         "automation_rules",
+        "operations",
     } <= tables
 
 

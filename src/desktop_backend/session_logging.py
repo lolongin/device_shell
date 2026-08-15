@@ -14,6 +14,9 @@ from typing import Protocol, TextIO
 from ..terminal_execution import strip_terminal_ansi
 
 
+LOG_FLUSH_BATCH_RECORDS = 64
+
+
 class SessionLogSink(Protocol):
     def record(
         self,
@@ -216,10 +219,14 @@ class FileSessionLogSink:
         if not path.exists():
             return "", False
         limit = max(1_024, min(2_000_000, int(max_chars)))
-        content = path.read_text(encoding="utf-8", errors="replace")
-        if len(content) <= limit:
-            return content, False
-        return content[-limit:], True
+        size = path.stat().st_size
+        read_size = min(size, limit * 4 + 4)
+        with path.open("rb") as handle:
+            if read_size < size:
+                handle.seek(-read_size, 2)
+            content = handle.read(read_size).decode("utf-8", errors="replace")
+        truncated = read_size < size or len(content) > limit
+        return (content[-limit:] if truncated else content), truncated
 
     def shutdown(self) -> None:
         if self._closed:
@@ -247,6 +254,7 @@ class FileSessionLogSink:
     def _run(self) -> None:
         handles: dict[str, TextIO] = {}
         session_devices: dict[str, str] = {}
+        unflushed_records: dict[str, int] = {}
         try:
             while True:
                 command = self._queue.get()
@@ -258,11 +266,13 @@ class FileSessionLogSink:
                         handle.flush()
                         handle.close()
                     session_devices.pop(command.session_id, None)
+                    unflushed_records.pop(command.session_id, None)
                     continue
                 if command.kind == "flush":
                     handle = handles.get(command.session_id)
                     if handle is not None:
                         handle.flush()
+                    unflushed_records[command.session_id] = 0
                     if command.completion is not None:
                         command.completion.set()
                     continue
@@ -277,6 +287,7 @@ class FileSessionLogSink:
                         )
                         if command.result is not None:
                             command.result["moved_count"] = moved_count
+                        unflushed_records.clear()
                     except (OSError, shutil.Error) as exc:
                         if command.result is not None:
                             command.result["error"] = str(exc)
@@ -294,6 +305,7 @@ class FileSessionLogSink:
                         )
                         if command.result is not None:
                             command.result["archived_path"] = str(archived_path or "")
+                        unflushed_records[command.session_id] = 0
                     except OSError as exc:
                         if command.result is not None:
                             command.result["error"] = str(exc)
@@ -317,7 +329,13 @@ class FileSessionLogSink:
                     len(strip_terminal_ansi(command.text).encode("utf-8")),
                 )
                 self._write_record(handle, command.channel, command.text)
-                handle.flush()
+                unflushed_records[command.session_id] = unflushed_records.get(command.session_id, 0) + 1
+                if (
+                    unflushed_records[command.session_id] >= LOG_FLUSH_BATCH_RECORDS
+                    or self._queue.empty()
+                ):
+                    handle.flush()
+                    unflushed_records[command.session_id] = 0
         finally:
             for handle in handles.values():
                 handle.flush()

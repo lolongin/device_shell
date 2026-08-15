@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Box,
   Cable,
@@ -30,9 +30,6 @@ import {
 import ConnectionProfileDialog from './components/ConnectionProfileDialog.vue'
 import ConnectionGroupDialog from './components/ConnectionGroupDialog.vue'
 import CommandWorkspace from './components/CommandWorkspace.vue'
-import AutomationWorkspace from './components/AutomationWorkspace.vue'
-import TransferWorkspace from './components/TransferWorkspace.vue'
-import UpgradeWorkspace from './components/UpgradeWorkspace.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SessionManager from './components/SessionManager.vue'
@@ -62,6 +59,10 @@ import type {
   SessionSummary
 } from './types'
 
+const AutomationWorkspace = defineAsyncComponent(() => import('./components/AutomationWorkspace.vue'))
+const TransferWorkspace = defineAsyncComponent(() => import('./components/TransferWorkspace.vue'))
+const UpgradeWorkspace = defineAsyncComponent(() => import('./components/UpgradeWorkspace.vue'))
+
 const workspace = useWorkspaceStore()
 const backendFailure = ref('')
 const workspaceRecoveryBusy = ref(false)
@@ -79,6 +80,7 @@ const PROFILE_GROUP_COLLAPSE_KEY = 'device-tui.desktop-v2.profile-collapsed-grou
 const NAVIGATOR_MIN_WIDTH = 400
 const NAVIGATOR_MAX_WIDTH = 760
 const ACTIVITY_RAIL_WIDTH = 52
+const MAX_WARM_DEVICE_WORKSPACES = 3
 const windowWidth = ref(window.innerWidth)
 const themeMode = ref<ThemeMode>(localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark')
 const alwaysOnTop = ref(localStorage.getItem(ALWAYS_ON_TOP_KEY) === '1')
@@ -122,12 +124,15 @@ const sessionContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const sessionManagerDeviceContextMenu = ref<{ deviceId: string; x: number; y: number } | null>(null)
 const sessionManagerDeviceContextMenuElement = ref<HTMLElement | null>(null)
 const sessionManagerDeviceContextMenuReturnFocus = ref<HTMLElement | null>(null)
-const terminalSplitWorkspace = ref<InstanceType<typeof TerminalSplitWorkspace> | null>(null)
+type TerminalSplitWorkspaceInstance = InstanceType<typeof TerminalSplitWorkspace>
+const terminalSplitWorkspaces = new Map<string, TerminalSplitWorkspaceInstance>()
+const terminalSplitStates = ref<Record<string, boolean>>({})
 const terminalSplitActive = ref(false)
 const profileContextMenu = ref<{ profile: ConnectionProfileSummary; x: number; y: number } | null>(null)
 const profileContextMenuElement = ref<HTMLElement | null>(null)
 const profileContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const lastActiveSessionByDevice = ref<Record<string, string>>({})
+const warmDeviceWorkspaceIds = ref<string[]>([])
 let unsubscribeBackendExit: (() => void) | null = null
 let unsubscribeBackendRecovered: (() => void) | null = null
 let stopApplicationEvents: (() => void) | null = null
@@ -323,10 +328,22 @@ const visibleProfileGroupCount = computed(() =>
 const selectedProfile = computed(
   () => workspace.profiles.find((profile) => profile.id === selectedProfileId.value) || null
 )
+const deviceById = computed(() => new Map(
+  workspace.devices.map((device) => [device.id, device])
+))
+const sessionsByDevice = computed(() => {
+  const groups = new Map<string, SessionSummary[]>()
+  for (const session of workspace.sessions) {
+    const sessions = groups.get(session.device_id)
+    if (sessions) sessions.push(session)
+    else groups.set(session.device_id, [session])
+  }
+  return groups
+})
 const liveWorkspaceTitle = computed(() => {
   const session = workspace.activeSession
   if (session) {
-    return workspace.devices.find((device) => device.id === session.device_id)?.name
+    return deviceById.value.get(session.device_id)?.name
       || session.title
       || session.device_id
   }
@@ -335,10 +352,8 @@ const liveWorkspaceTitle = computed(() => {
     : selectedProfile.value?.name || '选择一个连接配置'
 })
 const sessionDeviceGroups = computed(() => {
-  const deviceIds = [...new Set(workspace.sessions.map((session) => session.device_id))]
-  return deviceIds.map((deviceId) => {
-    const sessions = workspace.sessions.filter((session) => session.device_id === deviceId)
-    const device = workspace.devices.find((candidate) => candidate.id === deviceId) || null
+  return [...sessionsByDevice.value.entries()].map(([deviceId, sessions]) => {
+    const device = deviceById.value.get(deviceId) || null
     return {
       id: deviceId,
       label: device?.name || sessions[0]?.title.split(' · ').slice(1).join(' · ') || deviceId,
@@ -348,9 +363,13 @@ const sessionDeviceGroups = computed(() => {
   })
 })
 const activeSessionDeviceId = computed(() => workspace.activeSession?.device_id || '')
-const activeDeviceSessions = computed(() => workspace.sessions.filter(
-  (session) => session.device_id === activeSessionDeviceId.value
-))
+const warmSessionDeviceGroups = computed(() => {
+  const warmIds = new Set([...warmDeviceWorkspaceIds.value, activeSessionDeviceId.value])
+  return sessionDeviceGroups.value.filter((group) => warmIds.has(group.id))
+})
+const activeDeviceSessions = computed(() =>
+  sessionsByDevice.value.get(activeSessionDeviceId.value) || []
+)
 const activeProtocolLabels = computed<Record<string, string>>(() => {
   const totals = new Map<string, number>()
   const seen = new Map<string, number>()
@@ -366,6 +385,48 @@ const activeProtocolLabels = computed<Record<string, string>>(() => {
   }))
 })
 
+function setTerminalSplitWorkspace(deviceId: string, instance: unknown): void {
+  if (instance) {
+    terminalSplitWorkspaces.set(deviceId, instance as TerminalSplitWorkspaceInstance)
+  } else {
+    terminalSplitWorkspaces.delete(deviceId)
+    const nextStates = { ...terminalSplitStates.value }
+    delete nextStates[deviceId]
+    terminalSplitStates.value = nextStates
+  }
+}
+
+function touchWarmDeviceWorkspace(deviceId: string): void {
+  if (!deviceId) return
+  const currentIds = new Set(sessionDeviceGroups.value.map((group) => group.id))
+  warmDeviceWorkspaceIds.value = [
+    deviceId,
+    ...warmDeviceWorkspaceIds.value.filter((id) => id !== deviceId && currentIds.has(id))
+  ].slice(0, MAX_WARM_DEVICE_WORKSPACES)
+}
+
+function activeSessionIdForDevice(deviceId: string, sessions: SessionSummary[]): string {
+  if (deviceId === activeSessionDeviceId.value) return workspace.activeSessionId
+  const remembered = lastActiveSessionByDevice.value[deviceId]
+  return sessions.some((session) => session.id === remembered)
+    ? remembered
+    : sessions[0]?.id || ''
+}
+
+function updateTerminalSplitState(deviceId: string, active: boolean): void {
+  terminalSplitStates.value = { ...terminalSplitStates.value, [deviceId]: active }
+  if (deviceId === activeSessionDeviceId.value) terminalSplitActive.value = active
+}
+
+watch(
+  activeSessionDeviceId,
+  (deviceId) => {
+    touchWarmDeviceWorkspace(deviceId)
+    terminalSplitActive.value = Boolean(deviceId && terminalSplitStates.value[deviceId])
+  },
+  { immediate: true }
+)
+
 function sessionKindLabel(kind: string): string {
   return ({ ssh: 'SSH', telnet: 'Telnet', serial: '串口', simulated: '模拟终端' } as Record<string, string>)[kind]
     || kind.toLocaleUpperCase()
@@ -377,7 +438,7 @@ function activateSession(sessionId: string): void {
 }
 
 function activateSessionDevice(deviceId: string): void {
-  const sessions = workspace.sessions.filter((session) => session.device_id === deviceId)
+  const sessions = sessionsByDevice.value.get(deviceId) || []
   if (!sessions.length) return
   const remembered = lastActiveSessionByDevice.value[deviceId]
   activateSession(sessions.some((session) => session.id === remembered) ? remembered : sessions[0].id)
@@ -445,7 +506,7 @@ function selectDevice(deviceRowId: string): void {
 function selectDeviceByDeviceId(deviceId: string): boolean {
   const device = (workspace.selectedDevice?.id === deviceId ? workspace.selectedDevice : null)
     || workspace.filteredDevices.find((candidate) => candidate.id === deviceId)
-    || workspace.devices.find((candidate) => candidate.id === deviceId)
+    || deviceById.value.get(deviceId)
   if (!device) return false
   selectDevice(device.row_id)
   return true
@@ -713,7 +774,7 @@ function runDeviceContextAction(action: 'claim' | 'release' | 'power_off'): void
 
 function sessionDevice(session: SessionSummary | null): DeviceSummary | null {
   if (!session) return null
-  return workspace.devices.find((device) => device.id === session.device_id) || null
+  return deviceById.value.get(session.device_id) || null
 }
 
 function openSessionContextMenu(event: MouseEvent, session: SessionSummary): void {
@@ -732,7 +793,7 @@ function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string
 
 function sessionManagerContextDevice(): DeviceSummary | null {
   const deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''
-  return workspace.devices.find((device) => device.id === deviceId) || null
+  return deviceById.value.get(deviceId) || null
 }
 
 function sessionManagerDeviceIds(): string[] {
@@ -769,7 +830,7 @@ function locateSessionManagerDevice(deviceId = sessionManagerDeviceContextMenu.v
     workspace.clearDeviceFilters()
   }
   if (selectDeviceByDeviceId(deviceId)) {
-    workspace.notice = `已定位到设备: ${workspace.devices.find((device) => device.id === deviceId)?.name || deviceId}`
+    workspace.notice = `已定位到设备: ${deviceById.value.get(deviceId)?.name || deviceId}`
   }
   closeSessionManagerDeviceContextMenu()
 }
@@ -803,12 +864,21 @@ function startSessionTabDrag(event: DragEvent, session: SessionSummary): void {
 function splitSessionFromContext(direction: SplitDirection): void {
   const session = sessionContextMenu.value?.session
   if (!session) return
-  terminalSplitWorkspace.value?.splitSession(session.id, direction)
+  const splitWorkspace = terminalSplitWorkspaces.get(session.device_id)
+  if (splitWorkspace) {
+    splitWorkspace.splitSession(session.id, direction)
+  } else {
+    activateSession(session.id)
+    void nextTick(() => {
+      terminalSplitWorkspaces.get(session.device_id)?.splitSession(session.id, direction)
+    })
+  }
   closeSessionContextMenu()
 }
 
 function resetTerminalSplit(): void {
-  terminalSplitWorkspace.value?.resetSplit()
+  const session = sessionContextMenu.value?.session || workspace.activeSession
+  if (session) terminalSplitWorkspaces.get(session.device_id)?.resetSplit()
   closeSessionContextMenu()
 }
 
@@ -834,7 +904,7 @@ function handleSessionTabKeydown(event: KeyboardEvent, session: SessionSummary):
 }
 
 function canCloseSessionRelative(session: SessionSummary, mode: 'current' | 'left' | 'right' | 'others' | 'all'): boolean {
-  const deviceSessions = workspace.sessions.filter((candidate) => candidate.device_id === session.device_id)
+  const deviceSessions = sessionsByDevice.value.get(session.device_id) || []
   const index = deviceSessions.findIndex((candidate) => candidate.id === session.id)
   if (mode === 'all') return deviceSessions.length > 0
   if (index < 0) return false
@@ -2018,9 +2088,9 @@ onBeforeUnmount(() => {
       ><span aria-hidden="true"></span></div>
     </aside>
 
-    <AutomationWorkspace />
-    <TransferWorkspace />
-    <UpgradeWorkspace />
+    <AutomationWorkspace v-if="workspace.automationPanelOpen" />
+    <TransferWorkspace v-if="workspace.transferPanelOpen" />
+    <UpgradeWorkspace v-if="workspace.upgradePanelOpen" />
     <div
       v-if="operationPanelOpen"
       class="navigator-resize-handle operation-panel-resize-handle"
@@ -2357,21 +2427,23 @@ onBeforeUnmount(() => {
       </div>
 
       <TerminalSplitWorkspace
-        v-if="workspace.activeSession"
-        :key="activeSessionDeviceId"
-        ref="terminalSplitWorkspace"
-        :device-id="activeSessionDeviceId"
-        :sessions="activeDeviceSessions"
-        :active-session-id="workspace.activeSessionId"
+        v-for="group in warmSessionDeviceGroups"
+        v-show="group.id === activeSessionDeviceId"
+        :key="group.id"
+        :ref="(instance) => setTerminalSplitWorkspace(group.id, instance)"
+        :active="group.id === activeSessionDeviceId"
+        :device-id="group.id"
+        :sessions="group.sessions"
+        :active-session-id="activeSessionIdForDevice(group.id, group.sessions)"
         @activate="activateSession"
         @status="workspace.updateSessionStatus"
         @automation="openSessionAutomation"
         @transfer="openSessionTransfer"
         @upgrade="openSessionUpgrade"
         @context="openSessionToolbarContext"
-        @split-change="terminalSplitActive = $event"
+        @split-change="updateTerminalSplitState(group.id, $event)"
       />
-      <section v-else class="empty-workspace">
+      <section v-if="!workspace.activeSession" class="empty-workspace">
         <div class="empty-icon">
           <MonitorDot v-if="activeSection === 'devices'" :size="26" />
           <ServerCog v-else :size="26" />

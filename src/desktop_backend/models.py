@@ -425,6 +425,7 @@ class TransferSettingsModel(BaseModel):
     api_version: int = API_VERSION
     protocol: Literal["ftp", "sftp"]
     host: str
+    advertised_host: str
     port: int
     root: str
     username: str
@@ -432,6 +433,7 @@ class TransferSettingsModel(BaseModel):
     has_password: bool
     service_running: bool
     bound_port: int
+    idle_stop_at: str = ""
 
 
 class TransferSettingsUpdateRequest(BaseModel):
@@ -439,9 +441,11 @@ class TransferSettingsUpdateRequest(BaseModel):
 
     protocol: Literal["ftp", "sftp"]
     host: str = Field(default="0.0.0.0", max_length=255)
+    advertised_host: str = Field(default="", max_length=255)
     port: int = Field(default=0, ge=0, le=65535)
     root: str = Field(min_length=1, max_length=4_096)
     username: str = Field(min_length=1, max_length=255)
+    password: str | None = Field(default=None, max_length=1_024)
     writable: bool = True
 
 
@@ -464,6 +468,8 @@ class SharedFileListResponse(BaseModel):
     files: list[SharedFileModel]
     count: int
     truncated: bool
+    total: int = 0
+    next_offset: int | None = None
 
 
 class ManagedTransferStartRequest(BaseModel):
@@ -474,6 +480,7 @@ class ManagedTransferStartRequest(BaseModel):
     source_path: str = Field(min_length=1, max_length=4_096)
     destination_path: str = Field(min_length=1, max_length=4_096)
     overwrite: bool = False
+    terminal_environment: Literal["auto", "linux", "vrp"] = "auto"
 
 
 class PackageUpgradeStartRequest(BaseModel):
@@ -536,6 +543,12 @@ class OperationModel(BaseModel):
     stage: str
     message: str
     progress_percent: int
+    bytes_transferred: int
+    total_bytes: int
+    bytes_per_second: int
+    eta_seconds: int | None
+    queue_position: int | None
+    retry_of: str | None
     cancellable: bool
     error_code: str
     revision: int
@@ -552,6 +565,17 @@ class OperationResponse(BaseModel):
 class OperationListResponse(BaseModel):
     api_version: int = API_VERSION
     operations: list[OperationModel]
+
+
+class TransferQueueResumeResponse(BaseModel):
+    api_version: int = API_VERSION
+    session_id: str
+    resumed_count: int
+
+
+class DeleteHistoryResponse(BaseModel):
+    api_version: int = API_VERSION
+    deleted_count: int
 
 
 class AiPlanRequest(BaseModel):

@@ -69,6 +69,8 @@ class SendStep:
     text: str = ""
     control: str = ""
     secret_ref: str = ""
+    secret_prefix: str = ""
+    secret_suffix: str = ""
     append_enter: bool = True
     label: str = ""
     name: str = ""
@@ -578,6 +580,8 @@ class TerminalExecutionRunner:
                 text=step.text,
                 control=step.control,
                 secret_ref=step.secret_ref,
+                secret_prefix=step.secret_prefix,
+                secret_suffix=step.secret_suffix,
                 append_enter=step.append_enter,
             )
             self._finish_active_step_locked("completed")
@@ -676,6 +680,8 @@ class TerminalExecutionRunner:
         text: str,
         control: str,
         secret_ref: str,
+        secret_prefix: str = "",
+        secret_suffix: str = "",
         append_enter: bool,
     ) -> TerminalInput:
         if control:
@@ -695,8 +701,9 @@ class TerminalExecutionRunner:
                     f"本地凭据为空: {secret_ref}",
                 )
             self._known_secrets.append(value)
+            rendered = f"{secret_prefix}{value}{secret_suffix}"
             return TerminalInput(
-                value + ("\r" if append_enter else ""),
+                rendered + ("\r" if append_enter else ""),
                 sensitive=True,
                 secret_ref=secret_ref,
             )
@@ -968,10 +975,21 @@ class TerminalExecutionCoordinator:
 
 def _parse_send_step(raw: dict[str, Any], index: int) -> SendStep:
     text, control, secret_ref = _exclusive_input(raw, f"步骤 {index}")
+    secret_prefix = str(raw.get("secret_prefix") or "")
+    secret_suffix = str(raw.get("secret_suffix") or "")
+    if (secret_prefix or secret_suffix) and not secret_ref:
+        raise TerminalPlanError(
+            "invalid_plan",
+            f"步骤 {index} 只能为凭据引用设置 secret_prefix/secret_suffix。",
+        )
+    if len(secret_prefix) > 1_024 or len(secret_suffix) > 1_024:
+        raise TerminalPlanError("invalid_plan", f"步骤 {index} 凭据前后缀过长。")
     return SendStep(
         text=text,
         control=control,
         secret_ref=secret_ref,
+        secret_prefix=secret_prefix,
+        secret_suffix=secret_suffix,
         append_enter=bool(raw.get("append_enter", True)),
         label=str(raw.get("label") or text or control or secret_ref),
         name=_step_name(raw, index),
@@ -1153,13 +1171,19 @@ def _exclusive_input(
         )
     if control and control not in CONTROL_TEXT:
         raise TerminalPlanError("invalid_plan", f"{label} 控制输入无效: {control}")
+    runtime_transfer_ref = bool(
+        re.fullmatch(
+            r"managed_transfer\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:username|password)",
+            secret_ref,
+        )
+    )
     if secret_ref not in {
         "",
         "transfer.username",
         "transfer.password",
         "file_transfer.username",
         "file_transfer.password",
-    }:
+    } and not runtime_transfer_ref:
         raise TerminalPlanError(
             "secret_ref_not_allowed",
             f"{label} 不允许使用凭据引用: {secret_ref}",
@@ -1232,7 +1256,7 @@ def _match_token(
     alias_patterns = {
         "ftp_prompt": r"(?im)(?:^|\n)\s*ftp>\s*$",
         "sftp_prompt": r"(?im)(?:^|\n)\s*(?:sftp|sftp-client)>\s*$",
-        "username_prompt": r"(?i)(?:user(?:name)?|name)\s*:\s*$",
+        "username_prompt": r"(?i)(?:user(?:name)?|name)(?:\s*\([^\r\n)]{0,160}\))?\s*:\s*$",
         "password_prompt": r"(?i)password\s*:\s*$",
         "host_key_prompt": r"(?i)(?:yes/no|continue connecting).{0,80}$",
         "pagination_prompt": r"(?i)(?:----\s*more\s*----|--more--)\s*$",

@@ -7,15 +7,19 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 from typing import Any
 
 from .package_upgrade import PackageFileEntry, parse_dir_entries
 
 
 MAX_TRANSFER_FILES = 1_000
+MAX_TRANSFER_FILE_SCAN = 10_000
 _DEVICE_STORAGE_RE = re.compile(
     r"^[A-Za-z0-9_.-]+(?:#[A-Za-z0-9_.-]+)?:/(?:[^/\\\x00-\x1f]+/)*[^/\\\x00-\x1f]+$"
 )
+TERMINAL_ENVIRONMENTS = frozenset({"auto", "linux", "vrp"})
+_LINUX_MARKER_PREFIX = "__DEVICE_TUI_TRANSFER_"
 
 
 class ManagedTransferError(ValueError):
@@ -39,6 +43,8 @@ class SharedFileInfo:
 class SharedFileCatalog:
     files: tuple[SharedFileInfo, ...]
     truncated: bool = False
+    total: int = 0
+    next_offset: int | None = None
 
 
 def resolve_shared_root(root: Path) -> Path:
@@ -99,6 +105,10 @@ def list_shared_files(
     relative_path: str = "",
     recursive: bool = True,
     limit: int = 200,
+    query: str = "",
+    sort: str = "name",
+    order: str = "asc",
+    offset: int = 0,
 ) -> SharedFileCatalog:
     resolved_root = resolve_shared_root(root)
     if not 1 <= limit <= MAX_TRANSFER_FILES:
@@ -130,8 +140,17 @@ def list_shared_files(
             "枚举路径必须是共享目录中的子目录。",
         )
 
+    normalized_query = query.strip().casefold()
+    normalized_sort = sort.strip().casefold()
+    normalized_order = order.strip().casefold()
+    if normalized_sort not in {"name", "size", "modified"}:
+        raise ManagedTransferError("invalid_request", "不支持的文件排序字段。")
+    if normalized_order not in {"asc", "desc"}:
+        raise ManagedTransferError("invalid_request", "文件排序方向必须是 asc 或 desc。")
+    safe_offset = max(0, int(offset))
     files: list[SharedFileInfo] = []
-    truncated = False
+    scan_truncated = False
+    scanned = 0
     for directory, directory_names, file_names in os.walk(
         resolved_start,
         followlinks=False,
@@ -143,6 +162,10 @@ def list_shared_files(
             if not (directory_path / name).is_symlink()
         )
         for name in sorted(file_names):
+            scanned += 1
+            if scanned > MAX_TRANSFER_FILE_SCAN:
+                scan_truncated = True
+                break
             candidate = directory_path / name
             if candidate.is_symlink():
                 continue
@@ -154,14 +177,27 @@ def list_shared_files(
             if not resolved.is_file() or not resolved.is_relative_to(resolved_root):
                 continue
             relative_file = PurePosixPath(resolved.relative_to(resolved_root).as_posix())
-            files.append(_file_info(relative_file, stat))
-            if len(files) > limit:
-                truncated = True
-                break
-        if truncated or not recursive:
+            info = _file_info(relative_file, stat)
+            if normalized_query and normalized_query not in info.relative_path.casefold():
+                continue
+            files.append(info)
+        if scan_truncated or not recursive:
             break
-    files.sort(key=lambda item: item.relative_path.casefold())
-    return SharedFileCatalog(tuple(files[:limit]), truncated)
+    key = {
+        "name": lambda item: (item.name.casefold(), item.relative_path.casefold()),
+        "size": lambda item: (item.size_bytes, item.relative_path.casefold()),
+        "modified": lambda item: (item.modified_at, item.relative_path.casefold()),
+    }[normalized_sort]
+    files.sort(key=key, reverse=normalized_order == "desc")
+    total = len(files)
+    page = files[safe_offset : safe_offset + limit]
+    next_offset = safe_offset + len(page) if safe_offset + len(page) < total else None
+    return SharedFileCatalog(
+        tuple(page),
+        scan_truncated or next_offset is not None,
+        total,
+        next_offset,
+    )
 
 
 def validate_destination_path(destination_path: str) -> str:
@@ -184,6 +220,109 @@ def validate_destination_path(destination_path: str) -> str:
             "目标路径不能包含空目录、. 或 ..。",
         )
     return normalized
+
+
+def normalize_terminal_environment(value: str) -> str:
+    normalized = value.strip().casefold() or "auto"
+    if normalized not in TERMINAL_ENVIRONMENTS:
+        raise ManagedTransferError(
+            "invalid_terminal_environment",
+            f"不支持的终端环境: {value}",
+        )
+    return normalized
+
+
+def validate_linux_file_path(path: str) -> str:
+    raw = path.strip()
+    if not raw.startswith("/") or raw == "/":
+        raise ManagedTransferError(
+            "invalid_destination_path",
+            "Linux 文件路径必须是包含文件名的绝对路径，例如 /tmp/image.cc。",
+        )
+    if any(ord(character) < 32 or character == "\x7f" for character in raw):
+        raise ManagedTransferError(
+            "invalid_destination_path",
+            "Linux 文件路径不能包含控制字符。",
+        )
+    if any(part in {"", ".", ".."} for part in raw.split("/")[1:]):
+        raise ManagedTransferError(
+            "invalid_destination_path",
+            "Linux 文件路径不能包含 . 或 ..。",
+        )
+    return PurePosixPath(raw).as_posix()
+
+
+def validate_transfer_device_path(path: str, terminal_environment: str) -> str:
+    environment = normalize_terminal_environment(terminal_environment)
+    if environment == "vrp":
+        return validate_destination_path(path)
+    if environment == "linux":
+        return validate_linux_file_path(path)
+    try:
+        return validate_destination_path(path)
+    except ManagedTransferError:
+        return validate_linux_file_path(path)
+
+
+def infer_terminal_environment(path: str, *, session_kind: str = "") -> str:
+    raw = path.strip()
+    if _DEVICE_STORAGE_RE.fullmatch(raw):
+        return "vrp"
+    if raw.startswith("/"):
+        return "linux"
+    return "linux" if session_kind.strip().casefold() == "ssh" else "vrp"
+
+
+def build_linux_inspection_command(path: str, protocol: str) -> str:
+    normalized_path = validate_linux_file_path(path)
+    normalized_protocol = protocol.strip().casefold()
+    if normalized_protocol not in {"ftp", "sftp"}:
+        raise ManagedTransferError(
+            "invalid_request",
+            f"不支持的文件传输协议: {protocol}",
+        )
+    quoted_path = shlex.quote(normalized_path)
+    quoted_directory = shlex.quote(PurePosixPath(normalized_path).parent.as_posix())
+    quoted_client = shlex.quote(normalized_protocol)
+    prefix = _LINUX_MARKER_PREFIX
+    return (
+        f"if command -v {quoted_client} >/dev/null 2>&1; then printf '\\n{prefix}CLIENT__=1\\n'; "
+        f"else printf '\\n{prefix}CLIENT__=0\\n'; fi; "
+        f"if [ -f {quoted_path} ]; then printf '{prefix}SIZE__='; wc -c < {quoted_path}; "
+        f"else printf '{prefix}MISSING__=1\\n'; fi; "
+        f"if [ -d {quoted_directory} ]; then df -Pk {quoted_directory} 2>/dev/null | "
+        f"awk 'END {{printf \"{prefix}FREE__=%.0f\\n\", $4 * 1024}}'; "
+        f"else printf '{prefix}DIRECTORY__=0\\n'; fi"
+    )
+
+
+def linux_client_available(output: str) -> bool:
+    return bool(re.search(rf"(?m)^{re.escape(_LINUX_MARKER_PREFIX)}CLIENT__=1\s*$", output))
+
+
+def linux_file_size(output: str) -> int | None:
+    match = re.search(
+        rf"(?m)^{re.escape(_LINUX_MARKER_PREFIX)}SIZE__=(\d+)\s*$",
+        output,
+    )
+    return int(match.group(1)) if match else None
+
+
+def linux_free_space_bytes(output: str) -> int:
+    match = re.search(
+        rf"(?m)^{re.escape(_LINUX_MARKER_PREFIX)}FREE__=(\d+)\s*$",
+        output,
+    )
+    return int(match.group(1)) if match else 0
+
+
+def linux_directory_available(output: str) -> bool:
+    return not bool(
+        re.search(
+            rf"(?m)^{re.escape(_LINUX_MARKER_PREFIX)}DIRECTORY__=0\s*$",
+            output,
+        )
+    )
 
 
 def destination_storage(destination_path: str) -> str:
@@ -235,6 +374,8 @@ def _managed_transfer_connect_steps(
     port: int,
     responses: list[dict[str, Any]],
     timeout_seconds: int,
+    terminal_environment: str = "vrp",
+    connect_secret_ref: str = "",
 ) -> list[dict[str, Any]]:
     """Shared connect/login/binary-mode steps for App-managed FTP/SCP transfers."""
     normalized_protocol = protocol.strip().casefold()
@@ -251,12 +392,30 @@ def _managed_transfer_connect_steps(
                 "label": "确认二进制模式",
             },
         ]
-    return [
-        {
+    environment = normalize_terminal_environment(terminal_environment)
+    if environment == "auto":
+        environment = "vrp"
+    if environment == "linux" and normalized_protocol == "sftp":
+        if not connect_secret_ref:
+            raise ManagedTransferError(
+                "invalid_request",
+                "Linux SFTP 连接缺少临时身份命令。",
+            )
+        connect_step: dict[str, Any] = {
+            "type": "send",
+            "secret_ref": connect_secret_ref,
+            "secret_prefix": f"sftp -P {int(port)} ",
+            "secret_suffix": f"@{shlex.quote(host)}",
+            "label": "连接 SFTP 服务",
+        }
+    else:
+        connect_step = {
             "type": "send",
             "text": f"{normalized_protocol} {host} {port}",
             "label": f"连接 {normalized_protocol.upper()} 服务",
-        },
+        }
+    return [
+        connect_step,
         {
             "type": "expect",
             "success": [prompt, "ftp_prompt"],
@@ -276,7 +435,10 @@ def _managed_transfer_connect_steps(
     ]
 
 
-def _managed_transfer_login_responses() -> list[dict[str, Any]]:
+def _managed_transfer_login_responses(
+    username_secret_ref: str = "file_transfer.username",
+    password_secret_ref: str = "file_transfer.password",
+) -> list[dict[str, Any]]:
     return [
         {
             "match": "host_key_prompt",
@@ -285,12 +447,12 @@ def _managed_transfer_login_responses() -> list[dict[str, Any]]:
         },
         {
             "match": "username_prompt",
-            "secret_ref": "file_transfer.username",
+            "secret_ref": username_secret_ref,
             "max_matches": 1,
         },
         {
             "match": "password_prompt",
-            "secret_ref": "file_transfer.password",
+            "secret_ref": password_secret_ref,
             "max_matches": 2,
         },
     ]
@@ -304,6 +466,10 @@ def build_managed_transfer_steps(
     source_path: str,
     destination_path: str,
     source_size: int,
+    username_secret_ref: str = "file_transfer.username",
+    password_secret_ref: str = "file_transfer.password",
+    terminal_environment: str = "vrp",
+    connect_secret_ref: str = "",
 ) -> tuple[list[dict[str, Any]], int]:
     normalized_protocol = protocol.strip().casefold()
     if normalized_protocol not in {"ftp", "sftp"}:
@@ -323,8 +489,10 @@ def build_managed_transfer_steps(
             normalized_protocol,
             host,
             port,
-            _managed_transfer_login_responses(),
+            _managed_transfer_login_responses(username_secret_ref, password_secret_ref),
             timeout_seconds=45,
+            terminal_environment=terminal_environment,
+            connect_secret_ref=connect_secret_ref,
         ),
         {
             "type": "send",
@@ -369,6 +537,10 @@ def build_managed_transfer_download_steps(
     source_path: str,
     destination_path: str,
     source_size: int,
+    username_secret_ref: str = "file_transfer.username",
+    password_secret_ref: str = "file_transfer.password",
+    terminal_environment: str = "vrp",
+    connect_secret_ref: str = "",
 ) -> tuple[list[dict[str, Any]], int]:
     """Build FTP/SCP steps for a device->PC transfer (device 'put' to PC server)."""
     normalized_protocol = protocol.strip().casefold()
@@ -389,8 +561,10 @@ def build_managed_transfer_download_steps(
             normalized_protocol,
             host,
             port,
-            _managed_transfer_login_responses(),
+            _managed_transfer_login_responses(username_secret_ref, password_secret_ref),
             timeout_seconds=45,
+            terminal_environment=terminal_environment,
+            connect_secret_ref=connect_secret_ref,
         ),
         {
             "type": "send",
