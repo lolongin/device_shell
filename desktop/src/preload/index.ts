@@ -33,6 +33,7 @@ interface DeviceConnectionRequest {
 }
 
 interface TemporaryProfileSaveRequest {
+  profileId?: string
   payload: Record<string, unknown>
   secrets: Partial<Record<'telnet' | 'ssh' | 'serial', string>>
 }

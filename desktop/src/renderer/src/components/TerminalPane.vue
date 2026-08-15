@@ -27,12 +27,14 @@ import { desktopApi, terminalSocketUrl } from '../transport/api'
 import type { SessionSummary, TerminalEvent } from '../types'
 import { sessionStatusLabel } from '../sessionStatus'
 import {
+  announceContextMenuOpen,
   clampContextMenuElement,
   clampContextMenuPoint,
   contextMenuTrigger,
   focusFirstContextMenuItem,
   handleContextMenuKeydown,
-  restoreContextMenuFocus
+  restoreContextMenuFocus,
+  subscribeContextMenuOpen
 } from '../contextMenu'
 
 const props = defineProps<{ session: SessionSummary; active: boolean }>()
@@ -67,6 +69,7 @@ let searchAddon: SearchAddon | null = null
 let socket: WebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
 let themeObserver: MutationObserver | null = null
+let unsubscribeContextMenuOpen: (() => void) | null = null
 let lastSequence = 0
 let pendingCommand = ''
 let outputTail = ''
@@ -342,6 +345,7 @@ function handleTerminalClipboardShortcut(event: KeyboardEvent): boolean {
 }
 
 function openContextMenu(event: MouseEvent): void {
+  announceContextMenuOpen()
   contextMenuReturnFocus.value = contextMenuTrigger(event)
   contextMenu.value = {
     ...clampContextMenuPoint(event.clientX, event.clientY),
@@ -374,6 +378,7 @@ function handleTerminalContextKeydown(event: KeyboardEvent): void {
   }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
+    announceContextMenuOpen()
     const rect = container.value?.getBoundingClientRect()
     contextMenuReturnFocus.value = container.value
     contextMenu.value = {
@@ -545,6 +550,7 @@ watch(() => props.active, async (active) => {
 })
 
 onMounted(async () => {
+  unsubscribeContextMenuOpen = subscribeContextMenuOpen(closeContextMenu)
   await nextTick()
   if (!container.value) return
   fitAddon = new FitAddon()
@@ -589,6 +595,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  unsubscribeContextMenuOpen?.()
   resizeObserver?.disconnect()
   themeObserver?.disconnect()
   window.removeEventListener('keydown', handleShortcut, true)
@@ -632,9 +639,7 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <footer class="terminal-bottom-toolbar" role="toolbar" aria-label="终端辅助操作">
-      <div class="terminal-bottom-leading">
-        <slot name="bottom-leading"></slot>
-      </div>
+      <span class="terminal-bottom-spacer" aria-hidden="true"></span>
       <button class="icon-button" type="button" title="查看会话日志" @click="loadLog">
         <FileText :size="15" aria-hidden="true" />
         <span class="sr-only">查看会话日志</span>

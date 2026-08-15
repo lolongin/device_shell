@@ -96,12 +96,12 @@ function closeDialog(): void {
     v-if="collapsed"
     class="quick-toolbar-restore"
     type="button"
-    title="展开终端快捷工具栏"
+    title="展开快捷发送"
     @click="setCollapsed(false)"
   >
     <Send :size="13" />快捷发送 {{ workspace.quickSendButtons.length }}<ChevronDown :size="13" />
   </button>
-  <section v-else class="terminal-quick-toolbar" aria-label="终端快捷发送" data-testid="terminal-quick-toolbar">
+  <section v-else class="terminal-quick-toolbar" aria-label="快捷发送" data-testid="terminal-quick-toolbar">
     <span class="quick-toolbar-label">QUICK SEND</span>
     <div class="quick-send-buttons">
       <span v-for="button in workspace.quickSendButtons" :key="button.id" class="quick-send-group">
@@ -123,11 +123,12 @@ function closeDialog(): void {
         <Plus :size="13" />新增
       </button>
     </div>
-    <button class="quick-toolbar-collapse" type="button" title="收起终端快捷工具栏" @click="setCollapsed(true)">
+    <button class="quick-toolbar-collapse" type="button" title="收起快捷发送" @click="setCollapsed(true)">
       <ChevronUp :size="14" />
     </button>
   </section>
 
+  <Teleport to="body">
   <div v-if="dialogOpen" class="dialog-backdrop quick-send-dialog-backdrop" @mousedown.self="closeDialog">
     <form ref="dialog" class="profile-dialog quick-send-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-send-title" tabindex="-1" @submit.prevent="save" @keydown="handleDialogKeydown" @keydown.esc.prevent="closeDialog">
       <header>
@@ -163,4 +164,5 @@ function closeDialog(): void {
       </footer>
     </form>
   </div>
+  </Teleport>
 </template>

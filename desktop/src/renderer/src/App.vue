@@ -42,12 +42,14 @@ import {
   sessionStatusLabel
 } from './sessionStatus'
 import {
+  announceContextMenuOpen,
   clampContextMenuElement,
   clampContextMenuPoint,
   contextMenuTrigger,
   focusFirstContextMenuItem,
   handleContextMenuKeydown,
-  restoreContextMenuFocus
+  restoreContextMenuFocus,
+  subscribeContextMenuOpen
 } from './contextMenu'
 import type {
   ConnectionProfilePayload,
@@ -81,6 +83,10 @@ const NAVIGATOR_MIN_WIDTH = 400
 const NAVIGATOR_MAX_WIDTH = 760
 const ACTIVITY_RAIL_WIDTH = 52
 const MAX_WARM_DEVICE_WORKSPACES = 3
+const DEVICE_ROW_HEIGHT = 46
+const DEVICE_LIST_HEADER_HEIGHT = 30
+const DEVICE_VIRTUALIZATION_THRESHOLD = 120
+const DEVICE_VIRTUAL_OVERSCAN = 6
 const windowWidth = ref(window.innerWidth)
 const themeMode = ref<ThemeMode>(localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark')
 const alwaysOnTop = ref(localStorage.getItem(ALWAYS_ON_TOP_KEY) === '1')
@@ -133,9 +139,14 @@ const profileContextMenuElement = ref<HTMLElement | null>(null)
 const profileContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const lastActiveSessionByDevice = ref<Record<string, string>>({})
 const warmDeviceWorkspaceIds = ref<string[]>([])
+const deviceListElement = ref<HTMLElement | null>(null)
+const deviceListScrollTop = ref(0)
+const deviceListViewportHeight = ref(0)
+let deviceListResizeObserver: ResizeObserver | null = null
 let unsubscribeBackendExit: (() => void) | null = null
 let unsubscribeBackendRecovered: (() => void) | null = null
 let stopApplicationEvents: (() => void) | null = null
+let unsubscribeContextMenuOpen: (() => void) | null = null
 
 function defaultNavigatorWidth(width = window.innerWidth): number {
   if (width <= 1150) return 400
@@ -497,11 +508,87 @@ function expandProfileGroup(name: string): void {
 function selectDevice(deviceRowId: string): void {
   workspace.selectedDeviceRowId = deviceRowId
   void nextTick(() => {
-    document.querySelector(`[data-device-row-id="${CSS.escape(deviceRowId)}"]`)?.scrollIntoView({
-      block: 'nearest'
-    })
+    const renderedRow = document.querySelector(`[data-device-row-id="${CSS.escape(deviceRowId)}"]`)
+    if (renderedRow) {
+      renderedRow.scrollIntoView({ block: 'nearest' })
+      return
+    }
+    const index = workspace.filteredDevices.findIndex((device) => device.row_id === deviceRowId)
+    scrollDeviceIndexIntoView(index)
   })
 }
+
+const virtualizedDeviceList = computed(() =>
+  workspace.filteredDevices.length > DEVICE_VIRTUALIZATION_THRESHOLD
+)
+const virtualDeviceStart = computed(() => {
+  if (!virtualizedDeviceList.value) return 0
+  return Math.max(
+    0,
+    Math.floor(deviceListScrollTop.value / DEVICE_ROW_HEIGHT) - DEVICE_VIRTUAL_OVERSCAN
+  )
+})
+const virtualDeviceEnd = computed(() => {
+  if (!virtualizedDeviceList.value) return workspace.filteredDevices.length
+  const visibleHeight = Math.max(
+    DEVICE_ROW_HEIGHT,
+    deviceListViewportHeight.value - DEVICE_LIST_HEADER_HEIGHT
+  )
+  return Math.min(
+    workspace.filteredDevices.length,
+    Math.ceil((deviceListScrollTop.value + visibleHeight) / DEVICE_ROW_HEIGHT)
+      + DEVICE_VIRTUAL_OVERSCAN
+  )
+})
+const renderedDevices = computed(() =>
+  workspace.filteredDevices.slice(virtualDeviceStart.value, virtualDeviceEnd.value)
+)
+const virtualDeviceTopHeight = computed(() =>
+  virtualizedDeviceList.value ? virtualDeviceStart.value * DEVICE_ROW_HEIGHT : 0
+)
+const virtualDeviceBottomHeight = computed(() =>
+  virtualizedDeviceList.value
+    ? Math.max(0, (workspace.filteredDevices.length - virtualDeviceEnd.value) * DEVICE_ROW_HEIGHT)
+    : 0
+)
+
+function handleDeviceListScroll(event: Event): void {
+  deviceListScrollTop.value = (event.currentTarget as HTMLElement).scrollTop
+}
+
+function scrollDeviceIndexIntoView(index: number): void {
+  const list = deviceListElement.value
+  if (!list || index < 0) return
+  const rowTop = DEVICE_LIST_HEADER_HEIGHT + index * DEVICE_ROW_HEIGHT
+  const rowBottom = rowTop + DEVICE_ROW_HEIGHT
+  const visibleTop = list.scrollTop + DEVICE_LIST_HEADER_HEIGHT
+  const visibleBottom = list.scrollTop + list.clientHeight
+  if (rowTop < visibleTop) list.scrollTop = Math.max(0, rowTop - DEVICE_LIST_HEADER_HEIGHT)
+  else if (rowBottom > visibleBottom) list.scrollTop = rowBottom - list.clientHeight
+  deviceListScrollTop.value = list.scrollTop
+}
+
+watch(deviceListElement, (element) => {
+  deviceListResizeObserver?.disconnect()
+  deviceListResizeObserver = null
+  if (!element) return
+  const updateViewport = (): void => {
+    deviceListViewportHeight.value = element.clientHeight
+    deviceListScrollTop.value = element.scrollTop
+  }
+  updateViewport()
+  deviceListResizeObserver = new ResizeObserver(updateViewport)
+  deviceListResizeObserver.observe(element)
+})
+
+watch(
+  () => workspace.filteredDevices,
+  () => {
+    const list = deviceListElement.value
+    if (list) list.scrollTop = 0
+    deviceListScrollTop.value = 0
+  }
+)
 
 function selectDeviceByDeviceId(deviceId: string): boolean {
   const device = (workspace.selectedDevice?.id === deviceId ? workspace.selectedDevice : null)
@@ -614,12 +701,14 @@ async function copyDeviceText(text: string, message: string): Promise<void> {
 }
 
 function openDeviceContextMenu(event: MouseEvent, device: DeviceSummary): void {
+  announceContextMenuOpen()
   selectDevice(device.row_id)
   deviceContextMenuReturnFocus.value = contextMenuTrigger(event)
   deviceContextMenu.value = { device, ...clampContextMenuPoint(event.clientX, event.clientY) }
 }
 
 function openDeviceInspectorContextMenu(event: MouseEvent, device: DeviceSummary): void {
+  announceContextMenuOpen()
   selectDevice(device.row_id)
   deviceContextMenuReturnFocus.value = contextMenuTrigger(event)
   deviceContextMenu.value = { device, ...clampContextMenuPoint(event.clientX, event.clientY) }
@@ -717,6 +806,7 @@ function handleDeviceContextKeydown(event: KeyboardEvent): void {
     && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
   ) {
     event.preventDefault()
+    announceContextMenuOpen()
     const target = event.currentTarget as HTMLElement | null
     const selectedRow = document.querySelector<HTMLElement>(
       `[data-device-row-id="${CSS.escape(workspace.selectedDevice.row_id)}"]`
@@ -743,6 +833,7 @@ function handleDeviceInspectorKeydown(event: KeyboardEvent, device: DeviceSummar
   }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
+    announceContextMenuOpen()
     const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
     deviceContextMenuReturnFocus.value = event.currentTarget as HTMLElement | null
     deviceContextMenu.value = {
@@ -778,12 +869,14 @@ function sessionDevice(session: SessionSummary | null): DeviceSummary | null {
 }
 
 function openSessionContextMenu(event: MouseEvent, session: SessionSummary): void {
+  announceContextMenuOpen()
   workspace.activeSessionId = session.id
   sessionContextMenuReturnFocus.value = contextMenuTrigger(event)
   sessionContextMenu.value = { session, ...clampContextMenuPoint(event.clientX, event.clientY) }
 }
 
 function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string): void {
+  announceContextMenuOpen()
   sessionManagerDeviceContextMenuReturnFocus.value = contextMenuTrigger(event)
   sessionManagerDeviceContextMenu.value = {
     deviceId,
@@ -889,6 +982,7 @@ function handleSessionTabKeydown(event: KeyboardEvent, session: SessionSummary):
   }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
+    announceContextMenuOpen()
     workspace.activeSessionId = session.id
     const selectedTab = document.querySelector<HTMLElement>(
       `[data-session-tab-id="${CSS.escape(session.id)}"]`
@@ -1005,6 +1099,7 @@ async function copyProfileText(text: string, message: string): Promise<void> {
 }
 
 function openProfileContextMenu(event: MouseEvent, profile: ConnectionProfileSummary): void {
+  announceContextMenuOpen()
   selectedProfileId.value = profile.id
   profileContextMenuReturnFocus.value = contextMenuTrigger(event)
   profileContextMenu.value = { profile, ...clampContextMenuPoint(event.clientX, event.clientY) }
@@ -1017,6 +1112,7 @@ function handleProfileKeydown(event: KeyboardEvent, profile: ConnectionProfileSu
   }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
+    announceContextMenuOpen()
     selectedProfileId.value = profile.id
     const row = document.querySelector<HTMLElement>(
       `[data-profile-row-id="${CSS.escape(profile.id)}"]`
@@ -1319,6 +1415,7 @@ function statusKind(status: string): DeviceStatusKind {
 }
 
 onMounted(async () => {
+  unsubscribeContextMenuOpen = subscribeContextMenuOpen(closeAppContextMenus)
   window.addEventListener('resize', handleWindowResize)
   setNavigatorWidth(navigatorWidth.value, false)
   applyRendererTheme(themeMode.value)
@@ -1351,6 +1448,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer)
   stopNavigatorResize()
+  deviceListResizeObserver?.disconnect()
+  unsubscribeContextMenuOpen?.()
   window.removeEventListener('resize', handleWindowResize)
   unsubscribeBackendExit?.()
   unsubscribeBackendRecovered?.()
@@ -1563,10 +1662,12 @@ onBeforeUnmount(() => {
       <div v-else-if="workspace.error" class="navigator-state error">{{ workspace.error }}</div>
       <div
         v-else-if="activeSection === 'devices'"
+        ref="deviceListElement"
         class="device-list device-table-list"
         :role="workspace.filteredDevices.length ? 'table' : 'region'"
         aria-label="设备列表"
         tabindex="0"
+        @scroll="handleDeviceListScroll"
         @keydown="handleDeviceTableKeydown"
       >
         <div class="device-table-header" role="row">
@@ -1577,8 +1678,14 @@ onBeforeUnmount(() => {
           <span role="columnheader">Slot</span>
           <span role="columnheader">状态</span>
         </div>
+        <div
+          v-if="virtualDeviceTopHeight"
+          class="device-virtual-spacer"
+          :style="{ height: `${virtualDeviceTopHeight}px` }"
+          aria-hidden="true"
+        ></div>
         <button
-          v-for="(device, index) in workspace.filteredDevices"
+          v-for="(device, index) in renderedDevices"
           :key="device.row_id"
           class="device-row device-table-row"
           :class="{ selected: device.row_id === workspace.selectedDeviceRowId }"
@@ -1590,7 +1697,7 @@ onBeforeUnmount(() => {
           @click="selectDevice(device.row_id)"
           @contextmenu.prevent="openDeviceContextMenu($event, device)"
         >
-          <span class="device-index" role="cell">{{ device.board_id || index + 1 }}</span>
+          <span class="device-index" role="cell">{{ device.board_id || virtualDeviceStart + index + 1 }}</span>
           <span class="device-copy device-name-cell" role="cell">
             <strong>{{ device.name }}</strong>
             <small>{{ device.id }} · {{ device.site || device.domain }}</small>
@@ -1603,6 +1710,12 @@ onBeforeUnmount(() => {
             <span :title="device.tooltip || device.status_text">{{ device.status_text || device.status }}</span>
           </span>
         </button>
+        <div
+          v-if="virtualDeviceBottomHeight"
+          class="device-virtual-spacer"
+          :style="{ height: `${virtualDeviceBottomHeight}px` }"
+          aria-hidden="true"
+        ></div>
         <div v-if="!workspace.filteredDevices.length" class="navigator-empty-state device-table-empty" role="status">
           <SearchX :size="22" aria-hidden="true" />
           <strong>{{ workspace.hasActiveDeviceFilters ? '没有匹配的设备' : '暂无设备数据' }}</strong>
@@ -1877,7 +1990,7 @@ onBeforeUnmount(() => {
               <div v-if="selectedProfile.serial.host"><dt>串口</dt><dd class="mono">{{ selectedProfile.serial.host }}:{{ selectedProfile.serial.port }}</dd></div>
               <div><dt>凭据</dt><dd>{{ selectedProfile[selectedProfile.preferred_protocol].has_password ? '系统凭据库' : '未保存' }}</dd></div>
             </dl>
-            <div class="credential-actions" aria-label="管理连接凭据">
+            <div v-if="selectedProfile.profile_type === 'server'" class="credential-actions" aria-label="管理连接凭据">
               <button v-if="selectedProfile.ssh.host" class="secondary-button" type="button" @click="workspace.manageProfileCredential(selectedProfile, 'ssh')">
                 <KeyRound :size="13" />SSH 凭据
               </button>
@@ -1947,19 +2060,19 @@ onBeforeUnmount(() => {
         >复制连接信息</button>
         <hr />
         <button
-          v-if="profileContextMenu.profile.ssh.host"
+          v-if="profileContextMenu.profile.profile_type === 'server' && profileContextMenu.profile.ssh.host"
           type="button"
           role="menuitem"
           @click="manageProfileCredentialFromContext('ssh')"
         >管理 SSH 凭据</button>
         <button
-          v-if="profileContextMenu.profile.telnet.host"
+          v-if="profileContextMenu.profile.profile_type === 'server' && profileContextMenu.profile.telnet.host"
           type="button"
           role="menuitem"
           @click="manageProfileCredentialFromContext('telnet')"
         >管理 Telnet 凭据</button>
         <button
-          v-if="profileContextMenu.profile.serial.host"
+          v-if="profileContextMenu.profile.profile_type === 'server' && profileContextMenu.profile.serial.host"
           type="button"
           role="menuitem"
           @click="manageProfileCredentialFromContext('serial')"
@@ -2214,20 +2327,6 @@ onBeforeUnmount(() => {
           {{ workspaceRecoveryBusy ? '重试中…' : '重新载入' }}
         </button>
       </div>
-      <div
-        v-if="workspace.notice"
-        class="notice-banner"
-        :data-state="noticeRequiresAttention ? 'attention' : 'success'"
-        role="status"
-      >
-        <CircleAlert v-if="noticeRequiresAttention" :size="14" aria-hidden="true" />
-        <CircleCheck v-else :size="14" aria-hidden="true" />
-        <span>{{ workspace.notice }}</span>
-        <button type="button" title="关闭通知" aria-label="关闭通知" @click="clearWorkspaceNotice">
-          <X :size="13" aria-hidden="true" />
-        </button>
-      </div>
-
       <div
         class="session-workspace"
         :class="{ empty: !workspace.sessions.length }"
@@ -2501,6 +2600,32 @@ onBeforeUnmount(() => {
         @update-collapsed="setSessionTabRailCollapsed"
       />
     </aside>
+
+    <footer
+      class="global-status-bar"
+      :data-state="workspace.notice ? (noticeRequiresAttention ? 'attention' : 'success') : 'idle'"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div class="global-status-message">
+        <CircleAlert v-if="workspace.notice && noticeRequiresAttention" :size="13" aria-hidden="true" />
+        <CircleCheck v-else :size="13" aria-hidden="true" />
+        <span v-if="workspace.notice" data-role="notice">{{ workspace.notice }}</span>
+        <span v-else data-role="idle">就绪</span>
+      </div>
+      <div class="global-status-context" aria-label="工作区状态">
+        <span v-if="workspace.selectedDevice">{{ workspace.selectedDevice.name }}</span>
+        <span>{{ workspace.connectedSessions.length }}/{{ workspace.sessions.length }} 已连接</span>
+      </div>
+      <button
+        v-if="workspace.notice"
+        type="button"
+        title="关闭通知"
+        aria-label="关闭通知"
+        @click="clearWorkspaceNotice"
+      ><X :size="12" aria-hidden="true" /></button>
+    </footer>
 
     <ConnectionProfileDialog
       v-if="dialogType"

@@ -33,7 +33,6 @@ const manualTerminalTruncated = ref(false)
 const manualScript = ref('')
 const manualNotes = ref<string[]>([])
 const manualBusy = ref(false)
-const manualNotice = ref('')
 const manualConfirmed = ref(false)
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
@@ -100,7 +99,6 @@ watch(
     manualTerminalTruncated.value = false
     manualScript.value = ''
     manualNotes.value = []
-    manualNotice.value = ''
     manualConfirmed.value = false
   }
 )
@@ -134,7 +132,7 @@ async function startUpgrade(): Promise<void> {
 
 async function readManualTerminal(): Promise<void> {
   localError.value = ''
-  manualNotice.value = ''
+  workspace.notice = ''
   if (!workspace.activeSessionId) {
     localError.value = '请先打开并选中一个终端会话。'
     return
@@ -144,7 +142,7 @@ async function readManualTerminal(): Promise<void> {
     const response = await desktopApi.packageUpgradeManualTerminal(workspace.activeSessionId)
     manualTerminalText.value = response.content
     manualTerminalTruncated.value = response.truncated
-    manualNotice.value = response.content
+    workspace.notice = response.content
       ? (response.truncated ? '已读取终端尾部内容，较早输出已截断。' : '已读取当前终端内容。')
       : '当前终端暂无可读取内容。'
   } catch (cause) {
@@ -156,7 +154,7 @@ async function readManualTerminal(): Promise<void> {
 
 async function generateManualScript(): Promise<void> {
   localError.value = ''
-  manualNotice.value = ''
+  workspace.notice = ''
   if (!workspace.activeSessionId) {
     localError.value = '请先打开并选中一个终端会话。'
     return
@@ -181,7 +179,7 @@ async function generateManualScript(): Promise<void> {
     })
     manualScript.value = response.script
     manualNotes.value = response.notes
-    manualNotice.value = `已生成 ${response.package_name} 的安全脚本；密码保留为 Python 占位符。`
+    workspace.notice = `已生成 ${response.package_name} 的安全脚本；密码保留为 Python 占位符。`
   } catch (cause) {
     localError.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
@@ -193,7 +191,7 @@ async function copyManualScript(): Promise<void> {
   if (!manualScript.value) return
   try {
     await navigator.clipboard.writeText(manualScript.value)
-    manualNotice.value = '已复制脚本；复制内容不包含文件服务明文密码。'
+    workspace.notice = '已复制脚本；复制内容不包含文件服务明文密码。'
   } catch (cause) {
     localError.value = cause instanceof Error ? cause.message : String(cause)
   }
@@ -201,7 +199,7 @@ async function copyManualScript(): Promise<void> {
 
 async function sendManualScript(): Promise<void> {
   localError.value = ''
-  manualNotice.value = ''
+  workspace.notice = ''
   if (!workspace.activeSessionId || !manualScript.value.trim()) return
   if (!manualConfirmed.value) {
     localError.value = '请先确认已检查脚本和目标终端。'
@@ -214,7 +212,7 @@ async function sendManualScript(): Promise<void> {
       script: manualScript.value,
       interval_ms: 900
     })
-    manualNotice.value = `已向当前终端发送 ${response.command_count} 条命令。`
+    workspace.notice = `已向当前终端发送 ${response.command_count} 条命令。`
     manualConfirmed.value = false
   } catch (cause) {
     localError.value = cause instanceof Error ? cause.message : String(cause)
@@ -381,7 +379,6 @@ onBeforeUnmount(() => {
                 <Send :size="13" />发送脚本
               </button>
             </div>
-            <p v-if="manualNotice" class="upgrade-manual-notice" role="status">{{ manualNotice }}</p>
           </div>
         </section>
 

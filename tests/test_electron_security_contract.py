@@ -12,7 +12,7 @@ from src.desktop_backend.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_new_temporary_profile_accepts_passwords_without_exposing_saved_values() -> None:
+def test_temporary_profile_create_and_edit_accept_passwords_without_exposing_saved_values() -> None:
     profile_dialog = (
         ROOT / "desktop" / "src" / "renderer" / "src" / "components"
         / "ConnectionProfileDialog.vue"
@@ -28,7 +28,9 @@ def test_new_temporary_profile_accepts_passwords_without_exposing_saved_values()
     assert 'data-testid="temporary-telnet-password"' in profile_dialog
     assert 'data-testid="temporary-ssh-password"' in profile_dialog
     assert 'data-testid="temporary-serial-password"' in profile_dialog
-    assert "!profile && profileType === 'temporary'" in profile_dialog
+    assert "props.profileType === 'temporary'" in profile_dialog
+    assert "留空保留原密码；输入新密码将替换" in profile_dialog
+    assert "编辑时留空保留原密码" in profile_dialog
     assert 'autocomplete="new-password"' in profile_dialog
     assert "profile?.ssh.has_password" in profile_dialog
     assert ".password" not in workspace_store.casefold()
@@ -49,6 +51,8 @@ def test_generic_renderer_bridge_rejects_sensitive_body_keys() -> None:
     assert "Sensitive values are not allowed through the renderer API bridge" in electron_main
     assert "credential:open-profile-session" in electron_main
     assert "credential:create-temporary-profile" in electron_main
+    assert "profileId ? 'PUT' : 'POST'" in electron_main
+    assert "encodeURIComponent(profileId)" in electron_main
     assert "payload.profile_type !== 'temporary'" in electron_main
     assert "Untrusted temporary-profile caller" in electron_main
     assert "ipcRenderer.invoke('credential:create-temporary-profile', request)" in preload

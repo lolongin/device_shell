@@ -6,6 +6,16 @@ export interface ContextMenuPoint {
 const CONTEXT_MENU_EDGE_GAP = 8
 const CONTEXT_MENU_FALLBACK_WIDTH = 210
 const CONTEXT_MENU_FALLBACK_HEIGHT = 320
+const CONTEXT_MENU_OPEN_EVENT = 'device-tui:context-menu-open'
+
+export function announceContextMenuOpen(): void {
+  window.dispatchEvent(new Event(CONTEXT_MENU_OPEN_EVENT))
+}
+
+export function subscribeContextMenuOpen(closeMenus: () => void): () => void {
+  window.addEventListener(CONTEXT_MENU_OPEN_EVENT, closeMenus)
+  return () => window.removeEventListener(CONTEXT_MENU_OPEN_EVENT, closeMenus)
+}
 
 export function clampContextMenuPoint(
   x: number,

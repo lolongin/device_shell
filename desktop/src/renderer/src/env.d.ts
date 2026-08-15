@@ -34,6 +34,7 @@ interface DeviceConnectionRequest {
 }
 
 interface TemporaryProfileSaveRequest {
+  profileId?: string
   payload: import('./types').ConnectionProfilePayload
   secrets: import('./types').ConnectionProfileSecrets
 }

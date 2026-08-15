@@ -41,6 +41,7 @@ interface DeviceConnectionRequest {
 }
 
 interface TemporaryProfileSaveRequest {
+  profileId?: string
   payload: Record<string, unknown>
   secrets?: Partial<Record<'telnet' | 'ssh' | 'serial', unknown>>
 }
@@ -271,6 +272,13 @@ async function createWindow(): Promise<void> {
       if (payload.profile_type !== 'temporary' || hasSensitiveKey(payload)) {
         throw new Error('Invalid temporary-profile payload')
       }
+      const profileId = request?.profileId
+      if (
+        profileId !== undefined
+        && (typeof profileId !== 'string' || !profileId.trim() || profileId.length > 256)
+      ) {
+        throw new Error('Invalid temporary-profile id')
+      }
       const rawSecrets = request?.secrets || {}
       const allowedProtocols = new Set(['telnet', 'ssh', 'serial'])
       for (const [protocol, value] of Object.entries(rawSecrets)) {
@@ -287,8 +295,10 @@ async function createWindow(): Promise<void> {
       try {
         return await fetchBackend(
           backend.config,
-          '/api/v1/connection-profiles',
-          'POST',
+          profileId
+            ? `/api/v1/connection-profiles/${encodeURIComponent(profileId)}`
+            : '/api/v1/connection-profiles',
+          profileId ? 'PUT' : 'POST',
           body
         )
       } finally {
@@ -911,20 +921,21 @@ async function createWindow(): Promise<void> {
             )
             document.querySelector('.navigator-detail .property-copy-button')?.click()
             await sleep(80)
-            const actionableNotice = document.querySelector('.notice-banner[data-state="success"]')
-            const actionableNoticeClose = actionableNotice?.querySelector('button[title="关闭通知"]')
+            const actionableNotice = document.querySelector('.global-status-bar[data-state="success"] [data-role="notice"]')
+            const actionableNoticeBar = actionableNotice?.closest('.global-status-bar')
+            const actionableNoticeClose = actionableNoticeBar?.querySelector('button[title="关闭通知"]')
             actionableNoticeClose?.click()
             await sleep(40)
             setCheck(
               'globalNoticeIsSemanticAndDismissible',
               Boolean(actionableNotice)
-                && Boolean(actionableNotice?.querySelector('svg'))
+                && Boolean(actionableNoticeBar?.querySelector('svg'))
                 && Boolean(actionableNoticeClose)
-                && !document.querySelector('.notice-banner'),
+                && !document.querySelector('.global-status-bar [data-role="notice"]'),
               'notice=' + Boolean(actionableNotice)
-                + ' icon=' + Boolean(actionableNotice?.querySelector('svg'))
+                + ' icon=' + Boolean(actionableNoticeBar?.querySelector('svg'))
                 + ' close=' + Boolean(actionableNoticeClose)
-                + ' dismissed=' + !document.querySelector('.notice-banner')
+                + ' dismissed=' + !document.querySelector('.global-status-bar [data-role="notice"]')
             )
             document.querySelector('.navigator-detail-header .icon-button')?.click()
             await sleep(40)
@@ -965,7 +976,8 @@ async function createWindow(): Promise<void> {
               Boolean(emptySessionRect)
                 && Boolean(collapsedCommandRect)
                 && Boolean(workspaceStageRect)
-                && collapsedCommandRect.height <= 37
+                && collapsedCommandRect.height <= 68
+                && Boolean(collapsedCommandWorkspace.querySelector('.command-quick-send-row'))
                 && Math.abs(emptySessionRect.bottom - collapsedCommandRect.top) <= 1
                 && Math.abs(collapsedCommandRect.bottom - workspaceStageRect.bottom) <= 1,
               'sessionBottom=' + (emptySessionRect?.bottom || 0)
@@ -1944,12 +1956,12 @@ async function createWindow(): Promise<void> {
               editedWorkspaceResponse.body
             )
 
-            clickButtonByTitle('收起终端快捷工具栏')
+            clickButtonByTitle('收起快捷发送')
             await sleep(60)
             const quickToolbarCollapsed = localStorage.getItem('device-tui.desktop-v2.quick-toolbar-collapsed') === '1'
               && Boolean(document.querySelector('.quick-toolbar-restore'))
               && !document.querySelector('[data-testid="terminal-quick-toolbar"]')
-            clickButtonByTitle('展开终端快捷工具栏')
+            clickButtonByTitle('展开快捷发送')
             await sleep(60)
             setCheck(
               'quickToolbarCollapseAndRestorePersist',
@@ -2188,7 +2200,7 @@ async function createWindow(): Promise<void> {
             }
             document.querySelector('[data-testid="upgrade-manual-copy"]')?.click()
             await sleep(100)
-            const manualCopyNotice = text('.upgrade-manual-notice')
+            const manualCopyNotice = text('.global-status-bar [data-role="notice"]')
             let copiedManualScript = ''
             try {
               copiedManualScript = await navigator.clipboard.readText()
@@ -2231,7 +2243,7 @@ async function createWindow(): Promise<void> {
                 + ' placeholder=' + generatedManualScript.includes('{{file_transfer.password}}')
                 + ' copied=' + (copiedManualScript === generatedManualScript)
                 + ' copyNotice=' + manualCopyNotice
-                + ' notice=' + text('.upgrade-manual-notice')
+                + ' notice=' + text('.global-status-bar [data-role="notice"]')
                 + ' error=' + text('.upgrade-error')
                 + ' versions=' + versionCountBeforeManualSend + '->' + versionCountAfterManualSend
             )
@@ -2264,7 +2276,7 @@ async function createWindow(): Promise<void> {
             )
             await sleep(1300)
 
-            click('.command-collapsed-bar')
+            click('.command-collapsed-trigger')
             await sleep(120)
             const commandPanel = document.querySelector('.command-workspace.open')
             const commandResizeHandle = document.querySelector('[data-testid="command-resize-handle"]')
@@ -2383,7 +2395,7 @@ async function createWindow(): Promise<void> {
             const commandFinalHeight = commandPanel?.getBoundingClientRect().height || 0
             document.querySelector('button[title="收起常用命令"]')?.click()
             await sleep(50)
-            document.querySelector('.command-collapsed-bar')?.click()
+            document.querySelector('.command-collapsed-trigger')?.click()
             await sleep(80)
             const commandHeightAfterCollapseRestore = document.querySelector('.command-workspace.open')?.getBoundingClientRect().height || 0
             const persistedCommandHeight = Number(localStorage.getItem('device-tui.desktop-v2.command-panel-height') || 0)
@@ -2403,6 +2415,30 @@ async function createWindow(): Promise<void> {
                 + '/' + commandStageHeightInSmallWindow + ' restored=' + commandHeightAfterWindowRestore
                 + ' final=' + commandFinalHeight + ' collapseRestore=' + commandHeightAfterCollapseRestore
                 + ' stored=' + persistedCommandHeight
+            )
+            document.querySelector('button[title="收起常用命令"]')?.click()
+            await sleep(40)
+            if (commandResizeHandle) {
+              const rect = commandResizeHandle.getBoundingClientRect()
+              commandResizeHandle.dispatchEvent(new PointerEvent('pointerdown', {
+                bubbles: true,
+                button: 0,
+                clientX: rect.left + rect.width / 2,
+                clientY: rect.top + rect.height / 2
+              }))
+              document.dispatchEvent(new PointerEvent('pointermove', {
+                bubbles: true,
+                clientX: rect.left + rect.width / 2,
+                clientY: rect.top + rect.height / 2 - 50
+              }))
+              document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+            }
+            await sleep(60)
+            const commandHeightAfterCollapsedDrag = document.querySelector('.command-workspace.open')?.getBoundingClientRect().height || 0
+            setCheck(
+              'collapsedCommandBarDragOpensQuickSendWorkspace',
+              commandHeightAfterCollapsedDrag >= 220,
+              'height=' + commandHeightAfterCollapsedDrag
             )
             setCheck(
               'commandWorkspaceFitsNarrowStage',
@@ -2448,6 +2484,33 @@ async function createWindow(): Promise<void> {
               text('.command-context-menu')
             )
             document.querySelector('.command-header')?.click()
+            await sleep(40)
+            openContextMenu('.device-list.device-table-list > .device-table-row')
+            await sleep(40)
+            const deviceMenuOpenedForExclusivity = Boolean(document.querySelector('.device-context-menu'))
+            openContextMenu('.command-tab.active > button:first-child')
+            await sleep(40)
+            const commandMenuReplacedDeviceMenu = Boolean(document.querySelector('.command-context-menu'))
+              && !document.querySelector('.device-context-menu')
+            openContextMenu('.terminal-workspace-stack.active .terminal-host')
+            await sleep(40)
+            const terminalMenuReplacedCommandMenu = Boolean(document.querySelector('.terminal-context-menu'))
+              && !document.querySelector('.command-context-menu')
+              && !document.querySelector('.device-context-menu')
+            setCheck(
+              'contextMenusAreMutuallyExclusiveAcrossComponents',
+              deviceMenuOpenedForExclusivity
+                && commandMenuReplacedDeviceMenu
+                && terminalMenuReplacedCommandMenu
+                && document.querySelectorAll('[role="menu"]').length === 1,
+              JSON.stringify({
+                deviceMenuOpenedForExclusivity,
+                commandMenuReplacedDeviceMenu,
+                terminalMenuReplacedCommandMenu,
+                openMenus: document.querySelectorAll('[role="menu"]').length
+              })
+            )
+            document.querySelector('.workspace-stage')?.click()
             await sleep(40)
             for (let attempt = 0; attempt < 60; attempt += 1) {
               if ((document.querySelector('.xterm-rows')?.textContent || '').includes('System ready.')) break
@@ -2549,7 +2612,7 @@ async function createWindow(): Promise<void> {
               const rect = document.querySelector('.session-workspace')?.getBoundingClientRect()
               if (rect) enterLayoutSamples.push({ top: rect.top, height: rect.height })
             }
-            const routineCommandNotice = [...document.querySelectorAll('.notice-banner')]
+            const routineCommandNotice = [...document.querySelectorAll('.global-status-bar [data-role="notice"]')]
               .some((notice) => /命令已发送|已广播到/u.test(notice.textContent || ''))
             const enterFeedback = text('.command-dispatch-context span.success')
             setCheck(
@@ -2842,33 +2905,23 @@ async function createWindow(): Promise<void> {
             )
             const focusedTerminalRect = visibleElement('.terminal-workspace-stack.active .terminal-split-pane.focused .terminal-pane')?.getBoundingClientRect()
               || activeTerminalPane()?.getBoundingClientRect()
-            const visibleQuickSend = visibleElement('.terminal-workspace-stack.active [data-testid="terminal-quick-toolbar"], .terminal-workspace-stack.active .quick-toolbar-restore')
+            const visibleQuickSend = visibleElement('.command-workspace [data-testid="terminal-quick-toolbar"], .command-workspace .quick-toolbar-restore')
             const quickSendRect = visibleQuickSend?.getBoundingClientRect()
-            const quickSendToolbarRect = visibleQuickSend
-              ?.closest('.terminal-bottom-toolbar')?.getBoundingClientRect()
             const commandWorkspaceRect = document.querySelector('.command-workspace')?.getBoundingClientRect()
-            const activeSplitLayout = activeTerminalWorkspace()?.querySelector('.terminal-split-layout')
-            const splitActiveForQuickSend = activeSplitLayout?.getAttribute('data-split-direction') !== 'none'
-            const terminalSplitRect = activeSplitLayout?.getBoundingClientRect()
             const visibleQuickToolbarCount = [...document.querySelectorAll('[data-testid="terminal-quick-toolbar"], .quick-toolbar-restore')]
               .filter((element) => element.getClientRects().length > 0).length
             setCheck(
-              'quickSendLivesInFocusedTerminalBottomToolbar',
+              'quickSendIsMergedIntoResizableCommandWorkspace',
               Boolean(focusedTerminalRect)
                 && Boolean(quickSendRect)
                 && visibleQuickToolbarCount === 1
-                && (splitActiveForQuickSend
-                  ? Boolean(terminalSplitRect)
-                    && !quickSendToolbarRect
-                    && quickSendRect.top >= terminalSplitRect.bottom - 1
-                  : Boolean(quickSendToolbarRect)
-                    && quickSendRect.top >= quickSendToolbarRect.top - 1
-                    && quickSendRect.bottom <= quickSendToolbarRect.bottom + 1)
-                && (!commandWorkspaceRect || quickSendRect.bottom <= commandWorkspaceRect.top + 1),
+                && Boolean(commandWorkspaceRect)
+                && quickSendRect.top >= commandWorkspaceRect.top - 1
+                && quickSendRect.bottom <= commandWorkspaceRect.bottom + 1
+                && !document.querySelector('.terminal-pane [data-testid="terminal-quick-toolbar"], .terminal-pane .quick-toolbar-restore'),
               'terminalBottom=' + (focusedTerminalRect?.bottom || 0)
                 + ' quick=' + (quickSendRect?.top || 0) + '-' + (quickSendRect?.bottom || 0)
-                + ' toolbar=' + (quickSendToolbarRect?.top || 0) + '-' + (quickSendToolbarRect?.bottom || 0)
-                + ' commandTop=' + (commandWorkspaceRect?.top || 0)
+                + ' command=' + (commandWorkspaceRect?.top || 0) + '-' + (commandWorkspaceRect?.bottom || 0)
             )
 
             clickButtonByTitle('占用设备')
@@ -3107,6 +3160,71 @@ async function createWindow(): Promise<void> {
                 hasPassword: temporaryProfile?.ssh?.has_password,
                 temporarySessionCreated,
                 dialogOpen: Boolean(document.querySelector('.profile-dialog'))
+              })
+            )
+            const temporaryProfileRow = [...document.querySelectorAll('.profile-list .device-row')]
+              .find((row) => row.querySelector('strong')?.textContent?.trim() === temporaryProfileName)
+            temporaryProfileRow?.click()
+            await sleep(80)
+            const editTemporaryProfileButton = [...document.querySelectorAll('.navigator-detail .device-actions button')]
+              .find((button) => button.textContent?.trim() === '编辑')
+            editTemporaryProfileButton?.click()
+            await sleep(80)
+            const temporaryEditPasswordInputPresent = Boolean(
+              document.querySelector('.profile-dialog:not(.server-dialog) [data-testid="temporary-ssh-password"]')
+            )
+            const replacementTemporarySecret = 'edited-inline-temporary-secret'
+            setValue('[data-testid="temporary-ssh-password"]', replacementTemporarySecret)
+            document.querySelector('.profile-dialog:not(.server-dialog)')?.requestSubmit()
+            let editedTemporaryProfile = null
+            for (let attempt = 0; attempt < 50; attempt += 1) {
+              const response = await window.desktopApi.request({ path: '/api/v1/connection-profiles' })
+              try {
+                editedTemporaryProfile = JSON.parse(response.body).profiles
+                  ?.find((profile) => profile.id === temporaryProfile?.id) || null
+              } catch {
+                editedTemporaryProfile = null
+              }
+              if (editedTemporaryProfile?.ssh?.has_password && !document.querySelector('.profile-dialog')) break
+              await sleep(100)
+            }
+            const selectedTemporaryProfileRow = [...document.querySelectorAll('.profile-list .device-row')]
+              .find((row) => row.querySelector('strong')?.textContent?.trim() === temporaryProfileName)
+            selectedTemporaryProfileRow?.click()
+            await sleep(50)
+            const editTemporaryProfileAgain = [...document.querySelectorAll('.navigator-detail .device-actions button')]
+              .find((button) => button.textContent?.trim() === '编辑')
+            editTemporaryProfileAgain?.click()
+            await sleep(60)
+            const blankEditPasswordInput = document.querySelector('[data-testid="temporary-ssh-password"]')
+            const editPasswordStartsBlank = blankEditPasswordInput?.value === ''
+            document.querySelector('.profile-dialog:not(.server-dialog)')?.requestSubmit()
+            await sleep(160)
+            const preservedTemporaryResponse = await window.desktopApi.request({ path: '/api/v1/connection-profiles' })
+            let preservedTemporaryProfile = null
+            try {
+              preservedTemporaryProfile = JSON.parse(preservedTemporaryResponse.body).profiles
+                ?.find((profile) => profile.id === temporaryProfile?.id) || null
+            } catch {
+              preservedTemporaryProfile = null
+            }
+            openContextMenu('[data-profile-row-id="' + CSS.escape(temporaryProfile?.id || '') + '"]')
+            await sleep(40)
+            const temporaryContextMenuText = text('.profile-context-menu')
+            document.querySelector('.workspace-stage')?.click()
+            setCheck(
+              'temporaryProfileEditSavesInlinePasswordAndBlankPreservesIt',
+              temporaryEditPasswordInputPresent
+                && editedTemporaryProfile?.ssh?.has_password === true
+                && editPasswordStartsBlank
+                && preservedTemporaryProfile?.ssh?.has_password === true
+                && !temporaryContextMenuText.includes('管理 SSH 凭据'),
+              JSON.stringify({
+                inputPresent: temporaryEditPasswordInputPresent,
+                editedHasPassword: editedTemporaryProfile?.ssh?.has_password,
+                editPasswordStartsBlank,
+                preservedHasPassword: preservedTemporaryProfile?.ssh?.has_password,
+                contextMenu: temporaryContextMenuText
               })
             )
             const previousSessionTab = [...document.querySelectorAll('.session-tab[data-session-tab-id]')]
@@ -3471,7 +3589,7 @@ async function createWindow(): Promise<void> {
         const captureCommandPanelPath = process.env.DEVICE_TUI_CAPTURE_COMMAND_PANEL_PATH
         if (captureCommandPanelPath) {
           await mainWindow.webContents.executeJavaScript(
-            "document.querySelector('.command-collapsed-bar')?.click()",
+            "document.querySelector('.command-collapsed-trigger')?.click()",
             true
           )
           await new Promise((resolve) => setTimeout(resolve, 120))
@@ -4019,7 +4137,7 @@ async function createWindow(): Promise<void> {
           recoveryDom = await mainWindow.webContents.executeJavaScript(
             `({
               failure: document.querySelector('.system-banner')?.textContent?.trim() || '',
-              notice: document.querySelector('.notice-banner')?.textContent?.trim() || '',
+              notice: document.querySelector('.global-status-bar [data-role="notice"]')?.textContent?.trim() || '',
               deviceRows: document.querySelectorAll('.device-table-row').length
             })`,
             true
@@ -4031,7 +4149,7 @@ async function createWindow(): Promise<void> {
         const stableRecoveryDom = await mainWindow.webContents.executeJavaScript(
           `({
             failure: document.querySelector('.system-banner')?.textContent?.trim() || '',
-            notice: document.querySelector('.notice-banner')?.textContent?.trim() || '',
+            notice: document.querySelector('.global-status-bar [data-role="notice"]')?.textContent?.trim() || '',
             deviceRows: document.querySelectorAll('.device-table-row').length,
             loading: Boolean(document.querySelector('.navigator-state:not(.error)'))
           })`,

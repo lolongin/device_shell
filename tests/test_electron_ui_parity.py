@@ -35,6 +35,8 @@ PRELOAD_TS = Path("desktop/src/preload/index.ts")
 
 def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> None:
     toolbar = TERMINAL_QUICK_TOOLBAR.read_text(encoding="utf-8")
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
         encoding="utf-8"
@@ -57,6 +59,10 @@ def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> Non
     assert "workspace.sendQuickSendButton(button.id)" in toolbar
     assert "device-tui.desktop-v2.quick-toolbar-collapsed" in toolbar
     assert ':aria-label="`编辑 ${button.name}`"' in toolbar
+    assert "import TerminalQuickToolbar from './TerminalQuickToolbar.vue'" in command
+    assert command.count("<TerminalQuickToolbar />") == 2
+    assert 'class="command-quick-send-row"' in command
+    assert "TerminalQuickToolbar" not in split
 
     assert "quickSendButtons" in store
     assert "saveQuickSendButton" in store
@@ -501,6 +507,25 @@ def test_electron_device_search_covers_legacy_hidden_table_fields() -> None:
         assert f"{field}: string" in types
         assert f"device.{field}" in store
 
+    assert "effectiveQuery" in store
+    assert "devices.value.length < 200" in store
+    assert "}, 120)" in store
+
+
+def test_electron_large_device_lists_use_windowed_rendering() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "DEVICE_VIRTUALIZATION_THRESHOLD = 120" in app
+    assert "const renderedDevices = computed" in app
+    assert "workspace.filteredDevices.slice(virtualDeviceStart.value, virtualDeviceEnd.value)" in app
+    assert 'v-for="(device, index) in renderedDevices"' in app
+    assert 'ref="deviceListElement"' in app
+    assert '@scroll="handleDeviceListScroll"' in app
+    assert "scrollDeviceIndexIntoView(index)" in app
+    assert ".device-virtual-spacer" in styles
+    assert "height: 46px; min-height: 46px" in styles
+
 
 def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
@@ -645,7 +670,7 @@ def test_electron_device_table_keeps_keyboard_navigation() -> None:
     assert ':key="device.row_id"' in app
     assert ':data-device-row-id="device.row_id"' in app
     assert "device.row_id === workspace.selectedDeviceRowId" in app
-    assert "device.board_id || index + 1" in app
+    assert "device.board_id || virtualDeviceStart + index + 1" in app
     assert ".device-table-list:focus-visible" in styles
 
 
@@ -747,7 +772,7 @@ def test_electron_renderer_restores_persisted_theme_toggle() -> None:
     assert '.command-workspace {' in styles
     assert 'background: var(--surface);' in styles
     assert ':root[data-theme="light"] .system-banner' in styles
-    assert ':root[data-theme="light"] .notice-banner' in styles
+    assert ':root[data-theme="light"] .global-status-bar' in styles
     assert ':root[data-theme="light"] .status-pill[data-status="occupied"]' in styles
 
 
@@ -947,13 +972,13 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert 'class="terminal-toolbar"' not in terminal
     assert ".terminal-bottom-toolbar" in styles
     assert "bottom: 34px" in styles
-    assert '<template v-if="!splitDirection && focusedPane === pane && activeSessionFor(pane)?.id === session.id" #bottom-leading>' in split
-    assert '<TerminalQuickToolbar v-if="splitDirection" />' in split
-    assert "<TerminalQuickToolbar />" in split
-    assert '<slot name="bottom-leading"></slot>' in terminal
+    assert "TerminalQuickToolbar" not in split
+    assert '<slot name="bottom-leading"></slot>' not in terminal
+    assert 'class="terminal-bottom-spacer"' in terminal
     assert "grid-template-rows: minmax(0, 1fr)" in styles
-    assert ".terminal-workspace-stack.split" in styles
-    assert ".terminal-bottom-leading" in styles
+    assert ".terminal-workspace-stack.split > .terminal-quick-toolbar" not in styles
+    assert ".terminal-bottom-spacer" in styles
+    assert ".command-quick-send-row" in styles
     assert ".device-session-tabs" in styles
     assert ".session-child-tabs" in styles
     assert "TERMINAL_OUTPUT_BATCH_MS = 8" in terminal
@@ -1188,7 +1213,7 @@ def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
     assert 'data-testid="command-resize-handle"' in command
     assert 'role="separator"' in command
     assert 'aria-orientation="horizontal"' in command
-    assert ':aria-valuenow="commandPanelHeight"' in command
+    assert ':aria-valuenow="workspace.commandPanelOpen ? commandPanelHeight : 0"' in command
     assert '@dblclick="resetCommandPanelHeight"' in command
     assert ".command-resize-handle" in styles
     assert ".command-resize-handle:focus-visible" in styles
@@ -1373,9 +1398,13 @@ def test_connection_profile_dialog_explains_and_enforces_readiness() -> None:
     assert "protocol-host-field" in dialog
     assert "protocol-user-field" in dialog
     assert 'data-testid="temporary-ssh-password"' in dialog
-    assert "createTemporaryProfileWithSecrets" in WORKSPACE_STORE.read_text(encoding="utf-8")
+    assert "saveTemporaryProfileWithSecrets" in WORKSPACE_STORE.read_text(encoding="utf-8")
+    assert "留空保留原密码；输入新密码将替换" in dialog
+    assert 'v-if="profileType === \'temporary\'" class="protocol-field protocol-secret-field"' in dialog
     assert "credential:create-temporary-profile" in MAIN_TS.read_text(encoding="utf-8")
     assert "temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup" in MAIN_TS.read_text(encoding="utf-8")
+    assert "temporaryProfileEditSavesInlinePasswordAndBlankPreservesIt" in MAIN_TS.read_text(encoding="utf-8")
+    assert 'v-if="selectedProfile.profile_type === \'server\'" class="credential-actions"' in APP_VUE.read_text(encoding="utf-8")
     assert ".profile-readiness" in styles
     assert ".protocol-field" in styles
     assert ".protocol-secret-field" in styles
@@ -1468,11 +1497,15 @@ def test_electron_context_menus_clamp_to_viewport_and_focus_first_action() -> No
     assert "export function handleContextMenuKeydown" in context_menu
     assert "export function restoreContextMenuFocus" in context_menu
     assert "export function contextMenuTrigger" in context_menu
+    assert "export function announceContextMenuOpen" in context_menu
+    assert "export function subscribeContextMenuOpen" in context_menu
     assert "window.innerWidth - width" in context_menu
     assert "window.innerHeight - height" in context_menu
     for key in ("ArrowDown", "ArrowUp", "Home", "End", "Escape"):
         assert key in context_menu
     for source in (app, terminal, command):
+        assert "announceContextMenuOpen" in source
+        assert "subscribeContextMenuOpen" in source
         assert "clampContextMenuPoint" in source
         assert "clampContextMenuElement" in source
         assert "focusFirstContextMenuItem" in source
@@ -1541,7 +1574,9 @@ def test_electron_automation_workspace_keeps_runtime_feedback() -> None:
     assert "data-state=\"waiting\"" in styles
     assert "data-state=\"triggered\"" in styles
 
-    assert 'class="notice-banner"' in app
+    assert 'class="global-status-bar"' in app
+    assert 'data-role="notice"' in app
+    assert 'data-role="idle"' in app
     assert 'role="status"' in app
     assert "const noticeRequiresAttention = computed" in app
     assert "function clearWorkspaceNotice" in app
@@ -1554,8 +1589,10 @@ def test_electron_automation_workspace_keeps_runtime_feedback() -> None:
     assert 'title="立即重试工作区"' in app
     assert "workspaceRecoveryBusy" in app
     assert 'data-state="backend"' in app
-    assert ".notice-banner" in styles
-    assert '.notice-banner[data-state="attention"]' in styles
+    assert ".global-status-bar" in styles
+    assert '.global-status-bar[data-state="attention"]' in styles
+    assert "grid-template-rows: minmax(0, 1fr) 24px" in styles
+    assert "grid-column: 1 / -1; grid-row: 2" in styles
     assert ".system-banner > button" in styles
 
 

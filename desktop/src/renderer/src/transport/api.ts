@@ -103,11 +103,16 @@ export const desktopApi = {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
-  createTemporaryProfileWithSecrets: async (
+  saveTemporaryProfileWithSecrets: async (
+    profileId: string,
     payload: ConnectionProfilePayload,
     secrets: ConnectionProfileSecrets
   ): Promise<ConnectionProfileSummary> => parseBackendResponse<ConnectionProfileSummary>(
-    await window.desktopApi.saveTemporaryProfile({ payload, secrets })
+    await window.desktopApi.saveTemporaryProfile({
+      ...(profileId ? { profileId } : {}),
+      payload,
+      secrets
+    })
   ),
   updateConnectionProfile: (
     profileId: string,

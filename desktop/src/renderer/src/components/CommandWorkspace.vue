@@ -15,13 +15,16 @@ import {
   X
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
+import TerminalQuickToolbar from './TerminalQuickToolbar.vue'
 import {
+  announceContextMenuOpen,
   clampContextMenuElement,
   clampContextMenuPoint,
   contextMenuTrigger,
   focusFirstContextMenuItem,
   handleContextMenuKeydown,
-  restoreContextMenuFocus
+  restoreContextMenuFocus,
+  subscribeContextMenuOpen
 } from '../contextMenu'
 
 const workspace = useWorkspaceStore()
@@ -59,6 +62,7 @@ let dispatchFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 let resizeStartY = 0
 let resizeStartHeight = 0
 let panelResizing = false
+let unsubscribeContextMenuOpen: (() => void) | null = null
 
 const currentGroup = computed(() => workspace.currentCommandGroup)
 const matchCount = computed(() => {
@@ -150,6 +154,10 @@ function resizeCommandPanel(event: PointerEvent): void {
 function startCommandPanelResize(event: PointerEvent): void {
   if (event.button !== 0) return
   event.preventDefault()
+  if (!workspace.commandPanelOpen) {
+    workspace.commandPanelOpen = true
+    commandPanelHeight.value = COMMAND_PANEL_MIN_HEIGHT
+  }
   panelResizing = true
   resizeStartY = event.clientY
   resizeStartHeight = commandPanelHeight.value
@@ -162,15 +170,17 @@ function startCommandPanelResize(event: PointerEvent): void {
 
 function handleCommandPanelResizeKeydown(event: KeyboardEvent): void {
   const step = event.shiftKey ? 40 : 10
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+  workspace.commandPanelOpen = true
   if (event.key === 'ArrowUp') setCommandPanelHeight(commandPanelHeight.value + step)
   else if (event.key === 'ArrowDown') setCommandPanelHeight(commandPanelHeight.value - step)
   else if (event.key === 'Home') setCommandPanelHeight(COMMAND_PANEL_MIN_HEIGHT)
-  else if (event.key === 'End') setCommandPanelHeight(commandPanelMaxHeight.value)
-  else return
+  else setCommandPanelHeight(commandPanelMaxHeight.value)
   event.preventDefault()
 }
 
 function resetCommandPanelHeight(): void {
+  workspace.commandPanelOpen = true
   setCommandPanelHeight(COMMAND_PANEL_DEFAULT_HEIGHT)
 }
 
@@ -256,6 +266,7 @@ function closeEditorContextMenuAndRestoreFocus(): void {
 }
 
 function openCommandGroupContextMenu(event: MouseEvent, groupId: string, name: string): void {
+  announceContextMenuOpen()
   commandGroupContextMenuReturnFocus.value = contextMenuTrigger(event)
   commandGroupContextMenu.value = {
     groupId,
@@ -271,6 +282,7 @@ function handleCommandGroupKeydown(event: KeyboardEvent, groupId: string, name: 
   }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
+    announceContextMenuOpen()
     const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
     commandGroupContextMenuReturnFocus.value = event.currentTarget as HTMLElement | null
     commandGroupContextMenu.value = {
@@ -367,6 +379,7 @@ function handleWorkspaceShortcut(event: KeyboardEvent): void {
 }
 
 function openEditorContextMenu(event: MouseEvent): void {
+  announceContextMenuOpen()
   updateSelectionState()
   editorContextMenuReturnFocus.value = contextMenuTrigger(event)
   editorContextMenu.value = {
@@ -420,6 +433,7 @@ function handleEditorKeydown(event: KeyboardEvent): void {
   }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault()
+    announceContextMenuOpen()
     const rect = editor.value?.getBoundingClientRect()
     updateSelectionState()
     editorContextMenuReturnFocus.value = editor.value
@@ -520,6 +534,10 @@ function replaceAll(): void {
 }
 
 onMounted(() => {
+  unsubscribeContextMenuOpen = subscribeContextMenuOpen(() => {
+    closeCommandGroupContextMenu()
+    closeEditorContextMenu()
+  })
   clampCommandPanelHeight()
   window.addEventListener('resize', clampCommandPanelHeight)
 })
@@ -528,6 +546,7 @@ onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (dispatchFeedbackTimer) clearTimeout(dispatchFeedbackTimer)
   stopCommandPanelResize()
+  unsubscribeContextMenuOpen?.()
   window.removeEventListener('resize', clampCommandPanelHeight)
   void saveContent()
 })
@@ -544,32 +563,30 @@ onBeforeUnmount(() => {
     @click="closeCommandGroupContextMenu(); closeEditorContextMenu()"
     @keydown.capture="handleWorkspaceShortcut"
   >
-    <button
-      v-if="!workspace.commandPanelOpen"
-      class="command-collapsed-bar"
-      type="button"
-      title="展开常用命令"
-      @click="workspace.commandPanelOpen = true"
-    >
-      <span><BookOpenText :size="14" />常用命令 <strong>{{ currentGroup?.name || '终端' }}</strong></span>
-      <span>{{ dispatchTargetLabel }} <ChevronUp :size="14" /></span>
-    </button>
+    <div
+      class="command-resize-handle"
+      data-testid="command-resize-handle"
+      role="separator"
+      aria-label="调整常用命令面板高度"
+      aria-orientation="horizontal"
+      :aria-valuemin="COMMAND_PANEL_MIN_HEIGHT"
+      :aria-valuemax="commandPanelMaxHeight"
+      :aria-valuenow="workspace.commandPanelOpen ? commandPanelHeight : 0"
+      tabindex="0"
+      title="向上拖动展开并调整快捷发送与命令面板；双击恢复默认高度"
+      @pointerdown="startCommandPanelResize"
+      @keydown="handleCommandPanelResizeKeydown"
+      @dblclick="resetCommandPanelHeight"
+    ><span aria-hidden="true"></span></div>
+    <div v-if="!workspace.commandPanelOpen" class="command-quick-send-row"><TerminalQuickToolbar /></div>
+    <div v-if="!workspace.commandPanelOpen" class="command-collapsed-bar">
+      <button class="command-collapsed-trigger" type="button" title="展开常用命令" @click="workspace.commandPanelOpen = true">
+        <span><BookOpenText :size="14" />常用命令 <strong>{{ currentGroup?.name || '终端' }}</strong></span>
+        <span>{{ dispatchTargetLabel }} <ChevronUp :size="14" /></span>
+      </button>
+    </div>
     <template v-else>
-      <div
-        class="command-resize-handle"
-        data-testid="command-resize-handle"
-        role="separator"
-        aria-label="调整常用命令面板高度"
-        aria-orientation="horizontal"
-        :aria-valuemin="COMMAND_PANEL_MIN_HEIGHT"
-        :aria-valuemax="commandPanelMaxHeight"
-        :aria-valuenow="commandPanelHeight"
-        tabindex="0"
-        title="拖动调整高度；双击恢复默认"
-        @pointerdown="startCommandPanelResize"
-        @keydown="handleCommandPanelResizeKeydown"
-        @dblclick="resetCommandPanelHeight"
-      ><span aria-hidden="true"></span></div>
+      <div class="command-quick-send-row"><TerminalQuickToolbar /></div>
       <header class="command-header" @click="closeCommandGroupContextMenu">
         <div class="command-tabs" role="tablist">
           <div

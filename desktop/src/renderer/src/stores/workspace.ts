@@ -90,6 +90,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedDeviceRowId = ref(restored.selectedDeviceRowId || restored.selectedDeviceId || '')
   const activeSessionId = ref(restored.activeSessionId || '')
   const query = ref('')
+  const effectiveQuery = ref('')
   const domainFilter = ref('')
   const statusFilter = ref('')
   const cpuFilter = ref('')
@@ -111,6 +112,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   let lastEventSequence = 0
   let eventStreamWanted = false
   let eventConnectedOnce = false
+  let deviceQueryTimer: ReturnType<typeof setTimeout> | null = null
 
   const selectedDevice = computed(
     () => devices.value.find((device) => device.row_id === selectedDeviceRowId.value)
@@ -151,7 +153,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }])
   ))
   const filteredDevices = computed(() => {
-    const needle = query.value.trim().toLocaleLowerCase()
+    const needle = effectiveQuery.value
     const cpuNeedle = cpuFilter.value.trim().toLocaleLowerCase()
     return devices.value.filter((device) => {
       const index = deviceFilterIndex.value.get(device.row_id)
@@ -176,12 +178,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   ))
 
   function clearDeviceFilters(): void {
+    if (deviceQueryTimer) clearTimeout(deviceQueryTimer)
+    deviceQueryTimer = null
     query.value = ''
+    effectiveQuery.value = ''
     domainFilter.value = ''
     statusFilter.value = ''
     cpuFilter.value = ''
     mineOnly.value = false
   }
+
+  watch(query, (value) => {
+    if (deviceQueryTimer) clearTimeout(deviceQueryTimer)
+    deviceQueryTimer = null
+    const normalized = value.trim().toLocaleLowerCase()
+    if (!normalized || devices.value.length < 200) {
+      effectiveQuery.value = normalized
+      return
+    }
+    deviceQueryTimer = setTimeout(() => {
+      effectiveQuery.value = normalized
+      deviceQueryTimer = null
+    }, 120)
+  })
 
   function applyCommandWorkspace(response: CommandWorkspaceResponse): void {
     commandGroups.value = response.groups
@@ -529,10 +548,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     error.value = ''
     errorCode.value = ''
     try {
-      const saved = profileId
-        ? await desktopApi.updateConnectionProfile(profileId, payload)
-        : payload.profile_type === 'temporary'
-          ? await desktopApi.createTemporaryProfileWithSecrets(payload, secrets)
+      const saved = payload.profile_type === 'temporary'
+        ? await desktopApi.saveTemporaryProfileWithSecrets(profileId, payload, secrets)
+        : profileId
+          ? await desktopApi.updateConnectionProfile(profileId, payload)
           : await desktopApi.createConnectionProfile(payload)
       const index = profiles.value.findIndex((profile) => profile.id === saved.id)
       if (index >= 0) profiles.value[index] = saved

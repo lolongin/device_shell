@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Columns2, Rows2, X } from 'lucide-vue-next'
 import TerminalPane from './TerminalPane.vue'
-import TerminalQuickToolbar from './TerminalQuickToolbar.vue'
 import type { SessionSummary } from '../types'
 
 type PaneId = 'primary' | 'secondary'
@@ -353,11 +352,7 @@ defineExpose({ splitSession, resetSplit })
         @transfer="emit('transfer', $event)"
         @upgrade="emit('upgrade', $event)"
         @context="(sessionId, event) => emit('context', sessionId, event)"
-      >
-        <template v-if="!splitDirection && focusedPane === pane && activeSessionFor(pane)?.id === session.id" #bottom-leading>
-          <TerminalQuickToolbar />
-        </template>
-      </TerminalPane>
+      ></TerminalPane>
       <div v-if="!sessionsForPane(pane).length" class="split-empty-pane">
         <Columns2 :size="24" />
         <strong>空窗格</strong>
@@ -387,6 +382,5 @@ defineExpose({ splitSession, resetSplit })
       @keydown="handleSplitResizeKeydown"
       ></div>
     </div>
-    <TerminalQuickToolbar v-if="splitDirection" />
   </div>
 </template>
