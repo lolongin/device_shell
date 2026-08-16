@@ -348,6 +348,11 @@ async function pasteCommandText(): Promise<void> {
 }
 
 async function clearCurrentCommandGroup(): Promise<void> {
+  if (!content.value) return
+  if (!window.confirm(`清空命令页签“${currentGroup.value?.name || '当前页签'}”中的全部内容吗？`)) {
+    closeEditorContextMenu()
+    return
+  }
   content.value = ''
   await nextTick()
   editor.value?.focus()
@@ -625,7 +630,7 @@ onBeforeUnmount(() => {
           @click.stop
           @keydown="handleContextMenuKeydown($event, commandGroupContextMenuElement, closeCommandGroupContextMenuAndRestoreFocus)"
         >
-          <p>{{ commandGroupContextMenu.name }}</p>
+          <p>{{ commandGroupContextMenu.name }}<small>命令页签</small></p>
           <button
             type="button"
             role="menuitem"
@@ -633,10 +638,10 @@ onBeforeUnmount(() => {
           >重命名</button>
           <button type="button" role="menuitem" @click="workspace.createCommandGroup(); closeCommandGroupContextMenu()">新增命令页签</button>
           <button
+            v-if="workspace.commandGroups.length > 1"
             type="button"
             role="menuitem"
             class="danger-menu-item"
-            :disabled="workspace.commandGroups.length <= 1"
             @click="removeGroup(commandGroupContextMenu.groupId, commandGroupContextMenu.name)"
           >删除页签</button>
         </div>
@@ -741,13 +746,13 @@ onBeforeUnmount(() => {
           @click.stop
           @keydown="handleContextMenuKeydown($event, editorContextMenuElement, closeEditorContextMenuAndRestoreFocus)"
         >
-          <p>{{ currentGroup?.name || '常用命令' }}</p>
+          <p>{{ currentGroup?.name || '常用命令' }}<small>命令编辑器</small></p>
           <button
             type="button"
             role="menuitem"
             :disabled="!editorContextMenu.hasCommand"
             @click="copySelectedCommand"
-          >复制选中/当前命令</button>
+          >复制选中内容或当前行</button>
           <button type="button" role="menuitem" @click="pasteCommandText">粘贴</button>
           <button
             type="button"
@@ -761,22 +766,22 @@ onBeforeUnmount(() => {
             role="menuitem"
             :disabled="!editorContextMenu.hasCommand || !workspace.activeSession || workspace.commandBusy"
             @click="dispatch(false); closeEditorContextMenu()"
-          >发送到终端</button>
+          >发送到当前终端</button>
           <button
             type="button"
             role="menuitem"
             :disabled="!editorContextMenu.hasCommand || !workspace.connectedSessions.length || workspace.commandBusy"
             @click="dispatch(true); closeEditorContextMenu()"
-          >广播发送</button>
+          >发送到全部已连接终端</button>
           <hr />
           <button type="button" role="menuitem" @click="openFindReplace(); closeEditorContextMenu()">查找和替换</button>
           <button
+            v-if="content"
             type="button"
             role="menuitem"
             class="danger-menu-item"
-            :disabled="!content"
             @click="clearCurrentCommandGroup"
-          >清空当前页签</button>
+          >清空当前页签…</button>
         </div>
       </div>
     </template>

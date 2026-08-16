@@ -200,7 +200,7 @@ class SimulatedTerminalSession:
             return
         if lowered == "help":
             self.callbacks.on_output(
-                "Commands: help, reboot, display version, display startup, dir flash:/, "
+                "Commands: help, reboot, display version, display startup, dir flash:/, ftpget, "
                 "menu, admin, biglog [lines], exit\n"
                 "Upgrade toggles: sim upgrade fail-download|fail-space|fail-startup on|off\n"
                 "Use 'menu' to test Ctrl+B, 'admin' to test Ctrl+A.\n<sim> "
@@ -229,6 +229,9 @@ class SimulatedTerminalSession:
             return
         if lowered.startswith("dir "):
             self._handle_dir(command)
+            return
+        if lowered.startswith("ftpget "):
+            self._handle_ftpget(command)
             return
         if lowered.startswith("delete "):
             self._handle_delete(command)
@@ -337,6 +340,32 @@ class SimulatedTerminalSession:
             self.callbacks.on_output(f"Delete {path} OK.\n<sim> ")
             return
         self.callbacks.on_output(f"Warning: {path} does not exist.\n<sim> ")
+
+    def _handle_ftpget(self, command: str) -> None:
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = []
+        if len(parts) != 7 or parts[1] != "-u" or parts[3] != "-p":
+            self.callbacks.on_output(
+                "ftpget: usage: ftpget -u USER -p PASSWORD HOST FILE\n<sim> "
+            )
+            return
+        username, password, source_path = parts[2], parts[4], parts[6].replace("\\", "/")
+        if username != self._transfer_username or password != self._transfer_password:
+            self.callbacks.on_output("ftpget: Login incorrect\n<sim> ")
+            return
+        if source_path != self._transfer_source_path.replace("\\", "/"):
+            self.callbacks.on_output(f"ftpget: No such file: {source_path}\n<sim> ")
+            return
+        local_name = self._basename(source_path)
+        stored_size = self._transfer_source_size
+        if self._transfer_size_mismatch:
+            stored_size = max(1, stored_size - 1)
+        self._files_by_storage.setdefault("flash:/", {})[local_name] = stored_size
+        self.callbacks.on_output(
+            f"ftpget: {source_path} transfer complete ({stored_size} bytes)\n<sim> "
+        )
 
     async def _handle_transfer_command(self, command: str) -> None:
         lowered = command.lower()

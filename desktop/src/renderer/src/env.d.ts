@@ -39,6 +39,14 @@ interface TemporaryProfileSaveRequest {
   secrets: import('./types').ConnectionProfileSecrets
 }
 
+interface InternalLoginPromptRequest {
+  sourceLabel: string
+  username: string
+  cid: string
+  remembered: boolean
+  autoLogin: boolean
+}
+
 interface SessionLogExportRequest {
   suggestedName: string
   content: string
@@ -51,6 +59,8 @@ interface DesktopApi {
   openDeviceSession(request: DeviceConnectionRequest): Promise<import('./types').SessionSummary | null>
   manageProfileCredential(request: ProfileCredentialRequest): Promise<boolean>
   saveTemporaryProfile(request: TemporaryProfileSaveRequest): Promise<BackendResponse>
+  loginInternalService(request: InternalLoginPromptRequest): Promise<import('./types').InternalAuthStatus | null>
+  chooseDeviceImport(): Promise<import('./types').DeviceImportPreview | null>
   chooseTransferRoot(): Promise<string>
   chooseSessionLogDirectory(): Promise<string>
   openSessionLogDirectory(): Promise<boolean>

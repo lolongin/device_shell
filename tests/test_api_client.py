@@ -21,6 +21,8 @@ from src.api_client import (
 class _MockHandler(BaseHTTPRequestHandler):
     """Mock HTTP handler that simulates the device web service."""
 
+    last_login_payload: dict[str, Any] = {}
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -44,13 +46,37 @@ class _MockHandler(BaseHTTPRequestHandler):
                 self._json({"revision": 1, "changed": False})
         elif path == "/api/server-error":
             self._send_error(500)
+        elif path == "/api/cookie-check":
+            self._json({"cookie": self.headers.get("Cookie", "")})
+        elif path == "/api/unauthorized":
+            self._send_error(401)
         else:
             self._send_error(404)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
-        if "/toggle" in path:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length)
+        if path == "/api/login":
+            type(self).last_login_payload = json.loads(raw_body.decode("utf-8"))
+            self._json(
+                {"authenticated": True, "current_user": "cookie.user"},
+                headers={"Set-Cookie": "device_session=test-cookie; Path=/; HttpOnly"},
+            )
+        elif path == "/api/form-login":
+            values = parse_qs(raw_body.decode("utf-8"))
+            type(self).last_login_payload = {key: items[0] for key, items in values.items()}
+            body = b"<html><body>ok</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Set-Cookie", "form_session=form-cookie; Path=/; HttpOnly")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/api/login-no-cookie":
+            self._json({"authenticated": True})
+        elif "/toggle" in path:
             self._json({"message": "Toggled D1"})
         elif "/claim" in path:
             self._json({"message": "Claimed D1"})
@@ -63,10 +89,12 @@ class _MockHandler(BaseHTTPRequestHandler):
         else:
             self._send_error(404)
 
-    def _json(self, data: dict[str, Any]) -> None:
+    def _json(self, data: dict[str, Any], headers: dict[str, str] | None = None) -> None:
         body = json.dumps(data).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -116,6 +144,82 @@ class TestHttpDeviceApiClient:
     """Integration-style tests against the mock HTTP server."""
 
     # -- read operations ---------------------------------------------------
+
+    def test_login_keeps_cookie_in_memory_for_followup_requests(self, mock_server) -> None:
+        port = mock_server.server_port
+        client = HttpDeviceApiClient(f"http://127.0.0.1:{port}")
+
+        status = client.login("operator", "not-persisted", "CID-7")
+        cookie_check = client._request_json("GET", "/api/cookie-check")
+
+        assert status.authenticated is True
+        assert status.username == "cookie.user"
+        assert status.cid == "CID-7"
+        assert _MockHandler.last_login_payload == {
+            "username": "operator",
+            "password": "not-persisted",
+            "cid": "CID-7",
+        }
+        assert "device_session=test-cookie" in cookie_check["cookie"]
+
+    def test_login_requires_session_cookie(self, mock_server) -> None:
+        port = mock_server.server_port
+        client = HttpDeviceApiClient(
+            f"http://127.0.0.1:{port}",
+            login_path="/api/login-no-cookie",
+        )
+        with pytest.raises(ApiClientError, match="session cookie"):
+            client.login("operator", "secret", "CID-7")
+
+    def test_failed_account_switch_clears_previous_cookie(self, mock_server) -> None:
+        port = mock_server.server_port
+        client = HttpDeviceApiClient(f"http://127.0.0.1:{port}")
+        client.login("operator", "secret", "CID-7")
+        client._login_path = "/api/login-no-cookie"
+
+        with pytest.raises(ApiClientError, match="session cookie"):
+            client.login("second", "secret", "CID-8")
+
+        assert client.auth_status().authenticated is False
+        assert client._request_json("GET", "/api/cookie-check")["cookie"] == ""
+
+    def test_form_login_accepts_html_response_with_cookie(self, mock_server) -> None:
+        port = mock_server.server_port
+        client = HttpDeviceApiClient(
+            f"http://127.0.0.1:{port}",
+            login_path="/api/form-login",
+            login_format="form",
+        )
+
+        status = client.login("form-user", "form-secret", "CID-FORM")
+
+        assert status.authenticated is True
+        assert _MockHandler.last_login_payload == {
+            "username": "form-user",
+            "password": "form-secret",
+            "cid": "CID-FORM",
+        }
+
+    def test_logout_clears_in_memory_cookie(self, mock_server) -> None:
+        port = mock_server.server_port
+        client = HttpDeviceApiClient(f"http://127.0.0.1:{port}")
+        client.login("operator", "secret", "CID-7")
+
+        client.logout()
+
+        assert client.auth_status().authenticated is False
+        assert client._request_json("GET", "/api/cookie-check")["cookie"] == ""
+
+    def test_unauthorized_response_invalidates_cookie_session(self, mock_server) -> None:
+        port = mock_server.server_port
+        client = HttpDeviceApiClient(f"http://127.0.0.1:{port}")
+        client.login("operator", "secret", "CID-7")
+
+        with pytest.raises(ApiClientError):
+            client._request_json("GET", "/api/unauthorized")
+
+        assert client.auth_status().authenticated is False
+        assert client._request_json("GET", "/api/cookie-check")["cookie"] == ""
 
     def test_get_current_user(self, mock_server) -> None:
         port = mock_server.server_port
@@ -223,9 +327,28 @@ class TestCreateHttpClientFromEnv:
     def test_default_values(self, monkeypatch) -> None:
         monkeypatch.delenv("DEVICE_TUI_API_BASE_URL", raising=False)
         monkeypatch.delenv("DEVICE_TUI_API_TIMEOUT_SECONDS", raising=False)
+        monkeypatch.delenv("DEVICE_TUI_API_LOGIN_PATH", raising=False)
         client = create_http_client_from_env()
         assert client._base_url == "http://127.0.0.1:8765"
         assert client._timeout_seconds == 5.0
+        assert client._login_path == "/api/login"
+
+    def test_login_contract_can_be_configured_from_environment(self, monkeypatch) -> None:
+        monkeypatch.setenv("DEVICE_TUI_API_LOGIN_PATH", "/session/create")
+        monkeypatch.setenv("DEVICE_TUI_API_LOGOUT_PATH", "/session/delete")
+        monkeypatch.setenv("DEVICE_TUI_API_LOGIN_USERNAME_FIELD", "account")
+        monkeypatch.setenv("DEVICE_TUI_API_LOGIN_PASSWORD_FIELD", "passwd")
+        monkeypatch.setenv("DEVICE_TUI_API_LOGIN_CID_FIELD", "customerId")
+        monkeypatch.setenv("DEVICE_TUI_API_LOGIN_FORMAT", "form")
+
+        client = create_http_client_from_env()
+
+        assert client._login_path == "/session/create"
+        assert client._logout_path == "/session/delete"
+        assert client._username_field == "account"
+        assert client._password_field == "passwd"
+        assert client._cid_field == "customerId"
+        assert client._login_format == "form"
 
     def test_env_base_url(self, monkeypatch) -> None:
         monkeypatch.setenv("DEVICE_TUI_API_BASE_URL", "http://example.com:9999")

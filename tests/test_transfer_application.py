@@ -283,6 +283,94 @@ def test_backend_managed_upload_completes_and_verifies_simulated_device(
     assert cleared_history.json()["deleted_count"] >= 2
 
 
+def test_ftpget_command_mode_runs_one_protected_command_on_current_session(
+    tmp_path: Path,
+) -> None:
+    class FakePort21Controller:
+        def __init__(self, root: Path) -> None:
+            self.is_running = True
+            self.bound_port = 21
+            self.config = TransferServiceConfig(
+                protocol="ftp",
+                host="0.0.0.0",
+                port=21,
+                root=root,
+                username="device",
+                password="saved-password",
+                writable=True,
+            )
+
+        def register_managed_transfer(self, *_args, **_kwargs) -> tuple[str, str]:
+            return "managed-user", "managed-password"
+
+        def unregister_managed_transfer(self, _username: str) -> None:
+            return
+
+        def stop(self) -> None:
+            self.is_running = False
+
+    async def scenario() -> None:
+        package = tmp_path / "target.cc"
+        package.write_bytes(b"ftpget-payload")
+        hub = SessionHub()
+        executor = BackendTerminalExecutor(hub, lambda _reference: "")
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            hub,
+            secret_store=MemorySecretStore(),
+            terminal_executor=executor,
+            transfer_root=tmp_path,
+        )
+        executor.set_secret_resolver(application.transfers.resolve_secret)
+        application.transfers.update_settings(
+            protocol="ftp",
+            host="0.0.0.0",
+            port=21,
+            root=str(tmp_path),
+            username="device",
+            writable=True,
+        )
+        application.transfers._controller = FakePort21Controller(tmp_path)
+        device_id = application.devices.list_inventory().devices[0].id
+        session = await application.sessions.create(device_id, "simulated", "ftpget")
+        for _ in range(500):
+            output = "".join(
+                event.data
+                for event in hub.get(session.id).replay.after(0)
+                if event.type == "terminal.output"
+            )
+            if "System ready" in output:
+                break
+            await asyncio.sleep(0.01)
+
+        operation = application.transfers.start_upload(
+            session_id=session.id,
+            source_path="target.cc",
+            destination_path="target.cc",
+            command_mode="ftpget",
+        )
+        for _ in range(500):
+            operation = application.operations.get(operation.id)
+            if operation.status not in {"queued", "running"}:
+                break
+            await asyncio.sleep(0.01)
+
+        assert operation.status == "completed", (operation.error_code, operation.message)
+        assert operation.data["command_mode"] == "ftpget"
+        assert operation.data["command_preview"] == (
+            "ftpget -u <临时账号> -p ****** 192.0.2.10 target.cc"
+        )
+        serialized = json.dumps(operation.data, ensure_ascii=False)
+        assert "managed-password" not in serialized
+        assert operation.bytes_transferred == len(b"ftpget-payload")
+
+        await application.transfers.close()
+        executor.close()
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
 def test_transfer_legacy_password_moves_to_secret_store_without_sqlite_plaintext(
     tmp_path: Path,
 ) -> None:
@@ -537,7 +625,7 @@ def test_managed_transfer_history_persists_interrupts_and_prunes_to_200(
     with sqlite3.connect(store.path) as connection:
         serialized = " ".join(str(row[0]) for row in connection.execute("SELECT data_json FROM operations"))
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-    assert version == 4
+    assert version == 5
     assert str(tmp_path) not in serialized
     assert "password" not in serialized.casefold()
 

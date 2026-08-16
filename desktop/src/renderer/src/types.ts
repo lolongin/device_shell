@@ -376,6 +376,132 @@ export interface DeviceListResponse {
   devices: DeviceSummary[]
 }
 
+export type DeviceSourceId = string
+
+export interface DeviceSourceOption {
+  id: DeviceSourceId
+  label: string
+  description: string
+  icon: 'database' | 'globe' | 'spreadsheet' | 'plug'
+  available: boolean
+  unavailable_reason: string
+  requires_login: boolean
+  supports_import: boolean
+}
+
+export interface DeviceSourceStatus {
+  api_version: number
+  product_mode: 'universal' | 'web' | 'spreadsheet'
+  allow_source_switch: boolean
+  allow_plugin_management: boolean
+  allow_import: boolean
+  active_source: DeviceSourceId
+  default_source: DeviceSourceId
+  sources: DeviceSourceOption[]
+  plugin_warnings: string[]
+  imported_count: number
+  imported_file: string
+  imported_sheet: string
+  imported_at: string
+}
+
+export type PluginConfigValue = string | number | boolean | null
+
+export interface PluginConfigOption {
+  value: string
+  label: string
+}
+
+export interface PluginConfigField {
+  key: string
+  label: string
+  kind: 'text' | 'url' | 'number' | 'boolean' | 'select' | 'secret'
+  value: PluginConfigValue
+  description: string
+  placeholder: string
+  required: boolean
+  advanced: boolean
+  minimum: number | null
+  maximum: number | null
+  options: PluginConfigOption[]
+  secret_configured: boolean
+}
+
+export interface DeviceSourcePlugin {
+  id: DeviceSourceId
+  label: string
+  description: string
+  icon: DeviceSourceOption['icon']
+  version: string
+  publisher: string
+  built_in: boolean
+  enabled: boolean
+  available: boolean
+  unavailable_reason: string
+  active: boolean
+  default: boolean
+  requires_login: boolean
+  supports_import: boolean
+  config_fields: PluginConfigField[]
+}
+
+export interface DeviceSourcePluginListResponse {
+  api_version: number
+  plugins: DeviceSourcePlugin[]
+  warnings: string[]
+}
+
+export interface DeviceSourcePluginUpdate {
+  enabled?: boolean
+  config?: Record<string, PluginConfigValue>
+  secrets?: Record<string, string | null>
+}
+
+export interface DeviceSourcePluginTestResponse {
+  api_version: number
+  success: boolean
+  message: string
+  plugin: DeviceSourcePlugin
+}
+
+export interface DeviceImportIssue {
+  row: number
+  message: string
+}
+
+export interface DeviceImportPreview {
+  api_version: number
+  token: string
+  file_name: string
+  sheet_name: string
+  headers: string[]
+  total_rows: number
+  valid_rows: number
+  skipped_rows: number
+  preview_rows: Array<Record<string, string>>
+  errors: DeviceImportIssue[]
+  warnings: string[]
+}
+
+export interface DeviceImportCommitResponse {
+  api_version: number
+  imported_count: number
+  source: DeviceSourceStatus
+}
+
+export interface InternalAuthStatus {
+  api_version: number
+  available: boolean
+  configured: boolean
+  authenticated: boolean
+  username: string
+  cid: string
+  remembered: boolean
+  auto_login: boolean
+  auto_login_error: string
+  credential_warning: string
+}
+
 export interface SessionSummary {
   id: string
   device_id: string

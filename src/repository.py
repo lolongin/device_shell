@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from .api_client import ApiClientError, ApiConflictError, DeviceApiClient, ApiNotFoundError
@@ -26,9 +26,27 @@ class RepositoryConflictError(RepositoryError):
     """Raised when the remote or local state rejects an occupancy change."""
 
 
+@dataclass(frozen=True, slots=True)
+class InternalAuthStatus:
+    available: bool
+    configured: bool
+    authenticated: bool
+    username: str = ""
+    cid: str = ""
+
+
 class DeviceRepository(Protocol):
     refresh_interval_seconds: float
     live_update_timeout_seconds: float
+
+    def internal_auth_status(self) -> InternalAuthStatus:
+        ...
+
+    def login_internal(self, username: str, password: str, cid: str) -> InternalAuthStatus:
+        ...
+
+    def logout_internal(self) -> InternalAuthStatus:
+        ...
 
     def current_user(self) -> str:
         ...
@@ -72,6 +90,21 @@ class SampleDeviceRepository:
 
     def current_user(self) -> str:
         return self._current_user
+
+    def internal_auth_status(self) -> InternalAuthStatus:
+        return InternalAuthStatus(
+            available=False,
+            configured=False,
+            authenticated=False,
+            username=self._current_user,
+        )
+
+    def login_internal(self, username: str, password: str, cid: str) -> InternalAuthStatus:
+        del username, password, cid
+        raise RepositoryError("当前数据源未配置内部网站登录。")
+
+    def logout_internal(self) -> InternalAuthStatus:
+        return self.internal_auth_status()
 
     def fetch_devices(self) -> list[Device]:
         return [replace(device) for device in self._devices]
@@ -169,6 +202,32 @@ class ApiDeviceRepository:
         except ApiNotFoundError:
             self._current_user = os.getenv("DEVICE_TUI_CURRENT_USER", "")
         return self._current_user
+
+    def internal_auth_status(self) -> InternalAuthStatus:
+        status = self._api_client.auth_status()
+        return InternalAuthStatus(
+            available=True,
+            configured=status.configured,
+            authenticated=status.authenticated,
+            username=status.username or self._current_user,
+            cid=status.cid,
+        )
+
+    def login_internal(self, username: str, password: str, cid: str) -> InternalAuthStatus:
+        try:
+            status = self._api_client.login(username, password, cid)
+        except ApiClientError as exc:
+            raise RepositoryError(str(exc)) from exc
+        self._current_user = status.username
+        return self.internal_auth_status()
+
+    def logout_internal(self) -> InternalAuthStatus:
+        try:
+            self._api_client.logout()
+        except ApiClientError as exc:
+            raise RepositoryError(str(exc)) from exc
+        self._current_user = ""
+        return self.internal_auth_status()
 
     def fetch_devices(self) -> list[Device]:
         try:

@@ -8,9 +8,15 @@ import {
   CircleAlert,
   CircleCheck,
   CircleHelp,
+  Database,
   FileUp,
+  FileSpreadsheet,
   FolderPlus,
+  Globe2,
+  Plug,
   KeyRound,
+  LogIn,
+  LogOut,
   MonitorDot,
   Network,
   PanelLeftClose,
@@ -25,11 +31,13 @@ import {
   Moon,
   Sun,
   Trash2,
+  UserRound,
   Workflow,
   X
 } from 'lucide-vue-next'
 import ConnectionProfileDialog from './components/ConnectionProfileDialog.vue'
 import ConnectionGroupDialog from './components/ConnectionGroupDialog.vue'
+import DeviceImportDialog from './components/DeviceImportDialog.vue'
 import CommandWorkspace from './components/CommandWorkspace.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -59,7 +67,8 @@ import type {
   DeviceSummary,
   ProfileType,
   SessionKind,
-  SessionSummary
+  SessionSummary,
+  DeviceSourceId
 } from './types'
 
 const AutomationWorkspace = defineAsyncComponent(() => import('./components/AutomationWorkspace.vue'))
@@ -67,12 +76,26 @@ const TransferWorkspace = defineAsyncComponent(() => import('./components/Transf
 const UpgradeWorkspace = defineAsyncComponent(() => import('./components/UpgradeWorkspace.vue'))
 
 const workspace = useWorkspaceStore()
+const activeDeviceSource = computed(() =>
+  workspace.deviceSourceStatus.sources.find(
+    (source) => source.id === workspace.deviceSourceStatus.active_source
+  ) || null
+)
+const defaultDeviceSource = computed(() =>
+  workspace.deviceSourceStatus.sources.find(
+    (source) => source.id === workspace.deviceSourceStatus.default_source
+  ) || null
+)
+const importDeviceSource = computed(() =>
+  workspace.deviceSourceStatus.sources.find((source) => source.supports_import) || null
+)
 const backendFailure = ref('')
 const workspaceRecoveryBusy = ref(false)
 const activeSection = ref<'devices' | 'temporary' | 'server'>('devices')
 type ThemeMode = 'dark' | 'light'
 type SessionTabLayout = 'top' | 'side'
 type SplitDirection = 'left' | 'right' | 'top' | 'bottom'
+type SessionContextSource = 'tab' | 'manager' | 'terminal'
 const THEME_KEY = 'device-tui.desktop-v2.theme'
 const ALWAYS_ON_TOP_KEY = 'device-tui.desktop-v2.always-on-top'
 const SESSION_TAB_LAYOUT_KEY = 'device-tui.desktop-v2.session-tab-layout'
@@ -122,12 +145,18 @@ const settingsReturnFocus = ref<HTMLElement | null>(null)
 const helpReturnFocus = ref<HTMLElement | null>(null)
 const profileDialogReturnFocus = ref<HTMLElement | null>(null)
 const groupDialogReturnFocus = ref<HTMLElement | null>(null)
+const deviceImportReturnFocus = ref<HTMLElement | null>(null)
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
 const collapsedProfileGroups = ref(new Set<string>(storedCollapsedProfileGroups()))
 const deviceContextMenu = ref<{ device: DeviceSummary; x: number; y: number } | null>(null)
 const deviceContextMenuElement = ref<HTMLElement | null>(null)
 const deviceContextMenuReturnFocus = ref<HTMLElement | null>(null)
-const sessionContextMenu = ref<{ session: SessionSummary; x: number; y: number } | null>(null)
+const sessionContextMenu = ref<{
+  session: SessionSummary
+  source: SessionContextSource
+  x: number
+  y: number
+} | null>(null)
 const sessionContextMenuElement = ref<HTMLElement | null>(null)
 const sessionContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const sessionManagerDeviceContextMenu = ref<{ deviceId: string; x: number; y: number } | null>(null)
@@ -867,7 +896,20 @@ function openDeviceContextSession(kind: 'ssh' | 'telnet' | 'serial'): void {
   closeAppContextMenus()
 }
 
+function openDeviceContextSimulatedSession(): void {
+  void workspace.openSimulatedSession()
+  closeAppContextMenus()
+}
+
+function confirmDevicePowerOff(device: DeviceSummary): boolean {
+  return window.confirm(`确定让设备“${device.name}”掉电吗？当前终端和正在运行的任务会立即中断。`)
+}
+
 function runDeviceContextAction(action: 'claim' | 'release' | 'power_off'): void {
+  const device = deviceContextMenu.value?.device
+  if (!device) return
+  selectDevice(device.row_id)
+  if (action === 'power_off' && !confirmDevicePowerOff(device)) return
   void workspace.runDeviceAction(action)
   closeAppContextMenus()
 }
@@ -877,11 +919,23 @@ function sessionDevice(session: SessionSummary | null): DeviceSummary | null {
   return deviceById.value.get(session.device_id) || null
 }
 
-function openSessionContextMenu(event: MouseEvent, session: SessionSummary): void {
+function openSessionContextMenu(
+  event: MouseEvent,
+  session: SessionSummary,
+  source: SessionContextSource = 'tab'
+): void {
   announceContextMenuOpen()
   workspace.activeSessionId = session.id
   sessionContextMenuReturnFocus.value = contextMenuTrigger(event)
-  sessionContextMenu.value = { session, ...clampContextMenuPoint(event.clientX, event.clientY) }
+  sessionContextMenu.value = {
+    session,
+    source,
+    ...clampContextMenuPoint(event.clientX, event.clientY)
+  }
+}
+
+function openSessionManagerSessionContextMenu(event: MouseEvent, session: SessionSummary): void {
+  openSessionContextMenu(event, session, 'manager')
 }
 
 function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string): void {
@@ -896,6 +950,11 @@ function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string
 function sessionManagerContextDevice(): DeviceSummary | null {
   const deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''
   return deviceById.value.get(deviceId) || null
+}
+
+function sessionManagerDeviceHasSession(kind: SessionKind): boolean {
+  const deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''
+  return workspace.sessions.some((session) => session.device_id === deviceId && session.kind === kind)
 }
 
 function sessionManagerDeviceIds(): string[] {
@@ -921,6 +980,19 @@ function runSessionManagerDeviceClose(
 ): void {
   const deviceId = sessionManagerDeviceContextMenu.value?.deviceId
   if (!deviceId) return
+  const device = sessionManagerContextDevice()
+  const count = mode === 'current'
+    ? workspace.sessions.filter((session) => session.device_id === deviceId).length
+    : mode === 'others'
+      ? workspace.sessions.filter((session) => session.device_id !== deviceId).length
+      : workspace.sessions.length
+  if (count > 1 && !window.confirm(
+    mode === 'current'
+      ? `关闭“${device?.name || deviceId}”的 ${count} 个会话吗？`
+      : mode === 'others'
+        ? `关闭其他设备的 ${count} 个会话吗？`
+        : `关闭全部 ${count} 个设备会话吗？`
+  )) return
   void workspace.closeDeviceSessionGroups(deviceId, mode)
   closeSessionManagerDeviceContextMenu()
 }
@@ -943,15 +1015,6 @@ function openSessionManagerDeviceSession(kind: 'ssh' | 'telnet' | 'serial'): voi
   activeSection.value = 'devices'
   selectDevice(device.row_id)
   void workspace.openSession(kind)
-  closeSessionManagerDeviceContextMenu()
-}
-
-function runSessionManagerDeviceAction(action: 'claim' | 'release' | 'power_off'): void {
-  const device = sessionManagerContextDevice()
-  if (!device) return
-  activeSection.value = 'devices'
-  selectDevice(device.row_id)
-  void workspace.runDeviceAction(action)
   closeSessionManagerDeviceContextMenu()
 }
 
@@ -1000,6 +1063,7 @@ function handleSessionTabKeydown(event: KeyboardEvent, session: SessionSummary):
     sessionContextMenuReturnFocus.value = selectedTab || (event.currentTarget as HTMLElement | null)
     sessionContextMenu.value = {
       session,
+      source: 'tab',
       x: rect ? rect.left + 24 : 140,
       y: rect ? rect.bottom + 4 : 140
     }
@@ -1020,7 +1084,64 @@ function canCloseSessionRelative(session: SessionSummary, mode: 'current' | 'lef
 function runSessionContextClose(mode: 'current' | 'left' | 'right' | 'others' | 'all'): void {
   const session = sessionContextMenu.value?.session
   if (!session) return
+  const count = sessionCloseCount(session, mode)
+  if (count > 1 && !window.confirm(
+    mode === 'others'
+      ? `关闭此设备的其他 ${count} 个会话吗？`
+      : mode === 'all'
+        ? `关闭此设备的全部 ${count} 个会话吗？`
+        : `关闭${mode === 'left' ? '左侧' : '右侧'} ${count} 个页签吗？`
+  )) return
   void workspace.closeSessionsRelative(session.id, mode, session.device_id)
+  closeSessionContextMenu()
+}
+
+function sessionCloseCount(
+  session: SessionSummary,
+  mode: 'current' | 'left' | 'right' | 'others' | 'all'
+): number {
+  const deviceSessions = sessionsByDevice.value.get(session.device_id) || []
+  const index = deviceSessions.findIndex((candidate) => candidate.id === session.id)
+  if (index < 0 && mode !== 'all') return 0
+  if (mode === 'current') return 1
+  if (mode === 'left') return index
+  if (mode === 'right') return Math.max(0, deviceSessions.length - index - 1)
+  if (mode === 'others') return Math.max(0, deviceSessions.length - 1)
+  return deviceSessions.length
+}
+
+function canSplitSession(session: SessionSummary): boolean {
+  return (sessionsByDevice.value.get(session.device_id) || []).length > 1
+}
+
+function canReconnectSession(session: SessionSummary): boolean {
+  return ['disconnected', 'detached', 'error', 'failed'].includes(session.status)
+}
+
+function canDisconnectSession(session: SessionSummary): boolean {
+  return ['connected', 'connecting'].includes(session.status)
+}
+
+function runSessionConnectionAction(action: 'reconnect' | 'disconnect'): void {
+  const session = sessionContextMenu.value?.session
+  if (!session) return
+  if (action === 'reconnect') void workspace.reconnectSession(session.id)
+  else void workspace.disconnectSession(session.id)
+  closeSessionContextMenu()
+}
+
+async function copySessionInfoFromContext(): Promise<void> {
+  const session = sessionContextMenu.value?.session
+  if (!session) return
+  const device = sessionDevice(session)
+  await navigator.clipboard.writeText([
+    `会话: ${session.title}`,
+    `协议: ${sessionKindLabel(session.kind)}`,
+    `状态: ${sessionStatusLabel(session.status)}`,
+    `设备: ${device?.name || session.device_id}`,
+    `设备 ID: ${session.device_id}`
+  ].join('\n'))
+  workspace.notice = `已复制会话信息: ${session.title}`
   closeSessionContextMenu()
 }
 
@@ -1031,16 +1152,6 @@ function locateSessionDevice(session: SessionSummary): void {
   }
   selectDeviceByDeviceId(session.device_id)
   workspace.notice = `已定位到设备: ${sessionDevice(session)?.name || session.device_id}`
-  closeSessionContextMenu()
-}
-
-function openSessionDeviceSession(kind: 'ssh' | 'telnet' | 'serial'): void {
-  const session = sessionContextMenu.value?.session
-  const device = sessionDevice(session || null)
-  if (!session || !device) return
-  activeSection.value = 'devices'
-  selectDevice(device.row_id)
-  void workspace.openSession(kind)
   closeSessionContextMenu()
 }
 
@@ -1063,6 +1174,10 @@ function profileConnectionCopyText(profile: ConnectionProfileSummary): string {
   }
   if (profile.notes) lines.push(`备注: ${profile.notes}`)
   return lines.join('\n')
+}
+
+function profileDefaultOpenLabel(profile: ConnectionProfileSummary): string {
+  return `使用默认协议打开（${sessionKindLabel(profile.preferred_protocol)}）`
 }
 
 function profilePayload(
@@ -1251,7 +1366,7 @@ function openSessionUpgrade(sessionId: string): void {
 function openSessionToolbarContext(sessionId: string, event: MouseEvent): void {
   const session = workspace.sessions.find((candidate) => candidate.id === sessionId)
   if (!session) return
-  openSessionContextMenu(event, session)
+  openSessionContextMenu(event, session, 'terminal')
 }
 
 function toggleTransferPanel(): void {
@@ -1330,6 +1445,37 @@ function showHelpPanel(event?: Event): void {
   helpReturnFocus.value = eventTrigger(event)
   settingsPanelOpen.value = false
   helpPanelOpen.value = true
+}
+
+function showInternalLogin(): void {
+  if (workspace.internalAuthBusy) return
+  if (!workspace.internalAuthStatus.available) {
+    workspace.notice = '当前设备源未提供网站登录能力，请检查对应插件的登录配置。'
+  } else if (!workspace.internalAuthStatus.configured) {
+    workspace.notice = `${activeDeviceSource.value?.label || '设备网站'}登录未配置，请检查对应插件。`
+  }
+  void workspace.loginInternalService()
+}
+
+function logoutInternalService(): void {
+  if (workspace.internalAuthBusy || !workspace.internalAuthStatus.authenticated) return
+  void workspace.logoutInternalService()
+}
+
+async function switchDeviceSource(event: Event): Promise<void> {
+  const select = event.target as HTMLSelectElement
+  const source = select.value as DeviceSourceId
+  const switched = await workspace.switchDeviceSource(source)
+  if (!switched) select.value = workspace.deviceSourceStatus.active_source
+}
+
+async function chooseDeviceImport(event?: Event): Promise<void> {
+  deviceImportReturnFocus.value = eventTrigger(event)
+  await workspace.chooseDeviceImport()
+}
+
+function restoreDefaultDeviceSource(): void {
+  void workspace.switchDeviceSource(workspace.deviceSourceStatus.default_source)
 }
 
 function showProfileDialog(
@@ -1522,6 +1668,19 @@ onBeforeUnmount(() => {
       </button>
       <div class="rail-spacer"></div>
       <button
+        v-if="activeDeviceSource?.requires_login"
+        class="rail-button internal-auth-rail"
+        :class="{ active: workspace.internalAuthStatus.authenticated }"
+        type="button"
+        :disabled="workspace.internalAuthBusy"
+        :title="workspace.internalAuthStatus.authenticated ? `${activeDeviceSource?.label}：${workspace.internalAuthStatus.username} · CID ${workspace.internalAuthStatus.cid}；点击切换账号` : workspace.internalAuthStatus.configured ? `登录${activeDeviceSource?.label}` : `${activeDeviceSource?.label}登录未配置`"
+        :aria-label="workspace.internalAuthStatus.authenticated ? `切换${activeDeviceSource?.label}账号` : `登录${activeDeviceSource?.label}`"
+        @click="showInternalLogin"
+      >
+        <UserRound :size="18" />
+        <i :data-authenticated="workspace.internalAuthStatus.authenticated" aria-hidden="true"></i>
+      </button>
+      <button
         class="rail-button"
         :class="{ active: helpPanelOpen }"
         type="button"
@@ -1590,6 +1749,127 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </header>
+
+      <section
+        v-if="activeSection === 'devices' && workspace.deviceSourceStatus.allow_source_switch"
+        class="device-source-bar"
+        aria-label="设备数据源"
+      >
+        <div class="device-source-current">
+          <span class="device-source-icon" aria-hidden="true">
+            <Globe2 v-if="activeDeviceSource?.icon === 'globe'" :size="16" />
+            <FileSpreadsheet v-else-if="activeDeviceSource?.icon === 'spreadsheet'" :size="16" />
+            <Plug v-else-if="activeDeviceSource?.icon === 'plug'" :size="16" />
+            <Database v-else :size="16" />
+          </span>
+          <span>
+            <small>当前设备来源</small>
+            <strong>{{ activeDeviceSource?.label || '正在识别…' }}</strong>
+          </span>
+          <b v-if="workspace.deviceSourceStatus.active_source === workspace.deviceSourceStatus.default_source">默认</b>
+          <b v-else data-variant="changed">已切换</b>
+        </div>
+        <label class="device-source-switch">
+          <span>切换来源</span>
+          <select
+            :value="workspace.deviceSourceStatus.active_source"
+            :disabled="workspace.deviceSourceBusy || workspace.sessions.length > 0"
+            aria-label="切换设备来源"
+            @change="switchDeviceSource"
+          >
+            <option
+              v-for="source in workspace.deviceSourceStatus.sources"
+              :key="source.id"
+              :value="source.id"
+              :disabled="!source.available"
+              :title="source.unavailable_reason"
+            >{{ source.label }}{{ source.id === workspace.deviceSourceStatus.default_source ? '（默认）' : '' }}</option>
+          </select>
+        </label>
+        <button
+          v-if="importDeviceSource"
+          class="secondary-button device-import-button"
+          type="button"
+          :disabled="workspace.deviceImportBusy || workspace.sessions.length > 0"
+          @click="chooseDeviceImport($event)"
+        ><FileUp :size="13" />{{ workspace.deviceSourceStatus.imported_count ? '重新导入' : '导入 Excel' }}</button>
+        <div class="device-source-context">
+          <small v-if="workspace.sessions.length">关闭全部终端后才能切换来源或覆盖导入。</small>
+          <small v-else-if="activeDeviceSource?.supports_import">
+            当前显示 {{ workspace.deviceSourceStatus.imported_file }} 的 {{ workspace.deviceSourceStatus.imported_count }} 台设备。
+          </small>
+          <small v-else>{{ activeDeviceSource?.description }} 当前只显示这一来源的设备。</small>
+          <button
+            v-if="workspace.deviceSourceStatus.active_source !== workspace.deviceSourceStatus.default_source"
+            type="button"
+            :disabled="workspace.deviceSourceBusy || workspace.sessions.length > 0"
+            @click="restoreDefaultDeviceSource"
+          >恢复默认“{{ defaultDeviceSource?.label }}”</button>
+        </div>
+        <p
+          v-if="workspace.deviceSourceStatus.plugin_warnings.length"
+          class="device-source-plugin-warning"
+          role="status"
+          :title="workspace.deviceSourceStatus.plugin_warnings.join('\n')"
+        ><CircleAlert :size="12" />{{ workspace.deviceSourceStatus.plugin_warnings[0] }}</p>
+      </section>
+
+      <section
+        v-if="activeSection === 'devices' && !workspace.deviceSourceStatus.allow_source_switch && workspace.deviceSourceStatus.allow_import"
+        class="device-import-bar"
+        aria-label="设备表格"
+      >
+        <span class="device-import-summary">
+          <span class="device-source-icon" aria-hidden="true"><FileSpreadsheet :size="16" /></span>
+          <span>
+            <strong>{{ workspace.deviceSourceStatus.imported_count ? '设备表格' : '导入设备表格' }}</strong>
+            <small v-if="workspace.deviceSourceStatus.imported_count">
+              {{ workspace.deviceSourceStatus.imported_file }} · {{ workspace.deviceSourceStatus.imported_count }} 台设备
+            </small>
+            <small v-else>选择 Excel、CSV 或 TSV 文件开始使用</small>
+          </span>
+        </span>
+        <button
+          class="secondary-button device-import-button"
+          type="button"
+          :disabled="workspace.deviceImportBusy || workspace.sessions.length > 0"
+          @click="chooseDeviceImport($event)"
+        ><FileUp :size="13" />{{ workspace.deviceSourceStatus.imported_count ? '更新设备表' : '选择文件' }}</button>
+        <small v-if="workspace.sessions.length" class="device-import-hint">关闭全部终端后才能更新设备表。</small>
+      </section>
+
+      <section v-if="activeSection === 'devices' && activeDeviceSource?.requires_login" class="internal-account-bar" :data-authenticated="workspace.internalAuthStatus.authenticated">
+        <button
+          class="internal-account-main"
+          type="button"
+          :disabled="workspace.internalAuthBusy"
+          @click="showInternalLogin"
+        >
+          <span class="internal-account-icon" aria-hidden="true">
+            <UserRound :size="16" />
+          </span>
+          <span class="internal-account-copy">
+            <strong>{{ workspace.internalAuthStatus.authenticated ? workspace.internalAuthStatus.username : `登录${activeDeviceSource?.label || '设备网站'}` }}</strong>
+            <small v-if="workspace.internalAuthStatus.authenticated">CID {{ workspace.internalAuthStatus.cid }} · Cookie 已连接{{ workspace.internalAuthStatus.auto_login ? ' · 自动登录已开启' : '' }}</small>
+            <small v-else-if="workspace.internalAuthStatus.configured && workspace.internalAuthStatus.remembered">密码已安全保存 · 点击登录</small>
+            <small v-else-if="workspace.internalAuthStatus.configured">输入账号、密码和 CID 后加载设备</small>
+            <small v-else>当前为本地数据 · 点击查看配置要求</small>
+          </span>
+          <LogIn v-if="!workspace.internalAuthStatus.authenticated" :size="15" aria-hidden="true" />
+          <span v-else class="internal-account-switch">切换</span>
+        </button>
+        <button
+          v-if="workspace.internalAuthStatus.authenticated"
+          class="icon-button internal-account-logout"
+          type="button"
+          :title="`退出${activeDeviceSource?.label || '设备网站'}`"
+          :aria-label="`退出${activeDeviceSource?.label || '设备网站'}`"
+          :disabled="workspace.internalAuthBusy"
+          @click="logoutInternalService"
+        >
+          <LogOut :size="15" />
+        </button>
+      </section>
 
       <label class="search-field">
         <Search :size="15" aria-hidden="true" />
@@ -2039,29 +2319,30 @@ onBeforeUnmount(() => {
         @click.stop
         @keydown="handleContextMenuKeydown($event, profileContextMenuElement, closeProfileContextMenuAndRestoreFocus)"
       >
-        <p>{{ profileContextMenu.profile.name }}</p>
+        <p>{{ profileContextMenu.profile.name }}<small>{{ profileContextMenu.profile.profile_type === 'server' ? '服务器配置' : '临时连接' }}</small></p>
         <button
+          v-if="profileCanConnect(profileContextMenu.profile)"
           type="button"
           role="menuitem"
-          :disabled="!profileCanConnect(profileContextMenu.profile)"
+          :disabled="Boolean(workspace.openingKind)"
           @click="openProfileFromContext()"
-        >打开</button>
+        >{{ profileDefaultOpenLabel(profileContextMenu.profile) }}</button>
         <button
-          v-if="profileContextMenu.profile.ssh.host"
+          v-if="profileContextMenu.profile.ssh.host && profileContextMenu.profile.preferred_protocol !== 'ssh'"
           type="button"
           role="menuitem"
           :disabled="!profileCanConnect(profileContextMenu.profile, 'ssh') || Boolean(workspace.openingKind)"
           @click="openProfileFromContext('ssh')"
         >打开 SSH</button>
         <button
-          v-if="profileContextMenu.profile.profile_type === 'temporary'"
+          v-if="profileContextMenu.profile.profile_type === 'temporary' && profileContextMenu.profile.telnet.host && profileContextMenu.profile.preferred_protocol !== 'telnet'"
           type="button"
           role="menuitem"
           :disabled="!profileCanConnect(profileContextMenu.profile, 'telnet') || Boolean(workspace.openingKind)"
           @click="openProfileFromContext('telnet')"
         >打开设备管理口</button>
         <button
-          v-if="profileContextMenu.profile.profile_type === 'temporary'"
+          v-if="profileContextMenu.profile.profile_type === 'temporary' && profileContextMenu.profile.serial.host && profileContextMenu.profile.preferred_protocol !== 'serial'"
           type="button"
           role="menuitem"
           :disabled="!profileCanConnect(profileContextMenu.profile, 'serial') || Boolean(workspace.openingKind)"
@@ -2072,7 +2353,7 @@ onBeforeUnmount(() => {
           role="menuitem"
           @click="copyProfileText(profileConnectionCopyText(profileContextMenu.profile), `已复制连接信息: ${profileContextMenu.profile.name}`)"
         >复制连接信息</button>
-        <hr />
+        <hr v-if="profileContextMenu.profile.profile_type === 'server'" />
         <button
           v-if="profileContextMenu.profile.profile_type === 'server' && profileContextMenu.profile.ssh.host"
           type="button"
@@ -2091,22 +2372,22 @@ onBeforeUnmount(() => {
           role="menuitem"
           @click="manageProfileCredentialFromContext('serial')"
         >管理串口凭据</button>
-        <template v-if="profileContextMenu.profile.profile_type === 'server'">
+        <template v-if="profileContextMenu.profile.profile_type === 'server' && (profileContextMenu.profile.group || workspace.profileGroups.some((group) => group !== profileContextMenu?.profile.group))">
           <hr />
           <button
             type="button"
             role="menuitem"
-            :disabled="!profileContextMenu.profile.group"
+            v-if="profileContextMenu.profile.group"
             @click="moveProfileToGroupFromContext('')"
           >移动到未分组</button>
-          <button
-            v-for="group in workspace.profileGroups"
-            :key="group"
-            type="button"
-            role="menuitem"
-            :disabled="group === profileContextMenu.profile.group"
-            @click="moveProfileToGroupFromContext(group)"
-          >移动到 {{ group }}</button>
+          <template v-for="group in workspace.profileGroups" :key="group">
+            <button
+              v-if="group !== profileContextMenu.profile.group"
+              type="button"
+              role="menuitem"
+              @click="moveProfileToGroupFromContext(group)"
+            >移动到 {{ group }}</button>
+          </template>
         </template>
         <hr />
         <button type="button" role="menuitem" @click="editProfileFromContext">编辑</button>
@@ -2121,82 +2402,94 @@ onBeforeUnmount(() => {
         @click.stop
         @keydown="handleContextMenuKeydown($event, deviceContextMenuElement, closeDeviceContextMenuAndRestoreFocus)"
       >
-        <p>{{ deviceContextMenu.device.name }}</p>
+        <p>{{ deviceContextMenu.device.name }}<small>{{ deviceContextMenu.device.id }}</small></p>
+        <button
+          v-if="deviceContextMenu.device.is_simulated"
+          type="button"
+          role="menuitem"
+          :disabled="Boolean(workspace.openingKind)"
+          @click="openDeviceContextSimulatedSession"
+        >打开模拟终端</button>
+        <button
+          v-if="deviceContextMenu.device.can_connect_telnet"
+          type="button"
+          role="menuitem"
+          :disabled="Boolean(workspace.openingKind)"
+          title="打开设备管理口"
+          @click="openDeviceContextSession('telnet')"
+        >打开设备管理口</button>
+        <button
+          v-if="deviceContextMenu.device.can_connect_ssh"
+          type="button"
+          role="menuitem"
+          :disabled="Boolean(workspace.openingKind)"
+          title="打开 Linux 后台"
+          @click="openDeviceContextSession('ssh')"
+        >打开 Linux 后台</button>
+        <button
+          v-if="deviceContextMenu.device.can_connect_serial"
+          type="button"
+          role="menuitem"
+          :disabled="Boolean(workspace.openingKind)"
+          title="打开串口"
+          @click="openDeviceContextSession('serial')"
+        >打开串口</button>
+        <hr />
         <button
           type="button"
           role="menuitem"
           @click="copyDeviceText(deviceRowCopyText(deviceContextMenu.device), `已复制设备行: ${deviceContextMenu.device.name}`)"
         >复制设备行</button>
         <button
+          v-if="endpointHost(deviceContextMenu.device.ssh_endpoint) && !deviceContextMenu.device.is_simulated"
           type="button"
           role="menuitem"
-          :disabled="!endpointHost(deviceContextMenu.device.ssh_endpoint) || deviceContextMenu.device.is_simulated"
           @click="copyDeviceText(endpointHost(deviceContextMenu.device.ssh_endpoint), `已复制 SSH IP: ${deviceContextMenu.device.name}`)"
         >复制 SSH IP</button>
         <button
+          v-if="endpointHost(deviceContextMenu.device.telnet_endpoint) && !deviceContextMenu.device.is_simulated"
           type="button"
           role="menuitem"
-          :disabled="!endpointHost(deviceContextMenu.device.telnet_endpoint) || deviceContextMenu.device.is_simulated"
           @click="copyDeviceText(endpointHost(deviceContextMenu.device.telnet_endpoint), `已复制 Telnet IP: ${deviceContextMenu.device.name}`)"
         >复制 Telnet IP</button>
         <button
+          v-if="copyableSerialText(deviceContextMenu.device)"
           type="button"
           role="menuitem"
-          :disabled="!copyableSerialText(deviceContextMenu.device)"
           @click="copyDeviceText(copyableSerialText(deviceContextMenu.device), `已复制串口地址: ${deviceContextMenu.device.name}`)"
-        >复制串口 IP</button>
+        >复制串口地址</button>
         <button
+          v-if="!deviceContextMenu.device.is_simulated"
           type="button"
           role="menuitem"
-          :disabled="deviceContextMenu.device.is_simulated"
           @click="copyDeviceText(deviceConnectionCopyText(deviceContextMenu.device), `已复制连接信息: ${deviceContextMenu.device.name}`)"
         >复制连接信息</button>
-        <hr />
+        <hr v-if="deviceContextMenu.device.can_claim || deviceContextMenu.device.can_release || deviceContextMenu.device.can_power_off" />
         <button
-          v-if="!deviceContextMenu.device.can_release"
+          v-if="deviceContextMenu.device.can_claim"
           type="button"
           role="menuitem"
-          :disabled="!deviceContextMenu.device.can_claim || Boolean(workspace.deviceAction)"
-          :title="deviceContextMenu.device.is_simulated ? '模拟终端不支持占用' : '占用设备'"
+          :disabled="Boolean(workspace.deviceAction)"
+          title="占用设备"
           @click="runDeviceContextAction('claim')"
-        >占用</button>
+        >占用设备</button>
         <button
-          v-else
+          v-if="deviceContextMenu.device.can_release"
           type="button"
           role="menuitem"
-          :disabled="!deviceContextMenu.device.can_release || Boolean(workspace.deviceAction)"
+          :disabled="Boolean(workspace.deviceAction)"
           title="释放设备"
           @click="runDeviceContextAction('release')"
-        >释放</button>
+        >释放设备</button>
         <button
+          v-if="deviceContextMenu.device.can_power_off"
           type="button"
           role="menuitem"
-          :disabled="!deviceContextMenu.device.can_power_off || Boolean(workspace.deviceAction)"
-          :title="deviceContextMenu.device.is_simulated ? '模拟终端不支持掉电' : '当前设备不可掉电'"
+          class="danger-menu-item"
+          :disabled="Boolean(workspace.deviceAction)"
+          title="设备掉电"
           @click="runDeviceContextAction('power_off')"
-        >掉电</button>
-        <hr />
-        <button
-          type="button"
-          role="menuitem"
-          :disabled="Boolean(connectionDisabledReason(deviceContextMenu.device, 'telnet'))"
-          :title="connectionDisabledReason(deviceContextMenu.device, 'telnet') || '打开设备管理口'"
-          @click="openDeviceContextSession('telnet')"
-        >打开设备管理口</button>
-        <button
-          type="button"
-          role="menuitem"
-          :disabled="Boolean(connectionDisabledReason(deviceContextMenu.device, 'ssh'))"
-          :title="connectionDisabledReason(deviceContextMenu.device, 'ssh') || '打开 Linux 后台'"
-          @click="openDeviceContextSession('ssh')"
-        >打开 Linux 后台</button>
-        <button
-          type="button"
-          role="menuitem"
-          :disabled="Boolean(connectionDisabledReason(deviceContextMenu.device, 'serial'))"
-          :title="connectionDisabledReason(deviceContextMenu.device, 'serial') || '打开串口'"
-          @click="openDeviceContextSession('serial')"
-        >打开串口</button>
+        >设备掉电…</button>
       </div>
       <div
         class="navigator-resize-handle"
@@ -2390,79 +2683,50 @@ onBeforeUnmount(() => {
         @click.stop
         @keydown="handleContextMenuKeydown($event, sessionManagerDeviceContextMenuElement, closeSessionManagerDeviceContextMenuAndRestoreFocus)"
       >
-        <p>{{ sessionManagerContextDevice()?.name || sessionManagerDeviceContextMenu.deviceId }}</p>
+        <p>{{ sessionManagerContextDevice()?.name || sessionManagerDeviceContextMenu.deviceId }}<small>设备会话组</small></p>
+        <button type="button" role="menuitem" @click="locateSessionManagerDevice()">定位到设备列表</button>
+        <template v-if="sessionManagerContextDevice()">
+          <button
+            v-if="sessionManagerContextDevice()?.can_connect_telnet && !sessionManagerDeviceHasSession('telnet')"
+            type="button"
+            role="menuitem"
+            :disabled="Boolean(workspace.openingKind)"
+            @click="openSessionManagerDeviceSession('telnet')"
+          >新建设备管理口会话</button>
+          <button
+            v-if="sessionManagerContextDevice()?.can_connect_ssh && !sessionManagerDeviceHasSession('ssh')"
+            type="button"
+            role="menuitem"
+            :disabled="Boolean(workspace.openingKind)"
+            @click="openSessionManagerDeviceSession('ssh')"
+          >新建 Linux 后台会话</button>
+          <button
+            v-if="sessionManagerContextDevice()?.can_connect_serial && !sessionManagerDeviceHasSession('serial')"
+            type="button"
+            role="menuitem"
+            :disabled="Boolean(workspace.openingKind)"
+            @click="openSessionManagerDeviceSession('serial')"
+          >新建串口会话</button>
+        </template>
+        <hr />
         <button
           type="button"
           role="menuitem"
           :disabled="!canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'current')"
           @click="runSessionManagerDeviceClose('current')"
-        >关闭当前设备会话</button>
+        >关闭此设备全部会话</button>
         <button
+          v-if="canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'others')"
           type="button"
           role="menuitem"
-          :disabled="!canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'left')"
-          @click="runSessionManagerDeviceClose('left')"
-        >关闭左侧设备会话</button>
-        <button
-          type="button"
-          role="menuitem"
-          :disabled="!canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'right')"
-          @click="runSessionManagerDeviceClose('right')"
-        >关闭右侧设备会话</button>
-        <button
-          type="button"
-          role="menuitem"
-          :disabled="!canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'others')"
           @click="runSessionManagerDeviceClose('others')"
         >关闭其他设备会话</button>
         <button
+          v-if="canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'others')"
           type="button"
           role="menuitem"
-          :disabled="!canCloseDeviceSessions(sessionManagerDeviceContextMenu.deviceId, 'all')"
           @click="runSessionManagerDeviceClose('all')"
         >关闭所有设备会话</button>
-        <template v-if="sessionManagerContextDevice()">
-          <hr />
-          <button type="button" role="menuitem" @click="locateSessionManagerDevice()">定位到设备列表</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="Boolean(connectionDisabledReason(sessionManagerContextDevice(), 'telnet'))"
-            @click="openSessionManagerDeviceSession('telnet')"
-          >打开设备管理口</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="Boolean(connectionDisabledReason(sessionManagerContextDevice(), 'ssh'))"
-            @click="openSessionManagerDeviceSession('ssh')"
-          >打开 Linux 后台</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="Boolean(connectionDisabledReason(sessionManagerContextDevice(), 'serial'))"
-            @click="openSessionManagerDeviceSession('serial')"
-          >打开串口</button>
-          <hr />
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="!sessionManagerContextDevice()?.can_claim"
-            @click="runSessionManagerDeviceAction('claim')"
-          >占用设备</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="!sessionManagerContextDevice()?.can_release"
-            @click="runSessionManagerDeviceAction('release')"
-          >释放设备</button>
-          <button
-            type="button"
-            role="menuitem"
-            class="danger-menu-item"
-            :disabled="!sessionManagerContextDevice()?.can_power_off"
-            @click="runSessionManagerDeviceAction('power_off')"
-          >设备掉电</button>
-        </template>
       </div>
       <div
         v-if="sessionContextMenu"
@@ -2473,70 +2737,71 @@ onBeforeUnmount(() => {
         @click.stop
         @keydown="handleContextMenuKeydown($event, sessionContextMenuElement, closeSessionContextMenuAndRestoreFocus)"
       >
-        <p>{{ sessionContextMenu.session.title }}</p>
+        <p>{{ sessionContextMenu.session.title }}<small>{{ sessionKindLabel(sessionContextMenu.session.kind) }} · {{ sessionStatusLabel(sessionContextMenu.session.status) }}</small></p>
+        <button
+          v-if="canReconnectSession(sessionContextMenu.session)"
+          type="button"
+          role="menuitem"
+          :disabled="workspace.sessionActionId === sessionContextMenu.session.id"
+          @click="runSessionConnectionAction('reconnect')"
+        >重新连接</button>
+        <button
+          v-else-if="canDisconnectSession(sessionContextMenu.session)"
+          type="button"
+          role="menuitem"
+          :disabled="workspace.sessionActionId === sessionContextMenu.session.id"
+          @click="runSessionConnectionAction('disconnect')"
+        >断开连接</button>
+        <button type="button" role="menuitem" @click="copySessionInfoFromContext">复制会话信息</button>
+        <button
+          v-if="sessionDevice(sessionContextMenu.session)"
+          type="button"
+          role="menuitem"
+          @click="locateSessionDevice(sessionContextMenu.session)"
+        >定位到设备列表</button>
+        <hr />
         <button
           type="button"
           role="menuitem"
-          :disabled="!canCloseSessionRelative(sessionContextMenu.session, 'current')"
           @click="runSessionContextClose('current')"
-        >关闭当前页签</button>
+        >{{ sessionContextMenu.source === 'tab' ? '关闭当前页签' : '关闭会话' }}</button>
         <button
+          v-if="sessionContextMenu.source === 'tab' && canCloseSessionRelative(sessionContextMenu.session, 'left')"
           type="button"
           role="menuitem"
-          :disabled="!canCloseSessionRelative(sessionContextMenu.session, 'left')"
           @click="runSessionContextClose('left')"
         >关闭左侧页签</button>
         <button
+          v-if="sessionContextMenu.source === 'tab' && canCloseSessionRelative(sessionContextMenu.session, 'right')"
           type="button"
           role="menuitem"
-          :disabled="!canCloseSessionRelative(sessionContextMenu.session, 'right')"
           @click="runSessionContextClose('right')"
         >关闭右侧页签</button>
         <button
+          v-if="canCloseSessionRelative(sessionContextMenu.session, 'others')"
           type="button"
           role="menuitem"
-          :disabled="!canCloseSessionRelative(sessionContextMenu.session, 'others')"
           @click="runSessionContextClose('others')"
-        >关闭其他页签</button>
+        >{{ sessionContextMenu.source === 'tab' ? '关闭其他页签' : '关闭此设备其他会话' }}</button>
         <button
+          v-if="canCloseSessionRelative(sessionContextMenu.session, 'others')"
           type="button"
           role="menuitem"
-          :disabled="!canCloseSessionRelative(sessionContextMenu.session, 'all')"
           @click="runSessionContextClose('all')"
-        >关闭所有页签</button>
-        <hr />
-        <button type="button" role="menuitem" @click="splitSessionFromContext('left')">分屏到左侧</button>
-        <button type="button" role="menuitem" @click="splitSessionFromContext('right')">分屏到右侧</button>
-        <button type="button" role="menuitem" @click="splitSessionFromContext('top')">分屏到上方</button>
-        <button type="button" role="menuitem" @click="splitSessionFromContext('bottom')">分屏到下方</button>
+        >{{ sessionContextMenu.source === 'tab' ? '关闭此设备全部页签' : '关闭此设备全部会话' }}</button>
+        <template v-if="canSplitSession(sessionContextMenu.session)">
+          <hr />
+          <button type="button" role="menuitem" @click="splitSessionFromContext('left')">分屏到左侧</button>
+          <button type="button" role="menuitem" @click="splitSessionFromContext('right')">分屏到右侧</button>
+          <button type="button" role="menuitem" @click="splitSessionFromContext('top')">分屏到上方</button>
+          <button type="button" role="menuitem" @click="splitSessionFromContext('bottom')">分屏到下方</button>
+        </template>
         <button
           v-if="terminalSplitActive"
           type="button"
           role="menuitem"
           @click="resetTerminalSplit"
         >退出分屏</button>
-        <template v-if="sessionDevice(sessionContextMenu.session)">
-          <hr />
-          <button type="button" role="menuitem" @click="locateSessionDevice(sessionContextMenu.session)">定位到设备列表</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="Boolean(connectionDisabledReason(sessionDevice(sessionContextMenu.session), 'telnet'))"
-            @click="openSessionDeviceSession('telnet')"
-          >打开设备管理口</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="Boolean(connectionDisabledReason(sessionDevice(sessionContextMenu.session), 'ssh'))"
-            @click="openSessionDeviceSession('ssh')"
-          >打开 Linux 后台</button>
-          <button
-            type="button"
-            role="menuitem"
-            :disabled="Boolean(connectionDisabledReason(sessionDevice(sessionContextMenu.session), 'serial'))"
-            @click="openSessionDeviceSession('serial')"
-          >打开串口</button>
-        </template>
       </div>
 
       <TerminalSplitWorkspace
@@ -2608,7 +2873,7 @@ onBeforeUnmount(() => {
         :collapsed="sessionTabRailCollapsed"
         @activate="activateSession"
         @close="workspace.closeSession"
-        @session-context="openSessionContextMenu"
+        @session-context="openSessionManagerSessionContextMenu"
         @device-context="openSessionManagerDeviceContextMenu"
         @locate-device="locateSessionManagerDevice"
         @update-collapsed="setSessionTabRailCollapsed"
@@ -2658,18 +2923,28 @@ onBeforeUnmount(() => {
       @close="groupDialogOpen = false"
       @save="createGroup"
     />
+    <DeviceImportDialog
+      v-if="workspace.deviceImportPreview"
+      :preview="workspace.deviceImportPreview"
+      :busy="workspace.deviceImportBusy"
+      :return-focus="deviceImportReturnFocus"
+      @close="workspace.cancelDeviceImport"
+      @commit="workspace.commitDeviceImport"
+    />
     <SettingsPanel
       :open="settingsPanelOpen"
       :theme-mode="themeMode"
       :always-on-top="alwaysOnTop"
       :session-tab-layout="sessionTabLayout"
       :session-tab-rail-collapsed="sessionTabRailCollapsed"
+      :allow-plugin-management="workspace.deviceSourceStatus.allow_plugin_management"
       :return-focus="settingsReturnFocus"
       @close="settingsPanelOpen = false"
       @set-theme="applyRendererTheme"
       @set-always-on-top="setAlwaysOnTop"
       @set-session-tab-layout="setSessionTabLayout"
       @set-session-tab-rail-collapsed="setSessionTabRailCollapsed"
+      @device-sources-changed="workspace.initialize"
     />
     <HelpPanel :open="helpPanelOpen" :return-focus="helpReturnFocus" @close="helpPanelOpen = false" />
   </div>

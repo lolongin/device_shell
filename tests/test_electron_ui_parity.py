@@ -24,6 +24,7 @@ SETTINGS_PANEL = Path("desktop/src/renderer/src/components/SettingsPanel.vue")
 HELP_PANEL = Path("desktop/src/renderer/src/components/HelpPanel.vue")
 PROFILE_DIALOG = Path("desktop/src/renderer/src/components/ConnectionProfileDialog.vue")
 GROUP_DIALOG = Path("desktop/src/renderer/src/components/ConnectionGroupDialog.vue")
+DEVICE_IMPORT_DIALOG = Path("desktop/src/renderer/src/components/DeviceImportDialog.vue")
 DIALOG_FOCUS = Path("desktop/src/renderer/src/composables/useDialogFocus.ts")
 WORKSPACE_STORE = Path("desktop/src/renderer/src/stores/workspace.ts")
 TYPES_TS = Path("desktop/src/renderer/src/types.ts")
@@ -31,6 +32,75 @@ MAIN_TS = Path("desktop/src/main/index.ts")
 PACKAGE_JSON = Path("desktop/package.json")
 UI_PARITY_SMOKE = Path("desktop/scripts/smoke-ui-parity.mjs")
 PRELOAD_TS = Path("desktop/src/preload/index.ts")
+
+
+def test_internal_website_login_is_prominent_and_reports_cookie_state() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert 'class="rail-button internal-auth-rail"' in app
+    assert 'class="internal-account-bar"' in app
+    assert "activeDeviceSource?.requires_login" in app
+    assert "输入账号、密码和 CID 后加载设备" in app
+    assert "Cookie 已连接" in app
+    assert "自动登录已开启" in app
+    assert "密码已安全保存" in app
+    assert "当前设备源未提供网站登录能力" in app
+    assert app.count(':disabled="workspace.internalAuthBusy"') >= 3
+    assert "logoutInternalService" in app
+    assert ".internal-account-main:focus-visible" in styles
+    assert ":root[data-theme=\"light\"] .internal-account-bar" in styles
+    assert "loginInternalService" in store
+    assert "internalAuthStatus.value = await desktopApi.internalAuthStatus()" in store
+
+
+def test_device_sources_are_exclusive_and_import_requires_confirmation() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    dialog = DEVICE_IMPORT_DIALOG.read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert 'class="device-source-bar"' in app
+    assert "workspace.deviceSourceStatus.sources" in app
+    assert "当前设备来源" in app
+    assert "切换来源" in app
+    assert "恢复默认“{{ defaultDeviceSource?.label }}”" in app
+    assert "当前只显示这一来源的设备" in app
+    assert "source.id === workspace.deviceSourceStatus.default_source" in app
+    assert "activeDeviceSource?.requires_login" in app
+    assert "activeDeviceSource?.supports_import" in app
+    assert ':disabled="!source.available"' in app
+    assert "deviceSourceStatus.plugin_warnings" in app
+    assert "active_source === 'api'" not in app
+    assert "workspace.sessions.length > 0" in app
+    assert "重新导入" in app
+    assert "确认覆盖导入设备" in dialog
+    assert "我确认覆盖当前导入数据" in dialog
+    assert ':disabled="busy || !confirmed"' in dialog
+    assert "密码列会被忽略" in dialog
+    assert "preview.errors" in dialog
+    assert "deviceSourceStatus.value = await desktopApi.deviceSource()" in store
+    assert "await desktopApi.switchDeviceSource(source)" in store
+    assert "await desktopApi.commitDeviceImport(preview.token)" in store
+    assert ".device-source-bar" in styles
+    assert ".device-import-dialog" in styles
+
+
+def test_product_profile_hides_developer_source_controls() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    settings = SETTINGS_PANEL.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+    backend = Path("desktop/src/main/python-backend.ts").read_text(encoding="utf-8")
+
+    assert "workspace.deviceSourceStatus.allow_source_switch" in app
+    assert "!workspace.deviceSourceStatus.allow_source_switch && workspace.deviceSourceStatus.allow_import" in app
+    assert ':allow-plugin-management="workspace.deviceSourceStatus.allow_plugin_management"' in app
+    assert 'v-if="allowPluginManagement" class="settings-tabs"' in settings
+    assert "if (props.allowPluginManagement)" in settings
+    assert "allow_plugin_management: boolean" in types
+    assert "product-profile.json" in backend
+    assert "DEVICE_TUI_PRODUCT_MODE" in backend
 
 
 def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> None:
@@ -118,20 +188,20 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
     assert '!document.querySelector(\'.session-workspace .session-manager\')' in MAIN_TS.read_text(encoding="utf-8")
     assert "sessionManagerDeviceContextMenu" in app
     for label in (
-        "关闭当前设备会话",
-        "关闭左侧设备会话",
-        "关闭右侧设备会话",
+        "关闭此设备全部会话",
         "关闭其他设备会话",
         "关闭所有设备会话",
         "定位到设备列表",
-        "打开设备管理口",
-        "打开 Linux 后台",
-        "打开串口",
-        "占用设备",
-        "释放设备",
-        "设备掉电",
+        "新建设备管理口会话",
+        "新建 Linux 后台会话",
+        "新建串口会话",
     ):
         assert label in app
+    manager_menu = app[app.index('v-if="sessionManagerDeviceContextMenu"'):app.index('v-if="sessionContextMenu"')]
+    assert "关闭左侧设备会话" not in manager_menu
+    assert "关闭右侧设备会话" not in manager_menu
+    assert "runSessionManagerDeviceAction" not in app
+    assert "sessionManagerDeviceHasSession" in app
 
     assert "function closeDeviceSessionGroups(" in store
     assert "new Set(snapshot.map((session) => session.device_id))" in store
@@ -143,6 +213,7 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
         "hierarchicalSessionManagerGroupsSessionsByDevice",
         "sessionManagerSearchFiltersDevicesAndSessions",
         "sessionManagerDeviceContextActions",
+        "sessionManagerSessionContextIsScoped",
         "sessionManagerWidthResizePersists",
         "sessionManagerTreeStartsBelowSearch",
         "sessionManagerGroupCollapseStatePersists",
@@ -316,9 +387,9 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     for label in (
-        "手工客户端命令",
+        "设备连接入口",
         "复制客户端命令",
-        "文件服务运行日志",
+        "FTP 服务运行日志",
         "刷新日志",
         "复制日志",
         "清空日志",
@@ -335,13 +406,10 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     assert "手工服务密码" not in transfer
     assert "password?: string" in transport
     assert "transferPasswordInput?.getAttribute('type') === 'password'" in MAIN_TS.read_text(encoding="utf-8")
-    assert 'data-testid="transfer-terminal-environment"' in transfer
-    assert '<option value="auto">自动判断</option>' in transfer
-    assert '<option value="linux">Linux Shell</option>' in transfer
-    assert '<option value="vrp">Huawei VRP</option>' in transfer
-    assert "terminal_environment: terminalEnvironment.value" in transfer
+    assert 'data-testid="transfer-terminal-environment"' not in transfer
+    assert "terminal_environment: commandMode.value === 'ftpget' ? 'linux' : 'vrp'" in transfer
     assert "terminal_environment: 'auto' | 'linux' | 'vrp'" in transport
-    assert "transferEnvironmentSelect?.value === 'auto'" in MAIN_TS.read_text(encoding="utf-8")
+    assert "transferEnvironmentSelect" not in MAIN_TS.read_text(encoding="utf-8")
     assert "设备访问地址" in transfer
     assert "settingsDraft.advertised_host" in transfer
     assert "advertised_host: string" in TYPES_TS.read_text(encoding="utf-8")
@@ -349,6 +417,16 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     assert "navigator.clipboard.writeText" in transfer
     assert 'data-testid="transfer-service-log"' in transfer
     assert 'data-testid="transfer-client-command"' in transfer
+    assert "FTP 服务器配置" in transfer
+    assert 'data-testid="transfer-command-mode"' in transfer
+    assert '<option value="ftpget">ftpget 单命令</option>' in transfer
+    assert '<option value="vrp">Huawei VRP 交互式 FTP</option>' in transfer
+    assert '<option value="manual">仅启动服务 / 手工输入</option>' in transfer
+    assert 'data-testid="transfer-command-preview"' in transfer
+    assert "command_mode: commandMode.value" in transfer
+    assert "const settingsDirty = computed" in transfer
+    assert "settingsDirty.value && !await saveSettings()" in transfer
+    assert "高级设置" not in transfer
 
     assert "transferServiceLog" in store
     assert "transferClientCommand" in store
@@ -376,16 +454,21 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert 'data-testid="operation-panel-resize-handle"' in app
     assert 'role="region"' in transfer
     assert 'aria-modal="true"' not in transfer
-    assert "加入传输队列" in transfer
+    assert "发送到当前终端" in transfer
     assert "sourceError" in transfer
     assert "destinationError" in transfer
     assert "activeSessionConnected" in transfer
+    assert 'class="transfer-settings-actions"' in transfer
+    assert 'class="transfer-sort-order"' in transfer
+    assert "<ArrowDownUp" in transfer
     assert 'data-testid="transfer-recovery"' in transfer
     assert "function recoveryHint" in transfer
     assert "service_endpoint_unavailable" in transfer
     assert "transfer_client_unavailable" in transfer
     assert "检查设置与日志" in transfer
     assert ".transfer-recovery-card" in styles
+    assert ".transfer-settings-actions" in styles
+    assert ".transfer-sort-order" in styles
     assert 'role="region"' in upgrade
     assert 'aria-modal="true"' not in upgrade
     assert "upgradeActionHint" in upgrade
@@ -411,6 +494,27 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert ':data-session-id="session.id"' in terminal_pane
 
 
+def test_managed_transfer_formats_validation_errors_and_supports_old_vrp_backend() -> None:
+    transfer = Path("desktop/src/renderer/src/components/TransferWorkspace.vue").read_text(
+        encoding="utf-8"
+    )
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function backendDetailMessage(detail: unknown)" in transport
+    assert "item.type === 'extra_forbidden'" in transport
+    assert "当前 Python 后端不支持参数" in transport
+    assert "payload.command_mode !== 'vrp'" in transport
+    assert "legacyPayload" in transport
+
+    assert "const transferError = ref('')" in store
+    assert "transferError," in store
+    assert "workspace.transferError" in transfer
+    assert 'localError || workspace.error' not in transfer
+
+
 def test_terminal_toolbar_exposes_current_session_operations_without_navigation() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     pane = TERMINAL_PANE.read_text(encoding="utf-8")
@@ -420,7 +524,7 @@ def test_terminal_toolbar_exposes_current_session_operations_without_navigation(
 
     assert 'title="托管传输当前设备"' in pane
     assert 'title="升级当前设备系统包"' in pane
-    assert 'title="当前会话与设备操作"' in pane
+    assert 'title="当前会话操作"' in pane
     assert "transfer: [sessionId: string]" in pane
     assert "upgrade: [sessionId: string]" in pane
     assert "context: [sessionId: string, event: MouseEvent]" in pane
@@ -684,7 +788,7 @@ def test_electron_device_table_keeps_keyboard_navigation() -> None:
     assert ".device-table-list:focus-visible" in styles
 
 
-def test_electron_device_table_keeps_legacy_context_menu_actions() -> None:
+def test_electron_device_table_context_menu_only_shows_applicable_actions() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -701,11 +805,12 @@ def test_electron_device_table_keeps_legacy_context_menu_actions() -> None:
         "复制设备行",
         "复制 SSH IP",
         "复制 Telnet IP",
-        "复制串口 IP",
+        "复制串口地址",
         "复制连接信息",
-        "占用",
-        "释放",
-        "掉电",
+        "占用设备",
+        "释放设备",
+        "设备掉电…",
+        "打开模拟终端",
         "打开设备管理口",
         "打开 Linux 后台",
         "打开串口",
@@ -724,6 +829,10 @@ def test_electron_device_table_keeps_legacy_context_menu_actions() -> None:
     assert "openDeviceContextSession('ssh')" in app
     assert "openDeviceContextSession('telnet')" in app
     assert "openDeviceContextSession('serial')" in app
+    assert 'v-if="deviceContextMenu.device.can_connect_telnet"' in app
+    assert 'v-if="deviceContextMenu.device.can_connect_ssh"' in app
+    assert 'v-if="deviceContextMenu.device.can_connect_serial"' in app
+    assert "confirmDevicePowerOff" in app
     assert ".device-context-menu" in styles
     assert ".device-context-menu button:disabled" in styles
     assert ".device-context-menu button:focus-visible" in styles
@@ -786,6 +895,30 @@ def test_electron_renderer_restores_persisted_theme_toggle() -> None:
     assert ':root[data-theme="light"] .status-pill[data-status="occupied"]' in styles
 
 
+def test_electron_light_theme_uses_visible_text_cursor() -> None:
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "--text-input-cursor: url(\"data:image/svg+xml" in styles
+    assert "width='32' height='32' viewBox='0 0 32 32'" in styles
+    assert "shape-rendering='crispEdges'" in styles
+    assert '%3E\") 8 9, text;' in styles
+    assert "fill='%230f172a'" in styles
+    assert ':root[data-theme="light"] input:not([type])' in styles
+    assert '[type="password"]' in styles
+    assert ':root[data-theme="light"] textarea' in styles
+    assert ':root[data-theme="light"] [contenteditable="true"]' in styles
+    assert ':root[data-theme="light"] .xterm' in styles
+    assert "caret-color: #0f172a;" in styles
+    assert "cursor: var(--text-input-cursor);" in styles
+
+    cursor_rule = styles.split(
+        ':root[data-theme="light"] input:not([type])', 1
+    )[1].split("}", 1)[0]
+    assert '[type="checkbox"]' not in cursor_rule
+    assert '[type="radio"]' not in cursor_rule
+    assert ':root[data-theme="light"] select' not in cursor_rule
+
+
 def test_electron_restores_persisted_always_on_top_toggle() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
@@ -831,7 +964,7 @@ def test_electron_terminal_keeps_reconnect_and_disconnect_parity() -> None:
     assert ".icon-button:disabled" in styles
 
 
-def test_electron_terminal_keeps_legacy_context_menu_actions() -> None:
+def test_electron_terminal_context_menu_uses_clear_scoped_actions() -> None:
     terminal = TERMINAL_PANE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -847,15 +980,20 @@ def test_electron_terminal_keeps_legacy_context_menu_actions() -> None:
 
     for label in (
         "复制选中文本",
-        "复制全部",
+        "复制终端全部内容",
         "粘贴",
-        "清屏",
+        "清空终端显示",
         "搜索终端",
+        "管理自动响应",
         "查看会话日志",
+        "在系统中打开日志文件",
+        "开始新的日志文件",
         "断开连接",
         "重新连接",
     ):
         assert label in terminal
+    assert 'v-if="canDisconnect"' in terminal
+    assert 'v-if="canReconnect"' in terminal
 
     assert "terminal?.getSelection()" in terminal
     assert "terminalBufferText" in terminal
@@ -872,7 +1010,7 @@ def test_electron_terminal_keeps_legacy_context_menu_actions() -> None:
     assert ".terminal-context-menu button:focus-visible" in styles
 
 
-def test_electron_session_tabs_keep_close_actions_without_crowding_tab_rail() -> None:
+def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -903,13 +1041,21 @@ def test_electron_session_tabs_keep_close_actions_without_crowding_tab_rail() ->
         "关闭左侧页签",
         "关闭右侧页签",
         "关闭其他页签",
-        "关闭所有页签",
+        "关闭此设备全部页签",
         "定位到设备列表",
-        "打开设备管理口",
-        "打开 Linux 后台",
-        "打开串口",
+        "复制会话信息",
+        "重新连接",
+        "断开连接",
     ):
         assert label in app
+    session_menu = app[app.index('v-if="sessionContextMenu"'):app.index('<TerminalSplitWorkspace')]
+    assert "打开设备管理口" not in session_menu
+    assert "打开 Linux 后台" not in session_menu
+    assert "打开串口" not in session_menu
+    assert "sessionContextMenu.source === 'tab'" in session_menu
+    assert "canSplitSession" in session_menu
+    assert "workspace.reconnectSession(session.id)" in app
+    assert "workspace.disconnectSession(session.id)" in app
     assert 'class="session-tab-actions"' not in app
     assert ".session-tab-actions" not in styles
     assert ".session-context-menu" in styles
@@ -969,7 +1115,7 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
         "放大字体 (Ctrl++)",
     ):
         assert title in bottom_toolbar
-    for title in ("当前会话与设备操作", "断开连接", "重新连接 (Ctrl+Shift+R)"):
+    for title in ("当前会话操作", "断开连接", "重新连接 (Ctrl+Shift+R)"):
         assert title in bottom_toolbar
 
     assert 'class="split-session-tab"' not in split
@@ -1140,7 +1286,7 @@ def test_electron_shortcuts_are_scoped_and_discoverable() -> None:
     assert "重新连接 (Ctrl+Shift+R)" in terminal
 
 
-def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> None:
+def test_electron_command_workspace_context_menu_labels_actions_precisely() -> None:
     command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -1160,15 +1306,16 @@ def test_electron_command_workspace_keeps_legacy_context_menu_shortcuts() -> Non
         "重命名",
         "新增命令页签",
         "删除页签",
-        "复制选中/当前命令",
+        "复制选中内容或当前行",
         "粘贴",
         "选择当前行",
-        "发送到终端",
-        "广播发送",
+        "发送到当前终端",
+        "发送到全部已连接终端",
         "查找和替换",
-        "清空当前页签",
+        "清空当前页签…",
     ):
         assert label in command
+    assert "window.confirm(`清空命令页签" in command
 
     assert "window.desktopApi.writeClipboardText(command)" in command
     assert "window.desktopApi.readClipboardText()" in command
@@ -1391,6 +1538,21 @@ def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
     assert "settings-log-skeleton" in settings
     assert "settings-action-bar" in settings
     assert 'aria-label="正在读取日志设置"' in settings
+    for label in (
+        "数据来源与插件",
+        "已安装",
+        "外部插件",
+        "启用插件",
+        "连接配置",
+        "验证配置",
+        "保存插件设置",
+    ):
+        assert label in settings
+    assert "desktopApi.deviceSourcePlugins()" in settings
+    assert "desktopApi.updateDeviceSourcePlugin" in settings
+    assert "desktopApi.testDeviceSourcePlugin" in settings
+    assert "secret_configured" in settings
+    assert "pluginSecretDraft" in settings
     assert "操作帮助" in help_panel
     assert "安全边界" in help_panel
     assert "shortcutGroups" in help_panel
@@ -1783,7 +1945,7 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
         "legacyInventoryHasTwentyOneRows",
         "simulatedTerminalAppearsExactlyOnce",
         "simulatedTerminalOnlyOffersSimulatedSession",
-        "simulatedTerminalDeviceActionsAreDisabledWithReason",
+        "simulatedTerminalContextMenuOnlyShowsApplicableActions",
         "disabledConnectionActionsExplainReason",
         "connectionProfileReadinessPreventsIncompleteSave",
         "复制设备行",

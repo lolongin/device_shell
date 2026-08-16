@@ -82,7 +82,7 @@ const canReconnect = computed(() =>
   !reconnecting.value && ['disconnected', 'detached', 'error', 'failed'].includes(connectionStatus.value)
 )
 const canDisconnect = computed(() =>
-  !disconnecting.value && !['disconnected', 'detached', 'closed'].includes(connectionStatus.value)
+  !disconnecting.value && ['connected', 'connecting'].includes(connectionStatus.value)
 )
 const canPaste = computed(() => socket?.readyState === WebSocket.OPEN)
 const connectionStatusLabel = computed(() =>
@@ -679,9 +679,9 @@ onBeforeUnmount(() => {
         >
           <i aria-hidden="true"></i>{{ connectionStatusLabel }}
         </span>
-        <button class="icon-button" type="button" title="当前会话与设备操作" @click.stop="emit('context', session.id, $event)">
+        <button class="icon-button" type="button" title="当前会话操作" @click.stop="emit('context', session.id, $event)">
           <MoreHorizontal :size="15" aria-hidden="true" />
-          <span class="sr-only">当前会话与设备操作</span>
+          <span class="sr-only">当前会话操作</span>
         </button>
         <button
           class="icon-button"
@@ -714,42 +714,45 @@ onBeforeUnmount(() => {
       @click.stop
       @keydown="handleContextMenuKeydown($event, contextMenuElement, closeContextMenuAndRestoreFocus)"
     >
-      <p>{{ session.title }}</p>
+      <p>{{ session.title }}<small>{{ connectionStatusLabel }}</small></p>
       <button
         type="button"
         role="menuitem"
         :disabled="!contextMenu.hasSelection"
         @click="copySelection"
       >复制选中文本</button>
-      <button type="button" role="menuitem" @click="copyAll">复制全部</button>
+      <button type="button" role="menuitem" @click="copyAll">复制终端全部内容</button>
       <button
         type="button"
         role="menuitem"
         :disabled="!canPaste"
         @click="pasteFromClipboard"
       >粘贴</button>
-      <button type="button" role="menuitem" @click="clearTerminal">清屏</button>
       <hr />
       <button type="button" role="menuitem" @click="openSearch">搜索终端</button>
-      <button type="button" role="menuitem" @click="openAutomation">自动响应</button>
-      <button type="button" role="menuitem" @click="createNewLog">新建日志</button>
-      <button type="button" role="menuitem" @click="openCurrentLog">打开当前会话日志</button>
-      <button type="button" role="menuitem" @click="loadLogFromContext">查看会话日志</button>
-      <button type="button" role="menuitem" @click="openLogDirectory">打开日志目录</button>
-      <button type="button" role="menuitem" :disabled="!logContent" @click="saveLogCopy">保存日志副本</button>
+      <button type="button" role="menuitem" @click="clearTerminal">清空终端显示</button>
+      <button type="button" role="menuitem" @click="openAutomation">管理自动响应</button>
       <hr />
-      <button
-        type="button"
-        role="menuitem"
-        :disabled="!canDisconnect"
-        @click="disconnectFromContext"
-      >断开连接</button>
-      <button
-        type="button"
-        role="menuitem"
-        :disabled="!canReconnect"
-        @click="reconnectFromContext"
-      >重新连接</button>
+      <button type="button" role="menuitem" @click="loadLogFromContext">查看会话日志</button>
+      <button type="button" role="menuitem" @click="openCurrentLog">在系统中打开日志文件</button>
+      <button type="button" role="menuitem" @click="openLogDirectory">打开日志目录</button>
+      <button type="button" role="menuitem" @click="createNewLog">开始新的日志文件</button>
+      <button v-if="logContent" type="button" role="menuitem" @click="saveLogCopy">保存已查看日志的副本</button>
+      <template v-if="canDisconnect || canReconnect">
+        <hr />
+        <button
+          v-if="canDisconnect"
+          type="button"
+          role="menuitem"
+          @click="disconnectFromContext"
+        >断开连接</button>
+        <button
+          v-if="canReconnect"
+          type="button"
+          role="menuitem"
+          @click="reconnectFromContext"
+        >重新连接</button>
+      </template>
     </div>
     <form v-if="searchOpen" class="terminal-search" @submit.prevent="findNext">
       <Search :size="14" aria-hidden="true" />

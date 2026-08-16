@@ -38,6 +38,14 @@ interface TemporaryProfileSaveRequest {
   secrets: Partial<Record<'telnet' | 'ssh' | 'serial', string>>
 }
 
+interface InternalLoginPromptRequest {
+  sourceLabel: string
+  username: string
+  cid: string
+  remembered: boolean
+  autoLogin: boolean
+}
+
 interface SessionLogExportRequest {
   suggestedName: string
   content: string
@@ -55,6 +63,10 @@ const desktopApi = {
     ipcRenderer.invoke('credential:manage-profile', request),
   saveTemporaryProfile: (request: TemporaryProfileSaveRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('credential:create-temporary-profile', request),
+  loginInternalService: (request: InternalLoginPromptRequest): Promise<unknown | null> =>
+    ipcRenderer.invoke('internal-auth:login', request),
+  chooseDeviceImport: (): Promise<unknown | null> =>
+    ipcRenderer.invoke('device-source:choose-import'),
   chooseTransferRoot: (): Promise<string> =>
     ipcRenderer.invoke('file-transfer:choose-root'),
   chooseSessionLogDirectory: (): Promise<string> =>

@@ -22,6 +22,8 @@ from ..managed_file_transfer import (
     ManagedTransferError,
     SharedFileCatalog,
     _validate_relative_path,
+    build_ftpget_command,
+    build_ftpget_transfer_steps,
     build_linux_inspection_command,
     build_managed_transfer_download_steps,
     build_managed_transfer_steps,
@@ -345,9 +347,15 @@ class ManagedTransferService:
         self._runtime_secrets[password_ref] = password
         return username_ref, password_ref
 
+    def _register_runtime_command(self, operation_id: str, command: str) -> str:
+        command_ref = f"managed_transfer.{operation_id}.command"
+        self._runtime_secrets[command_ref] = command
+        return command_ref
+
     def _clear_runtime_credentials(self, operation_id: str) -> None:
         self._runtime_secrets.pop(f"managed_transfer.{operation_id}.username", None)
         self._runtime_secrets.pop(f"managed_transfer.{operation_id}.password", None)
+        self._runtime_secrets.pop(f"managed_transfer.{operation_id}.command", None)
 
     async def start_service(self, *, auto_stop_when_idle: bool = True) -> TransferSettings:
         self._cancel_idle_stop()
@@ -470,6 +478,7 @@ class ManagedTransferService:
         destination_path: str,
         overwrite: bool = False,
         terminal_environment: str = "auto",
+        command_mode: str = "vrp",
         retry_of: str | None = None,
     ) -> OperationRecord:
         session = self._connected_session(session_id)
@@ -478,17 +487,22 @@ class ManagedTransferService:
                 Path(str(self._saved_config()["root"])),
                 source_path,
             )
+            normalized_command_mode = self._normalize_command_mode(command_mode)
             requested_environment = normalize_terminal_environment(terminal_environment)
-            destination = validate_transfer_device_path(
-                destination_path,
-                requested_environment,
-            )
-            resolved_environment = (
-                infer_terminal_environment(destination, session_kind=session.kind)
-                if requested_environment == "auto"
-                else requested_environment
-            )
-            destination = validate_transfer_device_path(destination, resolved_environment)
+            if normalized_command_mode == "ftpget":
+                destination = info.relative_path
+                resolved_environment = "linux"
+            else:
+                destination = validate_transfer_device_path(
+                    destination_path,
+                    requested_environment,
+                )
+                resolved_environment = (
+                    infer_terminal_environment(destination, session_kind=session.kind)
+                    if requested_environment == "auto"
+                    else requested_environment
+                )
+                destination = validate_transfer_device_path(destination, resolved_environment)
             fingerprint = source_fingerprint(source)
         except ManagedTransferError as exc:
             raise self._application_error(exc) from exc
@@ -510,6 +524,7 @@ class ManagedTransferService:
                 "overwrite": bool(overwrite),
                 "terminal_environment_requested": requested_environment,
                 "terminal_environment": resolved_environment,
+                "command_mode": normalized_command_mode,
             },
         )
         del source, fingerprint
@@ -524,10 +539,17 @@ class ManagedTransferService:
         destination_path: str,
         overwrite: bool = False,
         terminal_environment: str = "auto",
+        command_mode: str = "vrp",
         retry_of: str | None = None,
     ) -> OperationRecord:
         session = self._connected_session(session_id)
         try:
+            normalized_command_mode = self._normalize_command_mode(command_mode)
+            if normalized_command_mode == "ftpget":
+                raise ManagedTransferError(
+                    "ftpget_direction_unsupported",
+                    "ftpget 单命令当前只支持 PC 到设备；设备到 PC 请使用 VRP 交互模式。",
+                )
             requested_environment = normalize_terminal_environment(terminal_environment)
             source = validate_transfer_device_path(source_path, requested_environment)
             resolved_environment = (
@@ -559,6 +581,7 @@ class ManagedTransferService:
                 "overwrite": bool(overwrite),
                 "terminal_environment_requested": requested_environment,
                 "terminal_environment": resolved_environment,
+                "command_mode": normalized_command_mode,
             },
         )
         self._enqueue(record)
@@ -587,6 +610,7 @@ class ManagedTransferService:
                 or payload.get("terminal_environment")
                 or "auto"
             ),
+            command_mode=str(payload.get("command_mode") or "vrp"),
             retry_of=original.id,
         )
 
@@ -854,6 +878,126 @@ class ManagedTransferService:
             if acquired:
                 self._executor.release(session.id, owner_id)
 
+    async def _run_ftpget_upload(
+        self,
+        operation_id: str,
+        session: SessionRecord,
+    ) -> None:
+        owner_id = f"managed-transfer:{operation_id}"
+        acquired = False
+        managed_username = ""
+        try:
+            operation = self._operations.get(operation_id)
+            source, info = resolve_shared_file(
+                Path(str(self._saved_config()["root"])),
+                str(operation.data["source_path"]),
+            )
+            initial_fingerprint = source_fingerprint(source)
+            saved_config = self._saved_config()
+            if str(saved_config["protocol"]).casefold() != "ftp":
+                raise _TransferRunError(
+                    "ftpget_requires_ftp",
+                    "ftpget 单命令需要将本机文件服务协议设置为 FTP。",
+                )
+            if int(saved_config["port"]) != 21:
+                raise _TransferRunError(
+                    "ftpget_requires_port_21",
+                    "当前 ftpget 语法不包含端口参数，请将 FTP 服务端口设置为 21。",
+                )
+            self._executor.acquire(
+                session.id,
+                owner_id,
+                on_cancel=lambda: self._cancel_active(operation_id, session.id, pause_queue=True),
+            )
+            acquired = True
+            self._operations.update(
+                operation_id,
+                stage="prechecking",
+                message="正在检查 ftpget 命令和本机 FTP 服务配置。",
+                progress_percent=0,
+                total_bytes=info.size_bytes,
+                bytes_transferred=0,
+                bytes_per_second=0,
+                clear_eta=True,
+            )
+            config = await self._ensure_service()
+            bound_port = self._controller.bound_port or config.port
+            if bound_port != 21:
+                raise _TransferRunError(
+                    "ftpget_requires_port_21",
+                    f"当前 FTP 服务实际端口为 {bound_port}，ftpget 单命令需要端口 21。",
+                )
+            host = self._device_host(session, config)
+            managed_username, managed_password = self._controller.register_managed_transfer(
+                operation_id,
+                total_bytes=info.size_bytes,
+                on_progress=self._queue_progress_from_thread,
+            )
+            command = build_ftpget_command(
+                username=managed_username,
+                password=managed_password,
+                host=host,
+                source_path=info.relative_path,
+            )
+            command_ref = self._register_runtime_command(operation_id, command)
+            self._executor.configure_managed_transfer(
+                session.id,
+                username=managed_username,
+                password=managed_password,
+                source_path=info.relative_path,
+                source_size=info.size_bytes,
+                destination_path=info.relative_path,
+            )
+            steps, timeout = build_ftpget_transfer_steps(
+                command_secret_ref=command_ref,
+                source_size=info.size_bytes,
+            )
+            self._operations.update(
+                operation_id,
+                stage="transferring",
+                message="已向当前终端发送 ftpget，正在等待 FTP 数据传输完成。",
+                progress_percent=0,
+                data={
+                    "service_host": host,
+                    "service_port": bound_port,
+                    "command_preview": (
+                        f"ftpget -u <临时账号> -p ****** {host} {info.relative_path}"
+                    ),
+                    "verification": "ftp_server_and_terminal_completion",
+                },
+            )
+            result = await self._run_plan(
+                session,
+                owner_id,
+                parse_terminal_plan(steps, total_timeout_seconds=timeout),
+            )
+            self._require_completed(result, "transferring")
+            self._record_progress(operation_id, info.size_bytes, force=True)
+            if source_fingerprint(source) != initial_fingerprint:
+                raise _TransferRunError("transfer_source_changed", "传输期间源文件发生变化。")
+            self._operations.update(
+                operation_id,
+                status="completed",
+                stage="completed",
+                message=f"ftpget 已完成 {info.relative_path}，本机 FTP 服务共发送 {info.size_bytes} 字节。",
+                progress_percent=100,
+                bytes_transferred=info.size_bytes,
+                total_bytes=info.size_bytes,
+                bytes_per_second=0,
+                clear_eta=True,
+                error_code="",
+            )
+        except asyncio.CancelledError:
+            self._mark_cancelled(operation_id)
+        except (ManagedTransferError, TerminalPlanError, TransferOperationError, _TransferRunError, RuntimeError, OSError) as exc:
+            self._mark_failed(operation_id, getattr(exc, "code", "transfer_failed"), str(exc))
+        finally:
+            if managed_username:
+                self._controller.unregister_managed_transfer(managed_username)
+            self._clear_runtime_credentials(operation_id)
+            if acquired:
+                self._executor.release(session.id, owner_id)
+
     async def _run_download(self, operation_id: str, session: SessionRecord) -> None:
         owner_id = f"managed-transfer:{operation_id}"
         acquired = False
@@ -1078,6 +1222,16 @@ class ManagedTransferService:
         return "Linux Shell" if terminal_environment == "linux" else "Huawei VRP"
 
     @staticmethod
+    def _normalize_command_mode(command_mode: str) -> str:
+        normalized = str(command_mode or "vrp").strip().casefold()
+        if normalized not in {"vrp", "ftpget"}:
+            raise ManagedTransferError(
+                "invalid_request",
+                f"不支持的设备 FTP 命令方式: {command_mode}",
+            )
+        return normalized
+
+    @staticmethod
     def _require_completed(result: dict[str, object], stage: str) -> str:
         status = str(result.get("status") or "")
         if status != "completed":
@@ -1142,7 +1296,12 @@ class ManagedTransferService:
                     message="正在准备传输。",
                     clear_queue_position=True,
                 )
-                runner = self._run_download if record.direction == "download" else self._run_upload
+                if record.direction == "download":
+                    runner = self._run_download
+                elif str(record.data.get("command_mode") or "vrp") == "ftpget":
+                    runner = self._run_ftpget_upload
+                else:
+                    runner = self._run_upload
                 task = asyncio.create_task(
                     runner(operation_id, session),
                     name=f"managed-transfer-{operation_id}",

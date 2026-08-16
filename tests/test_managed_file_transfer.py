@@ -8,6 +8,8 @@ import pytest
 
 from src.managed_file_transfer import (
     ManagedTransferError,
+    build_ftpget_command,
+    build_ftpget_transfer_steps,
     build_linux_inspection_command,
     build_managed_transfer_steps,
     destination_matches,
@@ -155,6 +157,34 @@ def test_managed_plan_uses_local_secrets_and_device_side_get() -> None:
     assert "put " not in text
     assert "binary" in text
     assert timeout >= 120
+
+
+def test_ftpget_plan_uses_exact_one_command_contract_and_protected_reference() -> None:
+    command = build_ftpget_command(
+        username="transfer-user",
+        password="transfer-secret",
+        host="192.0.2.10",
+        source_path="target.cc",
+    )
+    steps, timeout = build_ftpget_transfer_steps(
+        command_secret_ref="managed_transfer.12345678-1234-1234-1234-123456789abc.command",
+        source_size=2 * 1024 * 1024,
+    )
+
+    assert command == "ftpget -u transfer-user -p transfer-secret 192.0.2.10 target.cc"
+    assert steps[0]["secret_ref"].endswith(".command")
+    assert steps[1]["success"] == ["device_prompt"]
+    assert timeout >= 120
+    parsed = parse_terminal_plan(steps)
+    assert parsed.steps[0].secret_ref.endswith(".command")
+
+    quoted = build_ftpget_command(
+        username="transfer-user",
+        password="transfer-secret",
+        host="192.0.2.10",
+        source_path="images/target image;1.cc",
+    )
+    assert quoted.endswith("'images/target image;1.cc'")
 
 
 @pytest.mark.parametrize(

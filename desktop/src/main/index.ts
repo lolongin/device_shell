@@ -46,6 +46,14 @@ interface TemporaryProfileSaveRequest {
   secrets?: Partial<Record<'telnet' | 'ssh' | 'serial', unknown>>
 }
 
+interface InternalLoginPromptRequest {
+  sourceLabel: string
+  username: string
+  cid: string
+  remembered: boolean
+  autoLogin: boolean
+}
+
 interface CredentialDialogResult {
   action: 'submit' | 'remove' | 'cancel'
   password: string
@@ -53,6 +61,8 @@ interface CredentialDialogResult {
   host?: string
   port?: number
   username?: string
+  cid?: string
+  autoLogin?: boolean
 }
 
 interface SessionLogExportRequest {
@@ -80,8 +90,10 @@ function validateBackendRequest(request: BackendRequest): void {
     request.path.includes('/credentials/')
     || request.path === '/api/v1/sessions/with-credential'
     || request.path === '/api/v1/sessions/direct'
+    || request.path === '/api/v1/internal-auth/login'
+    || request.path === '/api/v1/device-source/import/preview'
   ) {
-    throw new Error('Credential endpoints require the isolated credential bridge')
+    throw new Error('This endpoint requires an isolated main-process bridge')
   }
   const method = String(request.method || 'GET').toUpperCase()
   if (!['GET', 'POST', 'DELETE', 'PATCH', 'PUT'].includes(method)) {
@@ -131,20 +143,30 @@ function backendError(response: BackendResponse): Error {
 }
 
 async function promptForCredential(
-  request: ProfileCredentialRequest | DeviceConnectionRequest,
-  mode: 'connect' | 'manage' | 'custom'
+  request: ProfileCredentialRequest | DeviceConnectionRequest | InternalLoginPromptRequest,
+  mode: 'connect' | 'manage' | 'custom' | 'internal'
 ): Promise<CredentialDialogResult> {
   if (!mainWindow) return { action: 'cancel', password: '', save: false }
+  let credentialTheme: 'dark' | 'light' = 'dark'
+  try {
+    const rendererTheme = await mainWindow.webContents.executeJavaScript(
+      'document.documentElement.dataset.theme',
+      true
+    ) as unknown
+    if (rendererTheme === 'light') credentialTheme = 'light'
+  } catch {
+    // Use the secure dark default if the renderer is unavailable during recovery.
+  }
   const credentialWindow = new BrowserWindow({
     parent: mainWindow,
     modal: true,
     width: mode === 'custom' ? 520 : 480,
-    height: mode === 'custom' ? 590 : 390,
+    height: mode === 'custom' || mode === 'internal' ? 590 : 390,
     resizable: false,
     minimizable: false,
     maximizable: false,
     show: false,
-    backgroundColor: '#08101d',
+    backgroundColor: credentialTheme === 'light' ? '#ffffff' : '#08101d',
     webPreferences: {
       preload: path.join(__dirname, '../preload/credential.js'),
       contextIsolation: true,
@@ -175,18 +197,28 @@ async function promptForCredential(
         host?: unknown
         port?: unknown
         username?: unknown
+        cid?: unknown
+        autoLogin?: unknown
       }
       const password = typeof submission.password === 'string' ? submission.password : ''
-      if ((mode !== 'custom' && !password) || password.length > 4_096) return
+      const canUseSavedPassword = mode === 'internal' && 'remembered' in request && request.remembered
+      if ((mode !== 'custom' && !password && !canUseSavedPassword) || password.length > 4_096) return
       const host = typeof submission.host === 'string' ? submission.host.trim() : ''
       const port = Number(submission.port)
       const username = typeof submission.username === 'string' ? submission.username.trim() : ''
+      const cid = typeof submission.cid === 'string' ? submission.cid.trim() : ''
       if (mode === 'custom' && (!host || host.length > 255 || !Number.isInteger(port) || port < 1 || port > 65535 || username.length > 255)) return
+      if (mode === 'internal' && (!username || username.length > 255 || !cid || cid.length > 255)) return
       finish({
         action: 'submit',
         password,
         save: submission.save === true,
-        ...(mode === 'custom' ? { host, port, username } : {})
+        ...(mode === 'custom' ? { host, port, username } : {}),
+        ...(mode === 'internal' ? {
+          username,
+          cid,
+          autoLogin: submission.autoLogin === true
+        } : {})
       })
     }
     const onRemove = (event: Electron.IpcMainEvent): void => {
@@ -199,20 +231,38 @@ async function promptForCredential(
     ipcMain.on('credential-dialog:remove', onRemove)
     ipcMain.on('credential-dialog:cancel', onCancel)
     credentialWindow.once('closed', () => finish({ action: 'cancel', password: '', save: false }))
-    const profileName = 'profileName' in request ? request.profileName : request.deviceName
-    const endpoint = 'endpoint' in request ? request.endpoint : `${request.host}:${request.port}`
+    const profileName = mode === 'internal'
+      ? ('sourceLabel' in request ? request.sourceLabel : '设备网站')
+      : 'profileName' in request
+        ? request.profileName
+        : 'deviceName' in request
+          ? request.deviceName
+          : '连接配置'
+    const endpoint = mode === 'internal'
+      ? ''
+      : 'endpoint' in request
+        ? request.endpoint
+        : 'host' in request && 'port' in request
+          ? `${request.host}:${request.port}`
+          : ''
     credentialWindow.loadFile(
       path.join(__dirname, '../../resources/credential-dialog.html'),
       {
         query: {
           mode,
+          theme: credentialTheme,
           profile: profileName,
-          protocol: request.protocol,
+          protocol: 'protocol' in request ? request.protocol : 'web',
           endpoint,
-          hasPassword: 'hasPassword' in request && request.hasPassword ? '1' : '0',
+          hasPassword: (
+            ('hasPassword' in request && request.hasPassword)
+            || ('remembered' in request && request.remembered)
+          ) ? '1' : '0',
           host: 'host' in request ? request.host : '',
           port: 'port' in request ? String(request.port) : '',
-          username: 'username' in request ? request.username : ''
+          username: 'username' in request ? request.username : '',
+          cid: 'cid' in request ? request.cid : '',
+          autoLogin: 'autoLogin' in request && request.autoLogin ? '1' : '0'
         }
       }
     ).then(() => credentialWindow.show()).catch(() => {
@@ -229,6 +279,8 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('credential:open-device-session')
   ipcMain.removeHandler('credential:manage-profile')
   ipcMain.removeHandler('credential:create-temporary-profile')
+  ipcMain.removeHandler('internal-auth:login')
+  ipcMain.removeHandler('device-source:choose-import')
   ipcMain.removeHandler('logs:choose-directory')
   ipcMain.removeHandler('logs:open-directory')
   ipcMain.removeHandler('logs:open-session')
@@ -261,6 +313,48 @@ async function createWindow(): Promise<void> {
     clipboard.writeText(value)
     return true
   })
+  ipcMain.handle(
+    'internal-auth:login',
+    async (event, request: InternalLoginPromptRequest): Promise<unknown | null> => {
+      if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted internal-auth caller')
+      if (
+        !request
+        || typeof request.sourceLabel !== 'string'
+        || !request.sourceLabel.trim()
+        || request.sourceLabel.length > 80
+        || typeof request.username !== 'string'
+        || request.username.length > 255
+        || typeof request.cid !== 'string'
+        || request.cid.length > 255
+        || typeof request.remembered !== 'boolean'
+        || typeof request.autoLogin !== 'boolean'
+      ) {
+        throw new Error('Invalid internal-auth prompt defaults')
+      }
+      let result = await promptForCredential(request, 'internal')
+      if (result.action !== 'submit') return null
+      let response: BackendResponse
+      try {
+        response = await fetchBackend(
+          backend.config,
+          '/api/v1/internal-auth/login',
+          'POST',
+          JSON.stringify({
+            username: result.username,
+            password: result.password,
+            cid: result.cid,
+            remember: result.save,
+            auto_login: result.autoLogin === true,
+            use_saved_password: !result.password && request.remembered
+          })
+        )
+      } finally {
+        result = { action: 'cancel', password: '', save: false }
+      }
+      if (response.status < 200 || response.status >= 300) throw backendError(response)
+      return JSON.parse(response.body) as unknown
+    }
+  )
   ipcMain.handle(
     'credential:create-temporary-profile',
     async (event, request: TemporaryProfileSaveRequest): Promise<BackendResponse> => {
@@ -351,6 +445,38 @@ async function createWindow(): Promise<void> {
       properties: ['openDirectory', 'createDirectory']
     })
     return selected.canceled ? '' : selected.filePaths[0] || ''
+  })
+
+  ipcMain.handle('device-source:choose-import', async (event): Promise<unknown | null> => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) {
+      throw new Error('Untrusted device-import caller')
+    }
+    const configuredSelection = process.env.DEVICE_TUI_DEVICE_IMPORT_SELECTION || ''
+    let selectedPath = configuredSelection ? path.resolve(configuredSelection) : ''
+    if (!selectedPath) {
+      const selected = await dialog.showOpenDialog(mainWindow, {
+        title: '导入设备清单',
+        properties: ['openFile'],
+        filters: [
+          { name: '设备清单', extensions: ['xlsx', 'csv', 'tsv'] },
+          { name: 'Excel 工作簿', extensions: ['xlsx'] },
+          { name: 'CSV / TSV', extensions: ['csv', 'tsv'] }
+        ]
+      })
+      if (selected.canceled) return null
+      selectedPath = selected.filePaths[0] || ''
+    }
+    if (!['.xlsx', '.csv', '.tsv'].includes(path.extname(selectedPath).toLowerCase())) {
+      throw new Error('仅支持 .xlsx、.csv 和 .tsv 文件')
+    }
+    const response = await fetchBackend(
+      backend.config,
+      '/api/v1/device-source/import/preview',
+      'POST',
+      JSON.stringify({ path: selectedPath })
+    )
+    if (response.status < 200 || response.status >= 300) throw backendError(response)
+    return JSON.parse(response.body) as unknown
   })
 
   ipcMain.handle('logs:choose-directory', async (event): Promise<string> => {
@@ -1122,12 +1248,13 @@ async function createWindow(): Promise<void> {
               await sleep(40)
             }
             const simulatedMenuButtons = [...document.querySelectorAll('.device-context-menu button')]
-            const simulatedDeviceActions = simulatedMenuButtons.filter((button) => ['占用', '掉电'].includes(button.textContent?.trim() || ''))
+            const simulatedDeviceActions = simulatedMenuButtons.filter((button) => ['占用设备', '释放设备', '设备掉电…'].includes(button.textContent?.trim() || ''))
             setCheck(
-              'simulatedTerminalDeviceActionsAreDisabledWithReason',
-              simulatedDeviceActions.length === 2
-                && simulatedDeviceActions.every((button) => button.disabled && (button.getAttribute('title') || '').includes('模拟终端不支持')),
-              simulatedDeviceActions.map((button) => (button.textContent?.trim() || '') + ':' + button.disabled + ':' + (button.getAttribute('title') || '')).join('|')
+              'simulatedTerminalContextMenuOnlyShowsApplicableActions',
+              simulatedDeviceActions.length === 0
+                && simulatedMenuButtons.some((button) => button.textContent?.trim() === '打开模拟终端')
+                && simulatedMenuButtons.every((button) => !button.disabled),
+              simulatedMenuButtons.map((button) => (button.textContent?.trim() || '') + ':' + button.disabled).join('|')
             )
             document.body.click()
             deviceRows().find((row) => row.getAttribute('data-device-row-id') === selectedDeviceId)?.click()
@@ -1318,7 +1445,15 @@ async function createWindow(): Promise<void> {
 
             setCheck(
               'deviceContextMenu',
-              openContextMenu('.device-list.device-table-list > .device-table-row') && await sleep(40).then(() => menuHasLabels('.device-context-menu', ['复制设备行', '复制 SSH IP', '复制 Telnet IP', '复制串口 IP', '复制连接信息', '占用', '掉电', '打开设备管理口', '打开 Linux 后台', '打开串口'])),
+              openContextMenu('.device-list.device-table-list > .device-table-row') && await sleep(40).then(() => {
+                const menu = document.querySelector('.device-context-menu')
+                const menuText = text('.device-context-menu')
+                return Boolean(menu)
+                  && menuText.includes('复制设备行')
+                  && ['打开模拟终端', '打开设备管理口', '打开 Linux 后台', '打开串口'].some((label) => menuText.includes(label))
+                  && !menuText.includes('复制串口 IP')
+                  && !menu?.querySelector('button:disabled')
+              }),
               text('.device-context-menu')
             )
             const edgeDeviceRow = document.querySelector('.device-list.device-table-list > .device-table-row')
@@ -1476,18 +1611,28 @@ async function createWindow(): Promise<void> {
             )
             setCheck(
               'sessionManagerDeviceContextActions',
-              openContextMenu('.session-device-group-header') && await sleep(40).then(() => menuHasLabels('.session-device-context-menu', [
-                '关闭当前设备会话',
-                '关闭左侧设备会话',
-                '关闭右侧设备会话',
-                '关闭其他设备会话',
-                '关闭所有设备会话',
-                '定位到设备列表',
-                '打开设备管理口',
-                '打开 Linux 后台',
-                '打开串口'
-              ])),
+              openContextMenu('.session-device-group-header') && await sleep(40).then(() => {
+                const menuText = text('.session-device-context-menu')
+                return menuHasLabels('.session-device-context-menu', ['定位到设备列表', '关闭此设备全部会话'])
+                  && !menuText.includes('关闭左侧设备会话')
+                  && !menuText.includes('关闭右侧设备会话')
+              }),
               text('.session-device-context-menu')
+            )
+            document.querySelector('.workspace-stage')?.click()
+            await sleep(40)
+            setCheck(
+              'sessionManagerSessionContextIsScoped',
+              openContextMenu('.session-manager-session') && await sleep(40).then(() => {
+                const menuText = text('.session-context-menu')
+                return menuHasLabels('.session-context-menu', ['复制会话信息', '定位到设备列表', '关闭会话'])
+                  && !menuText.includes('关闭左侧页签')
+                  && !menuText.includes('关闭右侧页签')
+                  && !menuText.includes('打开设备管理口')
+                  && !menuText.includes('打开 Linux 后台')
+                  && !menuText.includes('打开串口')
+              }),
+              text('.session-context-menu')
             )
             document.querySelector('.workspace-stage')?.click()
             await sleep(40)
@@ -1520,14 +1665,18 @@ async function createWindow(): Promise<void> {
             )
             setCheck(
               'sessionContextMenu',
-              openContextMenu('.session-tab') && await sleep(40).then(() => menuHasLabels('.session-context-menu', ['关闭当前页签', '关闭左侧页签', '关闭右侧页签', '关闭其他页签', '关闭所有页签'])),
+              openContextMenu('.session-tab') && await sleep(40).then(() => {
+                const menuText = text('.session-context-menu')
+                return menuHasLabels('.session-context-menu', ['复制会话信息', '定位到设备列表'])
+                  && (menuText.includes('关闭当前页签') || menuText.includes('关闭会话'))
+              }),
               text('.session-context-menu')
             )
             document.querySelector('.workspace-stage')?.click()
             await sleep(40)
             setCheck(
               'terminalContextMenu',
-              openContextMenu('.terminal-host') && await sleep(40).then(() => menuHasLabels('.terminal-context-menu', ['复制选中文本', '复制全部', '粘贴', '清屏', '搜索终端', '自动响应', '查看会话日志', '断开连接', '重新连接'])),
+              openContextMenu('.terminal-host') && await sleep(40).then(() => menuHasLabels('.terminal-context-menu', ['复制选中文本', '复制终端全部内容', '粘贴', '清空终端显示', '搜索终端', '管理自动响应', '查看会话日志', '在系统中打开日志文件', '断开连接'])),
               text('.terminal-context-menu')
             )
             document.querySelector('.workspace-stage')?.click()
@@ -2079,43 +2228,39 @@ async function createWindow(): Promise<void> {
             const transferFileList = document.querySelector('.transfer-file-list')
             const transferFileToolsRect = document.querySelector('.transfer-file-tools')?.getBoundingClientRect()
             const firstTransferFileRect = document.querySelector('[data-testid="transfer-file"]')?.getBoundingClientRect()
-            const transferEnvironmentSelect = document.querySelector('[data-testid="transfer-terminal-environment"]')
-            const transferEnvironmentOptions = [...(transferEnvironmentSelect?.querySelectorAll('option') || [])]
+            const transferCommandModeSelect = document.querySelector('[data-testid="transfer-command-mode"]')
+            const transferCommandModeOptions = [...(transferCommandModeSelect?.querySelectorAll('option') || [])]
               .map((option) => option.value)
-            const transferAdvancedToggle = [...document.querySelectorAll('.transfer-section-toggle')]
-              .find((button) => button.textContent?.includes('高级设置'))
-            const transferAdvancedInitiallyCollapsed = !document.querySelector('.transfer-settings-card')
+            const transferSettingsRect = document.querySelector('.transfer-settings-card')?.getBoundingClientRect()
             setCheck(
               'managedTransferCardsRemainVisibleAndOrdered',
-              transferAdvancedInitiallyCollapsed
+              Boolean(transferSettingsRect)
                 && Boolean(transferFilesRect)
                 && Boolean(transferRunRect)
                 && transferFilesRect.height >= 80
                 && transferFilesRect.height <= Math.min(332, window.innerHeight * 0.38 + 2)
-                && transferRunRect.height >= 250
+                && transferRunRect.height >= 360
                 && Boolean(transferFileList)
                 && getComputedStyle(transferFileList).overflowY === 'auto'
                 && Boolean(transferFileToolsRect)
                 && (!firstTransferFileRect || transferFileToolsRect.bottom <= firstTransferFileRect.top + 1)
-                && transferEnvironmentSelect?.value === 'auto'
-                && ['auto', 'linux', 'vrp'].every((value) => transferEnvironmentOptions.includes(value))
+                && ['ftpget', 'vrp', 'manual'].every((value) => transferCommandModeOptions.includes(value))
+                && transferSettingsRect.bottom <= transferFilesRect.top + 1
                 && transferFilesRect.bottom <= transferRunRect.top + 1,
-              'advancedCollapsed=' + transferAdvancedInitiallyCollapsed
+              'settings=' + (transferSettingsRect?.top || 0) + '-' + (transferSettingsRect?.bottom || 0)
                 + ' files=' + (transferFilesRect?.top || 0) + '-' + (transferFilesRect?.bottom || 0)
                 + ' run=' + (transferRunRect?.top || 0) + '-' + (transferRunRect?.bottom || 0)
                 + ' toolsBottom=' + (transferFileToolsRect?.bottom || 0)
                 + ' firstFileTop=' + (firstTransferFileRect?.top || 0)
-                + ' environments=' + transferEnvironmentOptions.join(',')
+                + ' commandModes=' + transferCommandModeOptions.join(',')
                 + ' fileScroll=' + (transferFileList?.scrollHeight || 0) + '/' + (transferFileList?.clientHeight || 0)
             )
-            transferAdvancedToggle?.click()
-            await sleep(80)
             setValue('[data-testid="transfer-root"]', ${JSON.stringify(manualUpgradeRoot)})
             document.querySelector('[data-testid="transfer-settings"]')?.requestSubmit()
             await sleep(700)
             const initialClientCommand = text('[data-testid="transfer-client-command"]')
             const startFileServiceButton = [...document.querySelectorAll('.transfer-settings-card button')]
-              .find((button) => button.textContent?.trim() === '手动启动')
+              .find((button) => button.textContent?.trim() === '启动 FTP 服务')
             const startTransferServiceResponse = await window.desktopApi.request({
               path: '/api/v1/file-transfer/service/start',
               method: 'POST'
@@ -2168,7 +2313,7 @@ async function createWindow(): Promise<void> {
               clearedTransferLogResponse.body
             )
             const stopFileServiceButton = [...document.querySelectorAll('.transfer-settings-card button')]
-              .find((button) => button.textContent?.trim() === '立即停止')
+              .find((button) => button.textContent?.trim() === '停止 FTP 服务')
             stopFileServiceButton?.click()
             await sleep(120)
             document.querySelector('button[aria-label="关闭文件传输"]')?.click()
@@ -2525,7 +2670,7 @@ async function createWindow(): Promise<void> {
             await sleep(40)
             setCheck(
               'commandEditorContextMenu',
-              openContextMenu('.command-editor-row textarea') && await sleep(40).then(() => menuHasLabels('.command-context-menu', ['复制选中/当前命令', '粘贴', '选择当前行', '发送到终端', '广播发送', '查找和替换', '清空当前页签'])),
+              openContextMenu('.command-editor-row textarea') && await sleep(40).then(() => menuHasLabels('.command-context-menu', ['复制选中内容或当前行', '粘贴', '选择当前行', '发送到当前终端', '发送到全部已连接终端', '查找和替换', '清空当前页签…'])),
               text('.command-context-menu')
             )
             document.querySelector('.command-header')?.click()
@@ -2943,7 +3088,7 @@ async function createWindow(): Promise<void> {
               'terminalLowFrequencyActionsLiveInBottomToolbar',
               ['查看会话日志', '打开当前会话自动响应', '托管传输当前设备', '升级当前设备系统包', '搜索终端 (Ctrl+F)', '缩小字体 (Ctrl+-)', '放大字体 (Ctrl++)']
                 .every((title) => terminalBottomToolbarTitles.includes(title))
-                && ['当前会话与设备操作', '断开连接', '重新连接']
+                && ['当前会话操作', '断开连接', '重新连接']
                   .every((action) => terminalConnectionActions.includes(action))
                 && !document.querySelector('.terminal-toolbar'),
               'actions=' + terminalConnectionActions.join('|') + ' bottom=' + terminalBottomToolbarTitles.join('|')
@@ -3948,9 +4093,6 @@ async function createWindow(): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 400))
         const transferPanelReady = await mainWindow.webContents.executeJavaScript(
           `(() => {
-            const toggle = [...document.querySelectorAll('.transfer-section-toggle')]
-              .find((button) => button.textContent?.includes('高级设置'))
-            if (!document.querySelector('[data-testid="transfer-settings"]')) toggle?.click()
             return Boolean(document.querySelector('[data-testid="transfer-run"]'))
           })()`,
           true
@@ -4029,9 +4171,7 @@ async function createWindow(): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 350))
         await mainWindow.webContents.executeJavaScript(
           `(() => {
-            const toggle = [...document.querySelectorAll('.transfer-section-toggle')]
-              .find((button) => button.textContent?.includes('高级设置'))
-            if (!document.querySelector('[data-testid="transfer-settings"]')) toggle?.click()
+            return Boolean(document.querySelector('[data-testid="transfer-settings"]'))
           })()`,
           true
         )

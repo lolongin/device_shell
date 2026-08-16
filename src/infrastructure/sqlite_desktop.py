@@ -11,11 +11,17 @@ from ..application.commands import CommandGroup
 from ..application.operations import OperationRecord, TERMINAL_OPERATION_STATUSES
 from ..auto_response import deserialize_auto_response_rule, serialize_auto_response_rule
 from ..command_suggestions import CommandHistoryItem
+from ..data import Device
+from ..imported_devices import (
+    ImportedDeviceMetadata,
+    deserialize_imported_device,
+    serialize_imported_device,
+)
 from .sqlite_profiles import SQLiteConnectionProfileStore
 
 
 class SQLiteDesktopStore(SQLiteConnectionProfileStore):
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     def __init__(self, path: Path) -> None:
         super().__init__(path)
@@ -225,6 +231,78 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
             )
             return max(0, int(cursor.rowcount))
 
+    def list_imported_devices(self) -> list[Device]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM imported_devices ORDER BY position"
+            ).fetchall()
+        devices: list[Device] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+                if isinstance(payload, dict):
+                    devices.append(deserialize_imported_device(payload))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return devices
+
+    def imported_device_metadata(self) -> ImportedDeviceMetadata:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM device_import_state WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return ImportedDeviceMetadata()
+        return ImportedDeviceMetadata(
+            source_name=str(row["source_name"]),
+            sheet_name=str(row["sheet_name"]),
+            imported_at=str(row["imported_at"]),
+            row_count=int(row["row_count"]),
+            revision=int(row["revision"]),
+        )
+
+    def replace_imported_devices(
+        self,
+        devices: list[Device],
+        *,
+        source_name: str,
+        sheet_name: str,
+        imported_at: str,
+    ) -> ImportedDeviceMetadata:
+        payloads = [
+            json.dumps(
+                serialize_imported_device(device),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            for device in devices
+        ]
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT revision FROM device_import_state WHERE id = 1"
+            ).fetchone()
+            revision = (int(current["revision"]) if current is not None else 0) + 1
+            connection.execute("DELETE FROM imported_devices")
+            connection.executemany(
+                "INSERT INTO imported_devices (position, payload) VALUES (?, ?)",
+                [(index, payload) for index, payload in enumerate(payloads)],
+            )
+            connection.execute(
+                """
+                INSERT INTO device_import_state (
+                    id, source_name, sheet_name, imported_at, row_count, revision
+                ) VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    source_name=excluded.source_name,
+                    sheet_name=excluded.sheet_name,
+                    imported_at=excluded.imported_at,
+                    row_count=excluded.row_count,
+                    revision=excluded.revision
+                """,
+                (source_name, sheet_name, imported_at, len(devices), revision),
+            )
+        return self.imported_device_metadata()
+
     def prune_terminal_operations(self, *, kind: str, keep: int) -> None:
         statuses = tuple(sorted(TERMINAL_OPERATION_STATUSES))
         placeholders = ",".join("?" for _ in statuses)
@@ -301,7 +379,19 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                     ON operations(kind, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_operations_kind_status_updated
                     ON operations(kind, status, updated_at DESC);
-                PRAGMA user_version = 4;
+                CREATE TABLE IF NOT EXISTS imported_devices (
+                    position INTEGER PRIMARY KEY,
+                    payload TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS device_import_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    source_name TEXT NOT NULL DEFAULT '',
+                    sheet_name TEXT NOT NULL DEFAULT '',
+                    imported_at TEXT NOT NULL DEFAULT '',
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    revision INTEGER NOT NULL DEFAULT 0
+                );
+                PRAGMA user_version = 5;
                 """
             )
 

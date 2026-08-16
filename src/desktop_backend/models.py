@@ -54,6 +54,159 @@ class DeviceListResponse(BaseModel):
     devices: list[DeviceSummary]
 
 
+class DeviceSourceOptionModel(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9._-]*$")
+    label: str
+    description: str
+    icon: Literal["database", "globe", "spreadsheet", "plug"] = "plug"
+    available: bool
+    unavailable_reason: str = ""
+    requires_login: bool = False
+    supports_import: bool = False
+
+
+class DeviceSourceStatusModel(BaseModel):
+    api_version: int = API_VERSION
+    product_mode: Literal["universal", "web", "spreadsheet"] = "universal"
+    allow_source_switch: bool = True
+    allow_plugin_management: bool = True
+    allow_import: bool = True
+    active_source: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9._-]*$")
+    default_source: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9._-]*$")
+    sources: list[DeviceSourceOptionModel]
+    plugin_warnings: list[str] = Field(default_factory=list)
+    imported_count: int = 0
+    imported_file: str = ""
+    imported_sheet: str = ""
+    imported_at: str = ""
+
+
+class DeviceSourceSwitchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9._-]*$")
+
+
+class PluginConfigOptionModel(BaseModel):
+    value: str
+    label: str
+
+
+class PluginConfigFieldModel(BaseModel):
+    key: str
+    label: str
+    kind: Literal["text", "url", "number", "boolean", "select", "secret"]
+    value: str | int | float | bool | None = None
+    description: str = ""
+    placeholder: str = ""
+    required: bool = False
+    advanced: bool = False
+    minimum: float | None = None
+    maximum: float | None = None
+    options: list[PluginConfigOptionModel] = Field(default_factory=list)
+    secret_configured: bool = False
+
+
+class DeviceSourcePluginModel(BaseModel):
+    id: str
+    label: str
+    description: str
+    icon: Literal["database", "globe", "spreadsheet", "plug"] = "plug"
+    version: str
+    publisher: str = ""
+    built_in: bool
+    enabled: bool
+    available: bool
+    unavailable_reason: str = ""
+    active: bool
+    default: bool
+    requires_login: bool = False
+    supports_import: bool = False
+    config_fields: list[PluginConfigFieldModel] = Field(default_factory=list)
+
+
+class DeviceSourcePluginListResponse(BaseModel):
+    api_version: int = API_VERSION
+    plugins: list[DeviceSourcePluginModel]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DeviceSourcePluginUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    config: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    secrets: dict[str, str | None] = Field(default_factory=dict)
+
+
+class DeviceSourcePluginTestResponse(BaseModel):
+    api_version: int = API_VERSION
+    success: bool
+    message: str
+    plugin: DeviceSourcePluginModel
+
+
+class DeviceImportPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4_096)
+
+
+class DeviceImportIssueModel(BaseModel):
+    row: int
+    message: str
+
+
+class DeviceImportPreviewModel(BaseModel):
+    api_version: int = API_VERSION
+    token: str
+    file_name: str
+    sheet_name: str
+    headers: list[str]
+    total_rows: int
+    valid_rows: int
+    skipped_rows: int
+    preview_rows: list[dict[str, str]]
+    errors: list[DeviceImportIssueModel]
+    warnings: list[str]
+
+
+class DeviceImportCommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=16, max_length=160)
+
+
+class DeviceImportCommitResponse(BaseModel):
+    api_version: int = API_VERSION
+    imported_count: int
+    source: DeviceSourceStatusModel
+
+
+class InternalAuthStatusModel(BaseModel):
+    api_version: int = API_VERSION
+    available: bool
+    configured: bool
+    authenticated: bool
+    username: str = ""
+    cid: str = ""
+    remembered: bool = False
+    auto_login: bool = False
+    auto_login_error: str = ""
+    credential_warning: str = ""
+
+
+class InternalAuthLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(default="", max_length=4_096, repr=False)
+    cid: str = Field(min_length=1, max_length=255)
+    remember: bool = False
+    auto_login: bool = False
+    use_saved_password: bool = False
+
+
 class DeviceActionResponse(BaseModel):
     api_version: int = API_VERSION
     device_id: str
@@ -481,6 +634,7 @@ class ManagedTransferStartRequest(BaseModel):
     destination_path: str = Field(min_length=1, max_length=4_096)
     overwrite: bool = False
     terminal_environment: Literal["auto", "linux", "vrp"] = "auto"
+    command_mode: Literal["vrp", "ftpget"] = "vrp"
 
 
 class PackageUpgradeStartRequest(BaseModel):

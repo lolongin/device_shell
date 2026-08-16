@@ -529,6 +529,76 @@ def build_managed_transfer_steps(
     return steps, min(3_600, transfer_timeout + 120)
 
 
+def build_ftpget_command(
+    *,
+    username: str,
+    password: str,
+    host: str,
+    source_path: str,
+) -> str:
+    """Build the one-shot device command used by simple ``ftpget`` clients."""
+    normalized_host = host.strip()
+    if not normalized_host:
+        raise ManagedTransferError("service_endpoint_unavailable", "FTP 服务地址不能为空。")
+    normalized_source = _validate_relative_path(
+        source_path,
+        label="source_path",
+    ).as_posix()
+    return " ".join((
+        "ftpget",
+        "-u",
+        shlex.quote(username),
+        "-p",
+        shlex.quote(password),
+        shlex.quote(normalized_host),
+        shlex.quote(normalized_source),
+    ))
+
+
+def build_ftpget_transfer_steps(
+    *,
+    command_secret_ref: str,
+    source_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Build a deterministic one-command FTP download plan for the device shell."""
+    if not command_secret_ref.strip():
+        raise ManagedTransferError("invalid_request", "ftpget 命令缺少受保护的运行时引用。")
+    transfer_timeout = min(
+        3_500,
+        max(120, int(source_size / (1024 * 1024)) * 2),
+    )
+    steps: list[dict[str, Any]] = [
+        {
+            "type": "send",
+            "secret_ref": command_secret_ref,
+            "label": "发送 ftpget 单命令",
+        },
+        {
+            "type": "expect",
+            "success": ["device_prompt"],
+            "failures": [
+                "ftpget: usage:",
+                "ftpget: Login incorrect",
+                "ftpget: No such file",
+                "Login incorrect",
+                "Authentication failed",
+                "Permission denied",
+                "No such file",
+                "not found",
+                "timed out",
+                "Connection refused",
+                "Connection closed",
+                "530 ",
+                "550 ",
+            ],
+            "timeout_seconds": transfer_timeout,
+            "label": "等待 ftpget 传输完成",
+            "max_output_chars": 32_768,
+        },
+    ]
+    return steps, min(3_600, transfer_timeout + 60)
+
+
 def build_managed_transfer_download_steps(
     *,
     protocol: str,

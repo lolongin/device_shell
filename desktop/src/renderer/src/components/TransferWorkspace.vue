@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   ArrowDownToLine,
+  ArrowDownUp,
   ArrowUpFromLine,
   ChevronDown,
   CircleStop,
@@ -30,18 +31,22 @@ import { useWorkspaceStore } from '../stores/workspace'
 import type { OperationRecord, TransferSettings } from '../types'
 
 const workspace = useWorkspaceStore()
+const COMMAND_MODE_KEY = 'device-tui.desktop-v2.transfer-command-mode'
 const direction = ref<'upload' | 'download'>('upload')
 const sourcePath = ref('')
 const destinationPath = ref('')
 const overwrite = ref(false)
-const terminalEnvironment = ref<'auto' | 'linux' | 'vrp'>('auto')
+const commandMode = ref<'ftpget' | 'vrp' | 'manual'>(
+  ['ftpget', 'vrp', 'manual'].includes(localStorage.getItem(COMMAND_MODE_KEY) || '')
+    ? localStorage.getItem(COMMAND_MODE_KEY) as 'ftpget' | 'vrp' | 'manual'
+    : 'vrp'
+)
 const localError = ref('')
 const fileQuery = ref('')
 const fileSort = ref<'name' | 'size' | 'modified'>('name')
 const fileOrder = ref<'asc' | 'desc'>('asc')
 const historyFilter = ref<'all' | 'completed' | 'failed' | 'cancelled' | 'interrupted'>('all')
 const historyOpen = ref(false)
-const advancedOpen = ref(false)
 const logsOpen = ref(false)
 const passwordVisible = ref(false)
 const passwordDirty = ref(false)
@@ -56,6 +61,19 @@ const settingsDraft = ref<Pick<TransferSettings, 'protocol' | 'host' | 'advertis
   username: 'device',
   password: '',
   writable: true
+})
+const settingsDirty = computed(() => {
+  const saved = workspace.transferSettings
+  const draft = settingsDraft.value
+  if (!saved) return false
+  return passwordDirty.value
+    || draft.protocol !== saved.protocol
+    || draft.host.trim() !== saved.host
+    || draft.advertised_host.trim() !== saved.advertised_host
+    || Number(draft.port) !== saved.port
+    || draft.root.trim() !== saved.root
+    || draft.username.trim() !== saved.username
+    || draft.writable !== saved.writable
 })
 
 const currentOperations = computed(() =>
@@ -84,23 +102,45 @@ const pausedSessionIds = computed(() => [...new Set(
 )])
 const hasRunningTransfer = computed(() => currentOperations.value.some((operation) => operation.status === 'running'))
 const activeSessionConnected = computed(() => workspace.activeSession?.status === 'connected')
-const preferredTerminalEnvironment = computed<'linux' | 'vrp'>(() => {
-  if (terminalEnvironment.value !== 'auto') return terminalEnvironment.value
-  return workspace.activeSession?.kind === 'ssh' ? 'linux' : 'vrp'
+const effectiveServiceHost = computed(() => {
+  const advertised = settingsDraft.value.advertised_host.trim()
+  const listening = settingsDraft.value.host.trim()
+  if (advertised) return advertised
+  if (listening && !['0.0.0.0', '::'].includes(listening)) return listening
+  return '<按当前终端路由自动选择>'
 })
-const terminalEnvironmentHint = computed(() => {
-  if (terminalEnvironment.value === 'linux') return 'Linux 绝对路径，例如 /tmp/image.cc'
-  if (terminalEnvironment.value === 'vrp') return 'VRP 存储路径，例如 flash:/image.cc'
-  return `自动判断，当前预计为 ${preferredTerminalEnvironment.value === 'linux' ? 'Linux Shell' : 'Huawei VRP'}`
-})
-const devicePathPlaceholder = computed(() => (
-  preferredTerminalEnvironment.value === 'linux' ? '例如 /tmp/target.cc' : '例如 flash:/target.cc'
-))
 const sourceError = computed(() => !sourcePath.value.trim() ? (direction.value === 'upload' ? '请从共享文件中选择源文件' : '请输入设备源文件路径') : '')
-const destinationError = computed(() => !destinationPath.value.trim() ? '请输入目标路径' : '')
+const destinationError = computed(() => commandMode.value === 'ftpget' ? '' : !destinationPath.value.trim() ? '请输入目标路径' : '')
+const commandModeError = computed(() => {
+  if (commandMode.value === 'manual') return ''
+  if (settingsDraft.value.protocol !== 'ftp') return '一键 ftpget 和 VRP 模式需要将本机文件服务协议设为 FTP。'
+  if (commandMode.value === 'ftpget' && Number(settingsDraft.value.port) !== 21) {
+    return '当前 ftpget 语法不支持端口参数，请将 FTP 服务端口设为 21。'
+  }
+  if (commandMode.value === 'ftpget' && direction.value === 'download') {
+    return 'ftpget 单命令只支持 PC → 设备；设备 → PC 请切换 VRP 或手工模式。'
+  }
+  return ''
+})
+const generatedCommand = computed(() => {
+  const host = effectiveServiceHost.value
+  const port = Number(settingsDraft.value.port) || workspace.transferSettings?.bound_port || 21
+  const source = sourcePath.value.trim() || '<选择文件>'
+  const destination = destinationPath.value.trim() || '<设备路径>'
+  if (commandMode.value === 'ftpget') {
+    return `ftpget -u <临时账号> -p ****** ${host} ${source}`
+  }
+  if (commandMode.value === 'vrp') {
+    const transfer = direction.value === 'upload'
+      ? `get ${source} ${destination}`
+      : `put ${source} ${destination}`
+    return [`ftp ${host} ${port}`, '<用户名>', '<密码>', 'binary', transfer, 'quit'].join('\n')
+  }
+  return workspace.transferClientCommand || `ftp ${host} ${port}`
+})
 const serviceLabel = computed(() => {
   const settings = workspace.transferSettings
-  if (!settings?.service_running) return '按需自动启动'
+  if (!settings?.service_running) return '服务未启动'
   return `${settings.protocol.toUpperCase()} · :${settings.bound_port}`
 })
 
@@ -130,12 +170,15 @@ watch(direction, () => {
   localError.value = ''
 })
 
-watch(terminalEnvironment, () => {
-  if (direction.value !== 'upload' || !sourcePath.value) return
-  const name = sourcePath.value.split('/').pop() || 'target.bin'
-  destinationPath.value = preferredTerminalEnvironment.value === 'linux'
-    ? `/tmp/${name}`
-    : `flash:/${name}`
+watch(commandMode, (mode) => {
+  localStorage.setItem(COMMAND_MODE_KEY, mode)
+  if (mode === 'ftpget' && direction.value === 'download') direction.value = 'upload'
+  if (direction.value === 'upload' && sourcePath.value) {
+    const name = sourcePath.value.split('/').pop() || 'target.bin'
+    destinationPath.value = mode === 'ftpget'
+      ? sourcePath.value
+      : `flash:/${name}`
+  }
   localError.value = ''
 })
 
@@ -168,8 +211,8 @@ async function loadFiles(offset = 0, append = false): Promise<void> {
 function selectUploadFile(relativePath: string, name: string): void {
   direction.value = 'upload'
   sourcePath.value = relativePath
-  destinationPath.value = preferredTerminalEnvironment.value === 'linux'
-    ? `/tmp/${name}`
+  destinationPath.value = commandMode.value === 'ftpget'
+    ? relativePath
     : `flash:/${name}`
   localError.value = ''
 }
@@ -179,11 +222,11 @@ async function chooseRoot(): Promise<void> {
   if (selected) settingsDraft.value.root = selected
 }
 
-async function saveSettings(): Promise<void> {
+async function saveSettings(): Promise<boolean> {
   localError.value = ''
   if (!settingsDraft.value.root.trim()) {
     localError.value = '请选择共享目录。'
-    return
+    return false
   }
   const { password, ...settings } = settingsDraft.value
   const saved = await workspace.saveTransferSettings({
@@ -192,16 +235,23 @@ async function saveSettings(): Promise<void> {
     ...(passwordDirty.value && password ? { password } : {})
   })
   if (saved) await loadFiles()
+  return saved
 }
 
 async function startTransfer(): Promise<void> {
   localError.value = ''
+  if (settingsDirty.value && !await saveSettings()) return
+  if (commandMode.value === 'manual') {
+    if (!workspace.transferSettings?.service_running) await workspace.toggleTransferService()
+    logsOpen.value = true
+    return
+  }
   if (!activeSessionConnected.value) {
     localError.value = '请先打开并选中一个已连接终端。'
     return
   }
-  if (sourceError.value || destinationError.value) {
-    localError.value = sourceError.value || destinationError.value
+  if (commandModeError.value || sourceError.value || destinationError.value) {
+    localError.value = commandModeError.value || sourceError.value || destinationError.value
     return
   }
   const started = await workspace.startManagedTransfer({
@@ -209,7 +259,8 @@ async function startTransfer(): Promise<void> {
     source_path: sourcePath.value.trim(),
     destination_path: destinationPath.value.trim(),
     overwrite: overwrite.value,
-    terminal_environment: terminalEnvironment.value
+    terminal_environment: commandMode.value === 'ftpget' ? 'linux' : 'vrp',
+    command_mode: commandMode.value
   })
   if (started) localError.value = ''
 }
@@ -274,6 +325,9 @@ function recoveryHint(operation: OperationRecord): string {
     transfer_timeout: '设备未在超时前完成交互。请检查本机防火墙、端口放行、设备到本机的路由，以及终端是否停在正常提示符。',
     transfer_command_failed: '设备返回了非预期提示。请展开服务日志，并确认终端环境和设备路径类型选择正确。',
     transfer_verification_failed: '传输命令已结束，但设备端文件大小不匹配。请检查中间网络、磁盘空间后重试。',
+    ftpget_requires_ftp: '请在上方服务器配置中将服务协议切换为 FTP，保存后重试。',
+    ftpget_requires_port_21: '当前设备命令没有端口参数，请将 FTP 服务端口设置为 21，保存后重试。',
+    ftpget_direction_unsupported: 'ftpget 只负责从服务器取文件；设备上传请切换到 VRP 或手工模式。',
     insufficient_space: '设备可用空间不足。请清理目标存储，或改用其他目标路径。',
     destination_exists: '目标文件已经存在。确认可覆盖后勾选“允许覆盖已存在文件”再重试。',
     session_unavailable: '原终端会话已断开。请重连并选中目标终端后重新提交任务。'
@@ -282,7 +336,6 @@ function recoveryHint(operation: OperationRecord): string {
 }
 
 function openTransferDiagnostics(): void {
-  advancedOpen.value = true
   logsOpen.value = true
   void workspace.loadTransferServiceLog()
 }
@@ -308,6 +361,38 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="transfer-body">
+        <section class="transfer-server-section" aria-labelledby="transfer-server-title">
+          <form class="transfer-settings-card" data-testid="transfer-settings" :aria-busy="workspace.transferBusy" @submit.prevent="saveSettings">
+            <header>
+              <div><Server :size="15" /><strong id="transfer-server-title">FTP 服务器配置</strong></div>
+              <span class="service-state" :data-running="workspace.transferSettings?.service_running"><i></i>{{ serviceLabel }}</span>
+            </header>
+            <div class="transfer-settings-grid">
+              <label class="form-field"><span>服务协议</span><select v-model="settingsDraft.protocol" :disabled="hasRunningTransfer"><option value="ftp">FTP</option><option value="sftp">SFTP</option></select></label>
+              <label class="form-field"><span>监听地址</span><input v-model.trim="settingsDraft.host" :disabled="hasRunningTransfer" autocomplete="off" /></label>
+              <label class="form-field" title="留空时，根据当前终端的远端 IP 查询系统路由，选择该路由使用的本机 IP"><span class="transfer-setting-label">设备访问地址 <em>留空自动</em></span><input v-model.trim="settingsDraft.advertised_host" :disabled="hasRunningTransfer" placeholder="自动：按当前终端路由选择" autocomplete="off" /></label>
+              <label class="form-field"><span>服务端口</span><input v-model.number="settingsDraft.port" type="number" min="0" max="65535" :disabled="hasRunningTransfer" /><small>ftpget 模式使用 21；VRP 可使用其他端口；0 表示自动。</small></label>
+              <label class="form-field"><span>登录账号</span><input v-model.trim="settingsDraft.username" :disabled="hasRunningTransfer" autocomplete="off" /></label>
+              <label class="form-field"><span class="transfer-password-label">登录密码 <em :data-set="workspace.transferSettings?.has_password">{{ workspace.transferSettings?.has_password ? '已安全保存' : '未设置' }}</em></span><span class="transfer-password-input"><input v-model="settingsDraft.password" :type="passwordVisible ? 'text' : 'password'" :placeholder="workspace.transferSettings?.has_password ? '留空保持现有密码' : '输入登录密码'" :disabled="hasRunningTransfer" autocomplete="new-password" @input="passwordDirty = true" /><button class="icon-button" type="button" :title="passwordVisible ? '隐藏密码' : '显示密码'" :aria-label="passwordVisible ? '隐藏登录密码' : '显示登录密码'" :aria-pressed="passwordVisible" :disabled="hasRunningTransfer" @click="passwordVisible = !passwordVisible"><EyeOff v-if="passwordVisible" :size="14" /><Eye v-else :size="14" /></button></span></label>
+              <label class="form-field transfer-root-field"><span>共享目录</span><span class="transfer-root-input"><input v-model="settingsDraft.root" data-testid="transfer-root" readonly :disabled="hasRunningTransfer" /><button class="icon-button" type="button" title="选择共享目录" :disabled="hasRunningTransfer" @click="chooseRoot"><FolderOpen :size="15" /></button></span></label>
+              <label class="transfer-write-toggle"><input v-model="settingsDraft.writable" type="checkbox" :disabled="hasRunningTransfer" />允许设备上传文件到共享目录</label>
+            </div>
+            <footer>
+              <span><ShieldCheck :size="13" />临时身份传输，连接端点全程可见</span>
+              <div class="transfer-settings-actions">
+                <button class="secondary-button" type="submit" :disabled="workspace.transferBusy || hasRunningTransfer"><Save :size="13" />保存配置</button>
+                <button :class="workspace.transferSettings?.service_running ? 'secondary-button danger-button' : 'secondary-button'" type="button" :disabled="workspace.transferBusy || hasRunningTransfer" @click="workspace.toggleTransferService"><CircleStop v-if="workspace.transferSettings?.service_running" :size="13" /><Play v-else :size="13" />{{ workspace.transferSettings?.service_running ? '停止服务' : '启动服务' }}</button>
+              </div>
+            </footer>
+            <div class="transfer-client-hint" data-testid="transfer-client-command"><span><strong>设备连接入口</strong><small>{{ effectiveServiceHost }} · {{ settingsDraft.protocol.toUpperCase() }} · 端口 {{ settingsDraft.port || '自动' }}</small></span><code>{{ workspace.transferClientCommand || '保存配置后生成连接命令' }}</code><button class="icon-button" type="button" title="复制客户端命令" :disabled="!workspace.transferClientCommand" @click="copyClientCommand"><Copy :size="13" /></button></div>
+          </form>
+
+          <div class="transfer-log-disclosure" :data-open="logsOpen">
+            <button type="button" :aria-expanded="logsOpen" @click="toggleLogs"><span><Server :size="13" />FTP 服务运行日志 <em>{{ workspace.transferServiceLog.length }} 条</em></span><ChevronDown :size="14" /></button>
+            <div v-if="logsOpen" class="transfer-service-log-card" data-testid="transfer-service-log"><header><span>显示启动、连接、登录和文件收发事件，不记录凭据。</span><div><button class="icon-button" type="button" title="刷新日志" @click="workspace.loadTransferServiceLog"><RefreshCw :size="13" /></button><button class="icon-button" type="button" title="复制日志" :disabled="!workspace.transferServiceLog.length" @click="copyServiceLog"><Copy :size="13" /></button><button class="icon-button" type="button" title="清空日志" :disabled="!workspace.transferServiceLog.length" @click="workspace.clearTransferServiceLog"><Trash2 :size="13" /></button></div></header><pre>{{ workspace.transferServiceLog.join('\n') || '暂无服务日志。' }}</pre></div>
+          </div>
+        </section>
+
         <section class="transfer-primary-grid">
           <div class="transfer-files-card">
             <header>
@@ -317,7 +402,7 @@ onBeforeUnmount(() => {
             <div class="transfer-file-tools">
               <label><Search :size="13" /><input v-model="fileQuery" aria-label="搜索共享文件" placeholder="搜索名称或路径" /></label>
               <select v-model="fileSort" aria-label="文件排序字段"><option value="name">名称</option><option value="size">大小</option><option value="modified">时间</option></select>
-              <button class="icon-button" type="button" :title="fileOrder === 'asc' ? '当前升序' : '当前降序'" @click="fileOrder = fileOrder === 'asc' ? 'desc' : 'asc'"><ChevronDown :class="{ 'sort-desc': fileOrder === 'desc' }" :size="14" /></button>
+              <button class="transfer-sort-order" type="button" :title="fileOrder === 'asc' ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序'" :aria-label="fileOrder === 'asc' ? '当前升序，切换为降序' : '当前降序，切换为升序'" @click="fileOrder = fileOrder === 'asc' ? 'desc' : 'asc'"><ArrowDownUp :size="12" />{{ fileOrder === 'asc' ? '升序' : '降序' }}</button>
             </div>
             <div class="transfer-file-list" :aria-busy="workspace.transferFilesLoading">
               <button
@@ -332,39 +417,43 @@ onBeforeUnmount(() => {
                 <File :size="14" /><span><strong>{{ file.name }}</strong><small>{{ file.relative_path }}</small></span><b>{{ formatBytes(file.size_bytes) }}</b>
               </button>
               <div v-if="workspace.transferFilesLoading && !workspace.transferFiles.length" class="transfer-file-loading" role="status"><LoaderCircle class="spinning-icon" :size="18" />正在读取共享目录…</div>
-              <div v-else-if="!workspace.transferFiles.length" class="transfer-empty transfer-empty-files"><FolderOpen :size="20" /><strong>没有匹配文件</strong><span>调整搜索条件或在高级设置中更换共享目录。</span></div>
+              <div v-else-if="!workspace.transferFiles.length" class="transfer-empty transfer-empty-files"><FolderOpen :size="20" /><strong>没有匹配文件</strong><span>调整搜索条件或在上方 FTP 服务器配置中更换共享目录。</span></div>
               <button v-if="workspace.transferFileNextOffset !== null" class="transfer-load-more" type="button" :disabled="workspace.transferFilesLoading" @click="loadFiles(workspace.transferFileNextOffset || 0, true)">加载更多</button>
             </div>
           </div>
 
           <form class="transfer-run-card" data-testid="transfer-run" @submit.prevent="startTransfer">
-            <header><div><strong>新建传输</strong><span>服务会在需要时自动启动</span></div><ShieldCheck :size="15" /></header>
+            <header><div><strong>发送文件命令</strong><span>选择设备支持的 FTP 使用方式</span></div><ShieldCheck :size="15" /></header>
             <div class="transfer-direction-tabs" role="tablist" aria-label="传输方向">
               <button type="button" role="tab" :aria-selected="direction === 'upload'" :class="{ active: direction === 'upload' }" @click="direction = 'upload'"><ArrowUpFromLine :size="14" />PC → 设备</button>
-              <button type="button" role="tab" :aria-selected="direction === 'download'" :class="{ active: direction === 'download' }" @click="direction = 'download'"><ArrowDownToLine :size="14" />设备 → PC</button>
+              <button type="button" role="tab" :aria-selected="direction === 'download'" :class="{ active: direction === 'download' }" :disabled="commandMode === 'ftpget'" title="ftpget 单命令仅支持 PC 到设备" @click="direction = 'download'"><ArrowDownToLine :size="14" />设备 → PC</button>
             </div>
-            <label class="form-field transfer-environment-field">
-              <span>终端环境 <em>{{ terminalEnvironmentHint }}</em></span>
-              <select v-model="terminalEnvironment" data-testid="transfer-terminal-environment">
-                <option value="auto">自动判断</option>
-                <option value="linux">Linux Shell</option>
-                <option value="vrp">Huawei VRP</option>
+            <label class="form-field transfer-command-mode-field">
+              <span>设备命令方式</span>
+              <select v-model="commandMode" data-testid="transfer-command-mode">
+                <option value="ftpget">ftpget 单命令</option>
+                <option value="vrp">Huawei VRP 交互式 FTP</option>
+                <option value="manual">仅启动服务 / 手工输入</option>
               </select>
             </label>
             <label class="form-field">
               <span>{{ direction === 'upload' ? '共享目录源文件' : '设备源文件' }}</span>
-              <input v-model="sourcePath" data-testid="transfer-source" :readonly="direction === 'upload'" :placeholder="direction === 'upload' ? '从左侧选择文件' : devicePathPlaceholder" autocomplete="off" />
+              <input v-model="sourcePath" data-testid="transfer-source" :readonly="direction === 'upload'" :placeholder="direction === 'upload' ? '从左侧选择文件' : '例如 flash:/backup.cfg'" autocomplete="off" />
               <small v-if="sourceError && localError" class="field-error">{{ sourceError }}</small>
             </label>
             <label class="form-field">
               <span>{{ direction === 'upload' ? '设备目标路径' : '共享目录目标路径' }}</span>
-              <input v-model="destinationPath" data-testid="transfer-destination" :placeholder="direction === 'upload' ? devicePathPlaceholder : '例如 downloads/backup.cfg'" autocomplete="off" />
+              <input v-model="destinationPath" data-testid="transfer-destination" :readonly="commandMode === 'ftpget'" :placeholder="commandMode === 'ftpget' ? '与服务器文件同名' : direction === 'upload' ? '例如 flash:/target.cc' : '例如 downloads/backup.cfg'" autocomplete="off" />
               <small v-if="destinationError && localError" class="field-error">{{ destinationError }}</small>
             </label>
-            <label class="transfer-write-toggle"><input v-model="overwrite" type="checkbox" />允许覆盖已存在文件</label>
-            <p v-if="localError || workspace.error" class="transfer-error" role="alert">{{ localError || workspace.error }}</p>
-            <p class="operation-readiness" :data-ready="activeSessionConnected && !sourceError && !destinationError"><i></i>{{ activeSessionConnected ? '提交后可在当前任务中查看实时进度' : '请先选择一个已连接终端' }}</p>
-            <button class="primary-button transfer-start-button" data-testid="transfer-start" type="submit" :disabled="workspace.transferBusy || !activeSessionConnected || Boolean(sourceError) || Boolean(destinationError)"><LoaderCircle v-if="workspace.transferBusy" class="spinning-icon" :size="14" /><FileUp v-else :size="14" />加入传输队列</button>
+            <label v-if="commandMode !== 'ftpget'" class="transfer-write-toggle"><input v-model="overwrite" type="checkbox" />允许覆盖已存在文件</label>
+            <div class="transfer-command-preview" data-testid="transfer-command-preview">
+              <span><strong>设备侧命令</strong><small>{{ commandMode === 'ftpget' ? '点击发送时由后端注入临时密码并脱敏' : commandMode === 'vrp' ? '按登录提示逐步发送' : '请在当前终端手工执行' }}</small></span>
+              <pre>{{ generatedCommand }}</pre>
+            </div>
+            <p v-if="localError || workspace.transferError" class="transfer-error" role="alert">{{ localError || workspace.transferError }}</p>
+            <p class="operation-readiness" :data-ready="commandMode === 'manual' || activeSessionConnected && !commandModeError && !sourceError && !destinationError"><i></i>{{ commandModeError || (commandMode === 'manual' ? '启动服务后由用户在终端手工输入命令' : activeSessionConnected ? '点击后发送到当前终端，并由 FTP 服务统计进度' : '请先选择一个已连接终端') }}</p>
+            <button class="primary-button transfer-start-button" data-testid="transfer-start" type="submit" :disabled="workspace.transferBusy || commandMode !== 'manual' && (!activeSessionConnected || Boolean(commandModeError) || Boolean(sourceError) || Boolean(destinationError))"><LoaderCircle v-if="workspace.transferBusy" class="spinning-icon" :size="14" /><Server v-else-if="commandMode === 'manual'" :size="14" /><FileUp v-else :size="14" />{{ commandMode === 'manual' ? (settingsDirty ? '保存并启动 FTP 服务' : workspace.transferSettings?.service_running ? 'FTP 服务已启动' : '启动 FTP 服务') : settingsDirty ? '保存配置并发送' : '发送到当前终端' }}</button>
           </form>
         </section>
 
@@ -422,31 +511,6 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="transfer-collapsible" :data-open="advancedOpen">
-          <button class="transfer-section-toggle" type="button" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen"><span><Settings2 :size="14" /><strong>高级设置</strong><em>服务、共享目录与日志</em></span><ChevronDown :size="15" /></button>
-          <div v-if="advancedOpen" class="transfer-collapsible-body">
-            <form class="transfer-settings-card" data-testid="transfer-settings" :aria-busy="workspace.transferBusy" @submit.prevent="saveSettings">
-              <header><div><Server :size="15" /><strong>本机文件服务</strong></div><span class="service-state" :data-running="workspace.transferSettings?.service_running"><i></i>{{ serviceLabel }}</span></header>
-              <div class="transfer-settings-grid">
-                <label class="form-field"><span>协议</span><select v-model="settingsDraft.protocol" :disabled="hasRunningTransfer"><option value="ftp">FTP</option><option value="sftp">SFTP</option></select></label>
-                <label class="form-field"><span>监听地址</span><input v-model="settingsDraft.host" :disabled="hasRunningTransfer" autocomplete="off" /></label>
-                <label class="form-field" title="留空时，根据当前终端的远端 IP 查询系统路由，选择该路由使用的本机 IP"><span class="transfer-setting-label">设备访问地址 <em>留空自动</em></span><input v-model="settingsDraft.advertised_host" :disabled="hasRunningTransfer" placeholder="自动：按当前终端路由选择" autocomplete="off" /></label>
-                <label class="form-field"><span>端口（0=自动）</span><input v-model.number="settingsDraft.port" type="number" min="0" max="65535" :disabled="hasRunningTransfer" /></label>
-                <label class="form-field"><span>登录账号</span><input v-model="settingsDraft.username" :disabled="hasRunningTransfer" autocomplete="off" /></label>
-                <label class="form-field"><span class="transfer-password-label">登录密码 <em :data-set="workspace.transferSettings?.has_password">{{ workspace.transferSettings?.has_password ? '已安全保存' : '未设置' }}</em></span><span class="transfer-password-input"><input v-model="settingsDraft.password" :type="passwordVisible ? 'text' : 'password'" :placeholder="workspace.transferSettings?.has_password ? '留空保持现有密码' : '输入登录密码'" :disabled="hasRunningTransfer" autocomplete="new-password" @input="passwordDirty = true" /><button class="icon-button" type="button" :title="passwordVisible ? '隐藏密码' : '显示密码'" :aria-label="passwordVisible ? '隐藏登录密码' : '显示登录密码'" :aria-pressed="passwordVisible" :disabled="hasRunningTransfer" @click="passwordVisible = !passwordVisible"><EyeOff v-if="passwordVisible" :size="14" /><Eye v-else :size="14" /></button></span></label>
-                <label class="form-field transfer-root-field"><span>共享目录</span><span class="transfer-root-input"><input v-model="settingsDraft.root" data-testid="transfer-root" readonly :disabled="hasRunningTransfer" /><button class="icon-button" type="button" title="选择共享目录" :disabled="hasRunningTransfer" @click="chooseRoot"><FolderOpen :size="15" /></button></span></label>
-                <label class="transfer-write-toggle"><input v-model="settingsDraft.writable" type="checkbox" :disabled="hasRunningTransfer" />允许设备写入共享目录</label>
-              </div>
-              <footer><span><ShieldCheck :size="13" />托管任务使用独立临时身份，完成后立即撤销</span><button class="secondary-button" type="submit" :disabled="workspace.transferBusy || hasRunningTransfer"><Save :size="13" />保存设置</button><button :class="workspace.transferSettings?.service_running ? 'secondary-button danger-button' : 'secondary-button'" type="button" :disabled="workspace.transferBusy || hasRunningTransfer" @click="workspace.toggleTransferService"><CircleStop v-if="workspace.transferSettings?.service_running" :size="13" /><Play v-else :size="13" />{{ workspace.transferSettings?.service_running ? '立即停止' : '手动启动' }}</button></footer>
-              <div class="transfer-client-hint" data-testid="transfer-client-command"><span><strong>手工客户端命令</strong><small>托管传输无需复制此命令。</small></span><code>{{ workspace.transferClientCommand || '保存设置后生成连接命令' }}</code><button class="icon-button" type="button" title="复制客户端命令" :disabled="!workspace.transferClientCommand" @click="copyClientCommand"><Copy :size="13" /></button></div>
-            </form>
-
-            <div class="transfer-log-disclosure" :data-open="logsOpen">
-              <button type="button" :aria-expanded="logsOpen" @click="toggleLogs"><span><Server :size="13" />文件服务运行日志 <em>{{ workspace.transferServiceLog.length }} 条</em></span><ChevronDown :size="14" /></button>
-              <div v-if="logsOpen" class="transfer-service-log-card" data-testid="transfer-service-log"><header><span>仅显示服务状态和连接事件，不记录临时凭据。</span><div><button class="icon-button" type="button" title="刷新日志" @click="workspace.loadTransferServiceLog"><RefreshCw :size="13" /></button><button class="icon-button" type="button" title="复制日志" :disabled="!workspace.transferServiceLog.length" @click="copyServiceLog"><Copy :size="13" /></button><button class="icon-button" type="button" title="清空日志" :disabled="!workspace.transferServiceLog.length" @click="workspace.clearTransferServiceLog"><Trash2 :size="13" /></button></div></header><pre>{{ workspace.transferServiceLog.join('\n') || '暂无服务日志。' }}</pre></div>
-            </div>
-          </div>
-        </section>
       </div>
     </aside>
   </div>

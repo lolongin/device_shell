@@ -234,11 +234,14 @@ class DeviceSnapshot:
             current_user,
             owned_device_ids,
         )
+        if bool(device.extra.get("imported")):
+            can_view_serial = bool(device.serial_ip.strip())
         occupied_by_me = _is_my_occupied_device(
             device,
             current_user,
             owned_device_ids,
         )
+        supports_occupancy = bool(device.extra.get("supports_occupancy", True))
         board_id = device.board_id.strip()
         row_id = f"{device.id}::{board_id}" if board_id else device.id
         return cls(
@@ -271,6 +274,7 @@ class DeviceSnapshot:
                 not simulated
                 and not temporary
                 and not saved_server
+                and supports_occupancy
                 and not occupied_by_me
                 and device.owner is None
             ),
@@ -278,6 +282,7 @@ class DeviceSnapshot:
                 not simulated
                 and not temporary
                 and not saved_server
+                and supports_occupancy
                 and occupied_by_me
             ),
             can_power_off=bool(
@@ -285,6 +290,7 @@ class DeviceSnapshot:
                 and occupied_by_me
                 and not simulated
                 and not temporary
+                and supports_occupancy
             ),
             is_simulated=simulated,
             is_temporary=temporary,

@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .superpowers/
 *.egg-info/
+build/
 desktop/node_modules/
 desktop/out/
 desktop/dist/

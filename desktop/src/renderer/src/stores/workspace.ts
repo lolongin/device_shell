@@ -20,8 +20,12 @@ import type {
   SharedTransferFile,
   TransferSettings,
   DeviceSummary,
+  DeviceSourceId,
+  DeviceSourceStatus,
+  DeviceImportPreview,
   SessionKind,
   SessionSummary,
+  InternalAuthStatus,
   AiPlanResponse,
   ApplicationEvent
 } from '../types'
@@ -78,6 +82,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     localStorage.getItem('device-tui.desktop-v2.transfer-open') === '1'
   )
   const transferBusy = ref(false)
+  const transferError = ref('')
   const upgradeOperations = ref<OperationRecord[]>([])
   const upgradePanelOpen = ref(
     localStorage.getItem('device-tui.desktop-v2.upgrade-open') === '1'
@@ -97,11 +102,43 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const mineOnly = ref(false)
   const profileQuery = ref('')
   const currentUser = ref('')
+  const internalAuthStatus = ref<InternalAuthStatus>({
+    api_version: 1,
+    available: false,
+    configured: false,
+    authenticated: false,
+    username: '',
+    cid: '',
+    remembered: false,
+    auto_login: false,
+    auto_login_error: '',
+    credential_warning: ''
+  })
+  const internalAuthBusy = ref(false)
+  const deviceSourceStatus = ref<DeviceSourceStatus>({
+    api_version: 1,
+    product_mode: 'universal',
+    allow_source_switch: false,
+    allow_plugin_management: false,
+    allow_import: false,
+    active_source: 'sample',
+    default_source: 'sample',
+    sources: [],
+    plugin_warnings: [],
+    imported_count: 0,
+    imported_file: '',
+    imported_sheet: '',
+    imported_at: ''
+  })
+  const deviceSourceBusy = ref(false)
+  const deviceImportPreview = ref<DeviceImportPreview | null>(null)
+  const deviceImportBusy = ref(false)
   const ownedDeviceIds = ref<string[]>([])
   const loading = ref(false)
   const error = ref('')
   const errorCode = ref('')
   const openingKind = ref<SessionKind | ''>('')
+  const sessionActionId = ref('')
   const deviceAction = ref('')
   const notice = ref('')
   let eventSocket: WebSocket | null = null
@@ -232,6 +269,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     error.value = ''
     errorCode.value = ''
     try {
+      deviceSourceStatus.value = await desktopApi.deviceSource()
+      internalAuthStatus.value = await desktopApi.internalAuthStatus()
+      if (
+        internalAuthStatus.value.auto_login_error
+        && !internalAuthStatus.value.authenticated
+      ) {
+        notice.value = `自动登录失败：${internalAuthStatus.value.auto_login_error}`
+      }
       const [
         deviceResponse,
         sessionResponse,
@@ -278,6 +323,143 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       error.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       loading.value = false
+    }
+  }
+
+  async function switchDeviceSource(source: DeviceSourceId): Promise<boolean> {
+    if (deviceSourceBusy.value || source === deviceSourceStatus.value.active_source) return false
+    deviceSourceBusy.value = true
+    error.value = ''
+    errorCode.value = ''
+    try {
+      deviceSourceStatus.value = await desktopApi.switchDeviceSource(source)
+      clearDeviceFilters()
+      devices.value = []
+      ownedDeviceIds.value = []
+      currentUser.value = ''
+      selectedDeviceRowId.value = ''
+      await initialize()
+      if (!error.value) {
+        const label = deviceSourceStatus.value.sources.find((item) => item.id === source)?.label || source
+        const defaultLabel = deviceSourceStatus.value.sources.find(
+          (item) => item.id === deviceSourceStatus.value.default_source
+        )?.label || deviceSourceStatus.value.default_source
+        notice.value = source === deviceSourceStatus.value.default_source
+          ? `已恢复默认来源“${label}”，当前只显示这一来源的设备。`
+          : `已切换到“${label}”；默认来源仍是“${defaultLabel}”，设备不会混合。`
+      }
+      return !error.value
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      errorCode.value = cause instanceof BackendApiError ? cause.code : ''
+      return false
+    } finally {
+      deviceSourceBusy.value = false
+    }
+  }
+
+  async function chooseDeviceImport(): Promise<boolean> {
+    if (deviceImportBusy.value) return false
+    deviceImportBusy.value = true
+    error.value = ''
+    try {
+      const preview = await window.desktopApi.chooseDeviceImport()
+      if (!preview) return false
+      deviceImportPreview.value = preview
+      return true
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      deviceImportBusy.value = false
+    }
+  }
+
+  function cancelDeviceImport(): void {
+    deviceImportPreview.value = null
+  }
+
+  async function commitDeviceImport(): Promise<boolean> {
+    const preview = deviceImportPreview.value
+    if (!preview || deviceImportBusy.value) return false
+    deviceImportBusy.value = true
+    error.value = ''
+    errorCode.value = ''
+    try {
+      const response = await desktopApi.commitDeviceImport(preview.token)
+      deviceSourceStatus.value = response.source
+      deviceImportPreview.value = null
+      clearDeviceFilters()
+      devices.value = []
+      ownedDeviceIds.value = []
+      currentUser.value = ''
+      selectedDeviceRowId.value = ''
+      await initialize()
+      if (!error.value) {
+        notice.value = `已用 ${preview.file_name} 覆盖导入 ${response.imported_count} 台设备。`
+      }
+      return !error.value
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      errorCode.value = cause instanceof BackendApiError ? cause.code : ''
+      return false
+    } finally {
+      deviceImportBusy.value = false
+    }
+  }
+
+  async function loginInternalService(): Promise<boolean> {
+    if (internalAuthBusy.value) return false
+    internalAuthBusy.value = true
+    error.value = ''
+    try {
+      const status = await window.desktopApi.loginInternalService({
+        sourceLabel: deviceSourceStatus.value.sources.find(
+          (source) => source.id === deviceSourceStatus.value.active_source
+        )?.label || '设备网站',
+        username: internalAuthStatus.value.username,
+        cid: internalAuthStatus.value.cid,
+        remembered: internalAuthStatus.value.remembered,
+        autoLogin: internalAuthStatus.value.auto_login
+      })
+      if (!status) return false
+      internalAuthStatus.value = status
+      const credentialWarning = status.credential_warning
+      await initialize()
+      if (!error.value) {
+        const sourceLabel = deviceSourceStatus.value.sources.find(
+          (source) => source.id === deviceSourceStatus.value.active_source
+        )?.label || '设备网站'
+        notice.value = credentialWarning
+          ? `已登录，但未能记住密码：${credentialWarning}`
+          : `已登录${sourceLabel}：${status.username}`
+      }
+      return !error.value
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      internalAuthBusy.value = false
+    }
+  }
+
+  async function logoutInternalService(): Promise<boolean> {
+    if (internalAuthBusy.value) return false
+    internalAuthBusy.value = true
+    error.value = ''
+    try {
+      internalAuthStatus.value = await desktopApi.logoutInternalService()
+      devices.value = []
+      ownedDeviceIds.value = []
+      currentUser.value = ''
+      selectedDeviceRowId.value = ''
+      notice.value = '已退出设备网站，登录 Cookie 已清除。'
+      return true
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      internalAuthBusy.value = false
     }
   }
 
@@ -903,7 +1085,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     append?: boolean
   } = {}): Promise<void> {
     transferFilesLoading.value = true
-    error.value = ''
+    transferError.value = ''
     try {
       const response = await desktopApi.sharedTransferFiles({
         query: options.query,
@@ -921,7 +1103,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferFiles.value = []
       transferFileTotal.value = 0
       transferFileNextOffset.value = null
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       transferFilesLoading.value = false
     }
@@ -933,7 +1115,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferServiceLog.value = response.entries
       transferClientCommand.value = response.client_command
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     }
   }
 
@@ -944,7 +1126,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferClientCommand.value = response.client_command
       notice.value = '文件服务日志已清空'
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     }
   }
 
@@ -957,7 +1139,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       operations.value = operationResponse.operations
       transferSettings.value = settingsResponse
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     }
   }
 
@@ -967,13 +1149,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   ): Promise<boolean> {
     transferBusy.value = true
-    error.value = ''
+    transferError.value = ''
     try {
       transferSettings.value = await desktopApi.updateTransferSettings(settings)
       await loadTransferFiles()
       return true
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
       return false
     } finally {
       transferBusy.value = false
@@ -983,14 +1165,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function toggleTransferService(): Promise<void> {
     if (!transferSettings.value) return
     transferBusy.value = true
-    error.value = ''
+    transferError.value = ''
     try {
       transferSettings.value = transferSettings.value.service_running
         ? await desktopApi.stopTransferService()
         : await desktopApi.startTransferService()
       await loadTransferServiceLog()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       transferBusy.value = false
     }
@@ -1002,10 +1184,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     destination_path: string
     overwrite: boolean
     terminal_environment: 'auto' | 'linux' | 'vrp'
+    command_mode: 'vrp' | 'ftpget'
   }): Promise<boolean> {
     if (!activeSessionId.value) return false
     transferBusy.value = true
-    error.value = ''
+    transferError.value = ''
     notice.value = ''
     try {
       const response = await desktopApi.startManagedTransfer({
@@ -1019,7 +1202,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       notice.value = '文件传输已启动'
       return true
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
       return false
     } finally {
       transferBusy.value = false
@@ -1027,8 +1210,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function cancelOperation(operationId: string): Promise<void> {
+    const operationIsUpgrade = upgradeOperations.value.some((record) => record.id === operationId)
     transferBusy.value = true
-    error.value = ''
+    if (operationIsUpgrade) error.value = ''
+    else transferError.value = ''
     try {
       const response = await desktopApi.cancelOperation(operationId)
       const index = operations.value.findIndex((record) => record.id === operationId)
@@ -1036,7 +1221,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const upgradeIndex = upgradeOperations.value.findIndex((record) => record.id === operationId)
       if (upgradeIndex >= 0) upgradeOperations.value[upgradeIndex] = response.operation
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (operationIsUpgrade) error.value = message
+      else transferError.value = message
     } finally {
       transferBusy.value = false
     }
@@ -1044,14 +1231,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function retryManagedTransfer(operationId: string): Promise<boolean> {
     transferBusy.value = true
-    error.value = ''
+    transferError.value = ''
     try {
       const response = await desktopApi.retryManagedTransfer(operationId)
       operations.value = [response.operation, ...operations.value]
       notice.value = '传输已重新加入队列'
       return true
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
       return false
     } finally {
       transferBusy.value = false
@@ -1060,13 +1247,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function resumeTransferQueue(sessionId: string): Promise<void> {
     transferBusy.value = true
-    error.value = ''
+    transferError.value = ''
     try {
       const response = await desktopApi.resumeTransferQueue(sessionId)
       notice.value = `已恢复 ${response.resumed_count} 个排队任务`
       await refreshOperations()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       transferBusy.value = false
     }
@@ -1074,13 +1261,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function clearTransferHistory(): Promise<void> {
     transferBusy.value = true
-    error.value = ''
+    transferError.value = ''
     try {
       const response = await desktopApi.clearTransferHistory()
       operations.value = operations.value.filter((operation) => !['completed', 'failed', 'cancelled', 'interrupted'].includes(operation.status))
       notice.value = `已清理 ${response.deleted_count} 条传输历史`
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      transferError.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       transferBusy.value = false
     }
@@ -1167,6 +1354,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       activeSessionId.value = sessions.value.find(
         (session) => session.device_id === closingDeviceId
       )?.id || sessions.value[0]?.id || ''
+    }
+  }
+
+  async function reconnectSession(sessionId: string): Promise<boolean> {
+    sessionActionId.value = sessionId
+    error.value = ''
+    try {
+      upsertSession(await desktopApi.reconnectSession(sessionId))
+      notice.value = '会话正在重新连接。'
+      return true
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      sessionActionId.value = ''
+    }
+  }
+
+  async function disconnectSession(sessionId: string): Promise<boolean> {
+    sessionActionId.value = sessionId
+    error.value = ''
+    try {
+      upsertSession(await desktopApi.disconnectSession(sessionId))
+      notice.value = '会话已断开。'
+      return true
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      sessionActionId.value = ''
     }
   }
 
@@ -1341,6 +1558,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   })
   watch(transferPanelOpen, (open) => {
     localStorage.setItem('device-tui.desktop-v2.transfer-open', open ? '1' : '0')
+    if (open) transferError.value = ''
   })
   watch(upgradePanelOpen, (open) => {
     localStorage.setItem('device-tui.desktop-v2.upgrade-open', open ? '1' : '0')
@@ -1377,6 +1595,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     operations,
     transferPanelOpen,
     transferBusy,
+    transferError,
     retryManagedTransfer,
     resumeTransferQueue,
     clearTransferHistory,
@@ -1394,10 +1613,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mineOnly,
     profileQuery,
     currentUser,
+    internalAuthStatus,
+    internalAuthBusy,
+    deviceSourceStatus,
+    deviceSourceBusy,
+    deviceImportPreview,
+    deviceImportBusy,
     loading,
     error,
     errorCode,
     openingKind,
+    sessionActionId,
     deviceAction,
     notice,
     selectedDevice,
@@ -1413,6 +1639,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     hasActiveDeviceFilters,
     clearDeviceFilters,
     initialize,
+    switchDeviceSource,
+    chooseDeviceImport,
+    cancelDeviceImport,
+    commitDeviceImport,
+    loginInternalService,
+    logoutInternalService,
     startApplicationEvents,
     openSimulatedSession,
     openCustomDeviceSession,
@@ -1454,6 +1686,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     approvePackageUpgrade,
     deleteProfile,
     closeSession,
+    reconnectSession,
+    disconnectSession,
     closeSessionsRelative,
     closeDeviceSessionGroups,
     closeActiveSession,

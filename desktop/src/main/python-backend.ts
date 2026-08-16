@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 
@@ -15,6 +15,11 @@ interface ReadyMessage {
   host: string
   port: number
   apiVersion: number
+}
+
+interface ProductProfileManifest {
+  mode?: unknown
+  source?: unknown
 }
 
 export class PythonBackend {
@@ -64,11 +69,12 @@ export class PythonBackend {
     }
     this.externalRuntime = false
     this.writeDiagnostic(`Starting Python backend: ${command} ${args.join(' ')}`)
+    const backendEnvironment = this.backendEnvironment()
     const backendProcess = spawn(command, args, {
       cwd: projectRoot,
       windowsHide: true,
       env: {
-        ...process.env,
+        ...backendEnvironment,
         DEVICE_TUI_DESKTOP_TOKEN: token,
         DEVICE_TUI_DATA_DIR: app.getPath('userData'),
         DEVICE_TUI_PACKAGED: bundledBackend ? '1' : '0',
@@ -169,6 +175,40 @@ export class PythonBackend {
     if (!app.isPackaged) return null
     const executable = process.platform === 'win32' ? 'device-tui-backend.exe' : 'device-tui-backend'
     return path.join(process.resourcesPath, 'backend', 'device-tui-backend', executable)
+  }
+
+  private backendEnvironment(): NodeJS.ProcessEnv {
+    const environment = { ...process.env }
+    if (environment.DEVICE_TUI_PRODUCT_MODE) return environment
+    const configuredPath = environment.DEVICE_TUI_PRODUCT_PROFILE
+    const manifestPath = configuredPath
+      ? path.resolve(configuredPath)
+      : app.isPackaged
+        ? path.join(process.resourcesPath, 'product-profile.json')
+        : path.join(app.getAppPath(), 'resources', 'product-profile.json')
+    if (!existsSync(manifestPath)) return environment
+    let manifest: ProductProfileManifest
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ProductProfileManifest
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Invalid product profile ${manifestPath}: ${message}`)
+    }
+    const mode = typeof manifest.mode === 'string' ? manifest.mode.trim().toLowerCase() : ''
+    const source = typeof manifest.source === 'string' ? manifest.source.trim().toLowerCase() : ''
+    if (!['universal', 'web', 'spreadsheet'].includes(mode)) {
+      throw new Error(`Invalid product profile mode in ${manifestPath}`)
+    }
+    if (source && !/^[a-z][a-z0-9._-]*$/.test(source)) {
+      throw new Error(`Invalid product profile source in ${manifestPath}`)
+    }
+    if (mode === 'web' && !source) {
+      throw new Error(`Product profile ${manifestPath} requires a website source`)
+    }
+    environment.DEVICE_TUI_PRODUCT_MODE = mode
+    environment.DEVICE_TUI_PRODUCT_SOURCE = source
+    this.writeDiagnostic(`Loaded product profile: mode=${mode}, source=${source || '(automatic)'}`)
+    return environment
   }
 
   private scheduleRestart(details: string): void {

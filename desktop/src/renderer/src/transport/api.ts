@@ -1,6 +1,13 @@
 import type {
   DeviceActionResponse,
   DeviceListResponse,
+  DeviceSourceId,
+  DeviceSourcePluginListResponse,
+  DeviceSourcePluginTestResponse,
+  DeviceSourcePluginUpdate,
+  DeviceSourceStatus,
+  DeviceImportCommitResponse,
+  InternalAuthStatus,
   ConnectionProfileListResponse,
   ConnectionProfileGroupListResponse,
   ConnectionProfilePayload,
@@ -53,6 +60,34 @@ export class BackendApiError extends Error {
   }
 }
 
+function backendDetailMessage(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((issue) => {
+        if (!issue || typeof issue !== 'object') return ''
+        const item = issue as { loc?: unknown; msg?: unknown; type?: unknown }
+        const location = Array.isArray(item.loc)
+          ? item.loc.filter((part) => part !== 'body').map(String).join('.')
+          : ''
+        if (item.type === 'extra_forbidden' && location) {
+          return `当前 Python 后端不支持参数“${location}”，请重启应用后再试。`
+        }
+        const message = typeof item.msg === 'string' ? item.msg : ''
+        if (location && message) return `请求参数 ${location}：${message}`
+        return message
+      })
+      .filter(Boolean)
+      .join('；')
+  }
+  if (detail && typeof detail === 'object') {
+    const item = detail as { message?: unknown; detail?: unknown }
+    if (typeof item.message === 'string') return item.message
+    return backendDetailMessage(item.detail)
+  }
+  return ''
+}
+
 export function parseBackendResponse<T>(response: BackendResponse): T {
   if (response.status < 200 || response.status >= 300) {
     const raw = response.body
@@ -60,11 +95,14 @@ export function parseBackendResponse<T>(response: BackendResponse): T {
     let code = ''
     try {
       const payload = JSON.parse(raw) as {
-        detail?: string
-        error?: { code?: string; message?: string }
+        detail?: unknown
+        error?: { code?: unknown; message?: unknown }
       }
-      message = payload.error?.message || payload.detail || raw
-      code = payload.error?.code || ''
+      const errorMessage = typeof payload.error?.message === 'string'
+        ? payload.error.message
+        : ''
+      message = errorMessage || backendDetailMessage(payload.detail) || raw
+      code = typeof payload.error?.code === 'string' ? payload.error.code : ''
     } catch {
       // Keep a non-JSON backend response as-is.
     }
@@ -88,6 +126,35 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
 }
 
 export const desktopApi = {
+  deviceSource: (): Promise<DeviceSourceStatus> => request('/api/v1/device-source'),
+  deviceSourcePlugins: (): Promise<DeviceSourcePluginListResponse> =>
+    request('/api/v1/device-source/plugins'),
+  updateDeviceSourcePlugin: (
+    sourceId: DeviceSourceId,
+    update: DeviceSourcePluginUpdate
+  ): Promise<DeviceSourcePluginListResponse> =>
+    request(`/api/v1/device-source/plugins/${encodeURIComponent(sourceId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(update)
+    }),
+  testDeviceSourcePlugin: (sourceId: DeviceSourceId): Promise<DeviceSourcePluginTestResponse> =>
+    request(`/api/v1/device-source/plugins/${encodeURIComponent(sourceId)}/test`, {
+      method: 'POST'
+    }),
+  switchDeviceSource: (source: DeviceSourceId): Promise<DeviceSourceStatus> =>
+    request('/api/v1/device-source', {
+      method: 'PUT',
+      body: JSON.stringify({ source })
+    }),
+  commitDeviceImport: (token: string): Promise<DeviceImportCommitResponse> =>
+    request('/api/v1/device-source/import/commit', {
+      method: 'POST',
+      body: JSON.stringify({ token })
+    }),
+  internalAuthStatus: (): Promise<InternalAuthStatus> => request('/api/v1/internal-auth'),
+  logoutInternalService: (): Promise<InternalAuthStatus> => request('/api/v1/internal-auth/session', {
+    method: 'DELETE'
+  }),
   devices: (): Promise<DeviceListResponse> => request('/api/v1/devices'),
   connectionProfiles: (): Promise<ConnectionProfileListResponse> =>
     request('/api/v1/connection-profiles'),
@@ -295,18 +362,32 @@ export const desktopApi = {
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/approve`, { method: 'POST' }),
   aiReject: (approvalId: string): Promise<{ approval: AiApproval }> =>
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/reject`, { method: 'POST' }),
-  startManagedTransfer: (payload: {
+  startManagedTransfer: async (payload: {
     direction: 'upload' | 'download'
     session_id: string
     source_path: string
     destination_path: string
     overwrite: boolean
     terminal_environment: 'auto' | 'linux' | 'vrp'
-  }): Promise<OperationResponse> =>
-    request('/api/v1/file-transfers', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }),
+    command_mode: 'vrp' | 'ftpget'
+  }): Promise<OperationResponse> => {
+    const send = (body: object): Promise<OperationResponse> =>
+      request('/api/v1/file-transfers', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    try {
+      return await send(payload)
+    } catch (cause) {
+      const oldBackendRejectedCommandMode = cause instanceof BackendApiError
+        && cause.status === 422
+        && cause.message.includes('command_mode')
+        && cause.message.includes('不支持参数')
+      if (payload.command_mode !== 'vrp' || !oldBackendRejectedCommandMode) throw cause
+      const { command_mode: _commandMode, ...legacyPayload } = payload
+      return send(legacyPayload)
+    }
+  },
   retryManagedTransfer: (operationId: string): Promise<OperationResponse> =>
     request(`/api/v1/file-transfers/${encodeURIComponent(operationId)}/retry`, { method: 'POST' }),
   resumeTransferQueue: (sessionId: string): Promise<{ api_version: number; session_id: string; resumed_count: number }> =>

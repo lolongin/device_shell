@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.desktop_backend.models import (
     DirectCredentialSessionRequest,
+    InternalAuthLoginRequest,
     OneTimeCredentialSessionRequest,
     ProfileCredentialUpdateRequest,
 )
@@ -96,6 +97,24 @@ def test_terminal_clipboard_bridge_is_bounded_and_main_owned() -> None:
     assert "ipcRenderer.invoke('clipboard:write-text', value)" in preload
 
 
+def test_device_import_path_is_owned_by_electron_main_process() -> None:
+    electron_main = (ROOT / "desktop" / "src" / "main" / "index.ts").read_text(encoding="utf-8")
+    preload = (ROOT / "desktop" / "src" / "preload" / "index.ts").read_text(encoding="utf-8")
+    workspace_store = (
+        ROOT / "desktop" / "src" / "renderer" / "src" / "stores" / "workspace.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "request.path === '/api/v1/device-source/import/preview'" in electron_main
+    assert "ipcMain.handle('device-source:choose-import'" in electron_main
+    assert "Untrusted device-import caller" in electron_main
+    assert "dialog.showOpenDialog(mainWindow" in electron_main
+    assert "extensions: ['xlsx', 'csv', 'tsv']" in electron_main
+    assert "JSON.stringify({ path: selectedPath })" in electron_main
+    assert "ipcRenderer.invoke('device-source:choose-import')" in preload
+    assert "window.desktopApi.chooseDeviceImport()" in workspace_store
+    assert "chooseDeviceImport({" not in workspace_store
+
+
 def test_sensitive_backend_models_hide_password_from_repr() -> None:
     vault = ProfileCredentialUpdateRequest(password="vault-secret")
     one_time = OneTimeCredentialSessionRequest(
@@ -111,10 +130,50 @@ def test_sensitive_backend_models_hide_password_from_repr() -> None:
         username="operator",
         password="direct-one-time-secret",
     )
+    internal = InternalAuthLoginRequest(
+        username="operator",
+        password="internal-one-time-secret",
+        cid="CID-7",
+    )
 
     assert "vault-secret" not in repr(vault)
     assert "one-time-secret" not in repr(one_time)
     assert "direct-one-time-secret" not in repr(direct)
+    assert "internal-one-time-secret" not in repr(internal)
+
+
+def test_internal_login_password_stays_out_of_vue_renderer() -> None:
+    electron_main = (ROOT / "desktop" / "src" / "main" / "index.ts").read_text(encoding="utf-8")
+    preload = (ROOT / "desktop" / "src" / "preload" / "index.ts").read_text(encoding="utf-8")
+    workspace_store = (
+        ROOT / "desktop" / "src" / "renderer" / "src" / "stores" / "workspace.ts"
+    ).read_text(encoding="utf-8")
+    credential_dialog = (
+        ROOT / "desktop" / "resources" / "credential-dialog.html"
+    ).read_text(encoding="utf-8")
+
+    assert "request.path === '/api/v1/internal-auth/login'" in electron_main
+    assert "ipcMain.handle(\n    'internal-auth:login'" in electron_main
+    assert "ipcRenderer.invoke('internal-auth:login', request)" in preload
+    assert "window.desktopApi.loginInternalService" in workspace_store
+    assert "username: internalAuthStatus.value.username" in workspace_store
+    assert "cid: internalAuthStatus.value.cid" in workspace_store
+    assert "sourceLabel: deviceSourceStatus.value.sources.find" in workspace_store
+    assert "request.sourceLabel.length > 80" in electron_main
+    assert 'id="cid" type="text"' in credential_dialog
+    assert "登录 Cookie 只保留在本次 App 运行期间" in credential_dialog
+    assert 'document.documentElement.dataset.theme' in electron_main
+    assert "backgroundColor: credentialTheme === 'light' ? '#ffffff' : '#08101d'" in electron_main
+    assert ':root[data-theme="light"]' in credential_dialog
+    assert "theme: credentialTheme" in electron_main
+    assert credential_dialog.index('id="username-row"') < credential_dialog.index('id="password"')
+    assert credential_dialog.index('id="password"') < credential_dialog.index('id="cid-row"')
+    assert 'id="password-toggle"' in credential_dialog
+    assert "password.type = visible ? 'password' : 'text'" in credential_dialog
+    assert 'id="auto-login" type="checkbox"' in credential_dialog
+    assert "记住登录（密码保存到操作系统凭据库）" in credential_dialog
+    assert "use_saved_password: !result.password && request.remembered" in electron_main
+    assert "auto_login: result.autoLogin === true" in electron_main
 
 
 def test_custom_device_connection_uses_isolated_credential_bridge() -> None:

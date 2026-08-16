@@ -6,6 +6,8 @@ interface CredentialSubmission {
   host?: string
   port?: number
   username?: string
+  cid?: string
+  autoLogin?: boolean
 }
 
 const credentialDialogApi = {

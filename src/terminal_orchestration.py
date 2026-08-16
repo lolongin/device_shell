@@ -1173,7 +1173,7 @@ def _exclusive_input(
         raise TerminalPlanError("invalid_plan", f"{label} 控制输入无效: {control}")
     runtime_transfer_ref = bool(
         re.fullmatch(
-            r"managed_transfer\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:username|password)",
+            r"managed_transfer\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:username|password|command)",
             secret_ref,
         )
     )

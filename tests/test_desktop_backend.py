@@ -5,14 +5,58 @@ import time
 
 from fastapi.testclient import TestClient
 
-from src.desktop_backend.app import _coalesce_terminal_events, create_app
+from src.desktop_backend.app import (
+    INTERNAL_AUTH_AUTO_LOGIN_SETTING,
+    INTERNAL_AUTH_CID_SETTING,
+    INTERNAL_AUTH_USERNAME_SETTING,
+    _attempt_internal_auto_login,
+    _coalesce_terminal_events,
+    _source_auth_secret_key,
+    _source_auth_setting_key,
+    create_app,
+)
 from src.desktop_backend.session_logging import FileSessionLogSink
 from src.desktop_backend.session_hub import SessionHub, TerminalEvent
-from src.repository import SampleDeviceRepository
+from src.repository import InternalAuthStatus, SampleDeviceRepository
+from src.application.secrets import MemorySecretStore
+from src.application.settings import MemorySettingsStore
 from pathlib import Path
 
 
 TOKEN = "desktop-test-token"
+
+
+class _InternalAuthSampleRepository(SampleDeviceRepository):
+    def __init__(self) -> None:
+        super().__init__(current_user="")
+        self.authenticated = False
+        self.auth_username = ""
+        self.auth_cid = ""
+        self.received_password = ""
+
+    def internal_auth_status(self) -> InternalAuthStatus:
+        return InternalAuthStatus(
+            available=True,
+            configured=True,
+            authenticated=self.authenticated,
+            username=self.auth_username,
+            cid=self.auth_cid,
+        )
+
+    def login_internal(self, username: str, password: str, cid: str) -> InternalAuthStatus:
+        self.authenticated = True
+        self.auth_username = username
+        self.auth_cid = cid
+        self.received_password = password
+        self._current_user = username
+        return self.internal_auth_status()
+
+    def logout_internal(self) -> InternalAuthStatus:
+        self.authenticated = False
+        self.auth_username = ""
+        self.auth_cid = ""
+        self._current_user = ""
+        return self.internal_auth_status()
 
 
 def test_terminal_output_bursts_are_coalesced_without_crossing_boundaries() -> None:
@@ -64,6 +108,90 @@ def test_health_does_not_require_token() -> None:
         response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "api_version": 1}
+
+
+def test_internal_auth_login_persists_safe_defaults_and_logout_clears_session() -> None:
+    repository = _InternalAuthSampleRepository()
+    secret_store = MemorySecretStore()
+    app = create_app(
+        token=TOKEN,
+        repository=repository,
+        session_hub=SessionHub(),
+        secret_store=secret_store,
+    )
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    with TestClient(app) as client:
+        before = client.get("/api/v1/internal-auth", headers=headers)
+        logged_in = client.post(
+            "/api/v1/internal-auth/login",
+            headers=headers,
+            json={
+                "username": "operator",
+                "password": "one-time-secret",
+                "cid": "CID-7",
+                "remember": True,
+                "auto_login": True,
+            },
+        )
+        logged_out = client.delete("/api/v1/internal-auth/session", headers=headers)
+        relogged = client.post(
+            "/api/v1/internal-auth/login",
+            headers=headers,
+            json={
+                "username": "operator",
+                "password": "",
+                "cid": "CID-7",
+                "remember": True,
+                "use_saved_password": True,
+            },
+        )
+
+    assert before.status_code == 200
+    assert before.json()["authenticated"] is False
+    assert logged_in.status_code == 200
+    assert logged_in.json() == {
+        "api_version": 1,
+        "available": True,
+        "configured": True,
+        "authenticated": True,
+        "username": "operator",
+        "cid": "CID-7",
+        "remembered": True,
+        "auto_login": True,
+        "auto_login_error": "",
+        "credential_warning": "",
+    }
+    assert "one-time-secret" not in logged_in.text
+    assert repository.received_password == "one-time-secret"
+    assert secret_store.get(_source_auth_secret_key("sample")) == "one-time-secret"
+    assert logged_out.status_code == 200
+    assert logged_out.json()["authenticated"] is False
+    assert logged_out.json()["username"] == "operator"
+    assert logged_out.json()["cid"] == "CID-7"
+    assert logged_out.json()["remembered"] is True
+    assert logged_out.json()["auto_login"] is False
+    assert relogged.status_code == 200
+    assert relogged.json()["authenticated"] is True
+    assert repository.received_password == "one-time-secret"
+
+
+def test_internal_auth_auto_login_uses_saved_password_without_exposing_it() -> None:
+    repository = _InternalAuthSampleRepository()
+    settings = MemorySettingsStore({
+        _source_auth_setting_key(INTERNAL_AUTH_USERNAME_SETTING, "sample"): "remembered-user",
+        _source_auth_setting_key(INTERNAL_AUTH_CID_SETTING, "sample"): "CID-AUTO",
+        _source_auth_setting_key(INTERNAL_AUTH_AUTO_LOGIN_SETTING, "sample"): True,
+    })
+    secrets = MemorySecretStore()
+    secrets.set(_source_auth_secret_key("sample"), "saved-secret")
+
+    _attempt_internal_auto_login(repository, settings, secrets, "sample")
+
+    assert repository.authenticated is True
+    assert repository.auth_username == "remembered-user"
+    assert repository.auth_cid == "CID-AUTO"
+    assert repository.received_password == "saved-secret"
 
 
 def test_device_api_excludes_credentials() -> None:

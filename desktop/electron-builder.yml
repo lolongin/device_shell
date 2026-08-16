@@ -16,6 +16,8 @@ extraResources:
     to: backend
     filter:
       - '**/*'
+  - from: resources/product-profile.json
+    to: product-profile.json
 win:
   target:
     - nsis

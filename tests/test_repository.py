@@ -146,3 +146,12 @@ class TestPowerOffDevice:
         sample_repo.release_device("MOCK-LAB-000", "li.wei")
         with pytest.raises(RepositoryConflictError):
             sample_repo.power_off_device("MOCK-LAB-000", "li.wei")
+
+
+def test_sample_repository_reports_internal_login_unavailable(sample_repo) -> None:
+    status = sample_repo.internal_auth_status()
+
+    assert status.available is False
+    assert status.authenticated is False
+    with pytest.raises(RepositoryError, match="未配置内部网站登录"):
+        sample_repo.login_internal("operator", "secret", "CID-7")

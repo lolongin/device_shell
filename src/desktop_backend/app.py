@@ -7,8 +7,11 @@ import json
 import os
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
+from time import monotonic
+from typing import AsyncIterator, Iterable
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,12 +50,42 @@ from ..application import (
 from ..infrastructure.sqlite_desktop import SQLiteDesktopStore
 from ..infrastructure.sqlite_settings import SQLiteSettingsStore
 from ..application.settings import MemorySettingsStore, SettingsStore
-from ..repo_factory import create_repository_from_env
-from ..repository import DeviceRepository
+from ..device_source_plugins import (
+    DeviceSourcePlugin,
+    DeviceSourcePluginError,
+)
+from ..device_source_service import DeviceSourceService, DeviceSourceServiceError
+from ..repository import (
+    DeviceRepository,
+    InternalAuthStatus,
+    RepositoryError,
+)
+from ..device_import import DeviceImportError, ParsedDeviceImport, parse_device_import
+from ..imported_devices import (
+    ImportedDeviceStore,
+    MemoryImportedDeviceStore,
+)
+from ..product_profile import ProductProfile
 from ..device_mcp.core import AppControlError
 from .models import (
     DeviceListResponse,
     DeviceActionResponse,
+    DeviceImportCommitRequest,
+    DeviceImportCommitResponse,
+    DeviceImportIssueModel,
+    DeviceImportPreviewModel,
+    DeviceImportPreviewRequest,
+    DeviceSourceOptionModel,
+    DeviceSourcePluginListResponse,
+    DeviceSourcePluginModel,
+    DeviceSourcePluginTestResponse,
+    DeviceSourcePluginUpdateRequest,
+    DeviceSourceStatusModel,
+    DeviceSourceSwitchRequest,
+    PluginConfigFieldModel,
+    PluginConfigOptionModel,
+    InternalAuthLoginRequest,
+    InternalAuthStatusModel,
     ConnectionProfileListResponse,
     ConnectionProfileGroupCreateRequest,
     ConnectionProfileGroupListResponse,
@@ -200,6 +233,11 @@ def _coalesce_terminal_events(
 SESSION_LOG_DIRECTORY_SETTING = "session_logs.directory"
 SESSION_LOG_MAX_BYTES_SETTING = "session_logs.max_bytes"
 SESSION_LOG_BACKUPS_SETTING = "session_logs.backup_count"
+INTERNAL_AUTH_USERNAME_SETTING = "internal_auth.username"
+INTERNAL_AUTH_CID_SETTING = "internal_auth.cid"
+INTERNAL_AUTH_AUTO_LOGIN_SETTING = "internal_auth.auto_login"
+INTERNAL_AUTH_AUTO_LOGIN_ERROR_SETTING = "internal_auth.auto_login_error"
+IMPORT_PREVIEW_TTL_SECONDS = 10 * 60
 
 
 def _device_summary(device: DeviceSnapshot) -> DeviceSummary:
@@ -237,6 +275,185 @@ def _device_summary(device: DeviceSnapshot) -> DeviceSummary:
         is_saved_server=device.is_saved_server,
         supports_power_off=device.supports_power_off,
     )
+
+
+def _internal_auth_status_model(
+    repository: DeviceRepository,
+    settings: SettingsStore,
+    secrets: SecretStore,
+    status: InternalAuthStatus | None = None,
+    *,
+    credential_warning: str = "",
+    source_id: str,
+) -> InternalAuthStatusModel:
+    current = status or repository.internal_auth_status()
+    username_key = _source_auth_setting_key(INTERNAL_AUTH_USERNAME_SETTING, source_id)
+    cid_key = _source_auth_setting_key(INTERNAL_AUTH_CID_SETTING, source_id)
+    auto_login_key = _source_auth_setting_key(INTERNAL_AUTH_AUTO_LOGIN_SETTING, source_id)
+    auto_login_error_key = _source_auth_setting_key(
+        INTERNAL_AUTH_AUTO_LOGIN_ERROR_SETTING,
+        source_id,
+    )
+    password_key = _source_auth_secret_key(source_id)
+    stored_username = str(settings.get(username_key, "") or "").strip()
+    stored_cid = str(settings.get(cid_key, "") or "").strip()
+    warning = credential_warning
+    try:
+        remembered = bool(secrets.get(password_key))
+    except ApplicationError as exc:
+        remembered = False
+        warning = warning or exc.message
+    auto_login = bool(settings.get(auto_login_key, False)) and remembered
+    return InternalAuthStatusModel(
+        available=current.available,
+        configured=current.configured,
+        authenticated=current.authenticated,
+        username=current.username or stored_username,
+        cid=current.cid or stored_cid,
+        remembered=remembered,
+        auto_login=auto_login,
+        auto_login_error=str(
+            settings.get(auto_login_error_key, "") or ""
+        ),
+        credential_warning=warning,
+    )
+
+
+def _device_source_status_model(
+    service: DeviceSourceService,
+) -> DeviceSourceStatusModel:
+    metadata = service.imported_store.imported_device_metadata()
+    source_ids = set(service.source_ids())
+    options: list[DeviceSourceOptionModel] = []
+    descriptors = service.registry.descriptors()
+    if service.product_profile.source_locked:
+        descriptors = tuple(
+            descriptor
+            for descriptor in descriptors
+            if descriptor.id == service.active_source
+        )
+    for descriptor in descriptors:
+        available = descriptor.id in source_ids
+        unavailable_reason = service.registry.unavailable_reason(descriptor.id)
+        if (
+            descriptor.supports_import
+            and metadata.row_count <= 0
+            and service.product_profile.mode != "spreadsheet"
+        ):
+            available = False
+            unavailable_reason = unavailable_reason or "尚未导入设备文件。"
+        options.append(DeviceSourceOptionModel(
+            id=descriptor.id,
+            label=descriptor.label,
+            description=descriptor.description,
+            icon=descriptor.icon,  # type: ignore[arg-type]
+            available=available,
+            unavailable_reason=unavailable_reason,
+            requires_login=descriptor.requires_login,
+            supports_import=descriptor.supports_import,
+        ))
+    return DeviceSourceStatusModel(
+        product_mode=service.product_profile.mode,
+        allow_source_switch=service.product_profile.allow_source_switch,
+        allow_plugin_management=service.product_profile.allow_plugin_management,
+        allow_import=service.product_profile.allow_import,
+        active_source=service.active_source,
+        default_source=service.default_source,
+        sources=options,
+        plugin_warnings=list(service.registry.warnings()),
+        imported_count=metadata.row_count,
+        imported_file=metadata.source_name,
+        imported_sheet=metadata.sheet_name,
+        imported_at=metadata.imported_at,
+    )
+
+
+def _device_source_plugin_model(
+    source_id: str,
+    service: DeviceSourceService,
+) -> DeviceSourcePluginModel:
+    registration = service.registry.registration(source_id)
+    descriptor = registration.descriptor
+    values = service.registry.configuration(source_id)
+    fields = [
+        PluginConfigFieldModel(
+            key=item.key,
+            label=item.label,
+            kind=item.kind,
+            value=None if item.kind == "secret" else values.get(item.key),
+            description=item.description,
+            placeholder=item.placeholder,
+            required=item.required,
+            advanced=item.advanced,
+            minimum=item.minimum,
+            maximum=item.maximum,
+            options=[
+                PluginConfigOptionModel(value=option.value, label=option.label)
+                for option in item.options
+            ],
+            secret_configured=(
+                service.registry.secret_configured(source_id, item.key)
+                if item.kind == "secret"
+                else False
+            ),
+        )
+        for item in registration.config_fields
+    ]
+    return DeviceSourcePluginModel(
+        id=descriptor.id,
+        label=descriptor.label,
+        description=descriptor.description,
+        icon=descriptor.icon,  # type: ignore[arg-type]
+        version=descriptor.version,
+        publisher=descriptor.publisher,
+        built_in=registration.built_in,
+        enabled=service.registry.enabled(source_id),
+        available=source_id in service.source_ids(),
+        unavailable_reason=service.registry.unavailable_reason(source_id),
+        active=source_id == service.active_source,
+        default=source_id == service.default_source,
+        requires_login=descriptor.requires_login,
+        supports_import=descriptor.supports_import,
+        config_fields=fields,
+    )
+
+
+def _attempt_internal_auto_login(
+    repository: DeviceRepository,
+    settings: SettingsStore,
+    secrets: SecretStore,
+    source_id: str,
+) -> None:
+    username_key = _source_auth_setting_key(INTERNAL_AUTH_USERNAME_SETTING, source_id)
+    cid_key = _source_auth_setting_key(INTERNAL_AUTH_CID_SETTING, source_id)
+    auto_login_key = _source_auth_setting_key(INTERNAL_AUTH_AUTO_LOGIN_SETTING, source_id)
+    auto_login_error_key = _source_auth_setting_key(
+        INTERNAL_AUTH_AUTO_LOGIN_ERROR_SETTING,
+        source_id,
+    )
+    password_key = _source_auth_secret_key(source_id)
+    if not bool(settings.get(auto_login_key, False)):
+        return
+    username = str(settings.get(username_key, "") or "").strip()
+    cid = str(settings.get(cid_key, "") or "").strip()
+    try:
+        status = repository.internal_auth_status()
+        password = secrets.get(password_key)
+        if not status.available or not status.configured or not username or not cid or not password:
+            return
+        repository.login_internal(username, password, cid)
+        settings.delete(auto_login_error_key)
+    except (ApplicationError, RepositoryError) as exc:
+        message = exc.message if isinstance(exc, ApplicationError) else str(exc)
+        settings.set(auto_login_error_key, message[:500])
+
+
+def _source_auth_setting_key(base_key: str, source_id: str) -> str:
+    return f"{base_key}.{source_id}"
+
+
+def _source_auth_secret_key(source_id: str) -> str:
+    return f"internal-auth/{source_id}/password"
 
 
 def _session_summary(session: SessionRecord) -> SessionSummary:
@@ -482,9 +699,13 @@ def create_app(
     automation_store: AutomationStore | None = None,
     transfer_store: TransferStore | None = None,
     transfer_root: Path | None = None,
+    imported_device_store: ImportedDeviceStore | None = None,
+    device_source_plugins: Iterable[DeviceSourcePlugin] = (),
+    discover_source_plugins: bool = True,
+    product_mode: str | None = None,
+    product_source: str | None = None,
 ) -> FastAPI:
     access_token = token if token is not None else os.getenv("DEVICE_TUI_DESKTOP_TOKEN", "")
-    repo = repository or create_repository_from_env()
     data_root = Path(
         os.getenv("DEVICE_TUI_DATA_DIR", str(Path.home() / ".device-tui"))
     )
@@ -524,6 +745,23 @@ def create_app(
     legacy_state_path = _resolve_legacy_state_path(legacy_state_path, should_import_legacy)
     if should_import_legacy:
         _import_legacy_log_settings(settings_store, legacy_state_path)
+
+    if secret_store is None:
+        secret_store = KeyringSecretStore() if production_defaults else MemorySecretStore()
+    imported_store = imported_device_store or desktop_store or MemoryImportedDeviceStore()
+    product_profile = ProductProfile.from_environment(
+        mode=product_mode,
+        source_id=product_source,
+    )
+    repo = DeviceSourceService.create(
+        imported_store=imported_store,
+        settings=settings_store,
+        secrets=secret_store,
+        product_profile=product_profile,
+        plugins=device_source_plugins,
+        discover_plugins=discover_source_plugins,
+        injected_repository=repository,
+    )
 
     stored_log_max_bytes = _setting_int(
         settings_store,
@@ -592,8 +830,6 @@ def create_app(
         automation_store = desktop_store or MemoryAutomationStore()
     if transfer_store is None:
         transfer_store = desktop_store or MemoryTransferStore()
-    if secret_store is None:
-        secret_store = KeyringSecretStore() if production_defaults else MemorySecretStore()
     if transfer_root is None:
         transfer_root = data_root / "transfers" if production_defaults else Path.cwd()
     if production_defaults:
@@ -611,6 +847,12 @@ def create_app(
         settings_store=settings_store,
         terminal_executor=terminal_executor,
         transfer_root=transfer_root,
+    )
+    _attempt_internal_auto_login(
+        repo,
+        desktop.settings,
+        desktop.secrets,
+        repo.active_source,
     )
     terminal_executor.set_secret_resolver(desktop.transfers.resolve_secret)
     ai_service = AiApplicationService(
@@ -673,6 +915,7 @@ def create_app(
     app.state.access_token = access_token
     app.state.ai_service = ai_service
     app.state.mcp_service = mcp_service
+    import_previews: dict[str, tuple[float, ParsedDeviceImport]] = {}
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -852,6 +1095,194 @@ def create_app(
     async def ai_audit(limit: int = Query(default=100, ge=1, le=500)) -> AiAuditResponse:
         return AiAuditResponse(entries=ai_service.audit_entries(limit))
 
+    @app.get(
+        "/api/v1/device-source",
+        response_model=DeviceSourceStatusModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def device_source_status() -> DeviceSourceStatusModel:
+        return _device_source_status_model(repo)
+
+    @app.get(
+        "/api/v1/device-source/plugins",
+        response_model=DeviceSourcePluginListResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def device_source_plugins() -> DeviceSourcePluginListResponse:
+        return DeviceSourcePluginListResponse(
+            plugins=[
+                _device_source_plugin_model(
+                    registration.descriptor.id,
+                    repo,
+                )
+                for registration in repo.registry.registrations()
+            ],
+            warnings=list(repo.registry.warnings()),
+        )
+
+    @app.put(
+        "/api/v1/device-source/plugins/{source_id}",
+        response_model=DeviceSourcePluginListResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def update_device_source_plugin(
+        source_id: str,
+        request: DeviceSourcePluginUpdateRequest,
+    ) -> DeviceSourcePluginListResponse:
+        if not product_profile.allow_plugin_management:
+            raise ApplicationConflictError(
+                "当前产品的数据来源由开发配置固定，不能在应用内修改插件。"
+            )
+        try:
+            repo.registry.registration(source_id)
+        except DeviceSourcePluginError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+        if source_id == repo.active_source and request.enabled is False:
+            raise ApplicationConflictError("当前正在使用的数据源不能禁用。")
+        if (
+            source_id == repo.active_source
+            and desktop.sessions.list_sessions()
+            and (request.config or request.secrets)
+        ):
+            raise ApplicationConflictError("请先关闭全部终端会话，再修改当前数据源配置。")
+        try:
+            repository = repo.apply_plugin_configuration(
+                source_id,
+                config_updates=request.config,
+                secret_updates=request.secrets,
+                enabled=request.enabled,
+            )
+        except DeviceSourcePluginError as exc:
+            raise ApplicationError(str(exc)) from exc
+        if repository is not None and source_id == repo.active_source:
+            _attempt_internal_auto_login(
+                repo,
+                desktop.settings,
+                desktop.secrets,
+                source_id,
+            )
+        return await device_source_plugins()
+
+    @app.post(
+        "/api/v1/device-source/plugins/{source_id}/test",
+        response_model=DeviceSourcePluginTestResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def test_device_source_plugin(source_id: str) -> DeviceSourcePluginTestResponse:
+        if not product_profile.allow_plugin_management:
+            raise ApplicationConflictError(
+                "当前产品的数据来源由开发配置固定，不能在应用内测试插件。"
+            )
+        try:
+            result = repo.test_plugin_configuration(source_id)
+        except DeviceSourcePluginError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+        return DeviceSourcePluginTestResponse(
+            success=result.success,
+            message=result.message,
+            plugin=_device_source_plugin_model(
+                source_id,
+                repo,
+            ),
+        )
+
+    @app.put(
+        "/api/v1/device-source",
+        response_model=DeviceSourceStatusModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def switch_device_source(
+        request: DeviceSourceSwitchRequest,
+    ) -> DeviceSourceStatusModel:
+        if request.source == repo.active_source:
+            return _device_source_status_model(repo)
+        if desktop.sessions.list_sessions():
+            raise ApplicationConflictError("请先关闭全部终端会话，再切换设备数据源。")
+        try:
+            descriptor = repo.activate(request.source)
+            if descriptor.requires_login:
+                _attempt_internal_auto_login(
+                    repo,
+                    desktop.settings,
+                    desktop.secrets,
+                    request.source,
+                )
+        except DeviceSourceServiceError as exc:
+            raise ApplicationConflictError(str(exc)) from exc
+        return _device_source_status_model(repo)
+
+    @app.post(
+        "/api/v1/device-source/import/preview",
+        response_model=DeviceImportPreviewModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def preview_device_import(
+        request: DeviceImportPreviewRequest,
+    ) -> DeviceImportPreviewModel:
+        if not product_profile.allow_import:
+            raise ApplicationConflictError("当前产品不提供设备表格导入。")
+        now = monotonic()
+        for expired_token, (expires_at, _preview) in list(import_previews.items()):
+            if expires_at <= now:
+                import_previews.pop(expired_token, None)
+        try:
+            parsed = await asyncio.to_thread(parse_device_import, Path(request.path))
+        except DeviceImportError as exc:
+            raise ApplicationError(str(exc)) from exc
+        preview_token = uuid4().hex
+        import_previews[preview_token] = (
+            now + IMPORT_PREVIEW_TTL_SECONDS,
+            parsed,
+        )
+        return DeviceImportPreviewModel(
+            token=preview_token,
+            file_name=parsed.source_path.name,
+            sheet_name=parsed.sheet_name,
+            headers=list(parsed.headers),
+            total_rows=parsed.total_rows,
+            valid_rows=len(parsed.devices),
+            skipped_rows=parsed.skipped_rows,
+            preview_rows=[dict(row) for row in parsed.preview_rows],
+            errors=[
+                DeviceImportIssueModel(row=issue.row, message=issue.message)
+                for issue in parsed.errors[:100]
+            ],
+            warnings=list(parsed.warnings),
+        )
+
+    @app.post(
+        "/api/v1/device-source/import/commit",
+        response_model=DeviceImportCommitResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def commit_device_import(
+        request: DeviceImportCommitRequest,
+    ) -> DeviceImportCommitResponse:
+        if not product_profile.allow_import:
+            raise ApplicationConflictError("当前产品不提供设备表格导入。")
+        if desktop.sessions.list_sessions():
+            raise ApplicationConflictError("请先关闭全部终端会话，再覆盖导入设备。")
+        cached = import_previews.get(request.token)
+        if cached is None or cached[0] <= monotonic():
+            import_previews.pop(request.token, None)
+            raise ApplicationConflictError("导入预览已失效，请重新选择文件。")
+        parsed = cached[1]
+        try:
+            metadata = await asyncio.to_thread(
+                repo.replace_imported_devices,
+                list(parsed.devices),
+                source_name=parsed.source_path.name,
+                sheet_name=parsed.sheet_name,
+                imported_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except (OSError, ValueError, RepositoryError, DeviceSourceServiceError) as exc:
+            raise ApplicationError(f"无法保存导入设备：{exc}") from exc
+        import_previews.pop(request.token, None)
+        return DeviceImportCommitResponse(
+            imported_count=metadata.row_count,
+            source=_device_source_status_model(repo),
+        )
+
     @app.post(
         "/api/v1/ws-tickets",
         response_model=WebSocketTicketResponse,
@@ -879,11 +1310,121 @@ def create_app(
         return WebSocketTicketResponse(ticket=ticket.value, expires_in_seconds=30)
 
     @app.get(
+        "/api/v1/internal-auth",
+        response_model=InternalAuthStatusModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def internal_auth_status() -> InternalAuthStatusModel:
+        try:
+            return _internal_auth_status_model(
+                repo,
+                desktop.settings,
+                desktop.secrets,
+                source_id=repo.active_source,
+            )
+        except RepositoryError as exc:
+            raise ApplicationError(str(exc)) from exc
+
+    @app.post(
+        "/api/v1/internal-auth/login",
+        response_model=InternalAuthStatusModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def internal_auth_login(
+        request: InternalAuthLoginRequest,
+    ) -> InternalAuthStatusModel:
+        source_id = repo.active_source
+        username_key = _source_auth_setting_key(INTERNAL_AUTH_USERNAME_SETTING, source_id)
+        cid_key = _source_auth_setting_key(INTERNAL_AUTH_CID_SETTING, source_id)
+        auto_login_key = _source_auth_setting_key(INTERNAL_AUTH_AUTO_LOGIN_SETTING, source_id)
+        auto_login_error_key = _source_auth_setting_key(
+            INTERNAL_AUTH_AUTO_LOGIN_ERROR_SETTING,
+            source_id,
+        )
+        password_key = _source_auth_secret_key(source_id)
+        username = request.username.strip()
+        cid = request.cid.strip()
+        if not username or not cid:
+            raise ApplicationError("账号和 CID 不能为空。")
+        password = request.password
+        if not password and request.use_saved_password:
+            password = desktop.secrets.get(password_key) or ""
+        if not password:
+            raise ApplicationError("请输入密码，或先启用记住登录。")
+        try:
+            status = repo.login_internal(username, password, cid)
+        except RepositoryError as exc:
+            raise ApplicationError(str(exc)) from exc
+        desktop.settings.set(username_key, username)
+        desktop.settings.set(cid_key, cid)
+        remember = request.remember or request.auto_login
+        warning = ""
+        try:
+            if remember:
+                desktop.secrets.set(password_key, password)
+            else:
+                desktop.secrets.delete(password_key)
+        except ApplicationError as exc:
+            remember = False
+            warning = exc.message
+        desktop.settings.set(
+            auto_login_key,
+            bool(request.auto_login and remember),
+        )
+        desktop.settings.delete(auto_login_error_key)
+        return _internal_auth_status_model(
+            repo,
+            desktop.settings,
+            desktop.secrets,
+            status,
+            credential_warning=warning,
+            source_id=source_id,
+        )
+
+    @app.delete(
+        "/api/v1/internal-auth/session",
+        response_model=InternalAuthStatusModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def internal_auth_logout() -> InternalAuthStatusModel:
+        source_id = repo.active_source
+        auto_login_key = _source_auth_setting_key(INTERNAL_AUTH_AUTO_LOGIN_SETTING, source_id)
+        auto_login_error_key = _source_auth_setting_key(
+            INTERNAL_AUTH_AUTO_LOGIN_ERROR_SETTING,
+            source_id,
+        )
+        try:
+            status = repo.logout_internal()
+        except RepositoryError as exc:
+            raise ApplicationError(str(exc)) from exc
+        desktop.settings.set(auto_login_key, False)
+        desktop.settings.delete(auto_login_error_key)
+        return _internal_auth_status_model(
+            repo,
+            desktop.settings,
+            desktop.secrets,
+            status,
+            source_id=source_id,
+        )
+
+    @app.get(
         "/api/v1/devices",
         response_model=DeviceListResponse,
         dependencies=[Depends(authorize)],
     )
     async def devices() -> DeviceListResponse:
+        descriptor = repo.registry.descriptor(repo.active_source)
+        if descriptor.requires_login:
+            try:
+                auth_status = repo.internal_auth_status()
+            except RepositoryError as exc:
+                raise ApplicationError(str(exc)) from exc
+            if not auth_status.authenticated:
+                return DeviceListResponse(
+                    current_user=auth_status.username,
+                    owned_device_ids=[],
+                    devices=[],
+                )
         inventory = desktop.devices.list_inventory()
         return DeviceListResponse(
             current_user=inventory.current_user,
@@ -1518,6 +2059,7 @@ def create_app(
                 destination_path=request.destination_path,
                 overwrite=request.overwrite,
                 terminal_environment=request.terminal_environment,
+                command_mode=request.command_mode,
             )
         else:
             operation = desktop.transfers.start_upload(
@@ -1526,6 +2068,7 @@ def create_app(
                 destination_path=request.destination_path,
                 overwrite=request.overwrite,
                 terminal_environment=request.terminal_environment,
+                command_mode=request.command_mode,
             )
         return OperationResponse(operation=_operation_model(operation))
 

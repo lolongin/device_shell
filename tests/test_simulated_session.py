@@ -227,3 +227,34 @@ def test_simulated_transfer_rejects_invalid_ftp_commands_without_creating_file()
     assert "500 Unknown FTP command: q" in text
     assert "large.bin" not in text[text.rfind("Directory of flash:/") :]
     assert "200 OK." not in text
+
+
+def test_simulated_ftpget_accepts_single_command_and_saves_same_named_file() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+    session.configure_managed_transfer(
+        username="managed-user",
+        password="managed-password",
+        source_path="target.cc",
+        source_size=4_096,
+        destination_path="target.cc",
+    )
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command(
+            "ftpget -u managed-user -p managed-password 192.0.2.10 target.cc"
+        )
+        await session.send_command("dir flash:/target.cc")
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    text = "".join(output)
+    assert "ftpget: target.cc transfer complete (4096 bytes)" in text
+    assert "target.cc" in text[text.rfind("Directory of flash:/") :]

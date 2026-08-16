@@ -153,14 +153,16 @@ $env:DEVICE_TUI_SAMPLE_DEVICE_COUNT = "1200"
 python src/desktop_app.py
 ```
 
-## API Mode
+## Legacy PySide API Mode
 
-By default, the GUI uses the in-memory sample repository. To connect it to your
-own backend service:
+The legacy `python src/desktop_app.py` entry point can still connect directly to
+an HTTP backend. The Electron app does not register this compatibility adapter as
+a selectable source; Electron website editions use `company-device-source`.
 
 ```powershell
 $env:DEVICE_TUI_DATA_SOURCE = "api"
 $env:DEVICE_TUI_API_BASE_URL = "http://127.0.0.1:8765"
+$env:DEVICE_TUI_API_LOGIN_PATH = "/api/login"
 $env:DEVICE_TUI_REFRESH_SECONDS = "30"
 python src/desktop_app.py
 ```
@@ -168,8 +170,19 @@ python src/desktop_app.py
 Useful environment variables:
 
 - `DEVICE_TUI_CURRENT_USER`: override current user in sample mode
+- `DEVICE_TUI_DEFAULT_DATA_SOURCE`: legacy PySide default, either `sample` or `api`.
+- `DEVICE_TUI_DATA_SOURCE`: force the legacy PySide startup source.
 - `DEVICE_TUI_API_BASE_URL`: backend API base URL
 - `DEVICE_TUI_API_TIMEOUT_SECONDS`: backend API timeout in seconds
+- `DEVICE_TUI_API_LOGIN_PATH`: internal website login path, defaults to `/api/login`.
+- `DEVICE_TUI_API_LOGOUT_PATH`: optional server-side logout path. The local cookie is
+  always cleared when the user logs out.
+- `DEVICE_TUI_API_LOGIN_USERNAME_FIELD`, `DEVICE_TUI_API_LOGIN_PASSWORD_FIELD`, and
+  `DEVICE_TUI_API_LOGIN_CID_FIELD`: login JSON field names, defaulting to
+  `username`, `password`, and `cid`.
+- `DEVICE_TUI_API_LOGIN_FORMAT`: login body format, either `json` (default) or
+  `form`. Both JSON and HTML login responses are accepted when a session cookie
+  is returned.
 - `DEVICE_TUI_REFRESH_SECONDS`: polling interval in API mode
 - `DEVICE_TUI_SAMPLE_DEVICE_COUNT`: generated sample device count for GUI testing
 - `DEVICE_TUI_TERMINAL_WIDGET`: terminal renderer, defaults to `xterm`.
@@ -179,6 +192,49 @@ Useful environment variables:
   terminal sessions on startup.
 - `DEVICE_TUI_XTERM_LOCAL_ECHO`: set to `1` only for endpoints which do not
   echo typed characters themselves. Leave it unset for normal SSH shells.
+
+In an Electron website edition, the account entry opens an isolated login window.
+The website plugin keeps the returned Cookie in memory and sends it with later
+device requests. Username and CID are saved as form defaults; the password is only
+persisted when **Remember login** is enabled, and then only in the operating-system
+credential vault. The Cookie is never written to SQLite, renderer state, or logs.
+
+## Device Data Sources and Batch Import
+
+The Electron desktop uses exactly one active device source at a time: built-in
+sample data, a website plugin, or an imported Excel/CSV snapshot. Records from
+different sources are never merged. A product build fixes the user-facing workflow
+through `desktop/resources/product-profile.json`: `web` exposes only website login,
+`spreadsheet` exposes only table import, and `universal` keeps source switching and
+plugin management for development. Existing terminal sessions must be closed before
+switching a universal build or replacing an import so a session cannot silently
+point at a different device row. `DEVICE_TUI_DATA_SOURCE` and
+`DEVICE_TUI_DEFAULT_DATA_SOURCE` remain compatibility settings for the legacy
+PySide entry point and unattended universal deployments.
+
+Use **Device source > Excel / batch import > Import** in the device navigator. The
+App supports `.xlsx`, `.csv`, and `.tsv` files up to 20 MB, 20,000 data rows, and
+100 columns. UTF-8 (including BOM) and GB18030 CSV files are accepted. A device ID
+or device name column is required; common Chinese and English headers for IP,
+SSH/Telnet/serial ports, usernames, model, site, rack, version, and board ID are
+mapped automatically. Legacy `.xls` files must first be saved as `.xlsx`.
+
+Import is a two-step operation: the App first shows valid, skipped, and erroneous
+row counts plus a safe preview, then requires explicit confirmation. A successful
+commit replaces the previous imported snapshot in one SQLite transaction and makes
+the imported source active. A failed parse or save leaves the previous snapshot
+unchanged. Password-like columns are detected and ignored; imported passwords are
+never stored in SQLite. Configure connection credentials when opening a terminal.
+
+Company-specific device websites can be integrated without modifying the core App.
+Copy `integration-templates/company-device-source` into the private repository and
+register it through the `device_tui.device_sources` Entry Point group. It ships with
+a complete demo website API and repository; later replace only
+`binding.py::create_company_web_api()` with the proprietary API adapter. Universal
+development builds expose installed sources under **Settings > Data sources and
+plugins**; fixed product builds hide those developer controls. See
+[Device Source Plugins](docs/device-source-plugins.md) for the contract and
+PyInstaller packaging.
 
 ## xterm.js Terminal
 
@@ -325,8 +381,12 @@ with `DEVICE_TUI_CONTROL_STATE` and `DEVICE_TUI_CONTROL_AUDIT`.
 - `src/device_mcp/service.py`: application-control coordinator
 - `src/mcp_server.py` and `src/app_control*.py`: compatibility entry points
 - `src/data.py`: device model and sample/generated data
+- `src/device_source_service.py`: product policy, active source, and plugin lifecycle
+- `src/device_source_plugins.py`: built-in sources and Entry Point discovery
+- `src/imported_devices.py`: spreadsheet-backed source and persistence boundary
+- `src/product_profile.py`: developer-owned product source policy
 - `src/repository.py`: sample and API-backed repositories
-- `src/api_client.py`: HTTP API client used by GUI API mode
+- `src/api_client.py`: HTTP client retained for legacy PySide API mode
 - `src/telnet_session.py`: Huawei/device Telnet session
 - `src/linux_session.py`: Linux SSH session
 - `src/session_protocol.py`: shared session callback/protocol types
@@ -336,3 +396,41 @@ with `DEVICE_TUI_CONTROL_STATE` and `DEVICE_TUI_CONTROL_AUDIT`.
 ```bash
 python -m py_compile src\*.py
 ```
+
+## Product Data Source Profile
+
+The packaged desktop app reads `desktop/resources/product-profile.json`. This
+is a developer-owned product setting, so end users do not need to install,
+choose, or configure data-source plugins.
+
+Use one of these profiles before building the app:
+
+```json
+{ "mode": "web", "source": "internal-site" }
+```
+
+The web profile fixes the named website plugin, hides source switching and
+plugin management, and leaves the account/CID login workflow visible.
+
+```json
+{ "mode": "spreadsheet", "source": "imported" }
+```
+
+The spreadsheet profile starts on the import workflow even before the first
+file exists. The UI only offers selecting or updating an Excel, CSV, or TSV
+device table.
+
+```json
+{ "mode": "universal", "source": "" }
+```
+
+Universal mode is intended for development and diagnostics. It keeps the
+source selector and the plugin-management settings page. For local development,
+`DEVICE_TUI_PRODUCT_MODE` and `DEVICE_TUI_PRODUCT_SOURCE` override the JSON
+profile. A web build fails fast when its fixed plugin is missing, unavailable,
+or does not implement the website-login workflow.
+
+For a complete internal-website integration guide, including API field
+mapping, Cookie/session ownership, reuse of an existing
+`create_repository_from_env()` factory, tests, and release packaging, see
+[`integration-templates/company-device-source/README.md`](integration-templates/company-device-source/README.md).

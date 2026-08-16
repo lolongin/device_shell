@@ -74,9 +74,13 @@ def test_electron_builder_includes_pyinstaller_backend_resource() -> None:
 def test_backend_bundle_script_has_stable_pyinstaller_output() -> None:
     script = Path("desktop/scripts/build-python-backend.ps1").read_text(encoding="utf-8")
 
-    assert '-m PyInstaller --noconfirm --clean --onedir' in script
-    assert '--name "device-tui-backend"' in script
-    assert '--distpath $outputRoot' in script
+    assert '$pyInstallerArgs = @(' in script
+    assert '"--noconfirm"' in script
+    assert '"--clean"' in script
+    assert '"--onedir"' in script
+    assert '"--name", "device-tui-backend"' in script
+    assert '"--distpath", $outputRoot' in script
+    assert '& $Python -m PyInstaller @pyInstallerArgs' in script
     assert 'src\\desktop_backend\\frozen_main.py' in script
     assert 'resources\\backend' in script
     assert 'device-tui-backend\\device-tui-backend.exe' in script
