@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.package_upgrade import (
+from device_tui.application.upgrades.package import (
     STANDBY_STORAGE_ABSENT,
     STANDBY_STORAGE_AVAILABLE,
     STANDBY_STORAGE_INDETERMINATE,

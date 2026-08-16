@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from src.application import (
+from device_tui.application import (
     SIMULATED_DEVICE_ID,
     ResourceNotFoundError,
     UnsupportedOperationError,
     build_desktop_application,
     create_simulated_device,
 )
-from src.desktop_backend.session_hub import SessionHub
-from src.repository import SampleDeviceRepository
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 def _application():
@@ -186,14 +186,16 @@ def test_settings_store_copies_mutable_values() -> None:
 
 
 def test_application_layer_has_no_qt_dependency() -> None:
-    application_root = Path(__file__).resolve().parents[1] / "src" / "application"
+    application_root = (
+        Path(__file__).resolve().parents[1] / "device_tui" / "application"
+    )
     source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in application_root.glob("*.py")
+        for path in application_root.rglob("*.py")
     ).casefold()
 
     assert "pyside6" not in source
-    assert "src.app" not in source
+    assert "device_tui.interfaces.desktop_api" not in source
 
 
 def test_device_service_claim_and_release_return_updated_snapshot() -> None:

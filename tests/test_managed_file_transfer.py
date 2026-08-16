@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.managed_file_transfer import (
+from device_tui.infrastructure.transfers.managed_file_transfer import (
     ManagedTransferError,
     build_ftpget_command,
     build_ftpget_transfer_steps,
@@ -24,7 +24,7 @@ from src.managed_file_transfer import (
     validate_destination_path,
     validate_transfer_device_path,
 )
-from src.terminal_orchestration import parse_terminal_plan
+from device_tui.application.terminal.orchestration import parse_terminal_plan
 
 
 def test_shared_file_catalog_returns_only_relative_metadata(tmp_path: Path) -> None:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from src.mcp_server import mcp
-from src.device_mcp.server import mcp as packaged_mcp
+from device_tui.interfaces.mcp.server import mcp
+from device_tui.interfaces.mcp.server import mcp as packaged_mcp
 
 
 def test_mcp_server_exposes_device_control_tools() -> None:

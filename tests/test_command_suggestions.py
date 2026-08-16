@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.command_suggestions import (
+from device_tui.application.commands.suggestions import (
     CommandHistoryItem,
     deserialize_command_history_item,
     infer_completed_command_from_terminal_line,

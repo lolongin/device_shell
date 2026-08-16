@@ -10,7 +10,7 @@ from pathlib import Path
 import asyncssh
 import pytest
 
-from src.file_transfer_service import TransferServiceConfig, TransferServiceController
+from device_tui.infrastructure.transfers.file_transfer_service import TransferServiceConfig, TransferServiceController
 
 
 def test_ftp_service_starts_on_ephemeral_port_and_honors_read_only(tmp_path: Path) -> None:

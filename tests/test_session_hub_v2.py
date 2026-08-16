@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from src.application.credentials import ConnectionTarget, SessionCredential
-from src.application.errors import SessionBusyError
-from src.desktop_backend.session_hub import ReplayBuffer, SessionHub, TerminalEvent
-from src.session_protocol import SessionCallbacks
+from device_tui.application.credentials import ConnectionTarget, SessionCredential
+from device_tui.application.errors import SessionBusyError
+from device_tui.interfaces.desktop_api.session_hub import ReplayBuffer, SessionHub, TerminalEvent
+from device_tui.infrastructure.transports.session_protocol import SessionCallbacks
 
 
 class FakeAdapter:

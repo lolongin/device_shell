@@ -1837,7 +1837,7 @@ def test_electron_automation_rules_can_be_safely_cloned() -> None:
     automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
-    backend = Path("src/desktop_backend/app.py").read_text(encoding="utf-8")
+    backend = Path("device_tui/interfaces/desktop_api/app.py").read_text(encoding="utf-8")
     smoke = MAIN_TS.read_text(encoding="utf-8")
 
     assert 'data-testid="automation-clone"' in automation
@@ -1859,7 +1859,7 @@ def test_electron_automation_workspace_shows_recent_execution_activity() -> None
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     types = TYPES_TS.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    backend = Path("src/desktop_backend/app.py").read_text(encoding="utf-8")
+    backend = Path("device_tui/interfaces/desktop_api/app.py").read_text(encoding="utf-8")
     smoke = MAIN_TS.read_text(encoding="utf-8")
 
     assert "interface AutomationActivityRecord" in types

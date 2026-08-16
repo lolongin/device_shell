@@ -60,7 +60,7 @@ npm run dev
 The Python backend can also be started independently for diagnostics:
 
 ```powershell
-python -m src.desktop_backend.main
+python -m device_tui.interfaces.desktop_api.main
 ```
 
 ## Build and Package
@@ -141,6 +141,10 @@ adapter. Login cookies remain in backend memory. Username and CID may be saved a
 form defaults, while remembered passwords use the operating-system credential
 vault.
 
+Plugins import descriptors from `device_tui.plugin_api` and repository contracts
+from `device_tui.plugin_api.repository`; internal package paths are not part of the
+plugin contract.
+
 See [Device Source Plugins](docs/device-source-plugins.md) and
 [Company Device Source Template](integration-templates/company-device-source/README.md).
 
@@ -170,7 +174,7 @@ device-tui-mcp
 The source-checkout equivalent is:
 
 ```powershell
-python -m src.device_mcp.server
+python -m device_tui.interfaces.mcp.server
 ```
 
 Common tools include `device_list`, `device_get`, `session_open`, `terminal_run`,
@@ -193,16 +197,13 @@ backend.
 - `desktop/src/main/`: Electron lifecycle, backend supervision, and secure IPC
 - `desktop/src/preload/`: narrow renderer bridge
 - `desktop/src/renderer/`: Vue application and xterm.js workspace
-- `src/desktop_backend/`: FastAPI and WebSocket desktop backend
-- `src/application/`: UI-independent application services
-- `src/infrastructure/`: persistence and external adapters
-- `src/device_mcp/`: MCP server, tools, and gateway
-- `src/device_source_service.py`: active-source policy and lifecycle
-- `src/device_source_plugins.py`: built-in sources and entry-point discovery
-- `src/imported_devices.py`: spreadsheet-backed source and persistence boundary
-- `src/product_profile.py`: developer-owned product source policy
-- `src/repository.py`: repository protocol and sample repository
-- `src/telnet_session.py`, `src/linux_session.py`: device session implementations
+- `device_tui/domain/`: device models and repository contracts
+- `device_tui/application/`: UI-independent application services
+- `device_tui/device_sources/`: active-source policy, imports, and plugin discovery
+- `device_tui/infrastructure/`: persistence, transports, transfer servers, and audit logs
+- `device_tui/interfaces/desktop_api/`: FastAPI and WebSocket desktop backend
+- `device_tui/interfaces/mcp/`: MCP server, tools, and gateway
+- `device_tui/plugin_api/`: stable public API for external device-source plugins
 
 ## Development Checks
 

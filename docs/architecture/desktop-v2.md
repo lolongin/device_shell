@@ -33,6 +33,22 @@ tickets issued through the authenticated API.
 
 ## Layer Boundaries
 
+The Python package has one root and explicit inward-facing layers:
+
+```text
+device_tui/
+  domain/                  device models and repository contracts
+  application/             use cases and orchestration
+  device_sources/          source selection, imports, and plugins
+  infrastructure/          persistence, transports, transfers, audit
+  interfaces/desktop_api/  Electron-facing FastAPI/WebSocket adapter
+  interfaces/mcp/          MCP adapter
+  plugin_api/              stable external integration contract
+```
+
+The former `src` package root and compatibility facades are not part of the
+runtime or distribution.
+
 ### Renderer
 
 The renderer owns visual state, layout, filtering, dialogs, and xterm.js display.

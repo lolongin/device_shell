@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-from src.device_import import DeviceImportError, parse_device_import
-from src.infrastructure.sqlite_desktop import SQLiteDesktopStore
+from device_tui.device_sources.import_parser import DeviceImportError, parse_device_import
+from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
 
 
 def test_csv_import_maps_chinese_aliases_and_ignores_passwords(tmp_path: Path) -> None:

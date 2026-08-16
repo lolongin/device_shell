@@ -10,13 +10,13 @@ from typing import Callable
 
 import pytest
 
-from src.application import MemorySecretStore, UnsupportedOperationError, build_desktop_application
-from src.application.credentials import ConnectionTarget
-from src.application.automation_expressions import SafeAutomationExpression
-from src.application.sessions import SessionRecord
-from src.auto_response import AutoResponseAction, AutoResponseRule, AutoResponseStep
-from src.infrastructure.sqlite_desktop import SQLiteDesktopStore
-from src.repository import SampleDeviceRepository
+from device_tui.application import MemorySecretStore, UnsupportedOperationError, build_desktop_application
+from device_tui.application.credentials import ConnectionTarget
+from device_tui.application.automation.expressions import SafeAutomationExpression
+from device_tui.application.sessions import SessionRecord
+from device_tui.application.automation.rules import AutoResponseAction, AutoResponseRule, AutoResponseStep
+from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 class EventSessionManager:

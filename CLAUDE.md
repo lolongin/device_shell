@@ -26,8 +26,8 @@ Vue renderer
   -> preload IPC
     -> Electron Main
       -> authenticated loopback HTTP/WebSocket
-        -> src/desktop_backend
-          -> src/application
+        -> device_tui/interfaces/desktop_api
+          -> device_tui/application
             -> repositories, session hub, transfers, automation
 ```
 
@@ -43,7 +43,7 @@ Sources never merge.
 
 ### Session layer
 
-`src/application/sessions.py` coordinates the backend-owned Session Hub.
+`device_tui/application/sessions.py` coordinates the backend-owned Session Hub.
 `HuaweiTelnetSession`, `LinuxSshSession`, and the simulated session implement the
 transport behavior. The Vue renderer receives output through authenticated,
 short-lived WebSocket tickets and renders it with xterm.js.
@@ -72,12 +72,13 @@ test restart behavior.
 - `desktop/src/main/`: Electron process and backend supervision
 - `desktop/src/preload/`: renderer bridge
 - `desktop/src/renderer/`: Vue workspace
-- `src/desktop_backend/`: HTTP/WebSocket routes and lifecycle
-- `src/application/`: application services
-- `src/infrastructure/`: persistence and adapters
-- `src/device_source_service.py`: active source orchestration
-- `src/device_source_plugins.py`: plugin discovery
-- `src/device_mcp/`: MCP integration
+- `device_tui/domain/`: device models and contracts
+- `device_tui/application/`: application services
+- `device_tui/device_sources/`: active source orchestration and plugin discovery
+- `device_tui/infrastructure/`: persistence, transports, transfers, and audit adapters
+- `device_tui/interfaces/desktop_api/`: HTTP/WebSocket routes and lifecycle
+- `device_tui/interfaces/mcp/`: MCP integration
+- `device_tui/plugin_api/`: external device-source contract
 
 ## Change Rules
 

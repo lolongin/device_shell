@@ -12,7 +12,7 @@ from .plugin_api import (
     PluginConfigOption,
     PluginSecretReader,
 )
-from .repository_api import (
+from .plugin_api.repository import (
     Device,
     DeviceRepository,
     InternalAuthStatus,

@@ -37,7 +37,7 @@ have been removed.
 The cutover contract in `tests/test_cutover_contract.py` prevents reintroducing Qt
 dependencies or deleted paths. New UI behavior belongs in
 `desktop/src/renderer/`; privileged desktop behavior belongs in Electron Main or
-the Python backend. Shared domain behavior belongs in `src/application/`.
+the Python backend. Shared domain behavior belongs in `device_tui/application/`.
 
 ## Validation
 

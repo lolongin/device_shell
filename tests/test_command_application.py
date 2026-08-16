@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from src.application import ApplicationConflictError, build_desktop_application
-from src.application.commands import CommandService, redact_command_secrets
-from src.application.credentials import ConnectionTarget
-from src.application.sessions import SessionRecord
-from src.infrastructure.sqlite_desktop import SQLiteDesktopStore
-from src.repository import SampleDeviceRepository
+from device_tui.application import ApplicationConflictError, build_desktop_application
+from device_tui.application.commands import CommandService, redact_command_secrets
+from device_tui.application.credentials import ConnectionTarget
+from device_tui.application.sessions import SessionRecord
+from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 class FakeSessionManager:

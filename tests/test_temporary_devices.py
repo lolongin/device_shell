@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.temporary_devices import (
+from device_tui.domain.devices.temporary import (
     TEMPORARY_DEVICE_DOMAIN,
     deserialize_temporary_device,
     is_temporary_device,

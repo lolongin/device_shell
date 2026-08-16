@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from src.ai_gateway.skills import SkillLoadError, SkillRegistry
+from device_tui.application.ai.gateway.skills import SkillLoadError, SkillRegistry
 
 
 def test_registry_lists_bundled_skill() -> None:

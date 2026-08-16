@@ -8,7 +8,7 @@ records to the canonical Device TUI repository contract.
 
 ## Public contract
 
-A plugin imports the stable `device_tui.plugin_api` and `device_tui.repository_api`
+A plugin imports the stable `device_tui.plugin_api` and `device_tui.plugin_api.repository`
 surfaces, exposes a `DeviceSourceDescriptor`, and creates an object implementing
 `DeviceRepository`. Plugin API version `1` requires all repository methods,
 including authentication status, inventory, occupancy actions, revision, and

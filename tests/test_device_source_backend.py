@@ -5,17 +5,17 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 
-from src.desktop_backend.app import create_app
-from src.desktop_backend.session_hub import SessionHub
-from src.device_source_plugins import (
+from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.device_sources.plugins import (
     DeviceSourceContext,
     DeviceSourceDescriptor,
     PluginCheckResult,
     PluginConfigField,
 )
-from src.application.secrets import MemorySecretStore
-from src.imported_devices import MemoryImportedDeviceStore
-from src.repository import SampleDeviceRepository
+from device_tui.application.secrets import MemorySecretStore
+from device_tui.device_sources.imported import MemoryImportedDeviceStore
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 TOKEN = "device-source-test"

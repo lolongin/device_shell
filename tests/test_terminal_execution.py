@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.terminal_execution import (
+from device_tui.application.terminal.execution import (
     detect_terminal_prompt,
     incremental_terminal_output,
     strip_terminal_ansi,

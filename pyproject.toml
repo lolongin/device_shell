@@ -22,8 +22,8 @@ packaging = [
 ]
 
 [project.scripts]
-device-tui-backend = "src.desktop_backend.main:main"
-device-tui-mcp = "src.device_mcp.server:main"
+device-tui-backend = "device_tui.interfaces.desktop_api.main:main"
+device-tui-mcp = "device_tui.interfaces.mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -31,8 +31,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "device_tui*"]
+include = ["device_tui*"]
+
+[tool.setuptools.package-data]
+"device_tui.application.ai.gateway" = ["skills/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["."]

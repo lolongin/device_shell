@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from src.telnet_session import (
+from device_tui.infrastructure.transports.telnet_session import (
     DO,
     IAC,
     SB,

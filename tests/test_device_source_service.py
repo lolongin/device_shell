@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import pytest
 
 from device_tui.plugin_api import DeviceSourceContext, DeviceSourceDescriptor
-from src.application.secrets import MemorySecretStore
-from src.application.settings import MemorySettingsStore
-from src.device_source_service import DeviceSourceService, DeviceSourceServiceError
-from src.imported_devices import MemoryImportedDeviceStore
-from src.product_profile import ProductProfile
-from src.repository import SampleDeviceRepository
+from device_tui.application.secrets import MemorySecretStore
+from device_tui.application.settings import MemorySettingsStore
+from device_tui.device_sources.service import DeviceSourceService, DeviceSourceServiceError
+from device_tui.device_sources.imported import MemoryImportedDeviceStore
+from device_tui.device_sources.profile import ProductProfile
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 @dataclass

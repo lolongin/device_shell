@@ -1,4 +1,4 @@
-from src.desktop_backend.ws_tickets import WebSocketTicketStore
+from device_tui.interfaces.desktop_api.ws_tickets import WebSocketTicketStore
 
 
 def test_websocket_ticket_is_scoped_and_single_use() -> None:

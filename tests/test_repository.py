@@ -6,7 +6,7 @@ import copy
 
 import pytest
 
-from src.repository import RepositoryConflictError, RepositoryError
+from device_tui.domain.devices.repository import RepositoryConflictError, RepositoryError
 
 
 class TestFetchDevices:

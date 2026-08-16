@@ -7,9 +7,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from src.device_mcp.actions import ActionBuilderMixin
-from src.device_mcp.validation import RequestValidationMixin
-from src.ai_device_ops import AiDeviceAction, AiDeviceToolResult, RiskLevel
+from device_tui.interfaces.mcp.actions import ActionBuilderMixin
+from device_tui.interfaces.mcp.validation import RequestValidationMixin
+from device_tui.application.ai.operations import AiDeviceAction, AiDeviceToolResult, RiskLevel
 
 
 class _Builder(RequestValidationMixin, ActionBuilderMixin):
@@ -68,8 +68,8 @@ def test_build_action_ai_get_result_is_observe() -> None:
 
 def _service_with_fake_backend():
     """Build an AppControlService whose backend simulates terminal_plan_start."""
-    from src.device_mcp.service import AppControlService
-    from src.ai_gateway.service import GatewayService
+    from device_tui.interfaces.mcp.service import AppControlService
+    from device_tui.application.ai.gateway.service import GatewayService
 
     class FakeBackend:
         def __init__(self) -> None:
@@ -115,7 +115,7 @@ def _service_with_fake_backend():
                     },
                 )
             if action.kind == "ai_gateway_get_result":
-                # Mirror the real app handler (src/app/ai_device_ops.py).
+                # Mirror the application AI operation handler.
                 data = self.gateway.get_result(
                     str(action.params.get("result_id") or ""),
                     include_raw=bool(action.params.get("include_raw", False)),
@@ -185,8 +185,8 @@ def test_service_ai_get_result_routes_to_app_handler() -> None:
 
 
 def test_service_routes_ai_create_session_open_and_wait() -> None:
-    from src.device_mcp.service import AppControlService
-    from src.ai_gateway.service import GatewayService
+    from device_tui.interfaces.mcp.service import AppControlService
+    from device_tui.application.ai.gateway.service import GatewayService
 
     class CreateBackend:
         def __init__(self) -> None:
@@ -232,8 +232,8 @@ def test_service_routes_ai_create_session_open_and_wait() -> None:
 def test_service_ai_execute_command_timeout_is_normal_outcome() -> None:
     """A timed-out execution is a NORMAL outcome: summary.status="timeout",
     partial output stays retrievable via ai_get_result (final-review Fix 1)."""
-    from src.device_mcp.service import AppControlService
-    from src.ai_gateway.service import GatewayService
+    from device_tui.interfaces.mcp.service import AppControlService
+    from device_tui.application.ai.gateway.service import GatewayService
 
     class TimeoutBackend:
         def __init__(self) -> None:
@@ -312,8 +312,8 @@ def test_service_ai_execute_batch_command_failure_is_failed_summary() -> None:
     """A command that fails on the device (terminal_failure) is a NORMAL
     outcome: summary.status="failed" with a result_id, not a hard HTTP error.
     The gateway result stays retrievable via ai_get_result."""
-    from src.device_mcp.service import AppControlService
-    from src.ai_gateway.service import GatewayService
+    from device_tui.interfaces.mcp.service import AppControlService
+    from device_tui.application.ai.gateway.service import GatewayService
 
     class FailureBackend:
         def __init__(self) -> None:

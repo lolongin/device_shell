@@ -9,10 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from device_tui.plugin_api import DeviceSourceContext
-from device_tui.repository_api import RepositoryError, STATUS_IDLE, STATUS_OCCUPIED
-from src.desktop_backend.app import create_app
-from src.desktop_backend.session_hub import SessionHub
-from src.imported_devices import MemoryImportedDeviceStore
+from device_tui.plugin_api.repository import RepositoryError, STATUS_IDLE, STATUS_OCCUPIED
+from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.device_sources.imported import MemoryImportedDeviceStore
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from src.ai_gateway.service import (
+from device_tui.application.ai.gateway.service import (
     GatewayService,
     GatewayUnavailableError,
 )

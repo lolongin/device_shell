@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src._sample_data import STATUS_IDLE, sample_devices
-from src.repository import SampleDeviceRepository
+from device_tui.device_sources.sample_data import STATUS_IDLE, sample_devices
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 def test_sample_data_includes_frame_device_boards() -> None:

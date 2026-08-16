@@ -131,7 +131,7 @@ function Invoke-CleanRuntimeCapture([string]$InstallDir, [string]$UserDataDir, [
     if ($logText -notmatch "resources\\backend\\device-tui-backend\\device-tui-backend(.exe)? --port 0") {
         throw "Backend log does not show bundled backend startup under clean runtime env: $backendLog"
     }
-    if ($logText -match "python -m src\.desktop_backend\.main") {
+    if ($logText -match "python -m device_tui\.interfaces\.desktop_api\.main") {
         throw "Packaged app fell back to source-mode Python backend under clean runtime env: $backendLog"
     }
 }

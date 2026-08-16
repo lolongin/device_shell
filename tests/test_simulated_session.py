@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from src.session_protocol import SessionCallbacks
-from src.simulated_session import SimulatedTerminalSession
+from device_tui.infrastructure.transports.session_protocol import SessionCallbacks
+from device_tui.infrastructure.transports.simulated_session import SimulatedTerminalSession
 
 
 def test_simulated_session_enters_boot_menu_with_ctrl_b() -> None:

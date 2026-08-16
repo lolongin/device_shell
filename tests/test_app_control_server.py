@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from src.ai_device_ops import AiDeviceAction, AiDeviceToolResult
-from src.app_control import APPROVAL_MODE_REQUIRED, AppControlService
-from src.app_control_client import AppControlClient, AppControlClientError
-from src.app_control_server import AppControlHttpServer
+from device_tui.application.ai.operations import AiDeviceAction, AiDeviceToolResult
+from device_tui.interfaces.mcp.service import APPROVAL_MODE_REQUIRED, AppControlService
+from device_tui.interfaces.mcp.client import AppControlClient, AppControlClientError
+from device_tui.interfaces.mcp.http_server import AppControlHttpServer
 
 
 @dataclass

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.desktop_backend.session_logging import FileSessionLogSink
+from device_tui.interfaces.desktop_api.session_logging import FileSessionLogSink
 
 
 def test_file_session_log_sink_writes_plain_redacted_records(tmp_path: Path) -> None:

@@ -3,6 +3,8 @@ __pycache__/
 .superpowers/
 *.egg-info/
 build/
+.preview_logs/
+trace_hang.txt
 desktop/node_modules/
 desktop/out/
 desktop/dist/

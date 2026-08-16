@@ -9,18 +9,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 
-from src.application import MemorySecretStore, build_desktop_application
-from src.application.errors import UnsupportedOperationError
-from src.application.events import EventBus
-from src.application.operations import OperationManager
-from src.application.transfers import normalize_advertised_host, select_route_local_ipv4
-from src.application.credentials import ConnectionTarget
-from src.desktop_backend.app import create_app
-from src.desktop_backend.session_hub import SessionHub
-from src.desktop_backend.terminal_executor import BackendTerminalExecutor
-from src.infrastructure.sqlite_desktop import SQLiteDesktopStore
-from src.file_transfer_service import TransferServiceConfig
-from src.repository import SampleDeviceRepository
+from device_tui.application import MemorySecretStore, build_desktop_application
+from device_tui.application.errors import UnsupportedOperationError
+from device_tui.application.events import EventBus
+from device_tui.application.operations import OperationManager
+from device_tui.application.transfers import normalize_advertised_host, select_route_local_ipv4
+from device_tui.application.credentials import ConnectionTarget
+from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.interfaces.desktop_api.terminal_executor import BackendTerminalExecutor
+from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
+from device_tui.infrastructure.transfers.file_transfer_service import TransferServiceConfig
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 TOKEN = "transfer-test-token"
@@ -46,10 +46,10 @@ def test_route_local_ip_uses_the_os_route_for_each_device(monkeypatch) -> None:
             return
 
     monkeypatch.setattr(
-        "src.application.transfers.socket.getaddrinfo",
+        "device_tui.application.transfers.socket.getaddrinfo",
         lambda host, port, **_kwargs: [(2, 2, 17, "", (host, port))],
     )
-    monkeypatch.setattr("src.application.transfers.socket.socket", RouteProbe)
+    monkeypatch.setattr("device_tui.application.transfers.socket.socket", RouteProbe)
 
     assert select_route_local_ipv4("192.0.2.20", 22) == "192.168.10.25"
     assert select_route_local_ipv4("198.51.100.30", 22) == "10.8.0.7"
@@ -86,7 +86,7 @@ def test_managed_transfer_uses_session_route_unless_access_ip_is_overridden(
         )
         selected: list[tuple[str, int]] = []
         monkeypatch.setattr(
-            "src.application.transfers.select_route_local_ipv4",
+            "device_tui.application.transfers.select_route_local_ipv4",
             lambda host, port: selected.append((host, port)) or "192.168.10.25",
         )
         config = TransferServiceConfig(

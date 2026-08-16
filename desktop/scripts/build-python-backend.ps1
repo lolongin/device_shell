@@ -18,6 +18,7 @@ $pyInstallerArgs = @(
     "--workpath", $workRoot,
     "--specpath", $specRoot,
     "--paths", $projectRoot,
+    "--collect-data", "device_tui",
     "--collect-all", "keyring",
     "--collect-all", "openpyxl",
     "--collect-all", "pyftpdlib",
@@ -47,7 +48,7 @@ foreach ($module in $pluginModules) {
     }
     $pyInstallerArgs += @("--collect-all", $module)
 }
-$pyInstallerArgs += (Join-Path $projectRoot "src\desktop_backend\frozen_main.py")
+$pyInstallerArgs += (Join-Path $projectRoot "device_tui\interfaces\desktop_api\frozen_main.py")
 
 & $Python -m PyInstaller @pyInstallerArgs
 

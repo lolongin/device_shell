@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.data import Device
-from src.repository import SampleDeviceRepository
+from device_tui.domain.devices.models import Device
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 @pytest.fixture

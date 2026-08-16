@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from src.ai_gateway.flow_engine import (
+from device_tui.application.ai.gateway.flow_engine import (
     FlowEngine,
     FlowPlanError,
     parse_flow,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ai_device_ops import (
+from device_tui.application.ai.operations import (
     DeviceSnapshot,
     RiskLevel,
     SimpleAiDevicePlanner,

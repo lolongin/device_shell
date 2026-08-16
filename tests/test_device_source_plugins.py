@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import src.device_source_plugins as plugin_module
-from src.desktop_backend.app import create_app
-from src.desktop_backend.session_hub import SessionHub
-from src.device_source_plugins import (
+import device_tui.device_sources.plugins as plugin_module
+from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.device_sources.plugins import (
     DEVICE_SOURCE_ENTRY_POINT_GROUP,
     DeviceSourceContext,
     DeviceSourceDescriptor,
@@ -20,12 +20,13 @@ from src.device_source_plugins import (
     discover_device_source_plugins,
     validate_device_repository,
 )
-from src.imported_devices import MemoryImportedDeviceStore
-from src.application.secrets import MemorySecretStore
-from src.application.settings import MemorySettingsStore
-from src.infrastructure.sqlite_desktop import SQLiteDesktopStore
-from src.infrastructure.sqlite_settings import SQLiteSettingsStore
-from src.repository import InternalAuthStatus, SampleDeviceRepository
+from device_tui.device_sources.imported import MemoryImportedDeviceStore
+from device_tui.application.secrets import MemorySecretStore
+from device_tui.application.settings import MemorySettingsStore
+from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
+from device_tui.infrastructure.persistence.sqlite_settings import SQLiteSettingsStore
+from device_tui.device_sources.sample import SampleDeviceRepository
+from device_tui.domain.devices.repository import InternalAuthStatus
 
 
 class _InternalRepository(SampleDeviceRepository):
@@ -206,8 +207,8 @@ def test_real_distribution_metadata_entry_point_is_discovered(
 ) -> None:
     (tmp_path / "external_device_source.py").write_text(
         """
-from src.device_source_plugins import DeviceSourceDescriptor
-from src.repository import SampleDeviceRepository
+from device_tui.device_sources.plugins import DeviceSourceDescriptor
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 class Plugin:
     descriptor = DeviceSourceDescriptor(

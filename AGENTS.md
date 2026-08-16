@@ -8,19 +8,19 @@ must not introduce PySide/PyQt dependencies.
 - `desktop/src/main/`: Electron lifecycle, backend supervision, secure IPC.
 - `desktop/src/preload/`: narrow renderer bridge.
 - `desktop/src/renderer/`: Vue UI and xterm.js terminal workspace.
-- `src/desktop_backend/`: FastAPI and WebSocket backend.
-- `src/application/`: UI-independent application services.
-- `src/infrastructure/`: persistence and external adapters.
-- `src/device_mcp/`: MCP entry point, tools, and gateway.
-- `src/device_source_service.py`: active device-source policy and lifecycle.
-- `src/device_source_plugins.py`: built-in sources and Entry Point discovery.
-- `src/data.py`, `src/repository.py`: device model and repository contracts.
+- `device_tui/domain/`: device models and repository contracts.
+- `device_tui/application/`: UI-independent application services.
+- `device_tui/device_sources/`: source policy, imports, and Entry Point discovery.
+- `device_tui/infrastructure/`: persistence, transports, transfers, and audit adapters.
+- `device_tui/interfaces/desktop_api/`: FastAPI and WebSocket backend.
+- `device_tui/interfaces/mcp/`: MCP entry point, tools, and gateway.
+- `device_tui/plugin_api/`: stable external device-source plugin contract.
 - `tests/`: pytest suite.
 
 ## Build, Test, and Development Commands
 
 - `pip install -e .`: install the Python backend in editable mode.
-- `python -m src.desktop_backend.main`: run the backend independently.
+- `python -m device_tui.interfaces.desktop_api.main`: run the backend independently.
 - `python -m pytest`: run Python tests.
 - `python -m compileall -q src`: check Python syntax.
 - `cd desktop && npm install`: install desktop packages.

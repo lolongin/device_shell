@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from device_tui.repository_api import (
+from device_tui.plugin_api.repository import (
     Device,
     InternalAuthStatus,
     RepositoryConflictError,

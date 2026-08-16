@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.device_mcp.gateway import McpGateway
+from device_tui.interfaces.mcp.gateway import McpGateway
 
 
 class _FakeClient:
@@ -47,7 +47,7 @@ def test_gateway_caches_discovery_and_does_not_probe_health(
         return client
 
     monkeypatch.setattr(
-        "src.device_mcp.gateway.AppControlClient.from_state_file",
+        "device_tui.interfaces.mcp.gateway.AppControlClient.from_state_file",
         create_client,
     )
     gateway = McpGateway(state_path)
@@ -75,7 +75,7 @@ def test_gateway_reloads_client_when_control_state_changes(
         return client
 
     monkeypatch.setattr(
-        "src.device_mcp.gateway.AppControlClient.from_state_file",
+        "device_tui.interfaces.mcp.gateway.AppControlClient.from_state_file",
         create_client,
     )
     gateway = McpGateway(state_path)
@@ -103,7 +103,7 @@ def test_gateway_can_route_to_electron_backend_without_state_file(monkeypatch: o
 
     monkeypatch.setenv("DEVICE_TUI_MCP_BACKEND_URL", "http://127.0.0.1:9999")
     monkeypatch.setenv("DEVICE_TUI_MCP_BACKEND_TOKEN", "desktop-token")
-    monkeypatch.setattr("src.device_mcp.gateway.DesktopApiClient", _DesktopClient)
+    monkeypatch.setattr("device_tui.interfaces.mcp.gateway.DesktopApiClient", _DesktopClient)
     gateway = McpGateway(Path("unused-state.json"))
 
     response = gateway.call("ai_get_result", result_id="ai-1", include_raw=True)

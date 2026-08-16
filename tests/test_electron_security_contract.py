@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.desktop_backend.models import (
+from device_tui.interfaces.desktop_api.models import (
     DirectCredentialSessionRequest,
     InternalAuthLoginRequest,
     OneTimeCredentialSessionRequest,

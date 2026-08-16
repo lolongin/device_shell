@@ -6,7 +6,7 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from src.ai_gateway.result_store import (
+from device_tui.application.ai.gateway.result_store import (
     ResultStore,
     summarize_output,
 )

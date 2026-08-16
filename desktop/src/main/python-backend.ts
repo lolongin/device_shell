@@ -62,7 +62,7 @@ export class PythonBackend {
     const command = bundledBackend || python
     const args = bundledBackend
       ? ['--port', '0']
-      : ['-m', 'src.desktop_backend.main', '--port', '0']
+      : ['-m', 'device_tui.interfaces.desktop_api.main', '--port', '0']
     const projectRoot = process.env.DEVICE_TUI_PROJECT_ROOT || path.resolve(app.getAppPath(), '..')
     if (bundledBackend && !existsSync(bundledBackend)) {
       throw new Error(`Bundled Python backend was not found: ${bundledBackend}`)

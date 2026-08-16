@@ -5,7 +5,7 @@ from typing import Callable
 
 import pytest
 
-from src.terminal_orchestration import (
+from device_tui.application.terminal.orchestration import (
     TerminalExecutionCoordinator,
     TerminalInput,
     TerminalPlanError,

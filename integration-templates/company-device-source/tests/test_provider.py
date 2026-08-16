@@ -7,7 +7,7 @@ import tomllib
 import pytest
 
 from device_tui.plugin_api import DeviceSourceContext
-from device_tui.repository_api import RepositoryError, STATUS_IDLE, STATUS_OCCUPIED
+from device_tui.plugin_api.repository import RepositoryError, STATUS_IDLE, STATUS_OCCUPIED
 
 
 ROOT = Path(__file__).resolve().parents[1]

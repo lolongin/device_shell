@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.desktop_backend.app import create_app
-from src.desktop_backend.session_hub import SessionHub
-from src.repository import SampleDeviceRepository
+from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 TOKEN = "desktop-mcp-test-token"

@@ -7,9 +7,9 @@ import threading
 
 import pytest
 
-import src.app_control as app_control_module
-from src.ai_device_ops import AiDeviceAction, AiDeviceToolResult, RiskLevel
-from src.app_control import (
+import device_tui.interfaces.mcp.service as app_control_module
+from device_tui.application.ai.operations import AiDeviceAction, AiDeviceToolResult, RiskLevel
+from device_tui.interfaces.mcp.service import (
     APPROVAL_MODE_DISABLED,
     APPROVAL_MODE_REQUIRED,
     AppControlError,

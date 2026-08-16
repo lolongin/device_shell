@@ -4,8 +4,8 @@ import asyncio
 
 import asyncssh
 
-from src.linux_session import LinuxSshSession, RemoteOutputDecoder
-from src.session_protocol import SessionCallbacks
+from device_tui.infrastructure.transports.linux_session import LinuxSshSession, RemoteOutputDecoder
+from device_tui.infrastructure.transports.session_protocol import SessionCallbacks
 
 
 class _BlockingReader:

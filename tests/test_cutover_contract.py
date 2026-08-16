@@ -18,20 +18,13 @@ QT_TOKENS = (
     "QtWebChannel",
 )
 REMOVED_PATHS = (
-    "src/desktop_app.py",
-    "src/app",
-    "src/widgets",
-    "src/web",
-    "src/app_state.py",
-    "src/async_utils.py",
-    "src/styles.py",
-    "src/theme_tokens.py",
+    "src",
 )
 
 
 def test_python_source_has_no_qt_dependency() -> None:
     offenders: list[str] = []
-    scanned = sorted((ROOT / "src").rglob("*.py"))
+    scanned = sorted((ROOT / "device_tui").rglob("*.py"))
 
     for path in scanned:
         source = path.read_text(encoding="utf-8")
@@ -53,8 +46,8 @@ def test_python_package_has_no_qt_runtime_dependency_or_gui_script() -> None:
     assert "pyqt" not in dependencies
     assert "pyte" not in dependencies
     assert scripts == {
-        "device-tui-backend": "src.desktop_backend.main:main",
-        "device-tui-mcp": "src.device_mcp.server:main",
+        "device-tui-backend": "device_tui.interfaces.desktop_api.main:main",
+        "device-tui-mcp": "device_tui.interfaces.mcp.server:main",
     }
 
 
@@ -75,8 +68,33 @@ def test_legacy_desktop_paths_are_removed() -> None:
     assert leftovers == []
 
 
+def test_device_tui_is_the_only_python_package_root() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["tool"]["setuptools"]["packages"]["find"]["include"] == [
+        "device_tui*"
+    ]
+
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "device_tui").rglob("*.py"))
+    )
+    assert "from src." not in source
+    assert "import src." not in source
+
+    for relative in (
+        "device_tui/domain",
+        "device_tui/application",
+        "device_tui/device_sources",
+        "device_tui/infrastructure",
+        "device_tui/interfaces/desktop_api",
+        "device_tui/interfaces/mcp",
+        "device_tui/plugin_api",
+    ):
+        assert (ROOT / relative).is_dir()
+
+
 def test_electron_and_backend_entry_points_exist() -> None:
     assert (ROOT / "desktop/package.json").is_file()
     assert (ROOT / "desktop/src/main").is_dir()
     assert (ROOT / "desktop/src/renderer/src/App.vue").is_file()
-    assert (ROOT / "src/desktop_backend/main.py").is_file()
+    assert (ROOT / "device_tui/interfaces/desktop_api/main.py").is_file()

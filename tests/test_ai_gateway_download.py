@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from src.managed_file_transfer import (
+from device_tui.infrastructure.transfers.managed_file_transfer import (
     ManagedTransferError,
     build_managed_transfer_download_steps,
 )

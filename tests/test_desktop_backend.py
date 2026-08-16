@@ -5,7 +5,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from src.desktop_backend.app import (
+from device_tui.interfaces.desktop_api.app import (
     INTERNAL_AUTH_AUTO_LOGIN_SETTING,
     INTERNAL_AUTH_CID_SETTING,
     INTERNAL_AUTH_USERNAME_SETTING,
@@ -15,11 +15,12 @@ from src.desktop_backend.app import (
     _source_auth_setting_key,
     create_app,
 )
-from src.desktop_backend.session_logging import FileSessionLogSink
-from src.desktop_backend.session_hub import SessionHub, TerminalEvent
-from src.repository import InternalAuthStatus, SampleDeviceRepository
-from src.application.secrets import MemorySecretStore
-from src.application.settings import MemorySettingsStore
+from device_tui.interfaces.desktop_api.session_logging import FileSessionLogSink
+from device_tui.interfaces.desktop_api.session_hub import SessionHub, TerminalEvent
+from device_tui.device_sources.sample import SampleDeviceRepository
+from device_tui.domain.devices.repository import InternalAuthStatus
+from device_tui.application.secrets import MemorySecretStore
+from device_tui.application.settings import MemorySettingsStore
 from pathlib import Path
 
 

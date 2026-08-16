@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from src.application.credentials import RepositoryCredentialResolver
-from src.application.errors import ApplicationConflictError
-from src.application.profiles import (
+from device_tui.application.credentials import RepositoryCredentialResolver
+from device_tui.application.errors import ApplicationConflictError
+from device_tui.application.profiles import (
     CompositeCredentialResolver,
     ConnectionProfileDraft,
     ConnectionProfileService,
     ProfileEndpoint,
 )
-from src.application.secrets import MemorySecretStore
-from src.infrastructure.sqlite_profiles import SQLiteConnectionProfileStore
-from src.repository import SampleDeviceRepository
+from device_tui.application.secrets import MemorySecretStore
+from device_tui.infrastructure.persistence.sqlite_profiles import SQLiteConnectionProfileStore
+from device_tui.device_sources.sample import SampleDeviceRepository
 
 
 def _service(tmp_path: Path) -> tuple[ConnectionProfileService, MemorySecretStore, Path]:

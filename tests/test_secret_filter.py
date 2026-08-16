@@ -1,4 +1,4 @@
-from src.desktop_backend.secret_filter import SecretOutputFilter
+from device_tui.interfaces.desktop_api.secret_filter import SecretOutputFilter
 
 
 def test_secret_filter_redacts_secret_split_across_chunks() -> None:
