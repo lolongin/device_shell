@@ -336,7 +336,7 @@ class DeviceService:
         owned_device_ids.discard(SIMULATED_DEVICE_ID)
         # SIM-TERMINAL is an application-owned navigation item rather than a
         # repository record. Reserve its id, canonicalize it, and append it in
-        # the same position as the legacy PySide navigation.
+        # the stable final position expected by desktop navigation.
         repository_devices = [
             device
             for device in fetched_devices

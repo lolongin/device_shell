@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from src.command_suggestions import (
     CommandHistoryItem,
     deserialize_command_history_item,
@@ -10,8 +8,6 @@ from src.command_suggestions import (
     serialize_command_history_item,
     suggest_commands,
 )
-from src.widgets.terminal_canvas import TerminalCanvasWidget
-from src.widgets.xterm_web_widget import XtermWebWidget
 
 
 def test_command_history_records_and_ranks_recent_device_commands() -> None:
@@ -120,118 +116,3 @@ def test_infer_completed_command_from_terminal_line_supports_token_completion() 
         infer_completed_command_from_terminal_line("cat /proc/k", "root@box:~# cat /proc/kbox")
         == "cat /proc/kbox"
     )
-
-
-def test_xterm_command_suggestion_does_not_intercept_tab() -> None:
-    terminal = XtermWebWidget.__new__(XtermWebWidget)
-    sent: list[str] = []
-    terminal._raw_sender = sent.append
-    terminal._command_recorder = None
-    terminal._command_suggestion_provider = lambda _query: "display version"
-    terminal._enter_reconnect_handler = None
-    terminal._pending_command_chars = list("di")
-    terminal._current_command_suggestion = "display version"
-    terminal._local_echo = False
-    terminal._ready = False
-    terminal._view = None
-
-    terminal._handle_input("\t")
-
-    assert sent == ["\t"]
-    assert "".join(terminal._pending_command_chars) == "di"
-    assert terminal._current_command_suggestion == ""
-
-
-def test_xterm_page_clears_suggestion_before_history_navigation() -> None:
-    page = (Path(__file__).resolve().parents[1] / "src" / "web" / "xterm_terminal.html").read_text(
-        encoding="utf-8"
-    )
-
-    assert "function shouldClearSuggestionForData(data)" in page
-    assert "event.key === 'ArrowUp'" in page
-    assert "event.key === 'ArrowDown'" in page
-    assert "shouldClearSuggestionForData(data)" in page
-    assert "clearSuggestion();" in page[page.index("term.onData((data) =>") :]
-    assert "scheduleCompletionLineCapture();" in page
-    assert "cacheCompletionLine(currentTerminalLineText())" in page
-
-
-def test_xterm_records_tab_completed_command_from_terminal_line() -> None:
-    terminal = XtermWebWidget.__new__(XtermWebWidget)
-    recorded: list[str] = []
-    sent: list[str] = []
-    terminal._raw_sender = sent.append
-    terminal._command_recorder = recorded.append
-    terminal._command_suggestion_provider = None
-    terminal._enter_reconnect_handler = None
-    terminal._pending_command_chars = list("cd d")
-    terminal._current_command_suggestion = ""
-    terminal._local_echo = False
-    terminal._ready = False
-    terminal._view = None
-
-    terminal._handle_input_with_terminal_line("\r", r"lon@HOST C:\Users\74527>cd d:\\")
-
-    assert sent == ["\r"]
-    assert recorded == [r"cd d:\\"]
-    assert terminal._pending_command_chars == []
-
-
-def test_xterm_caches_tab_completed_line_before_enter() -> None:
-    terminal = XtermWebWidget.__new__(XtermWebWidget)
-    recorded: list[str] = []
-    sent: list[str] = []
-    terminal._raw_sender = sent.append
-    terminal._command_recorder = recorded.append
-    terminal._command_suggestion_provider = None
-    terminal._enter_reconnect_handler = None
-    terminal._pending_command_chars = list("cat /proc/k")
-    terminal._current_command_suggestion = ""
-    terminal._local_echo = False
-    terminal._ready = False
-    terminal._view = None
-
-    terminal._handle_input("\t")
-    terminal.cache_completion_line("root@box:~# cat /proc/kbox")
-    terminal._handle_input_with_terminal_line("\r", "cat /proc/k")
-
-    assert sent == ["\t", "\r"]
-    assert recorded == ["cat /proc/kbox"]
-    assert terminal._pending_command_chars == []
-
-
-def test_xterm_records_tab_completed_command_when_prefix_is_replaced() -> None:
-    terminal = XtermWebWidget.__new__(XtermWebWidget)
-    recorded: list[str] = []
-    sent: list[str] = []
-    terminal._raw_sender = sent.append
-    terminal._command_recorder = recorded.append
-    terminal._command_suggestion_provider = None
-    terminal._enter_reconnect_handler = None
-    terminal._pending_command_chars = list("dis int")
-    terminal._current_command_suggestion = ""
-    terminal._local_echo = False
-    terminal._ready = False
-    terminal._view = None
-
-    terminal._handle_input_with_terminal_line("\r", "<RTN-1>display interface brief")
-
-    assert sent == ["\r"]
-    assert recorded == ["display interface brief"]
-    assert terminal._pending_command_chars == []
-
-
-def test_canvas_records_tab_completed_command_from_current_line() -> None:
-    terminal = TerminalCanvasWidget.__new__(TerminalCanvasWidget)
-    recorded: list[str] = []
-    terminal._pending_command_chars = list("dis")
-    terminal._command_recorder = recorded.append
-    terminal._screen = None
-    terminal._plain_fast_mode = False
-    terminal._fallback_lines = ["<RTN-1>display version"]
-
-    terminal._sync_pending_command_from_current_line()
-    terminal._commit_pending_command()
-
-    assert recorded == ["display version"]
-    assert terminal._pending_command_chars == []

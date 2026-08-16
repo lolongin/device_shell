@@ -1,60 +1,61 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This project is a small Python package for a PySide6 desktop device dashboard.
-Keep source code in `src/`.
 
-- `src/desktop_app.py`: main desktop GUI, layout, device actions, and terminal tabs.
-- `src/data.py`: `Device` model and sample/generated device data.
-- `src/repository.py`: sample and API-backed repository implementations.
-- `src/api_client.py`: HTTP API client used by GUI API mode.
-- `src/telnet_session.py`: device Telnet session implementation.
-- `src/linux_session.py`: Linux SSH session implementation.
-- `src/session_protocol.py`: shared session callback/protocol types.
-- `src/__init__.py`: package marker.
-- `README.md`: user-facing setup and usage notes.
-- `pyproject.toml`: package metadata and desktop console script entry points.
+Device TUI has one desktop UI: Electron + Vue. Python is a headless backend and
+must not introduce PySide/PyQt dependencies.
 
-There is no `tests/` directory yet. Add new tests under `tests/` when the suite is introduced.
+- `desktop/src/main/`: Electron lifecycle, backend supervision, secure IPC.
+- `desktop/src/preload/`: narrow renderer bridge.
+- `desktop/src/renderer/`: Vue UI and xterm.js terminal workspace.
+- `src/desktop_backend/`: FastAPI and WebSocket backend.
+- `src/application/`: UI-independent application services.
+- `src/infrastructure/`: persistence and external adapters.
+- `src/device_mcp/`: MCP entry point, tools, and gateway.
+- `src/device_source_service.py`: active device-source policy and lifecycle.
+- `src/device_source_plugins.py`: built-in sources and Entry Point discovery.
+- `src/data.py`, `src/repository.py`: device model and repository contracts.
+- `tests/`: pytest suite.
 
 ## Build, Test, and Development Commands
-- `pip install -e .`: install the project in editable mode.
-- `python src/desktop_app.py`: run the desktop GUI directly during development.
-- `device-tui`: run the packaged desktop entry point after installation.
-- `python -m py_compile src\\*.py`: quick syntax check for source files.
 
-Use a virtual environment and Python `3.10+`, matching `pyproject.toml`.
+- `pip install -e .`: install the Python backend in editable mode.
+- `python -m src.desktop_backend.main`: run the backend independently.
+- `python -m pytest`: run Python tests.
+- `python -m compileall -q src`: check Python syntax.
+- `cd desktop && npm install`: install desktop packages.
+- `cd desktop && npm run dev`: run the desktop App.
+- `cd desktop && npm run typecheck`: run Vue and Electron TypeScript checks.
+- `cd desktop && npm run build`: build the production desktop bundles.
+- `cd desktop && npm run dist`: build the Windows installer and bundled backend.
+
+Use Python 3.10+ and a virtual environment.
 
 ## Coding Style & Naming Conventions
-Follow standard Python conventions:
 
-- Use 4-space indentation and type hints for new code.
-- Keep module names lowercase, for example `data.py`.
-- Use `snake_case` for functions and variables, `PascalCase` for classes, and `UPPER_SNAKE_CASE` for constants.
-- Keep UI strings, key bindings, and style constants grouped near the top of `src/desktop_app.py`.
-
-Favor small helper methods over deeply nested event handlers.
+- Use 4-space indentation and type hints for new Python code.
+- Use `snake_case` for Python functions and variables, `PascalCase` for classes,
+  and `UPPER_SNAKE_CASE` for constants.
+- Keep Vue components focused; move shared behavior into composables, stores, or
+  Python application services.
+- Keep credentials and privileged operations outside the renderer.
+- Favor small helpers over deeply nested event handlers.
 
 ## Testing Guidelines
-Automated tests are not configured yet. For now, validate changes by:
 
-- Launching `python src/desktop_app.py`
-- Exercising filters, list navigation, device detail updates, and connection shortcuts
-- Verifying terminal tabs, reconnect/disconnect actions, command notes, and log controls
-
-When adding tests, use `pytest`, place files in `tests/`, and name them `test_*.py`.
+Use `pytest` for Python tests under `tests/test_*.py`. For desktop changes, run
+type checks and the production build in addition to the relevant pytest files.
+Exercise filters, source workflows, terminal connection/reconnect, transfer plans,
+and persistence when those areas change.
 
 ## Commit & Pull Request Guidelines
-Use short, imperative commit messages such as `Add CPU filter chips`.
 
-Pull requests should include:
-
-- A clear summary of behavior changes
-- Manual test notes with commands used
-- Screenshots or terminal captures for GUI layout changes
-- Linked issue or task reference when applicable
+Use short, imperative commit messages such as `Simplify device source selection`.
+Pull requests should include a behavior summary, validation commands, screenshots
+for visible UI changes, and a linked issue when applicable.
 
 ## Security & Configuration Tips
-`src/data.py` contains sample usernames, passwords, and IPs for local testing.
-Do not commit real credentials. Prefer environment-based configuration or a
-secure secrets store before connecting to production systems.
+
+Never commit real credentials. Keep passwords in the operating-system credential
+vault and website cookies in backend memory. Renderer state, SQLite, logs, and MCP
+results must remain free of secrets.

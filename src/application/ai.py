@@ -1,8 +1,7 @@
-"""Qt-free AI, approval, and audit facade for the desktop backend.
+"""UI-independent AI, approval, and audit facade for the desktop backend.
 
 The service deliberately works with application services only.  It is therefore
-usable by FastAPI, MCP, and future non-Electron clients without importing the
-legacy PySide desktop window.
+usable by FastAPI, MCP, and other service clients without importing a desktop UI.
 """
 
 from __future__ import annotations

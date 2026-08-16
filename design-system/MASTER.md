@@ -1,172 +1,90 @@
 # Device TUI Design System
 
-This file is the source of truth for the desktop workspace visual language.
-The app is a PySide6 desktop shell with Web-rendered home, terminal navigation,
-auto-response editor, and xterm terminal surfaces.
+This file defines the visual and interaction language for the Electron + Vue
+desktop workspace. The implementation source of truth is
+`desktop/src/renderer/src/styles.css`; component-specific styles may refine layout
+without redefining the shared palette.
 
 ## Product Direction
 
-- Make the UI feel like a polished Web operations dashboard inside the desktop app.
-- Keep the home screen as the full device pool overview.
-- Keep terminal sessions as the operator workspace, with the left rail shown as a compact terminal session navigation surface.
-- Preserve right-click operations by routing all native menus through the workspace menu factory and all Web device rows through QtWebChannel bridge requests.
+- Present a compact, calm operations workspace rather than a generic admin page.
+- Keep the device pool as the home view and terminals as the focused work area.
+- Make connection state, active device, destructive actions, and transfer progress
+  immediately legible.
+- Keep developer-only source/plugin controls out of fixed product builds.
 
 ## Theme Tokens
 
-Use these colors across Web CSS, Qt style sheets, canvas terminal rendering, and generated HTML snippets.
-
-| Token | Value | Usage |
-| --- | --- | --- |
-| Background | `#020617` | App background, terminal surface |
-| Panel | `#0f172a` | Cards, grouped panels, menus |
-| Panel Raised | `#111c2f` | Hover rows, secondary surfaces |
-| Input | `#08101d` | Inputs, inactive controls |
-| Line | `#243244` | Panel borders, table dividers |
-| Strong Line | `#334155` | Control borders, scroll thumbs |
-| Text | `#f8fafc` | Primary text |
-| Muted Text | `#a7b4c7` | Secondary text |
-| Soft Text | `#718096` | Disabled and low-emphasis text |
-| Accent | `#22c55e` | Primary action, connected, idle |
-| Accent Blue | `#60a5fa` | Focus ring, pipeline, links |
-| Warning | `#fbbf24` | Occupied, caution |
-| Warning Text | `#f8e7a1` | Compact warning metadata |
-| Danger | `#f87171` | Errors, destructive actions |
-| Success Text | `#d8fff0` | Success button and chip foreground |
-| Danger Text | `#fecaca` | Danger button and destructive foreground |
-| Selected | `#24324a` | Selected rows, tabs, and checked surfaces |
-| Text Selection | `#315f9f` | Selected text background across Qt, Web, and terminals |
-| Text Selection Foreground | `#f8fafc` | Selected text foreground |
-| Scroll Hover | `#475569` | Web and terminal scrollbar hover |
-| Terminal ANSI Magenta | `#c4b5fd` | xterm ANSI magenta |
-| Terminal ANSI Cyan | `#91d7e3` | xterm ANSI cyan |
-| Terminal Bright Red | `#fca5a5` | xterm bright red |
-| Terminal Bright Green | `#86efac` | xterm bright green |
-| Terminal Bright Yellow | `#f5d99a` | xterm bright yellow |
-| Terminal Bright Blue | `#b7c8ff` | xterm bright blue |
-| Terminal Bright Magenta | `#ddd6fe` | xterm bright magenta |
-| Terminal Bright Cyan | `#b5eff7` | xterm bright cyan |
-| Terminal Bright White | `#f6f8fb` | xterm bright white |
-| Overlay | `rgba(2, 6, 23, 0.72)` | Modal backdrop |
-| Home Accent Glow | `rgba(34, 197, 94, 0.08)` | Home dashboard radial glow |
-| Home Blue Glow | `rgba(96, 165, 250, 0.10)` | Home dashboard radial glow |
-| Surface Top | `rgba(9, 12, 16, 0.86)` | Web top bar surface |
-| Surface Filter | `rgba(8, 12, 17, 0.92)` | Web filter bar surface |
-| Surface Card | `rgba(13, 17, 23, 0.94)` | Web card surface |
-| Status Idle Line | `rgba(34, 197, 94, 0.42)` | Idle status capsule border |
-| Status Occupied Soft | `rgba(251, 191, 36, 0.13)` | Occupied status capsule background |
-| Status Pipeline Soft | `rgba(96, 165, 250, 0.13)` | Pipeline status capsule background |
-| Status Other Soft | `rgba(113, 128, 150, 0.14)` | Other status capsule background |
-| Empty Background | `rgba(8, 16, 29, 0.55)` | Empty state placeholder surface |
-
-## CSS Custom Properties
-
-Every Web page should consume these variables from `src/web/assets/workspace-theme.css`.
-When adding a new custom property, update this list and the theme tests together.
-
-- `--bg`
-- `--panel`
-- `--panel-2`
-- `--line`
-- `--line-strong`
-- `--text`
-- `--muted`
-- `--soft`
-- `--accent`
-- `--accent-2`
-- `--blue`
-- `--warn`
-- `--danger`
-- `--selected`
-- `--text-selection-bg`
-- `--text-selection-fg`
-- `--input`
-- `--input-quiet`
-- `--success-soft`
-- `--success-line`
-- `--success-text`
-- `--danger-soft`
-- `--danger-line`
-- `--danger-text`
-- `--warn-text`
-- `--focus-ring`
-- `--focus`
-- `--row-line`
-- `--home-glow-accent`
-- `--home-glow-blue`
-- `--surface-top`
-- `--surface-filter`
-- `--surface-card`
-- `--scroll-hover`
-- `--terminal-suggestion`
-- `--terminal-ansi-magenta`
-- `--terminal-ansi-cyan`
-- `--terminal-ansi-bright-red`
-- `--terminal-ansi-bright-green`
-- `--terminal-ansi-bright-yellow`
-- `--terminal-ansi-bright-blue`
-- `--terminal-ansi-bright-magenta`
-- `--terminal-ansi-bright-cyan`
-- `--terminal-ansi-bright-white`
-- `--overlay`
-- `--shadow-strong`
-- `--status-idle-soft`
-- `--status-idle-line`
-- `--status-occupied-soft`
-- `--status-occupied-line`
-- `--status-pipeline-soft`
-- `--status-pipeline-line`
-- `--status-other-soft`
-- `--status-other-line`
-- `--empty-bg`
+| Token | Dark | Light | Usage |
+| --- | --- | --- | --- |
+| Background | `#020617` | `#f2f4f6` | App and terminal background |
+| Panel | `#0f172a` | `#ffffff` | Cards and menus |
+| Panel Raised | `#111c2f` | `#e8ebef` | Hover and secondary surfaces |
+| Input | `#08101d` | `#fafbfc` | Inputs and inactive controls |
+| Line | `#243244` | `#d5dae1` | Dividers and borders |
+| Strong Line | `#334155` | `#c0c7d1` | Focused control boundaries |
+| Text | `#f8fafc` | `#1c2128` | Primary text |
+| Muted Text | `#a7b4c7` | `#5a6470` | Secondary text |
+| Soft Text | `#718096` | `#87919d` | Disabled text |
+| Accent | `#22c55e` | `#1f8a4c` | Primary and connected state |
+| Blue | `#60a5fa` | `#3a7ecf` | Focus, links, pipeline state |
+| Warning | `#fbbf24` | `#b7791f` | Occupied and caution state |
+| Danger | `#f87171` | `#c74a4a` | Errors and destructive action |
+| Selected | `#24324a` | `#dbe6f2` | Selected rows and tabs |
+| Text Selection | `#315f9f` | `#3a7ecf` | Native and terminal selection |
 
 ## Typography
 
-- Use `Fira Sans` for Web and native workspace UI when available.
-- Use `Fira Code`, `Cascadia Mono`, or `Consolas` for terminals and command editors.
-- Keep font sizes compact and operational: dense tables are acceptable, but focus rings and row states must stay visible.
+- Use the system UI stack for workspace text.
+- Use `Fira Code`, `Cascadia Mono`, or `Consolas` for terminal and command text.
+- Keep tables dense but preserve readable hit targets and visible focus rings.
+- Numeric progress, byte counts, ports, and IP addresses should use tabular figures.
 
 ## Surface Rules
 
-- Web pages must link `src/web/assets/workspace-theme.css`.
-- Web pages must not redeclare root-level theme tokens locally.
-- Web pages should use shared root classes from `workspace-theme.css`: `workspace-page`, `workspace-compact-page`, or `workspace-terminal-page`.
-- Web pages must consume shared `button`, `input`, `select`, and focus-visible control styling from `workspace-theme.css` instead of redefining base controls page by page.
-- Web form surfaces should consume shared utilities from `workspace-theme.css`, including `workspace-field`, `workspace-panel`, `workspace-button-row`, and `workspace-step-actions`.
-- Web pages should avoid inline `style=` layout overrides; add shared utility classes instead.
-- `web_shell.html` is the device-pool home. It owns device search, filters, detail, and connection launch actions.
-- `device_navigation.html` is terminal navigation only. It must not duplicate the home device table or filter bar.
-- Native style overrides live in `src/styles.py`; the final OLED cascade must remain after legacy overrides.
-- Python-rendered helper HTML and WebEngine container backgrounds should read shared values from `src/theme_tokens.py` instead of repeating raw literals in feature modules.
-- Terminal renderers must use the same background, text, cursor, and selection palette as the Web theme.
-- xterm ANSI theme colors must be read from `workspace-theme.css` terminal custom properties instead of page-local hex literals.
-- Status indicators use shared classes or helpers: `idle`, `occupied`, `pipeline`, `other`.
-- Native status statistics must read from `STATUS_COLORS`; do not pass legacy palette literals into stat chips.
-- Tool panels should use card surfaces for live status, endpoint metadata, and command hints instead of loose standalone labels.
-- Tool forms with multiple protocols should group each protocol into its own card surface so dense native forms still read like Web panels.
-- Reusable native cards should expose object names and properties for chips or badges instead of embedding color and border styles in HTML strings.
-- Qt rich-text snippets may use shared helpers to emit inline styles, but palette values must be centralized rather than embedded in feature logic.
-- Filter chips and badge-like rich text should use shared helpers such as `html_chip()` or `html_badge()` instead of hand-building style strings in feature modules.
-- Short colored status values in Qt rich text should use `html_status_text()` so text weight, escaping, and class hooks stay consistent.
+- Define global variables and base controls in `styles.css`.
+- Components consume shared variables; avoid page-local palette copies.
+- Cards use consistent border, radius, spacing, and elevation.
+- Forms group related fields and place validation next to the affected control.
+- Terminal colors, cursor, selection, and ANSI palette follow the active App theme.
+- Dialogs, menus, popovers, and isolated Electron credential windows must all use
+  the same theme mode.
+- Light-theme text cursors and pointer cursors must remain visible against inputs.
 
 ## Interaction Rules
 
-- Clickable rows must expose hover and keyboard focus states.
-- Device rows in Web views should be marked as contextable and forward context menu requests to Python.
-- Web device rows must support keyboard operation: `Enter` or `Space` selects the row, and `ContextMenu` or `Shift+F10` opens the same device context menu as right-click.
-- Selected Web device rows must expose `aria-selected` alongside the visual selected state.
-- Web terminal session rows, whether on the home screen or left terminal navigation, must preserve session context operations by forwarding right-click, `ContextMenu`, and `Shift+F10` to the native workspace session menu.
-- Web editor surfaces should expose page-local context menus for row or card editing actions when the operation no longer lives in native Qt widgets, with `ContextMenu` and `Shift+F10` keyboard equivalents.
-- Native right-click menus must be created through `new_workspace_menu()`.
-- The xterm WebView must forward its internal context menu event to the outer terminal widget so the terminal menu is preserved.
-- The left terminal navigation should provide a visible Home button so operators can return from terminals to the device-pool home.
-- The activity rail uses exclusive emphasis: Home restores the full dashboard and closes tool drawers; Terminal restores session navigation; Temporary Connection and File Transfer toggle their own drawers.
-- Prefer reduced-motion support for Web transitions.
+- Every clickable row exposes hover, selected, and keyboard-focus states.
+- `Enter` or `Space` activates focused rows where appropriate.
+- Context menus have keyboard equivalents through `ContextMenu` or `Shift+F10`.
+- Destructive operations require clear labels and preserve backend risk gates.
+- Loading, empty, offline, and error states must be distinct and actionable.
+- Do not show end users plugin management in `web` or `spreadsheet` products.
+- Password fields support visibility toggles without copying values into renderer
+  persistence.
+- Respect reduced-motion preferences and avoid decorative animation during active
+  terminal or transfer work.
+
+## Layout Rules
+
+- Home owns the complete device pool, search, filters, and selected-device detail.
+- Terminal mode uses compact session navigation and maximizes terminal space.
+- Tool workspaces for transfer, upgrade, automation, and AI retain the current
+  device/session context.
+- Dialogs must fit common laptop displays and scroll internally when content grows.
+- Split panes preserve practical minimum terminal sizes and keyboard navigation.
+
+## Accessibility
+
+- Preserve WCAG AA contrast for text and state indicators.
+- Never rely on color alone; pair status colors with labels or icons.
+- Inputs have visible labels, error descriptions, and focus rings.
+- Icon-only buttons require accessible names and tooltips.
+- Maintain logical tab order in dialogs and restore focus when they close.
 
 ## Anti-Patterns
 
-- Do not introduce page-local `:root` token blocks.
-- Do not revive the old `#080808`, `#ededed`, or `#5b6ef5` Linear/Vercel palette as final UI output.
-- Do not add raw `QMenu(...)` calls outside the menu factory.
-- Do not show the left device pool on the home screen; the home screen already is the device pool.
-- Do not make the left terminal navigation a second device-pool page with search filters and a full device table.
-- Do not keep unreachable legacy UI templates after a visible surface has migrated to the workspace design system.
+- Do not add PySide/PyQt stylesheets, WebEngine pages, or native Qt widgets.
+- Do not duplicate device-pool functionality inside terminal navigation.
+- Do not expose credentials, cookies, or backend tokens to Vue state.
+- Do not hard-code theme colors in feature logic when a shared variable exists.
+- Do not leave migrated or unreachable UI implementations in the repository.

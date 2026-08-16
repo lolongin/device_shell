@@ -1,7 +1,7 @@
 [project]
 name = "device-tui"
 version = "0.1.0"
-description = "Desktop device dashboard with device inventory, occupancy, and dual-channel CLI."
+description = "Python backend and device services for the Electron device dashboard."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -9,13 +9,10 @@ dependencies = [
     "fastapi>=0.135,<1",
     "mcp>=1.27,<2",
     "keyring>=25,<26",
-    "PySide6-WebEngine>=6.7,<7",
     "telnetlib3>=4.0,<5",
     "uvicorn>=0.46,<1",
     "websockets>=15,<17",
     "pyftpdlib>=2.0,<3",
-    "PySide6>=6.7,<7",
-    "pyte>=0.8,<1",
     "openpyxl>=3.1,<4",
 ]
 
@@ -25,8 +22,6 @@ packaging = [
 ]
 
 [project.scripts]
-device-tui = "src.desktop_app:main"
-device-tui-desktop = "src.desktop_app:main"
 device-tui-backend = "src.desktop_backend.main:main"
 device-tui-mcp = "src.device_mcp.server:main"
 
@@ -37,12 +32,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*", "device_tui*"]
-
-[tool.setuptools.package-data]
-src = [
-    "web/*.html",
-    "web/assets/*",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

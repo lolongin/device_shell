@@ -1,94 +1,88 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Repository guidance for coding agents working on Device TUI.
 
-## Build & Test
+## Build and Test
 
-```bash
-pip install -e .                          # editable install
-python -m py_compile src\*.py             # quick compilation check
-pytest                                    # run all tests
-pytest tests/test_api_client.py -v        # run a single test file
+```powershell
+python -m pip install -e .
+python -m pytest
+python -m compileall -q src
+Set-Location desktop
+npm install
+npm run typecheck
+npm run build
 ```
-
-The `[tool.pytest.ini_options]` in `pyproject.toml` sets `testpaths = ["tests"]` and `pythonpath = ["src"]`, so tests import from `src` directly.
 
 ## Architecture
 
-### Class composition via mixins
+Electron + Vue is the sole desktop presentation layer. Electron Main supervises a
+loopback-only FastAPI process and exposes a narrow preload API to the renderer.
+Python owns device data, sessions, credentials, automation, transfers, upgrades,
+persistence, and MCP integration.
 
-`DeviceDesktopApp` (in `src/app/main_window.py`) is built by composing seven mixins with `QMainWindow`:
-
-```
-SessionOpsMixin, OccupancyOpsMixin, CommandRecordOpsMixin,
-DesktopStateMixin, FileTransferOpsMixin, TemporaryDeviceOpsMixin,
-TableOpsMixin, QMainWindow
-```
-
-Each mixin lives in its own `src/app/<domain>_ops.py` file and handles one cross-cutting concern (session lifecycle, occupancy toggling, command record panel, state persistence, file transfer service, temporary connections, table rendering). The main window class itself contains all UI construction (`_build_*` methods) and event wiring.
-
-### Data flow
-
-```
-DeviceRepository (Protocol)
-  ├── SampleDeviceRepository    (in-memory, default)
-  └── ApiDeviceRepository       (HTTP API, opt-in via DEVICE_TUI_DATA_SOURCE=api)
-         └── DeviceApiClient    (src/api_client.py)
+```text
+Vue renderer
+  -> preload IPC
+    -> Electron Main
+      -> authenticated loopback HTTP/WebSocket
+        -> src/desktop_backend
+          -> src/application
+            -> repositories, session hub, transfers, automation
 ```
 
-`repo_factory.create_repository_from_env()` selects the implementation at startup. The repository is polled on a `QTimer` in API mode; in sample mode it returns a static snapshot. `RepositorySnapshot` (`app_state.py`) bundles the current user, device list, and owned device IDs for the UI.
+Do not add PySide/PyQt desktop code or move privileged behavior into Vue.
+
+### Device sources
+
+`DeviceSourceService` is the single source boundary. `DeviceSourceRegistry`
+provides built-in `sample` and `imported` sources and discovers external packages
+through the `device_tui.device_sources` Entry Point group. A product profile fixes
+website or spreadsheet behavior; universal mode is for development diagnostics.
+Sources never merge.
 
 ### Session layer
 
-```
-CommandSession (Protocol, session_protocol.py)
-  ├── HuaweiTelnetSession    (telnet_session.py)
-  └── LinuxSshSession        (linux_session.py)
-```
+`src/application/sessions.py` coordinates the backend-owned Session Hub.
+`HuaweiTelnetSession`, `LinuxSshSession`, and the simulated session implement the
+transport behavior. The Vue renderer receives output through authenticated,
+short-lived WebSocket tickets and renders it with xterm.js.
 
-Sessions are async (`asyncssh` for SSH, `telnetlib3` for Telnet) and run on `AsyncLoopThread` — a dedicated daemon thread with its own `asyncio` event loop. `AsyncLoopThread.submit(coro)` schedules coroutines thread-safely and returns a `concurrent.futures.Future`.
+### Security boundary
 
-### Terminal rendering
+Passwords use the operating-system credential vault. Website cookies and one-time
+credentials stay in backend memory. Backend tokens stay in Electron Main. Never
+put secrets in renderer state, SQLite, logs, terminal replay, or MCP results.
 
-Three backends, selected via `DEVICE_TUI_TERMINAL_WIDGET`:
-- `xterm` (default): `QWebEngineView` + xterm.js + `QtWebChannel` bridge — `src/widgets/xterm_web_widget.py`
-- `canvas`: PySide/pyte-based canvas renderer — `src/widgets/terminal_canvas.py`
-- `legacy`: `QPlainTextEdit` — `src/widgets/terminal_widget.py`
+### Automation and transfers
 
-The xterm backend loads assets from `src/web/assets/` (xterm.js, xterm.css, addon-fit.js) with a CDN fallback.
+Automation rules and execution live in Python application services. Managed
+FTP/SFTP servers, device command generation, transfer verification, and package
+upgrade gates also remain backend-owned. UI components should call the existing
+API rather than reimplement these workflows.
 
-### Web surfaces
+### Persistence
 
-`src/web/` contains HTML pages rendered in `QWebEngineView`:
-- `web_shell.html` — home dashboard
-- `device_navigation.html` — compact terminal session navigation
-- `xterm_terminal.html` — xterm.js terminal
-- `auto_response_editor.html` — auto-response rule editor
+Desktop workspace state and non-secret metadata are stored through the
+infrastructure persistence layer. Keep schema migrations backward compatible and
+test restart behavior.
 
-All Web pages link `src/web/assets/workspace-theme.css` for shared OLED theme tokens. Python ↔ JavaScript communication uses `QtWebChannel` with bridge objects exposed from the Python side.
+## Key Files
 
-### Qt UI thread safety
+- `desktop/src/main/`: Electron process and backend supervision
+- `desktop/src/preload/`: renderer bridge
+- `desktop/src/renderer/`: Vue workspace
+- `src/desktop_backend/`: HTTP/WebSocket routes and lifecycle
+- `src/application/`: application services
+- `src/infrastructure/`: persistence and adapters
+- `src/device_source_service.py`: active source orchestration
+- `src/device_source_plugins.py`: plugin discovery
+- `src/device_mcp/`: MCP integration
 
-All UI mutations must happen on the Qt main thread. Background work (network I/O) runs on `AsyncLoopThread`, which posts results to `self.ui_queue`. A 10ms `QTimer` (`ui_timer`) drains the queue on the main thread via `_drain_ui_queue()`.
+## Change Rules
 
-### Design system
-
-`design-system/MASTER.md` is the source of truth for colors, tokens, and visual language. The theme tokens apply across Qt stylesheets (`src/styles.py`), Web CSS (`workspace-theme.css`), canvas rendering, and generated HTML. When changing colors, update `design-system/MASTER.md` first, then propagate to all surfaces.
-
-### Auto-response rules
-
-`src/auto_response.py` defines `AutoResponseRule` — patterns that match terminal output and automatically send responses. Rules support match/regex triggers, multi-step workflows, action flows (send/wait/loop/exit/condition), and per-session trigger counting. Rules are serialized to/from desktop state JSON.
-
-### Desktop state persistence
-
-`DesktopStateMixin` (`src/app/desktop_state.py`) saves/loads window geometry, session tabs, command record content, auto-response rules, quick-send buttons, and UI toggle states to a JSON file. State is debounced via `state_save_timer`.
-
-### Temporary devices
-
-`TemporaryDeviceOpsMixin` manages ephemeral connections that don't appear in the device table — stored in `self.temporary_devices` as `Device` objects and rendered in the "临时连接" panel.
-
-### Key data types
-
-- `Device` (`src/data.py`): `@dataclass(slots=True)` with fields for id, name, domain, status, owner, SSH/Telnet/Serial connection params, asset metadata, and an `extra: dict` for extensibility.
-- `DeviceTabState` / `SessionTabState` (`src/app_state.py`): runtime state for device-level tabs (which can contain session splitters) and individual session tabs.
-- `SessionCallbacks` (`src/session_protocol.py`): `on_output` and `on_status` emitters passed to session backends.
+- Put visual behavior in Vue/CSS and reusable domain behavior in Python services.
+- Keep renderer IPC narrow, typed, and free of secrets.
+- Add or update pytest coverage for backend changes and run desktop typecheck/build
+  for renderer or Electron changes.
+- Preserve unrelated working-tree changes.
