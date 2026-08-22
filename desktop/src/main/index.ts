@@ -584,6 +584,22 @@ async function createWindow(): Promise<void> {
     return selected.canceled ? '' : selected.filePaths[0] || ''
   })
 
+  ipcMain.handle('file-transfer:choose-package', async (event, defaultPath?: unknown): Promise<string> => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) {
+      throw new Error('Untrusted file-transfer package caller')
+    }
+    const initialPath = typeof defaultPath === 'string' && defaultPath.trim()
+      ? path.resolve(defaultPath.trim())
+      : undefined
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: '选择换包软件包',
+      properties: ['openFile'],
+      filters: [{ name: '设备软件包', extensions: ['cc'] }],
+      ...(initialPath ? { defaultPath: initialPath } : {})
+    })
+    return selected.canceled ? '' : selected.filePaths[0] || ''
+  })
+
   ipcMain.handle('device-source:choose-import', async (event): Promise<unknown | null> => {
     if (event.sender !== mainWindow?.webContents || !mainWindow) {
       throw new Error('Untrusted device-import caller')

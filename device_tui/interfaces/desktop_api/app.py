@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -20,8 +21,11 @@ from fastapi.responses import JSONResponse
 from device_tui.application import (
     ApplicationError,
     ApplicationConflictError,
+    CommandRequest,
+    ControlContext,
     DeviceActionResult,
     DeviceSnapshot,
+    DeviceTarget,
     ResourceNotFoundError,
     SessionRecord,
     UnsupportedOperationError,
@@ -31,6 +35,9 @@ from device_tui.application import (
     CommandStore,
     CommandGroup,
     ConnectionProfile,
+    Action,
+    Decision,
+    DecisionActor,
     ConnectionProfileDraft,
     ConnectionTarget,
     DesktopApplication,
@@ -41,8 +48,14 @@ from device_tui.application import (
     MemoryAutomationStore,
     MemoryTransferStore,
     MemorySecretStore,
+    PackageUpgradeRequest,
     SecretStore,
     SessionCredential,
+    TransferRequest,
+    TaskCreate,
+    WorkflowDefinition,
+    WorkflowStep,
+    device_upgrade_workflow,
     ProfileEndpoint,
     redact_command_secrets,
     build_desktop_application,
@@ -164,6 +177,12 @@ from .models import (
     AiApprovalResponse,
     AiApprovalListResponse,
     AiAuditResponse,
+    WorkflowStepRequest,
+    TaskCreateRequest,
+    TaskResumeRequest,
+    TaskModel,
+    TaskResponse,
+    TaskListResponse,
 )
 from .session_hub import SessionHub, TerminalEvent
 from .terminal_executor import BackendTerminalExecutor
@@ -609,7 +628,26 @@ def _automation_workspace(desktop: DesktopApplication) -> AutomationWorkspaceRes
 
 
 def _operation_model(record: object) -> OperationModel:
-    return OperationModel(**asdict(record))  # type: ignore[arg-type]
+    payload = asdict(record)
+    if "operation_id" in payload and "id" not in payload:
+        payload["id"] = payload.pop("operation_id")
+    payload.setdefault("direction", "")
+    payload.setdefault("bytes_transferred", 0)
+    payload.setdefault("total_bytes", 0)
+    payload.setdefault("bytes_per_second", 0)
+    payload.setdefault("eta_seconds", None)
+    payload.setdefault("queue_position", None)
+    payload.setdefault("retry_of", None)
+    payload.setdefault("cancellable", True)
+    payload.setdefault("revision", 0)
+    payload.setdefault("created_at", "")
+    payload.setdefault("updated_at", "")
+    return OperationModel(**payload)  # type: ignore[arg-type]
+
+
+def _task_model(record: object) -> TaskModel:
+    payload = asdict(record)
+    return TaskModel(**payload)
 
 
 def _transfer_settings(desktop: DesktopApplication) -> TransferSettingsModel:
@@ -876,6 +914,7 @@ def create_app(
         settings_store=settings_store,
         terminal_executor=terminal_executor,
         transfer_root=transfer_root,
+        task_store=desktop_store,
     )
     _attempt_internal_auto_login(
         repo,
@@ -892,7 +931,7 @@ def create_app(
         audit_max_bytes=audit_log_max_bytes,
         audit_backup_count=audit_log_backups,
     )
-    mcp_service = DesktopMcpService(desktop, terminal_executor, ai_service)
+    mcp_service = DesktopMcpService(desktop, terminal_executor, ai_service, plan_store=desktop_store)
     legacy_import = (
         desktop.profiles.import_legacy_state(legacy_state_path)
         if should_import_legacy and legacy_state_path is not None
@@ -918,6 +957,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
+        await desktop.tasks.close()
         await desktop.upgrades.close()
         await desktop.transfers.close()
         await desktop.automation.close()
@@ -1020,6 +1060,92 @@ def create_app(
     async def invoke_mcp_tool(tool: str, request: dict[str, object]) -> JSONResponse:
         status, payload = await mcp_service.invoke(tool, dict(request))
         return JSONResponse(status_code=status, content=payload)
+
+    @app.post("/api/v1/tasks", response_model=TaskResponse, dependencies=[Depends(authorize)])
+    async def task_create(request: TaskCreateRequest) -> TaskResponse:
+        session_id = request.session_id
+        device_id = request.device_id
+        if session_id:
+            session = next((item for item in desktop.sessions.list_sessions() if item.id == session_id), None)
+            if session is None:
+                raise ResourceNotFoundError("Unknown session", details={"session_id": session_id})
+            device_id = session.device_id
+        if not device_id:
+            raise UnsupportedOperationError("device_id or session_id is required")
+        if not session_id:
+            view = await desktop.control.open_session(DeviceTarget(device_id=device_id, protocol=request.protocol), reuse=True, context=ControlContext(source=request.source))
+            session_id = view.session_id
+        if request.workflow_id == "device_upgrade":
+            if not request.package:
+                raise UnsupportedOperationError("package is required for device_upgrade")
+            package = request.package
+            package_path = Path(package).expanduser()
+            if package_path.is_absolute():
+                if request.source != "desktop":
+                    raise UnsupportedOperationError("An absolute package path is only accepted from the desktop file picker.")
+                if package_path.suffix.casefold() != ".cc" or not package_path.is_file():
+                    raise UnsupportedOperationError("请选择存在的 .cc 软件包文件。")
+                transfer_root = Path(desktop.transfers.settings().root).resolve()
+                transfer_root.mkdir(parents=True, exist_ok=True)
+                staged_path = (transfer_root / package_path.name).resolve()
+                if staged_path != package_path.resolve():
+                    try:
+                        shutil.copy2(package_path, staged_path)
+                    except OSError as exc:
+                        raise UnsupportedOperationError(f"无法将软件包放入文件服务目录：{exc}") from exc
+                package = staged_path.relative_to(transfer_root).as_posix()
+            workflow = device_upgrade_workflow(device_id=device_id, package=package, options=dict(request.options))
+        else:
+            if not request.steps:
+                raise UnsupportedOperationError("Task steps must be a non-empty list.")
+            workflow = WorkflowDefinition(
+                id=request.workflow_id,
+                steps=tuple(WorkflowStep(id=item.id, kind=item.kind, action=item.action, depends_on=tuple(item.depends_on), params=dict(item.params)) for item in request.steps),
+            )
+        record = desktop.tasks.create(TaskCreate(workflow=workflow, target=DeviceTarget(device_id=device_id, session_id=session_id, protocol=request.protocol), source=request.source, context=dict(request.context)))
+        return TaskResponse(task=_task_model(record))
+
+    @app.get("/api/v1/tasks", response_model=TaskListResponse, dependencies=[Depends(authorize)])
+    async def task_list(limit: int = Query(default=200, ge=1, le=500)) -> TaskListResponse:
+        return TaskListResponse(tasks=[_task_model(item) for item in desktop.tasks.list(limit=limit)])
+
+    @app.get("/api/v1/tasks/{task_id}", response_model=TaskResponse, dependencies=[Depends(authorize)])
+    async def task_get(task_id: str) -> TaskResponse:
+        return TaskResponse(task=_task_model(desktop.tasks.get(task_id)))
+
+    @app.post("/api/v1/tasks/{task_id}/cancel", response_model=TaskResponse, dependencies=[Depends(authorize)])
+    async def task_cancel(task_id: str) -> TaskResponse:
+        return TaskResponse(task=_task_model(desktop.tasks.cancel(task_id)))
+
+    @app.post("/api/v1/tasks/{task_id}/pause", response_model=TaskResponse, dependencies=[Depends(authorize)])
+    async def task_pause(task_id: str) -> TaskResponse:
+        return TaskResponse(task=_task_model(desktop.tasks.pause(task_id)))
+
+    @app.get("/api/v1/tasks/{task_id}/decision", dependencies=[Depends(authorize)])
+    async def task_decision_get(task_id: str) -> dict[str, object]:
+        decision = desktop.tasks.get_decision(task_id)
+        return {"decision": decision.to_dict() if decision is not None else None}
+
+    @app.post("/api/v1/tasks/{task_id}/resume", response_model=TaskResponse, dependencies=[Depends(authorize)])
+    async def task_resume(task_id: str, request: TaskResumeRequest) -> TaskResponse:
+        return TaskResponse(task=_task_model(desktop.tasks.resume(task_id, context=dict(request.context), step_id=request.step_id)))
+
+    @app.post("/api/v1/tasks/{task_id}/decision", response_model=TaskResponse, dependencies=[Depends(authorize)])
+    async def task_decision(task_id: str, request: dict[str, object]) -> TaskResponse:
+        raw_action = request.get("action")
+        if isinstance(raw_action, str):
+            action = Action(raw_action, target_step=str(request.get("target_step") or ""), parameters=dict(request.get("parameters") or {}))
+        elif isinstance(raw_action, dict):
+            action = Action.from_dict(raw_action)
+        else:
+            raise UnsupportedOperationError("Decision action is required")
+        decision = Decision(
+            decision_id=str(request.get("decision_id") or uuid4()),
+            actor=DecisionActor(type=str(request.get("actor_type") or "user"), id=str(request.get("actor_id") or "")),
+            action=action, reason=str(request.get("reason") or ""),
+            task_id=task_id, expected_revision=(int(request["expected_revision"]) if request.get("expected_revision") is not None else None),
+        )
+        return TaskResponse(task=_task_model(desktop.tasks.apply_decision(task_id, decision)))
 
     @app.post(
         "/api/v1/ai/plan",
@@ -1616,7 +1742,12 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     async def power_off_device(device_id: str) -> DeviceActionResponse:
-        return device_action_response(desktop.devices.power_off(device_id))
+        return device_action_response(
+            desktop.control.power_off(
+                device_id,
+                context=ControlContext(source="electron"),
+            )
+        )
 
     @app.get(
         "/api/v1/sessions",
@@ -1634,13 +1765,14 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     async def create_session(request: SessionCreateRequest) -> SessionSummary:
-        session = await desktop.sessions.create(
-            request.device_id,
-            request.kind,
-            request.title,
-            (request.cols, request.rows),
+        view = await desktop.control.open_session(
+            DeviceTarget(device_id=request.device_id, protocol=request.kind),
+            reuse=False,
+            title=request.title,
+            term_size=(request.cols, request.rows),
+            context=ControlContext(source="electron"),
         )
-        return _session_summary(session)
+        return _session_summary(next(item for item in desktop.sessions.list_sessions() if item.id == view.session_id))
 
     @app.post(
         "/api/v1/sessions/with-credential",
@@ -1655,12 +1787,14 @@ def create_app(
             request.kind,
             request.password,
         )
-        session = await desktop.sessions.create_target(
+        view = await desktop.control.open_connection(
             target,
-            request.title,
-            (request.cols, request.rows),
+            reuse=False,
+            title=request.title,
+            term_size=(request.cols, request.rows),
+            context=ControlContext(source="electron"),
         )
-        return _session_summary(session)
+        return _session_summary(next(item for item in desktop.sessions.list_sessions() if item.id == view.session_id))
 
     @app.post(
         "/api/v1/sessions/direct",
@@ -1685,12 +1819,14 @@ def create_app(
             port=request.port,
             credentials=credentials,
         )
-        session = await desktop.sessions.create_target(
+        view = await desktop.control.open_connection(
             target,
-            request.title,
-            (request.cols, request.rows),
+            reuse=False,
+            title=request.title,
+            term_size=(request.cols, request.rows),
+            context=ControlContext(source="electron"),
         )
-        return _session_summary(session)
+        return _session_summary(next(item for item in desktop.sessions.list_sessions() if item.id == view.session_id))
 
     @app.get(
         "/api/v1/commands/workspace",
@@ -1798,7 +1934,23 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     async def send_command(request: CommandSendRequest) -> CommandDispatchResponse:
-        session = await desktop.commands.send(request.session_id, request.command)
+        session = next(
+            (item for item in desktop.sessions.list_sessions() if item.id == request.session_id),
+            None,
+        )
+        if session is None:
+            raise ResourceNotFoundError(
+                f"Unknown session: {request.session_id}",
+                details={"session_id": request.session_id},
+            )
+        await desktop.control.send_raw(
+            DeviceTarget(device_id=session.device_id, session_id=session.id),
+            request.command,
+            context=ControlContext(source="electron"),
+        )
+        # Preserve the command-workspace history side effect while the transport
+        # itself is now routed through DeviceControlService.
+        desktop.commands.record_for_session(request.session_id, request.command)
         return CommandDispatchResponse(
             command=redact_command_secrets(request.command),
             session_ids=[session.id],
@@ -1820,13 +1972,16 @@ def create_app(
     async def broadcast_command(
         request: CommandBroadcastRequest,
     ) -> CommandDispatchResponse:
-        session_ids = await desktop.commands.broadcast(
+        result = await desktop.control.broadcast(
             request.command,
-            request.session_ids or None,
+            session_ids=request.session_ids or None,
+            context=ControlContext(source="electron"),
         )
+        for session_id in result.session_ids:
+            desktop.commands.record_for_session(session_id, request.command)
         return CommandDispatchResponse(
             command=redact_command_secrets(request.command),
-            session_ids=session_ids,
+            session_ids=list(result.session_ids),
         )
 
     @app.get(
@@ -2132,25 +2287,30 @@ def create_app(
     async def start_managed_file_transfer(
         request: ManagedTransferStartRequest,
     ) -> OperationResponse:
-        if request.direction == "download":
-            operation = desktop.transfers.start_download(
-                session_id=request.session_id,
+        session = next(
+            (item for item in desktop.sessions.list_sessions() if item.id == request.session_id),
+            None,
+        )
+        if session is None:
+            raise ResourceNotFoundError(
+                f"Unknown session: {request.session_id}",
+                details={"session_id": request.session_id},
+            )
+        operation = desktop.control.transfer(
+            DeviceTarget(device_id=session.device_id, session_id=session.id),
+            TransferRequest(
+                direction=request.direction,
                 source_path=request.source_path,
                 destination_path=request.destination_path,
                 overwrite=request.overwrite,
                 terminal_environment=request.terminal_environment,
                 command_mode=request.command_mode,
-            )
-        else:
-            operation = desktop.transfers.start_upload(
-                session_id=request.session_id,
-                source_path=request.source_path,
-                destination_path=request.destination_path,
-                overwrite=request.overwrite,
-                terminal_environment=request.terminal_environment,
-                command_mode=request.command_mode,
-            )
-        return OperationResponse(operation=_operation_model(operation))
+            ),
+            context=ControlContext(source="electron"),
+        )
+        return OperationResponse(
+            operation=_operation_model(desktop.control.get_operation(operation.operation_id))
+        )
 
     @app.post(
         "/api/v1/file-transfers/{operation_id}/retry",
@@ -2191,16 +2351,30 @@ def create_app(
     async def start_package_upgrade(
         request: PackageUpgradeStartRequest,
     ) -> OperationResponse:
-        operation = desktop.upgrades.start(
-            session_id=request.session_id,
-            package_path=request.package_path,
-            include_slave=request.include_slave,
-            auto_delete_old_packages=request.auto_delete_old_packages,
-            reboot_after_setting=request.reboot_after_setting,
-            master_storage=request.master_storage,
-            slave_storage=request.slave_storage,
+        session = next(
+            (item for item in desktop.sessions.list_sessions() if item.id == request.session_id),
+            None,
         )
-        return OperationResponse(operation=_operation_model(operation))
+        if session is None:
+            raise ResourceNotFoundError(
+                f"Unknown session: {request.session_id}",
+                details={"session_id": request.session_id},
+            )
+        operation = desktop.control.start_package_upgrade(
+            DeviceTarget(device_id=session.device_id, session_id=session.id),
+            PackageUpgradeRequest(
+                package_path=request.package_path,
+                include_slave=request.include_slave,
+                auto_delete_old_packages=request.auto_delete_old_packages,
+                reboot_after_setting=request.reboot_after_setting,
+                master_storage=request.master_storage,
+                slave_storage=request.slave_storage,
+            ),
+            context=ControlContext(source="electron"),
+        )
+        return OperationResponse(
+            operation=_operation_model(desktop.control.get_operation(operation.operation_id))
+        )
 
     @app.get(
         "/api/v1/package-upgrades/manual/{session_id}/terminal",
@@ -2269,8 +2443,12 @@ def create_app(
     async def approve_package_upgrade_reboot(
         operation_id: str,
     ) -> OperationResponse:
+        operation = desktop.control.approve_package_upgrade_reboot(
+            operation_id,
+            context=ControlContext(source="electron"),
+        )
         return OperationResponse(
-            operation=_operation_model(desktop.upgrades.approve_reboot(operation_id))
+            operation=_operation_model(desktop.control.get_operation(operation.operation_id))
         )
 
     @app.get(
@@ -2284,7 +2462,7 @@ def create_app(
     ) -> OperationListResponse:
         return OperationListResponse(operations=[
             _operation_model(record)
-            for record in desktop.operations.list(kind=kind, limit=limit)
+            for record in desktop.control.list_operations(kind=kind, limit=limit)
         ])
 
     @app.get(
@@ -2294,7 +2472,7 @@ def create_app(
     )
     async def get_operation(operation_id: str) -> OperationResponse:
         return OperationResponse(
-            operation=_operation_model(desktop.operations.get(operation_id))
+            operation=_operation_model(desktop.control.get_operation(operation_id))
         )
 
     @app.post(
@@ -2304,7 +2482,7 @@ def create_app(
     )
     async def cancel_operation(operation_id: str) -> OperationResponse:
         return OperationResponse(
-            operation=_operation_model(desktop.operations.cancel(operation_id))
+            operation=_operation_model(desktop.control.cancel_operation(operation_id))
         )
 
     @app.post(
@@ -2315,7 +2493,19 @@ def create_app(
     async def reconnect_session(session_id: str) -> SessionSummary:
         desktop.upgrades.cancel_session(session_id)
         desktop.transfers.cancel_session(session_id)
-        return _session_summary(await desktop.sessions.reconnect(session_id))
+        record = next(
+            (item for item in desktop.sessions.list_sessions() if item.id == session_id),
+            None,
+        )
+        if record is None:
+            raise ResourceNotFoundError(
+                f"Unknown session: {session_id}", details={"session_id": session_id}
+            )
+        view = await desktop.control.reconnect_session(
+            DeviceTarget(device_id=record.device_id, session_id=session_id),
+            context=ControlContext(source="electron"),
+        )
+        return _session_summary(next(item for item in desktop.sessions.list_sessions() if item.id == view.session_id))
 
     @app.post(
         "/api/v1/sessions/{session_id}/disconnect",
@@ -2325,7 +2515,19 @@ def create_app(
     async def disconnect_session(session_id: str) -> SessionSummary:
         desktop.upgrades.cancel_session(session_id)
         desktop.transfers.cancel_session(session_id)
-        return _session_summary(await desktop.sessions.disconnect(session_id))
+        record = next(
+            (item for item in desktop.sessions.list_sessions() if item.id == session_id),
+            None,
+        )
+        if record is None:
+            raise ResourceNotFoundError(
+                f"Unknown session: {session_id}", details={"session_id": session_id}
+            )
+        view = await desktop.control.disconnect_session(
+            DeviceTarget(device_id=record.device_id, session_id=session_id),
+            context=ControlContext(source="electron"),
+        )
+        return _session_summary(next(item for item in desktop.sessions.list_sessions() if item.id == view.session_id))
 
     @app.get(
         "/api/v1/settings/session-logs",
@@ -2423,7 +2625,18 @@ def create_app(
         desktop.automation.cancel_session(session_id, reason="session_closed")
         desktop.upgrades.cancel_session(session_id)
         desktop.transfers.cancel_session(session_id)
-        await desktop.sessions.close(session_id)
+        record = next(
+            (item for item in desktop.sessions.list_sessions() if item.id == session_id),
+            None,
+        )
+        if record is None:
+            raise ResourceNotFoundError(
+                f"Unknown session: {session_id}", details={"session_id": session_id}
+            )
+        await desktop.control.close_session(
+            DeviceTarget(device_id=record.device_id, session_id=session_id),
+            context=ControlContext(source="electron"),
+        )
 
     @app.websocket("/ws/v1/events")
     async def event_socket(

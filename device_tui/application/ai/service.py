@@ -23,6 +23,7 @@ from device_tui.application.terminal.orchestration import (
     build_batch_plan,
     parse_terminal_plan,
 )
+from device_tui.application.device_control import CommandRequest, ControlContext, DeviceTarget
 from device_tui.application.transfers import TerminalPlanExecutor
 from device_tui.infrastructure.audit import AuditLogger, redact_text
 
@@ -120,7 +121,12 @@ class AiApplicationService:
         if cached is not None:
             return cached
         del approval_token
-        await self.desktop.commands.send(session_id, normalized)
+        await self.desktop.control.send_raw(
+            DeviceTarget(device_id=session.device_id, session_id=session_id),
+            normalized,
+            context=ControlContext(source=source),
+        )
+        self.desktop.commands.record_for_session(session_id, normalized)
         await asyncio.sleep(0)
         log = self.desktop.sessions.read_log(session_id, 32_768)
         output = redact_text(log.content[-32_768:])
@@ -168,7 +174,12 @@ class AiApplicationService:
         del approval_token
         results: list[dict[str, Any]] = []
         for command in normalized:
-            await self.desktop.commands.send(session_id, command)
+            await self.desktop.control.send_raw(
+                DeviceTarget(device_id=session.device_id, session_id=session_id),
+                command,
+                context=ControlContext(source=source),
+            )
+            self.desktop.commands.record_for_session(session_id, command)
             await asyncio.sleep(0)
             log = self.desktop.sessions.read_log(session_id, 32_768)
             results.append(self._store_result("command", {
@@ -280,27 +291,24 @@ class AiApplicationService:
         source: str = "desktop-api",
         kind: str = "terminal_plan",
     ) -> dict[str, Any]:
-        executor = self._terminal_executor
-        if executor is None:
-            raise UnsupportedOperationError("Terminal plan execution is unavailable.")
         session = self._session(session_id)
-        try:
-            plan = parse_terminal_plan(steps, total_timeout_seconds=total_timeout_seconds)
-        except TerminalPlanError as exc:
-            raise UnsupportedOperationError(str(exc), details={"code": exc.code}) from exc
-        result = await executor.run(
-            session_id=session.id,
-            device_id=session.device_id,
-            plan=plan,
-            owner_id=f"{kind}:{uuid4().hex}",
+        result = await self.desktop.control.execute(
+            DeviceTarget(device_id=session.device_id, session_id=session.id),
+            CommandRequest(
+                mode="interactive",
+                steps=tuple(dict(step) for step in steps),
+                total_timeout_seconds=total_timeout_seconds,
+            ),
+            context=ControlContext(source=source),
         )
+        raw = dict(result.data)
         self._record_audit(
             tool=kind,
             source=source,
             action=self._action(kind, kind, RiskLevel.LOW, device_id=session.device_id),
-            status=200 if result.get("status") == "completed" else 409,
+            status=200 if result.status == "completed" else 409,
         )
-        return dict(result)
+        return raw
 
     async def run_terminal_batch(
         self,
@@ -313,32 +321,25 @@ class AiApplicationService:
         source: str = "desktop-api",
         kind: str = "terminal_batch",
     ) -> dict[str, Any]:
-        executor = self._terminal_executor
-        if executor is None:
-            raise UnsupportedOperationError("Terminal plan execution is unavailable.")
         session = self._session(session_id)
-        try:
-            plan = build_batch_plan(
-                commands,
-                command_timeout_seconds=command_timeout_seconds,
+        result = await self.desktop.control.execute(
+            DeviceTarget(device_id=session.device_id, session_id=session.id),
+            CommandRequest(
+                commands=tuple(str(command) for command in commands),
+                mode="batch",
+                timeout_seconds=command_timeout_seconds,
                 total_timeout_seconds=total_timeout_seconds,
                 max_output_chars=max_output_chars,
-            )
-        except TerminalPlanError as exc:
-            raise UnsupportedOperationError(str(exc), details={"code": exc.code}) from exc
-        result = await executor.run(
-            session_id=session.id,
-            device_id=session.device_id,
-            plan=plan,
-            owner_id=f"{kind}:{uuid4().hex}",
+            ),
+            context=ControlContext(source=source),
         )
         self._record_audit(
             tool=kind,
             source=source,
             action=self._action(kind, kind, max((classify_command_risk(item) for item in commands), default=RiskLevel.LOW), device_id=session.device_id, command="\n".join(commands)),
-            status=200 if result.get("status") == "completed" else 409,
+            status=200 if result.status == "completed" else 409,
         )
-        return dict(result)
+        return dict(result.data)
 
     def get_result(self, result_id: str, *, include_raw: bool = False) -> dict[str, Any]:
         with self._lock:
@@ -383,6 +384,19 @@ class AiApplicationService:
         command = str(params.get("command") or params.get("script") or "")
         if not command and isinstance(params.get("commands"), list):
             command = "\n".join(str(item) for item in params["commands"])
+        raw_plan = params.get("plan")
+        if not command and isinstance(raw_plan, dict):
+            plan_commands: list[str] = []
+            for step in raw_plan.get("steps", ()):
+                if not isinstance(step, dict):
+                    continue
+                values = step.get("params") if isinstance(step.get("params"), dict) else step
+                if isinstance(values, dict):
+                    if values.get("command"):
+                        plan_commands.append(str(values["command"]))
+                    if isinstance(values.get("commands"), list):
+                        plan_commands.extend(str(item) for item in values["commands"])
+            command = "\n".join(plan_commands)
         risk = classify_command_risk(command) if command else RiskLevel.OBSERVE
         self._record_audit(
             tool=tool,

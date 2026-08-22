@@ -352,6 +352,138 @@ export interface OperationListResponse {
   operations: OperationRecord[]
 }
 
+export type TaskStatus = 'pending' | 'running' | 'waiting_for_decision' | 'waiting_for_user' | 'paused' | 'resumed' | 'completed' | 'success' | 'failed' | 'cancelled'
+export type TaskStepStatus = 'pending' | 'running' | 'waiting_for_decision' | 'waiting_for_user' | 'paused' | 'resumed' | 'completed' | 'success' | 'failed' | 'skipped' | 'cancelled'
+
+export interface TaskStepState {
+  step_id: string
+  status: TaskStepStatus | string
+  attempt: number
+  result?: {
+    status?: string
+    output?: string
+    facts?: Record<string, unknown>
+    data?: Record<string, unknown>
+    error?: { code?: string; message?: string; error_class?: string; retryable?: boolean }
+  } | null
+  error?: { code?: string; message?: string; error_class?: string; retryable?: boolean } | null
+}
+
+export interface TaskCheckpoint {
+  id: string
+  task_id: string
+  workflow_instance_id: string
+  revision: number
+  current_step: string
+  completed_steps: string[]
+  step_states: TaskStepState[]
+  outputs: Record<string, unknown>
+  context: Record<string, unknown>
+  failed_step_id: string
+  attempts: Record<string, number>
+  pending_decision_id: string
+  error_code: string
+  error_message: string
+  decisions: Array<Record<string, unknown>>
+}
+
+export interface TaskResultStep {
+  step_id: string
+  status: string
+  action?: Record<string, unknown> | string
+  output?: string
+  error_code?: string
+  message?: string
+  data?: Record<string, unknown>
+}
+
+export interface TaskResult {
+  status?: string
+  steps?: TaskResultStep[]
+  outputs?: Record<string, unknown>
+  error_code?: string
+  message?: string
+}
+
+export interface TaskRecord {
+  id: string
+  status: TaskStatus | string
+  workflow_id: string
+  device_id: string
+  session_id: string
+  source: string
+  created_at: string
+  updated_at: string
+  progress_percent: number
+  current_step_id: string
+  error_code: string
+  message: string
+  result?: TaskResult | null
+  checkpoint?: TaskCheckpoint | null
+  plan_id?: string
+  plan_hash?: string
+  parent_task_id?: string
+  plan_revision?: number
+}
+
+export interface McpResponse<T> {
+  ok: boolean
+  message: string
+  data: T
+  error?: { code?: string; message?: string; details?: Record<string, unknown> } | null
+}
+
+export interface WorkflowPlanValidation {
+  plan_id: string
+  plan_hash: string
+  status: string
+  errors: Array<{ code?: string; path?: string; message?: string }>
+  warnings: string[]
+  required_actions: Array<Record<string, unknown>>
+  workflow?: Record<string, unknown> | null
+}
+
+export interface TaskResponse {
+  api_version: number
+  task: TaskRecord
+}
+
+export interface TaskListResponse {
+  api_version: number
+  tasks: TaskRecord[]
+}
+
+export interface TaskDecisionAction {
+  name: string
+  parameters?: Record<string, unknown>
+  target_step?: string
+  risk?: string
+  confirmation_required?: boolean
+}
+
+export interface TaskDecisionActionPayload {
+  name: string
+  parameters?: Record<string, unknown>
+  target_step?: string
+}
+
+export interface TaskDecisionContext {
+  task_id: string
+  workflow_id: string
+  current_step: string
+  error?: { code?: string; message?: string; error_class?: string; retryable?: boolean } | null
+  result?: { status?: string; output?: string; facts?: Record<string, unknown> } | null
+  context: Record<string, unknown>
+  available_actions: TaskDecisionAction[]
+  decision_modes: string[]
+  workflow_instance_id: string
+  checkpoint_revision: number
+}
+
+export interface TaskDecisionResponse {
+  decision: TaskDecisionContext | null
+}
+
 export interface PackageUpgradeManualPlanResponse {
   api_version: number
   script: string

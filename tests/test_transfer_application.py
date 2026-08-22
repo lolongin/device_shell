@@ -700,7 +700,7 @@ def test_managed_transfer_history_persists_interrupts_and_prunes_to_200(
     with sqlite3.connect(store.path) as connection:
         serialized = " ".join(str(row[0]) for row in connection.execute("SELECT data_json FROM operations"))
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-    assert version == 5
+        assert version == SQLiteDesktopStore.SCHEMA_VERSION
     assert str(tmp_path) not in serialized
     assert "password" not in serialized.casefold()
 

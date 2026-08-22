@@ -7,24 +7,56 @@ from dataclasses import asdict
 import threading
 from typing import Any
 
-from device_tui.application import AiApplicationService, ApplicationError, DesktopApplication
+from device_tui.application import (
+    AiApplicationService,
+    Action,
+    ApplicationError,
+    CommandRequest,
+    ControlContext,
+    DesktopApplication,
+    DeviceTarget,
+    Decision,
+    DecisionActor,
+    PackageUpgradeRequest,
+    TransferRequest,
+    TaskCreate,
+    WorkflowDefinition,
+    WorkflowStep,
+    WorkflowPlan,
+    WorkflowPlanCompiler,
+    PlanStore,
+    device_upgrade_workflow,
+)
 from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
 from .terminal_executor import BackendTerminalExecutor
 
 
 class DesktopMcpService:
-    """Serve the legacy MCP tool names without a Qt window or UI dispatcher."""
+    """Expose one Backend capability boundary for legacy and Agent MCP tools."""
 
     def __init__(
         self,
         desktop: DesktopApplication,
         terminal_executor: BackendTerminalExecutor,
         ai: AiApplicationService,
+        plan_store: PlanStore | None = None,
     ) -> None:
         self.desktop = desktop
         self.terminal_executor = terminal_executor
         self.ai = ai
         self._selected_device_id = ""
+        self._plan_compiler = WorkflowPlanCompiler()
+        self._plans: dict[str, tuple[WorkflowPlan, Any]] = {}
+        self._approved_plans: set[str] = set()
+        self._plan_store = plan_store
+        if plan_store is not None:
+            for payload in plan_store.list_plans(limit=500):
+                restored = self._restore_plan(payload)
+                if restored is not None:
+                    plan, validation, approved = restored
+                    self._plans[plan.plan_id] = (plan, validation)
+                    if approved:
+                        self._approved_plans.add(plan.plan_id)
         self._idempotency: dict[str, tuple[int, dict[str, Any]]] = {}
         self._lock = threading.RLock()
 
@@ -36,7 +68,11 @@ class DesktopMcpService:
                 cached = self._idempotency.get(cache_key)
             if cached is not None:
                 return cached[0], dict(cached[1])
-        handler = getattr(self, f"_tool_{tool}", None)
+        # Public MCP names use namespaces (task.create, decision.get, ...),
+        # while handlers stay ordinary Python identifiers.  Keep the legacy
+        # underscore names working and normalize only at this boundary.
+        handler_name = tool.replace(".", "_")
+        handler = getattr(self, f"_tool_{handler_name}", None)
         if not callable(handler):
             return self._error(404, "tool_not_found", f"Unsupported MCP tool: {tool}")
         try:
@@ -60,7 +96,7 @@ class DesktopMcpService:
             "approval_mode": "disabled",
             "selected_device_id": self._selected_device_id,
             "sessions": [self._session_payload(item) for item in self.desktop.sessions.list_sessions()],
-            "operations": [asdict(item) for item in self.desktop.operations.list(limit=50)],
+            "operations": [asdict(item) for item in self.desktop.control.list_operations(limit=50)],
         }
 
     async def _tool_device_list(self, _params: dict[str, Any]) -> dict[str, Any]:
@@ -77,6 +113,311 @@ class DesktopMcpService:
         device = self.desktop.devices.require_device(self._text(params, "device_id"))
         self._selected_device_id = device.id
         return {"selected_device_id": device.id, "device": self._device_payload(device)}
+
+    async def _create_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Build and persist a Task for both task.create and workflow.run."""
+        validated_plan_id = str(params.get("validated_plan_id") or params.get("plan_id") or "").strip()
+        if validated_plan_id:
+            stored = self._plans.get(validated_plan_id)
+            if stored is None:
+                raise ResourceNotFoundError("Unknown or expired workflow plan.", details={"plan_id": validated_plan_id})
+            planned, validation = stored
+            expected_hash = str(params.get("expected_plan_hash") or params.get("plan_hash") or "").strip()
+            if expected_hash and expected_hash != validation.plan_hash:
+                raise UnsupportedOperationError("Workflow plan hash does not match the validated plan.")
+            if validation.status != "validated" and validated_plan_id not in self._approved_plans:
+                raise UnsupportedOperationError("Workflow plan requires confirmation before it can run.", details={"status": validation.status})
+            params = {
+                **params,
+                "workflow_id": validation.workflow.id if validation.workflow else planned.plan_id,
+                "device_id": str(params.get("device_id") or planned.target.get("device_id") or ""),
+                "session_id": str(params.get("session_id") or planned.target.get("session_id") or ""),
+                "protocol": str(params.get("protocol") or planned.target.get("protocol") or "auto"),
+                "steps": [],
+            }
+            compiled = validation.workflow
+            if compiled is None:
+                raise UnsupportedOperationError("Validated workflow has no compiled definition.")
+        else:
+            compiled = None
+        device_id = str(params.get("device_id") or "")
+        session_id = str(params.get("session_id") or "")
+        if session_id:
+            session = self._resolve_session(session_id=session_id)
+            device_id = session.device_id
+        if not device_id:
+            raise UnsupportedOperationError("A device_id or session_id is required.")
+        if not session_id:
+            view = await self.desktop.control.open_session(
+                DeviceTarget(device_id=device_id, protocol=str(params.get("protocol") or "auto")),
+                reuse=True,
+                context=ControlContext(source="mcp"),
+            )
+            session_id = view.session_id
+        workflow_id = str(params.get("workflow_id") or "task")
+        if compiled is not None:
+            workflow = compiled
+        elif workflow_id == "device_upgrade":
+            package = str(params.get("package") or "")
+            if not package:
+                raise UnsupportedOperationError("package is required for device_upgrade")
+            workflow = device_upgrade_workflow(device_id=device_id, package=package, options=dict(params.get("options") or {}))
+        else:
+            raw_steps = params.get("steps")
+            if not isinstance(raw_steps, list) or not raw_steps:
+                raise UnsupportedOperationError("Task steps must be a non-empty list.")
+            steps = tuple(
+                WorkflowStep(
+                    id=str(item.get("id") or ""), kind=str(item.get("kind") or "command"), action=str(item.get("action") or ""),
+                    depends_on=tuple(str(dep) for dep in item.get("depends_on", []) if isinstance(dep, str)), params=dict(item.get("params") or {}),
+                )
+                for item in raw_steps if isinstance(item, dict)
+            )
+            if not steps or any(not item.id for item in steps):
+                raise UnsupportedOperationError("Each task step requires an id.")
+            workflow = WorkflowDefinition(id=workflow_id, steps=steps)
+        source = str(params.get("source") or "mcp").strip() or "mcp"
+        task_context = dict(params.get("context") or {}) if isinstance(params.get("context"), dict) else {}
+        if validated_plan_id in self._approved_plans:
+            task_context["approved_steps"] = [
+                item.target_step for item in validation.required_actions
+                if getattr(item, "target_step", "")
+            ]
+        record = self.desktop.tasks.create(TaskCreate(
+            workflow=workflow,
+            target=DeviceTarget(device_id=device_id, session_id=session_id, protocol=str(params.get("protocol") or "auto")),
+            source=source,
+            context=task_context,
+        ))
+        return {"task": self._task_payload(record)}
+
+    async def _tool_task_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create a Task through the same backend boundary as Electron."""
+        return await self._create_task(params)
+
+    async def _tool_workflow_plan_validate(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw = params.get("plan")
+        if not isinstance(raw, dict):
+            # Accept a flat payload as a convenience for MCP clients.
+            raw = {key: value for key, value in params.items() if key not in {"source", "request_id"}}
+        plan = WorkflowPlan.from_dict(raw)
+        device_id = str(plan.target.get("device_id") or "").strip()
+        if device_id:
+            self.desktop.devices.require_device(device_id)
+        if not plan.plan_id:
+            plan = WorkflowPlan(
+                plan_id=f"plan-{__import__('uuid').uuid4().hex[:12]}",
+                objective=plan.objective,
+                target=plan.target,
+                steps=plan.steps,
+                success_criteria=plan.success_criteria,
+                budget=plan.budget,
+                parent_task_id=plan.parent_task_id,
+                revision=plan.revision,
+                metadata=plan.metadata,
+            )
+        validation = self._plan_compiler.validate(plan)
+        if validation.status in {"validated", "requires_confirmation"}:
+            self._plans[plan.plan_id] = (plan, validation)
+            self._persist_plan(plan, validation)
+        return {
+            "plan_id": plan.plan_id,
+            "plan_hash": validation.plan_hash,
+            "status": validation.status,
+            "errors": list(validation.errors),
+            "warnings": list(validation.warnings),
+            "required_actions": [item.to_dict() for item in validation.required_actions],
+            "workflow": validation.workflow.to_dict() if validation.workflow is not None else None,
+        }
+
+    async def _tool_workflow_plan_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        plan_id = self._text(params, "plan_id")
+        stored = self._plans.get(plan_id)
+        if stored is None:
+            raise ResourceNotFoundError("Unknown workflow plan.", details={"plan_id": plan_id})
+        plan, validation = stored
+        return {
+            "plan": plan.to_dict(),
+            "plan_hash": validation.plan_hash,
+            "status": validation.status,
+            "errors": list(validation.errors),
+            "warnings": list(validation.warnings),
+            "workflow": validation.workflow.to_dict() if validation.workflow else None,
+        }
+
+    async def _tool_workflow_plan_approve(self, params: dict[str, Any]) -> dict[str, Any]:
+        plan_id = self._text(params, "plan_id")
+        stored = self._plans.get(plan_id)
+        if stored is None:
+            raise ResourceNotFoundError("Unknown workflow plan.", details={"plan_id": plan_id})
+        _plan, validation = stored
+        expected_hash = str(params.get("plan_hash") or "").strip()
+        if expected_hash and expected_hash != validation.plan_hash:
+            raise UnsupportedOperationError("Workflow plan hash does not match the validated plan.")
+        if validation.status not in {"validated", "requires_confirmation"}:
+            raise UnsupportedOperationError("Only a valid plan can be approved.")
+        self._approved_plans.add(plan_id)
+        self._persist_plan(_plan, validation, approved=True)
+        return {"plan_id": plan_id, "approved": True, "reason": str(params.get("reason") or "")}
+
+    async def _tool_task_replan(self, params: dict[str, Any]) -> dict[str, Any]:
+        parent_task_id = self._text(params, "parent_task_id")
+        parent = self.desktop.tasks.get(parent_task_id)
+        raw = params.get("plan")
+        if not isinstance(raw, dict):
+            raise UnsupportedOperationError("task.replan requires a plan object.")
+        plan_raw = dict(raw)
+        plan_raw["parent_task_id"] = parent_task_id
+        plan_raw.setdefault("revision", max(1, int(getattr(parent, "plan_revision", 0) or 0) + 1))
+        plan = WorkflowPlan.from_dict(plan_raw)
+        if not plan.plan_id:
+            plan = WorkflowPlan(
+                plan_id=f"plan-{__import__('uuid').uuid4().hex[:12]}",
+                objective=plan.objective,
+                target=plan.target,
+                steps=plan.steps,
+                success_criteria=plan.success_criteria,
+                budget=plan.budget,
+                parent_task_id=parent_task_id,
+                revision=plan.revision + 1,
+                metadata=plan.metadata,
+            )
+        validation = self._plan_compiler.validate(plan)
+        if validation.status != "validated":
+            return {"plan": {"plan_id": plan.plan_id, "status": validation.status, "errors": list(validation.errors), "warnings": list(validation.warnings)}}
+        self._plans[plan.plan_id] = (plan, validation)
+        self._persist_plan(plan, validation)
+        return await self._create_task({"plan_id": plan.plan_id, "plan_hash": validation.plan_hash, "source": "agent"})
+
+    def _persist_plan(self, plan: WorkflowPlan, validation: Any, *, approved: bool = False) -> None:
+        if self._plan_store is None:
+            return
+        self._plan_store.upsert_plan({
+            "plan_id": plan.plan_id,
+            "status": validation.status,
+            "approved": approved or plan.plan_id in self._approved_plans,
+            "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "plan": plan.to_dict(),
+            "plan_hash": validation.plan_hash,
+            "errors": list(validation.errors),
+            "warnings": list(validation.warnings),
+            "required_actions": [item.to_dict() for item in validation.required_actions],
+            "workflow": validation.workflow.to_dict() if validation.workflow else None,
+        })
+
+    @staticmethod
+    def _restore_plan(payload: dict[str, Any]) -> tuple[WorkflowPlan, Any, bool] | None:
+        try:
+            from device_tui.application.tasking import Action, PlanValidationResult
+            raw_plan = payload.get("plan")
+            if not isinstance(raw_plan, dict):
+                return None
+            plan = WorkflowPlan.from_dict(raw_plan)
+            raw_workflow = payload.get("workflow")
+            workflow = WorkflowDefinition.from_dict(raw_workflow) if isinstance(raw_workflow, dict) else None
+            required = tuple(Action.from_dict(item) for item in payload.get("required_actions", ()) if isinstance(item, dict))
+            validation = PlanValidationResult(
+                str(payload.get("status") or "rejected"),
+                plan,
+                str(payload.get("plan_hash") or plan.content_hash()),
+                workflow=workflow,
+                errors=tuple(dict(item) for item in payload.get("errors", ()) if isinstance(item, dict)),
+                warnings=tuple(str(item) for item in payload.get("warnings", ()) if str(item)),
+                required_actions=required,
+            )
+            return plan, validation, bool(payload.get("approved", False))
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    async def _tool_task_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"task": self._task_payload(self.desktop.tasks.get(self._text(params, "task_id")))}
+
+    async def _get_decision(self, params: dict[str, Any]) -> dict[str, Any]:
+        decision = self.desktop.tasks.get_decision(self._text(params, "task_id"))
+        return {"decision": decision.to_dict() if decision is not None else None}
+
+    async def _tool_task_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"tasks": [self._task_payload(item) for item in self.desktop.tasks.list(limit=int(params.get("limit") or 200))]}
+
+    async def _tool_task_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"task": self._task_payload(self.desktop.tasks.cancel(self._text(params, "task_id")))}
+
+    async def _tool_task_pause(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"task": self._task_payload(self.desktop.tasks.pause(self._text(params, "task_id")))}
+
+    async def _tool_task_resume(self, params: dict[str, Any]) -> dict[str, Any]:
+        context = params.get("context")
+        return {"task": self._task_payload(self.desktop.tasks.resume(
+            self._text(params, "task_id"),
+            context=dict(context) if isinstance(context, dict) else {},
+            step_id=str(params.get("step_id") or ""),
+        ))}
+
+    async def _tool_task_decision(self, params: dict[str, Any]) -> dict[str, Any]:
+        action_value = params.get("action")
+        if isinstance(action_value, dict):
+            action = Action.from_dict(action_value)
+        else:
+            action = Action(str(action_value or ""), target_step=str(params.get("target_step") or ""), parameters=dict(params.get("parameters") or {}))
+        task_id = self._text(params, "task_id")
+        decision = Decision(
+            decision_id=str(params.get("decision_id") or f"mcp-{task_id}"),
+            actor=DecisionActor(type=str(params.get("actor_type") or "agent"), id=str(params.get("actor_id") or "agent")),
+            action=action, reason=str(params.get("reason") or ""), task_id=task_id,
+            expected_revision=(int(params["expected_revision"]) if params.get("expected_revision") is not None else None),
+        )
+        return {"task": self._task_payload(self.desktop.tasks.apply_decision(task_id, decision))}
+
+    async def _tool_decision_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._get_decision(params)
+
+    async def _tool_decision_apply(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(params.get("action"), dict):
+            raise UnsupportedOperationError("decision.apply requires a structured action object.")
+        payload = dict(params)
+        payload["actor_type"] = "agent"
+        payload.setdefault("actor_id", "agent")
+        return await self._tool_task_decision(payload)
+
+    async def _tool_workflow_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        workflows = []
+        for workflow in (
+            device_upgrade_workflow(device_id="<device_id>", package="<package>"),
+        ):
+            workflows.append({
+                "id": workflow.id,
+                "name": workflow.name,
+                "description": workflow.description,
+                "steps": [
+                    {"id": step.id, "kind": step.kind, "action": step.action.name if isinstance(step.action, Action) else str(step.action), "depends_on": list(step.depends_on), "params": dict(step.params), "retry_policy": dict(step.retry_policy)}
+                    for step in workflow.steps
+                ],
+            })
+        return {
+            "workflows": workflows,
+            "capabilities": sorted(self._plan_compiler.CAPABILITIES),
+            "plan_limits": {
+                "max_steps": self._plan_compiler.MAX_STEPS,
+                "max_replans": self._plan_compiler.MAX_REPLANS,
+            },
+        }
+
+    async def _tool_workflow_run(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Start a workflow as a Task; the Agent never receives an Engine."""
+        return await self._create_task(params)
+
+    async def _tool_tool_execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Execute an existing diagnostic backend tool, without workflow access."""
+        tool_name = str(params.get("name") or params.get("tool") or "").strip().replace(".", "_")
+        allowed = {"terminal_run", "terminal_execute", "terminal_execute_batch", "terminal_interact", "terminal_read", "file_transfer_list", "execution_get"}
+        if tool_name not in allowed:
+            raise UnsupportedOperationError(f"tool.execute only allows diagnostic tools: {', '.join(sorted(allowed))}")
+        handler = getattr(self, f"_tool_{tool_name}", None)
+        if not callable(handler):
+            raise UnsupportedOperationError(f"Unknown diagnostic tool: {tool_name}")
+        nested = params.get("params")
+        payload = dict(nested) if isinstance(nested, dict) else {key: value for key, value in params.items() if key not in {"name", "tool", "params"}}
+        return await handler(payload)
 
     async def _tool_session_open(self, params: dict[str, Any]) -> dict[str, Any]:
         session, reused = await self._open_or_reuse(self._text(params, "device_id"), "auto")
@@ -101,16 +442,27 @@ class DesktopMcpService:
         if action == "status":
             return {"session": self._session_payload(session)}
         if action == "reconnect":
-            return {"session": self._session_payload(await self.desktop.sessions.reconnect(session.id))}
+            updated = await self.desktop.control.reconnect_session(
+                DeviceTarget(device_id=session.device_id, session_id=session.id),
+                context=ControlContext(source="mcp"),
+            )
+            return {"session": self._session_view_payload(updated)}
         if action == "disconnect":
             self.desktop.upgrades.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
-            return {"session": self._session_payload(await self.desktop.sessions.disconnect(session.id))}
+            updated = await self.desktop.control.disconnect_session(
+                DeviceTarget(device_id=session.device_id, session_id=session.id),
+                context=ControlContext(source="mcp"),
+            )
+            return {"session": self._session_view_payload(updated)}
         if action == "close":
             self.desktop.automation.cancel_session(session.id, reason="mcp_close")
             self.desktop.upgrades.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
-            await self.desktop.sessions.close(session.id)
+            await self.desktop.control.close_session(
+                DeviceTarget(device_id=session.device_id, session_id=session.id),
+                context=ControlContext(source="mcp"),
+            )
             return {"session_id": session.id, "closed": True}
         raise UnsupportedOperationError(f"Unsupported session action: {action}")
 
@@ -171,10 +523,21 @@ class DesktopMcpService:
         return self._execution_payload(result)
 
     async def _tool_terminal_send_command(self, params: dict[str, Any]) -> dict[str, Any]:
-        session, _ = await self._open_or_reuse(self._text(params, "device_id"), "auto")
+        device_id = self._text(params, "device_id")
+        session, _ = await self._open_or_reuse(device_id, "auto")
         command = self._text(params, "command")
-        await self.desktop.commands.send(session.id, command)
-        return {"session_id": session.id, "device_id": session.device_id, "command": command, "sent": True}
+        result = await self.desktop.control.send_raw(
+            DeviceTarget(device_id=device_id, session_id=session.id),
+            command,
+            context=ControlContext(source="mcp"),
+        )
+        self.desktop.commands.record_for_session(session.id, command)
+        return {
+            "session_id": result.session_id,
+            "device_id": result.device_id,
+            "command": command,
+            "sent": result.sent,
+        }
 
     async def _tool_terminal_read(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._resolve_session(device_id=self._text(params, "device_id"))
@@ -182,10 +545,14 @@ class DesktopMcpService:
         return {"session_id": session.id, "device_id": session.device_id, "output": log.content, "truncated": log.truncated}
 
     async def _tool_execution_get(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._execution_payload(self.terminal_executor.get_execution(self._text(params, "execution_id")))
+        return self._execution_payload(
+            self.desktop.control.get_execution(self._text(params, "execution_id"))
+        )
 
     async def _tool_execution_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._execution_payload(self.terminal_executor.cancel_execution(self._text(params, "execution_id")))
+        return self._execution_payload(
+            self.desktop.control.cancel_execution(self._text(params, "execution_id"))
+        )
 
     async def _tool_file_transfer_list(self, params: dict[str, Any]) -> dict[str, Any]:
         catalog = self.desktop.transfers.list_files(
@@ -196,38 +563,49 @@ class DesktopMcpService:
         return {"files": [item.public_dict() for item in catalog.files], "truncated": catalog.truncated}
 
     async def _tool_file_transfer_start(self, params: dict[str, Any]) -> dict[str, Any]:
-        session, _ = await self._open_or_reuse(self._text(params, "device_id"), "auto")
-        operation = self.desktop.transfers.start_upload(
-            session_id=session.id,
-            source_path=self._text(params, "source_path"),
-            destination_path=self._text(params, "destination_path"),
-            overwrite=bool(params.get("overwrite", False)),
+        device_id = self._text(params, "device_id")
+        session, _ = await self._open_or_reuse(device_id, "auto")
+        operation = self.desktop.control.transfer(
+            DeviceTarget(device_id=device_id, session_id=session.id),
+            TransferRequest(
+                direction="upload",
+                source_path=self._text(params, "source_path"),
+                destination_path=self._text(params, "destination_path"),
+                overwrite=bool(params.get("overwrite", False)),
+            ),
+            context=ControlContext(source="mcp"),
         )
-        return {"operation_id": operation.id, "operation": asdict(operation)}
+        return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
 
     async def _tool_package_upgrade_start(self, params: dict[str, Any]) -> dict[str, Any]:
         session, _ = await self._open_or_reuse(self._text(params, "device_id"), "auto")
         packages = [item for item in self.desktop.transfers.list_files(limit=1_000).files if item.name.casefold().endswith(".cc")]
         if not packages:
             raise UnsupportedOperationError("No .cc package is available in the managed transfer root.")
-        operation = self.desktop.upgrades.start(session_id=session.id, package_path=packages[0].relative_path)
-        return {"operation_id": operation.id, "operation": asdict(operation)}
+        operation = self.desktop.control.start_package_upgrade(
+            DeviceTarget(device_id=session.device_id, session_id=session.id),
+            PackageUpgradeRequest(package_path=packages[0].relative_path),
+            context=ControlContext(source="mcp"),
+        )
+        return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
 
     async def _tool_operation_get(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"operation": asdict(self.desktop.operations.get(self._text(params, "operation_id")))}
+        operation = self.desktop.control.get_operation(self._text(params, "operation_id"))
+        return {"operation": self._operation_view_payload(operation)}
 
     async def _tool_operation_wait(self, params: dict[str, Any]) -> dict[str, Any]:
         operation_id = self._text(params, "operation_id")
         revision = int(params.get("since_revision") or 0)
         deadline = asyncio.get_running_loop().time() + min(60, max(0, int(params.get("timeout_seconds") or 60)))
         while True:
-            record = self.desktop.operations.get(operation_id)
-            if record.status in {"completed", "failed", "cancelled"} or record.revision > revision or asyncio.get_running_loop().time() >= deadline:
-                return {"operation": asdict(record)}
+            operation = self.desktop.control.get_operation(operation_id)
+            if operation.status in {"completed", "failed", "cancelled"} or operation.revision > revision or asyncio.get_running_loop().time() >= deadline:
+                return {"operation": self._operation_view_payload(operation)}
             await asyncio.sleep(0.1)
 
     async def _tool_operation_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"operation": asdict(self.desktop.operations.cancel(self._text(params, "operation_id")))}
+        operation = self.desktop.control.cancel_operation(self._text(params, "operation_id"))
+        return {"operation": self._operation_view_payload(operation)}
 
     async def _tool_ai_create_session(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._tool_session_open(params)
@@ -248,9 +626,19 @@ class DesktopMcpService:
         return await self._tool_file_transfer_start(params)
 
     async def _tool_ai_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
-        session, _ = await self._open_or_reuse(self._text(params, "device_id"), "auto")
-        operation = self.desktop.transfers.start_download(session_id=session.id, source_path=self._text(params, "source_path"), destination_path=self._text(params, "destination_path"), overwrite=False)
-        return {"operation_id": operation.id, "operation": asdict(operation)}
+        device_id = self._text(params, "device_id")
+        session, _ = await self._open_or_reuse(device_id, "auto")
+        operation = self.desktop.control.transfer(
+            DeviceTarget(device_id=device_id, session_id=session.id),
+            TransferRequest(
+                direction="download",
+                source_path=self._text(params, "source_path"),
+                destination_path=self._text(params, "destination_path"),
+                overwrite=False,
+            ),
+            context=ControlContext(source="mcp"),
+        )
+        return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
 
     async def _tool_ai_get_result(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.ai.get_result(self._text(params, "result_id"), include_raw=bool(params.get("include_raw", False)))
@@ -280,12 +668,18 @@ class DesktopMcpService:
         return self._resolve_session(device_id=device_id)
 
     async def _open_or_reuse(self, device_id: str, protocol: str) -> tuple[Any, bool]:
-        for session in self.desktop.sessions.list_sessions():
-            if session.device_id == device_id and session.status == "connected":
-                return session, True
-        device = self.desktop.devices.require_device(device_id)
-        kind = protocol if protocol in {"ssh", "telnet", "serial", "simulated"} else self._protocol_for(device)
-        return await self.desktop.sessions.create(device_id, kind), False
+        view = await self.desktop.control.open_session(
+            DeviceTarget(device_id=device_id, protocol=protocol),
+            reuse=True,
+            context=ControlContext(source="mcp"),
+        )
+        session = next(
+            (item for item in self.desktop.sessions.list_sessions() if item.id == view.session_id),
+            None,
+        )
+        if session is None:
+            raise ResourceNotFoundError("Session disappeared after opening", details={"session_id": view.session_id})
+        return session, view.reused
 
     def _resolve_session(self, *, session_id: str = "", device_id: str = "") -> Any:
         for session in self.desktop.sessions.list_sessions():
@@ -316,9 +710,41 @@ class DesktopMcpService:
         return payload
 
     @staticmethod
+    def _task_payload(record: Any) -> dict[str, Any]:
+        payload = asdict(record)
+        if payload.get("result") is not None:
+            payload["result"] = asdict(record.result)
+        return payload
+
+    @staticmethod
     def _session_payload(session: Any) -> dict[str, Any]:
         payload = asdict(session)
         payload["session_id"] = session.id
+        return payload
+
+    @staticmethod
+    def _session_view_payload(session: Any) -> dict[str, Any]:
+        payload = asdict(session)
+        payload["session_id"] = session.session_id
+        payload["id"] = session.session_id
+        payload["kind"] = session.protocol
+        return payload
+
+    @staticmethod
+    def _operation_view_payload(operation: Any) -> dict[str, Any]:
+        payload = asdict(operation)
+        payload.setdefault("id", getattr(operation, "operation_id", ""))
+        payload.setdefault("direction", "")
+        payload.setdefault("bytes_transferred", 0)
+        payload.setdefault("total_bytes", 0)
+        payload.setdefault("bytes_per_second", 0)
+        payload.setdefault("eta_seconds", None)
+        payload.setdefault("queue_position", None)
+        payload.setdefault("retry_of", None)
+        payload.setdefault("cancellable", True)
+        payload.setdefault("revision", 0)
+        payload.setdefault("created_at", "")
+        payload.setdefault("updated_at", "")
         return payload
 
     @staticmethod

@@ -326,6 +326,7 @@ class AppControlService(
                 action,
                 result,
                 kind="package_upgrade",
+                operation_id=str(result.data.get("operation_id") or ""),
             )
             response["data"]["operation_id"] = operation.id
             response["data"]["operation"] = asdict(operation)

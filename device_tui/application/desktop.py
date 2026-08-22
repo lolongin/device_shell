@@ -10,6 +10,7 @@ from .automation import AutomationService, AutomationStore, MemoryAutomationStor
 from .credentials import CredentialResolver, RepositoryCredentialResolver
 from .commands import CommandService, CommandStore, MemoryCommandStore
 from .devices import DeviceService
+from .device_control import DeviceControlService
 from .events import EventBus
 from .profiles import (
     CompositeCredentialResolver,
@@ -29,6 +30,7 @@ from .transfers import (
     UnavailableTerminalPlanExecutor,
 )
 from .upgrades import PackageUpgradeService
+from .tasking import DeviceExecutionTool, MemoryTaskStore, TaskManager, TaskStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +47,8 @@ class DesktopApplication:
     operations: OperationManager
     transfers: ManagedTransferService
     upgrades: PackageUpgradeService
+    control: DeviceControlService
+    tasks: TaskManager
 
 
 def build_desktop_application(
@@ -60,6 +64,7 @@ def build_desktop_application(
     settings_store: SettingsStore | None = None,
     terminal_executor: TerminalPlanExecutor | None = None,
     transfer_root: Path | None = None,
+    task_store: TaskStore | None = None,
 ) -> DesktopApplication:
     events = EventBus()
     devices = DeviceService(repository)
@@ -97,6 +102,8 @@ def build_desktop_application(
         default_root=transfer_root,
     )
     upgrades = PackageUpgradeService(sessions, operations, transfers, executor)
+    control = DeviceControlService(devices, sessions, transfers, operations, executor, upgrades)
+    tasks = TaskManager(DeviceExecutionTool(control), events, store=task_store or MemoryTaskStore())
     return DesktopApplication(
         devices=devices,
         sessions=sessions,
@@ -110,4 +117,6 @@ def build_desktop_application(
         operations=operations,
         transfers=transfers,
         upgrades=upgrades,
+        control=control,
+        tasks=tasks,
     )

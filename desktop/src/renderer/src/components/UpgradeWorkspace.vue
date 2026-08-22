@@ -20,6 +20,7 @@ import {
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
 import { desktopApi } from '../transport/api'
+import TaskWorkspace from './TaskWorkspace.vue'
 
 const workspace = useWorkspaceStore()
 const packagePath = ref('')
@@ -122,8 +123,7 @@ async function startUpgrade(): Promise<void> {
     localError.value = '共享目录中没有可用的 .cc 系统包。'
     return
   }
-  await workspace.startPackageUpgrade({
-    package_path: packagePath.value,
+  await workspace.createDeviceUpgradeTask(packagePath.value, {
     include_slave: includeSlave.value,
     auto_delete_old_packages: autoDelete.value,
     reboot_after_setting: requestReboot.value
@@ -254,7 +254,8 @@ onBeforeUnmount(() => {
     @mousedown.self="workspace.upgradePanelOpen = false"
   >
     <aside class="upgrade-workspace" role="region" aria-labelledby="upgrade-title">
-      <header class="upgrade-header">
+      <TaskWorkspace />
+      <header v-if="false" class="upgrade-header">
         <div class="upgrade-heading">
           <span class="upgrade-icon"><Box :size="18" /></span>
           <div>
@@ -268,7 +269,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div class="upgrade-body">
+      <div v-if="false" class="upgrade-body">
         <section class="upgrade-safety-banner">
           <ShieldAlert :size="17" />
           <div>

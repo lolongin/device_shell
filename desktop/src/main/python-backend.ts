@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 
@@ -45,13 +45,14 @@ export class PythonBackend {
     this.stopping = false
     const configuredUrl = process.env.DEVICE_TUI_BACKEND_URL
     const configuredToken = process.env.DEVICE_TUI_DESKTOP_TOKEN
-    if (configuredUrl && configuredToken) {
+      if (configuredUrl && configuredToken) {
       this.externalRuntime = true
       this.runtime = {
         apiBaseUrl: configuredUrl.replace(/\/$/, ''),
         token: configuredToken,
         apiVersion: 1
       }
+      this.writeControlState(this.runtime)
       this.writeDiagnostic(`Using externally configured backend at ${this.runtime.apiBaseUrl}`)
       return this.runtime
     }
@@ -76,7 +77,7 @@ export class PythonBackend {
       env: {
         ...backendEnvironment,
         DEVICE_TUI_DESKTOP_TOKEN: token,
-        DEVICE_TUI_DATA_DIR: app.getPath('userData'),
+        DEVICE_TUI_DATA_DIR: process.env.DEVICE_TUI_DATA_DIR || app.getPath('userData'),
         DEVICE_TUI_PACKAGED: bundledBackend ? '1' : '0',
         PYTHONUNBUFFERED: '1'
       }
@@ -124,6 +125,7 @@ export class PythonBackend {
               token,
               apiVersion: Number(message.apiVersion || 1)
             }
+            this.writeControlState(this.runtime)
             this.writeDiagnostic(`Python backend ready at ${this.runtime.apiBaseUrl}`)
             resolve(this.runtime)
           }
@@ -175,6 +177,32 @@ export class PythonBackend {
     if (!app.isPackaged) return null
     const executable = process.platform === 'win32' ? 'device-tui-backend.exe' : 'device-tui-backend'
     return path.join(process.resourcesPath, 'backend', 'device-tui-backend', executable)
+  }
+
+  private writeControlState(runtime: BackendRuntime): void {
+    const configuredPath = process.env.DEVICE_TUI_CONTROL_STATE?.trim()
+    const localAppData = process.env.LOCALAPPDATA || path.join(app.getPath('appData'), '..', 'Local')
+    const statePath = configuredPath || path.join(localAppData, 'DeviceTUI', 'app-control.json')
+    try {
+      mkdirSync(path.dirname(statePath), { recursive: true })
+      writeFileSync(
+        statePath,
+        JSON.stringify(
+          {
+            pid: this.child?.pid ?? process.pid,
+            base_url: runtime.apiBaseUrl,
+            token: runtime.token,
+            transport: 'desktop-api',
+            started_at: new Date().toISOString()
+          },
+          null,
+          2
+        ),
+        'utf8'
+      )
+    } catch (error) {
+      this.writeDiagnostic(`Failed to write MCP control state: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private backendEnvironment(): NodeJS.ProcessEnv {

@@ -73,6 +73,7 @@ interface DesktopApi {
   loginInternalService(request: InternalLoginPromptRequest): Promise<import('./types').InternalAuthStatus | null>
   chooseDeviceImport(): Promise<import('./types').DeviceImportPreview | null>
   chooseTransferRoot(): Promise<string>
+  choosePackage(defaultPath?: string): Promise<string>
   saveTransferSettings(request: TransferSettingsSaveRequest): Promise<BackendResponse>
   copyTransferCommand(command: string): Promise<boolean>
   chooseSessionLogDirectory(): Promise<string>

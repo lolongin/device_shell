@@ -114,6 +114,22 @@ class OperationManager:
         data: dict[str, object] | None = None,
     ) -> OperationRecord:
         now = self._now()
+        record_data = dict(data or {})
+        if kind == "package_upgrade":
+            # Package replacement is exposed as one guarded operation, but its
+            # internal stages are useful evidence for the parent Task timeline.
+            # Keep a bounded, secret-free history in the operation payload.
+            record_data.setdefault(
+                "stage_history",
+                [
+                    {
+                        "stage": stage,
+                        "status": status,
+                        "message": message,
+                        "progress_percent": 0,
+                    }
+                ],
+            )
         record = OperationRecord(
             id=str(uuid4()),
             kind=kind,
@@ -127,7 +143,7 @@ class OperationManager:
             retry_of=retry_of,
             created_at=now,
             updated_at=now,
-            data=dict(data or {}),
+            data=record_data,
         )
         if status in TERMINAL_OPERATION_STATUSES:
             record = replace(record, cancellable=False)
@@ -179,16 +195,31 @@ class OperationManager:
         if data:
             merged_data.update(data)
         next_status = current.status if status is None else status
+        next_stage = current.stage if stage is None else stage
+        next_message = current.message if message is None else message
+        next_progress = (
+            current.progress_percent
+            if progress_percent is None
+            else max(0, min(100, int(progress_percent)))
+        )
+        if current.kind == "package_upgrade" and next_stage != current.stage:
+            history = merged_data.get("stage_history")
+            entries = [dict(item) for item in history if isinstance(item, dict)] if isinstance(history, list) else []
+            entries.append(
+                {
+                    "stage": next_stage,
+                    "status": next_status,
+                    "message": next_message,
+                    "progress_percent": next_progress,
+                }
+            )
+            merged_data["stage_history"] = entries[-32:]
         updated = replace(
             current,
             status=next_status,
-            stage=current.stage if stage is None else stage,
-            message=current.message if message is None else message,
-            progress_percent=(
-                current.progress_percent
-                if progress_percent is None
-                else max(0, min(100, int(progress_percent)))
-            ),
+            stage=next_stage,
+            message=next_message,
+            progress_percent=next_progress,
             bytes_transferred=(
                 current.bytes_transferred
                 if bytes_transferred is None

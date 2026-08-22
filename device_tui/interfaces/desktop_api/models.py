@@ -831,6 +831,64 @@ class AiAuditResponse(BaseModel):
     entries: list[dict[str, object]]
 
 
+class WorkflowStepRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=160)
+    kind: str = Field(default="command", min_length=1, max_length=32)
+    action: str = Field(default="", max_length=64)
+    depends_on: list[str] = Field(default_factory=list, max_length=50)
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class TaskCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str = Field(min_length=1, max_length=160)
+    device_id: str = Field(default="", max_length=160)
+    session_id: str = Field(default="", max_length=160)
+    protocol: Literal["auto", "simulated", "ssh", "telnet", "serial"] = "auto"
+    source: str = Field(default="desktop-api", max_length=64)
+    context: dict[str, object] = Field(default_factory=dict)
+    package: str = Field(default="", max_length=1024)
+    options: dict[str, object] = Field(default_factory=dict)
+    steps: list[WorkflowStepRequest] = Field(default_factory=list, max_length=50)
+
+
+class TaskResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context: dict[str, object] = Field(default_factory=dict)
+    step_id: str = Field(default="", max_length=160)
+
+
+class TaskModel(BaseModel):
+    id: str
+    status: str
+    workflow_id: str
+    device_id: str
+    session_id: str
+    source: str
+    created_at: str
+    updated_at: str
+    progress_percent: int
+    current_step_id: str
+    error_code: str
+    message: str
+    result: dict[str, object] | None = None
+    checkpoint: dict[str, object] | None = None
+
+
+class TaskResponse(BaseModel):
+    api_version: int = API_VERSION
+    task: TaskModel
+
+
+class TaskListResponse(BaseModel):
+    api_version: int = API_VERSION
+    tasks: list[TaskModel]
+
+
 class ConnectionProfileUpsertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

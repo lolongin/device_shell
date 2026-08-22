@@ -144,6 +144,30 @@ def test_simulated_session_can_inject_upgrade_failures() -> None:
     assert "old.cc" not in text[text.rfind("Directory of flash:/") :]
 
 
+def test_simulated_session_can_inject_one_workflow_command_failure() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command("sim workflow fail-next on")
+        await session.send_command("display version")
+        await session.send_command("display version")
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    text = "".join(output)
+    assert "Simulated workflow fail-next is on." in text
+    assert "Unknown command: display version" in text
+    assert text.count("SimOS V1.0 build 2026-05-29") == 1
+
+
 def test_simulated_transfer_login_can_expire_while_waiting_for_input() -> None:
     output: list[str] = []
     session = SimulatedTerminalSession(

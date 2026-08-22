@@ -13,6 +13,7 @@ from .core import (
 from .models import OperationRecord
 from .runtime import default_audit_path, default_runtime_directory, default_state_path
 from .service import AppControlService
+from .device_control_backend import DeviceControlAppBackend
 
 __all__ = [
     "APPROVAL_MODE_DISABLED",
@@ -22,6 +23,7 @@ __all__ = [
     "AppControlError",
     "AppControlHttpServer",
     "AppControlService",
+    "DeviceControlAppBackend",
     "ApprovalRecord",
     "ApprovalStore",
     "AuditLogger",

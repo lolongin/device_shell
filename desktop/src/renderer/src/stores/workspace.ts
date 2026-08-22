@@ -29,7 +29,10 @@ import type {
   SessionSummary,
   InternalAuthStatus,
   AiPlanResponse,
-  ApplicationEvent
+  ApplicationEvent,
+  TaskRecord,
+  TaskDecisionContext,
+  TaskDecisionActionPayload
 } from '../types'
 
 const VIEW_STATE_KEY = 'device-tui.desktop-v2.workspace'
@@ -91,6 +94,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     localStorage.getItem('device-tui.desktop-v2.upgrade-open') === '1'
   )
   const upgradeBusy = ref(false)
+  const tasks = ref<TaskRecord[]>([])
+  const activeTaskId = ref('')
+  const taskBusy = ref(false)
+  const taskDecision = ref<TaskDecisionContext | null>(null)
+  const taskError = ref('')
+  let taskRefreshTimer: ReturnType<typeof setInterval> | null = null
   const aiPanelOpen = ref(localStorage.getItem('device-tui.desktop-v2.ai-open') === '1')
   const aiBusy = ref(false)
   const aiObjective = ref('')
@@ -163,6 +172,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeSession = computed(
     () => sessions.value.find((session) => session.id === activeSessionId.value) || null
   )
+
+  function selectDevice(deviceId: string): void {
+    const device = devices.value.find((item) => item.id === deviceId || item.row_id === deviceId)
+    if (device) selectedDeviceRowId.value = device.row_id
+  }
   const currentCommandGroup = computed(
     () => commandGroups.value.find((group) => group.id === currentCommandGroupId.value) || null
   )
@@ -296,7 +310,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         transferSettingsResponse,
         transferLogResponse,
         operationResponse,
-        upgradeOperationResponse
+        upgradeOperationResponse,
+        taskResponse
       ] = await Promise.all([
         desktopApi.devices(),
         desktopApi.sessions(),
@@ -306,7 +321,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         desktopApi.transferSettings(),
         desktopApi.transferServiceLog(),
         desktopApi.operations('managed_file_transfer'),
-        desktopApi.operations('package_upgrade')
+        desktopApi.operations('package_upgrade'),
+        desktopApi.listTasks().catch((cause) => {
+          taskError.value = cause instanceof Error ? cause.message : String(cause)
+          return { api_version: 1, tasks: [] }
+        })
       ])
       applyDeviceInventory(deviceResponse)
       sessions.value = []
@@ -320,6 +339,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferClientCommand.value = transferLogResponse.client_command
       operations.value = operationResponse.operations
       upgradeOperations.value = upgradeOperationResponse.operations
+      tasks.value = taskResponse.tasks
       const restoredDevice = devices.value.find(
         (device) => device.row_id === selectedDeviceRowId.value
       ) || devices.value.find((device) => device.id === selectedDeviceRowId.value)
@@ -1347,6 +1367,185 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  async function refreshTasks(): Promise<void> {
+    try {
+      taskError.value = ''
+      const response = await desktopApi.listTasks()
+      tasks.value = response.tasks
+      if (activeTaskId.value) {
+        const active = tasks.value.find((item) => item.id === activeTaskId.value)
+        const isTerminal = Boolean(active && ['completed', 'failed', 'cancelled'].includes(active.status))
+        const isWaiting = Boolean(active && ['waiting_for_decision', 'waiting_for_user'].includes(active.status))
+        if (active) await syncTaskSession(active)
+        if (isTerminal && taskRefreshTimer) {
+          clearInterval(taskRefreshTimer)
+          taskRefreshTimer = null
+        }
+        if (isWaiting && active) {
+          const decision = await desktopApi.getTaskDecision(active.id)
+          taskDecision.value = decision.decision
+        } else {
+          // A decision is actionable only while the task is waiting. Clear the
+          // cached context after approval/resume and when a task reaches any
+          // non-waiting state, otherwise a completed task can show stale
+          // "需要人工 Action" controls from an earlier checkpoint.
+          taskDecision.value = null
+        }
+      }
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+    }
+  }
+
+  async function createDeviceUpgradeTask(packagePath: string, options: Record<string, unknown> = {}): Promise<boolean> {
+    const deviceId = selectedDeviceId.value
+    if (!deviceId || !packagePath) return false
+    taskBusy.value = true
+    error.value = ''
+    taskError.value = ''
+    try {
+      const response = await desktopApi.createTask({ workflow_id: 'device_upgrade', device_id: deviceId, package: packagePath, options, source: 'desktop' })
+      activeTaskId.value = response.task.id
+      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== response.task.id)]
+      await syncTaskSession(response.task)
+      taskDecision.value = null
+      notice.value = '换包任务已创建'
+      startTaskPolling()
+      return true
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      taskBusy.value = false
+    }
+  }
+
+  async function createWorkflowPlanTask(objective: string, command: string): Promise<boolean> {
+    const deviceId = selectedDeviceId.value
+    if (!deviceId || !objective.trim() || !command.trim()) return false
+    taskBusy.value = true
+    taskError.value = ''
+    try {
+      const plan = {
+        plan_id: 'ui-' + Date.now().toString(36),
+        objective: objective.trim(),
+        target: { device_id: deviceId },
+        steps: [{
+          id: 'command',
+          capability: 'terminal.command',
+          params: { command: command.trim() }
+        }]
+      }
+      const validated = await desktopApi.workflowPlanValidate(plan)
+      const result = validated.data
+      if (!['validated', 'requires_confirmation'].includes(result.status)) {
+        taskError.value = result.errors?.map((item) => item.message || item.code || '计划校验失败').join('；') || '计划校验失败'
+        return false
+      }
+      if (result.status === 'requires_confirmation') {
+        await desktopApi.workflowPlanApprove(result.plan_id, result.plan_hash, '桌面任务工作区确认执行')
+      }
+      const started = await desktopApi.workflowRunPlan(result.plan_id, result.plan_hash)
+      activeTaskId.value = started.data.task.id
+      tasks.value = [started.data.task, ...tasks.value.filter((item) => item.id !== started.data.task.id)]
+      await syncTaskSession(started.data.task)
+      taskDecision.value = null
+      notice.value = '计划任务已创建'
+      startTaskPolling()
+      return true
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally {
+      taskBusy.value = false
+    }
+  }
+
+  async function getTask(taskId: string): Promise<TaskRecord | null> {
+    try {
+      const response = await desktopApi.getTask(taskId)
+      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      if (taskId === activeTaskId.value) await syncTaskSession(response.task)
+      if (taskId === activeTaskId.value && ['waiting_for_decision', 'waiting_for_user'].includes(response.task.status)) {
+        taskDecision.value = (await desktopApi.getTaskDecision(taskId)).decision
+      } else if (taskId === activeTaskId.value) {
+        // Do not retain the previous decision context once the task resumes or
+        // reaches a terminal state.
+        taskDecision.value = null
+      }
+      return response.task
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+      return null
+    }
+  }
+
+  async function syncTaskSession(task: TaskRecord): Promise<void> {
+    if (task.device_id) selectDevice(task.device_id)
+    if (!task.session_id) return
+
+    let session = sessions.value.find((item) => item.id === task.session_id)
+    if (!session) {
+      try {
+        // An Agent may create the Backend session before the renderer knows
+        // about it. Refresh the session inventory and attach the terminal to
+        // the Task's existing session; do not open a second device session.
+        const available = await desktopApi.sessions()
+        for (const item of available) upsertSession(item)
+        session = sessions.value.find((item) => item.id === task.session_id)
+      } catch (cause) {
+        taskError.value = cause instanceof Error ? cause.message : String(cause)
+      }
+    }
+    if (session) activeSessionId.value = session.id
+  }
+
+  async function pauseTask(taskId = activeTaskId.value): Promise<void> {
+    if (!taskId) return
+    taskBusy.value = true
+    try {
+      const response = await desktopApi.pauseTask(taskId)
+      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+    } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
+  }
+
+  async function resumeTask(taskId = activeTaskId.value, stepId = ''): Promise<void> {
+    if (!taskId) return
+    taskBusy.value = true
+    try {
+      const response = await desktopApi.resumeTask(taskId, stepId)
+      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      startTaskPolling()
+    } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
+  }
+
+  async function cancelTask(taskId = activeTaskId.value): Promise<void> {
+    if (!taskId) return
+    taskBusy.value = true
+    try {
+      const response = await desktopApi.cancelTask(taskId)
+      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      taskDecision.value = null
+    } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
+  }
+
+  async function applyTaskDecision(action: TaskDecisionActionPayload, reason = ''): Promise<void> {
+    const task = tasks.value.find((item) => item.id === activeTaskId.value)
+    if (!task || !taskDecision.value) return
+    taskBusy.value = true
+    try {
+      const response = await desktopApi.applyTaskDecision(activeTaskId.value, { action, expected_revision: taskDecision.value.checkpoint_revision, reason })
+      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== response.task.id)]
+      taskDecision.value = null
+      startTaskPolling()
+    } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
+  }
+
+  function startTaskPolling(): void {
+    if (taskRefreshTimer) clearInterval(taskRefreshTimer)
+    taskRefreshTimer = setInterval(() => { void refreshTasks() }, 900)
+  }
+
   async function approvePackageUpgrade(operationId: string): Promise<void> {
     upgradeBusy.value = true
     error.value = ''
@@ -1613,9 +1812,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     upgradeOperations,
     upgradePanelOpen,
     upgradeBusy,
+    tasks,
+    activeTaskId,
+    taskBusy,
+    taskDecision,
+    taskError,
+    refreshTasks,
+    createDeviceUpgradeTask,
+    createWorkflowPlanTask,
+    getTask,
+    pauseTask,
+    resumeTask,
+    cancelTask,
+    applyTaskDecision,
     aiPanelOpen, aiBusy, aiObjective, aiPlan,
     buildAiPlan,
     selectedDeviceId,
+    selectDevice,
     activeSessionId,
     query,
     domainFilter,

@@ -33,8 +33,17 @@ import type {
   SessionLogActionResponse,
   SessionLogResponse,
   SessionLogSettings,
-  SessionSummary
-  ,AiPlanResponse, AiApprovalListResponse, AiApproval
+  SessionSummary,
+  TaskResponse,
+  TaskRecord,
+  TaskListResponse,
+  TaskDecisionResponse,
+  TaskDecisionActionPayload,
+  AiPlanResponse,
+  AiApprovalListResponse,
+  AiApproval,
+  McpResponse,
+  WorkflowPlanValidation
 } from '../types'
 
 let runtimePromise: Promise<BackendRuntime> | null = null
@@ -367,6 +376,27 @@ export const desktopApi = {
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/approve`, { method: 'POST' }),
   aiReject: (approvalId: string): Promise<{ approval: AiApproval }> =>
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/reject`, { method: 'POST' }),
+  createTask: (payload: { workflow_id: string; device_id: string; package: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>
+    request('/api/v1/tasks', { method: 'POST', body: JSON.stringify(payload) }),
+  workflowPlanValidate: (plan: Record<string, unknown>): Promise<McpResponse<WorkflowPlanValidation>> =>
+    request('/api/v1/mcp/workflow.plan.validate', { method: 'POST', body: JSON.stringify({ plan, source: 'desktop' }) }),
+  workflowPlanApprove: (planId: string, planHash: string, reason = ''): Promise<McpResponse<Record<string, unknown>>> =>
+    request('/api/v1/mcp/workflow.plan.approve', { method: 'POST', body: JSON.stringify({ plan_id: planId, plan_hash: planHash, reason, source: 'desktop' }) }),
+  workflowRunPlan: (planId: string, planHash: string): Promise<McpResponse<{ task: TaskRecord }>> =>
+    request('/api/v1/mcp/workflow.run', { method: 'POST', body: JSON.stringify({ plan_id: planId, plan_hash: planHash, source: 'desktop' }) }),
+  getTask: (taskId: string): Promise<TaskResponse> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}`),
+  listTasks: (): Promise<TaskListResponse> => request('/api/v1/tasks'),
+  pauseTask: (taskId: string): Promise<TaskResponse> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
+  resumeTask: (taskId: string, stepId = ''): Promise<TaskResponse> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST', body: JSON.stringify({ step_id: stepId }) }),
+  cancelTask: (taskId: string): Promise<TaskResponse> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
+  getTaskDecision: (taskId: string): Promise<TaskDecisionResponse> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}/decision`),
+  applyTaskDecision: (taskId: string, payload: { action: TaskDecisionActionPayload; expected_revision?: number; reason?: string }): Promise<TaskResponse> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}/decision`, { method: 'POST', body: JSON.stringify(payload) }),
   startManagedTransfer: async (payload: {
     direction: 'upload' | 'download'
     session_id: string

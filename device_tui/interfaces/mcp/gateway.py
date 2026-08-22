@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import os
 import threading
 import time
@@ -58,11 +59,21 @@ class McpGateway:
                 if self._desktop_url and self._desktop_token:
                     self._client = DesktopApiClient(self._desktop_url, self._desktop_token)
                 else:
-                    self._client = AppControlClient.from_state_file(self.state_path)
+                    self._client = self._client_from_state_file()
                 self._state_signature = signature
                 if previous is not None:
                     previous.close()
             return self._client
+
+    def _client_from_state_file(self) -> AppControlClient | DesktopApiClient:
+        """Select the protocol from the runtime state written by Electron."""
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return AppControlClient.from_state_file(self.state_path)
+        if payload.get("transport") == "desktop-api":
+            return DesktopApiClient(str(payload["base_url"]), str(payload.get("token") or ""))
+        return AppControlClient.from_state_file(self.state_path)
 
     def invalidate(self) -> None:
         with self._lock:

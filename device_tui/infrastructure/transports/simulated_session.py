@@ -36,6 +36,7 @@ class SimulatedTerminalSession:
         self._upgrade_fail_download = False
         self._upgrade_fail_space = False
         self._upgrade_fail_startup = False
+        self._workflow_fail_next = False
         self._transfer_mode = ""
         self._transfer_phase = ""
         self._transfer_binary = False
@@ -203,11 +204,19 @@ class SimulatedTerminalSession:
                 "Commands: help, reboot, display version, display startup, dir flash:/, ftpget, "
                 "menu, admin, biglog [lines], exit\n"
                 "Upgrade toggles: sim upgrade fail-download|fail-space|fail-startup on|off\n"
+                "Workflow test: sim workflow fail-next on|off\n"
                 "Use 'menu' to test Ctrl+B, 'admin' to test Ctrl+A.\n<sim> "
             )
             return
         if lowered.startswith("sim upgrade "):
             self._handle_upgrade_toggle(lowered)
+            return
+        if lowered.startswith("sim workflow "):
+            self._handle_workflow_toggle(lowered)
+            return
+        if self._workflow_fail_next:
+            self._workflow_fail_next = False
+            self.callbacks.on_output(f"Unknown command: {command}\n<sim> ")
             return
         if lowered == "screen-length 0 temporary":
             self.callbacks.on_output("Info: Screen length disabled temporarily.\n<sim> ")
@@ -291,6 +300,15 @@ class SimulatedTerminalSession:
             self._upgrade_fail_startup = enabled
         state = "on" if enabled else "off"
         self.callbacks.on_output(f"Simulated upgrade {parts[2]} is {state}.\n<sim> ")
+
+    def _handle_workflow_toggle(self, lowered: str) -> None:
+        parts = lowered.split()
+        if len(parts) != 4 or parts[2] != "fail-next" or parts[3] not in {"on", "off"}:
+            self.callbacks.on_output("Usage: sim workflow fail-next on|off\n<sim> ")
+            return
+        self._workflow_fail_next = parts[3] == "on"
+        state = "on" if self._workflow_fail_next else "off"
+        self.callbacks.on_output(f"Simulated workflow fail-next is {state}.\n<sim> ")
 
     @staticmethod
     def _normalize_storage(value: str) -> str:

@@ -80,6 +80,8 @@ const desktopApi = {
     ipcRenderer.invoke('device-source:choose-import'),
   chooseTransferRoot: (): Promise<string> =>
     ipcRenderer.invoke('file-transfer:choose-root'),
+  choosePackage: (defaultPath?: string): Promise<string> =>
+    ipcRenderer.invoke('file-transfer:choose-package', defaultPath),
   saveTransferSettings: (request: TransferSettingsSaveRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('file-transfer:save-settings', request),
   copyTransferCommand: (command: string): Promise<boolean> =>

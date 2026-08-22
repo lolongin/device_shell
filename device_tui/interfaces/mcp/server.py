@@ -9,18 +9,20 @@ from .tools import register_all_tools
 
 
 INSTRUCTIONS = (
-    "Operate devices through the running Device TUI application. "
-    "Use terminal_run as the default tool for one or more ordinary commands; "
-    "it can prepare or reuse the target session in the same call. Use "
-    "terminal_interact for prompt-driven terminal workflows. For requests to "
-    "transfer a file only, call file_transfer_list and file_transfer_start. "
-    "Use package_upgrade_start for guarded package replacement and "
-    "operation_wait to wait for long-running work without repeated polling. "
-    "The older terminal_send_command, terminal_read, terminal_execute, and "
-    "terminal_execute_batch tools remain available for compatibility. Use "
-    "stable device_id and session_id values. Device TUI retains risk "
-    "classification, audit logging, terminal leases, local secret handling, "
-    "and guarded package-upgrade workflows."
+    "Operate devices through the running Device TUI backend. The public MCP "
+    "surface is intentionally limited to the namespaced Task/Workflow/Decision "
+    "capabilities: task.create, task.get, task.list, task.resume, task.cancel, "
+    "workflow.list, workflow.plan.validate, workflow.plan.get, "
+    "workflow.plan.approve, workflow.run, "
+    "task.replan, decision.get, decision.apply, and "
+    "tool.execute. Use workflow.run for a named workflow and task.create for a "
+    "generic Task. Use tool.execute only for an allow-listed diagnostic backend "
+    "tool; it is not a way to call Workflow Engine methods. An Agent is an "
+    "operator: first submit a declarative WorkflowPlan for backend validation, "
+    "then run only the returned validated plan. Inspect Task and "
+    "DecisionContext, return a structured action and reason, then apply it "
+    "through decision.apply. Use task.replan for a new revision; never mutate "
+    "WorkflowEngine state or invent device business logic in MCP."
 )
 
 

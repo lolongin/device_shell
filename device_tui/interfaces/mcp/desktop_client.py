@@ -130,6 +130,10 @@ class DesktopApiClient:
         timeout = payload.pop("timeout_seconds_override", None)
         return self._request("POST", f"/api/v1/mcp/{quote(tool, safe='')}", payload, request_timeout_seconds=timeout)
 
+    def mcp_tool(self, tool: str, **payload: Any) -> dict[str, Any]:
+        """Call a namespaced Backend MCP capability without domain logic."""
+        return self._tool(tool, **payload)
+
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None, *, authenticated: bool = True, request_timeout_seconds: int | None = None) -> dict[str, Any]:
         body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if method != "GET" else None
         connection = HTTPConnection(self.host, self.port, timeout=request_timeout_seconds or 30)

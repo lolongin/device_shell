@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from device_tui.application.automation import AutomationRuleRecord
 from device_tui.application.automation.rules import (
@@ -14,6 +15,8 @@ from device_tui.application.automation.rules import (
 from device_tui.application.commands import CommandGroup
 from device_tui.application.commands.suggestions import CommandHistoryItem
 from device_tui.application.operations import OperationRecord, TERMINAL_OPERATION_STATUSES
+if TYPE_CHECKING:
+    from device_tui.application.tasking import TaskCreate, TaskRecord
 from device_tui.device_sources.imported import (
     ImportedDeviceMetadata,
     deserialize_imported_device,
@@ -24,7 +27,7 @@ from .sqlite_profiles import SQLiteConnectionProfileStore
 
 
 class SQLiteDesktopStore(SQLiteConnectionProfileStore):
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 7
 
     def __init__(self, path: Path) -> None:
         super().__init__(path)
@@ -323,6 +326,91 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                 (kind, *statuses, kind, *statuses, max(0, int(keep))),
             )
 
+    def list_tasks(self, *, limit: int = 500) -> list[tuple[TaskRecord, TaskCreate]]:
+        """Load persisted Task snapshots and their immutable create requests."""
+        from device_tui.application.tasking import TaskCreate, TaskRecord
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT record_json, request_json
+                FROM tasks
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(0, int(limit)),),
+            ).fetchall()
+        items: list[tuple[TaskRecord, TaskCreate]] = []
+        for row in rows:
+            try:
+                record = TaskRecord.from_json(str(row["record_json"]))
+                request = TaskCreate.from_json(str(row["request_json"]))
+            except (TypeError, ValueError, KeyError):
+                # A malformed historical row should not prevent the app from
+                # starting or hide all other Task records.
+                continue
+            items.append((record, request))
+        return items
+
+    def upsert_task(self, record: TaskRecord, request: TaskCreate) -> None:
+        """Persist the complete Task checkpoint and immutable workflow input."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    id, status, created_at, updated_at, record_json, request_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    updated_at=excluded.updated_at,
+                    record_json=excluded.record_json,
+                    request_json=excluded.request_json
+                """,
+                (
+                    record.id,
+                    str(record.status),
+                    record.created_at,
+                    record.updated_at,
+                    record.to_json(),
+                    request.to_json(),
+                ),
+            )
+
+    def list_plans(self, *, limit: int = 500) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM workflow_plans ORDER BY updated_at DESC, plan_id DESC LIMIT ?",
+                (max(0, int(limit)),),
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                result.append(payload)
+        return result
+
+    def upsert_plan(self, payload: dict[str, object]) -> None:
+        plan_id = str(payload.get("plan_id") or "")
+        if not plan_id:
+            return
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        updated_at = str(payload.get("updated_at") or "")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO workflow_plans (plan_id, status, updated_at, payload)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(plan_id) DO UPDATE SET
+                    status=excluded.status,
+                    updated_at=excluded.updated_at,
+                    payload=excluded.payload
+                """,
+                (plan_id, str(payload.get("status") or ""), updated_at, serialized),
+            )
+
     def _migrate_desktop_schema(self) -> None:
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -382,6 +470,24 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                     ON operations(kind, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_operations_kind_status_updated
                     ON operations(kind, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    record_json TEXT NOT NULL,
+                    request_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_tasks_created
+                    ON tasks(created_at DESC, id DESC);
+                CREATE TABLE IF NOT EXISTS workflow_plans (
+                    plan_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_workflow_plans_updated
+                    ON workflow_plans(updated_at DESC, plan_id DESC);
                 CREATE TABLE IF NOT EXISTS imported_devices (
                     position INTEGER PRIMARY KEY,
                     payload TEXT NOT NULL
@@ -394,7 +500,7 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                     row_count INTEGER NOT NULL DEFAULT 0,
                     revision INTEGER NOT NULL DEFAULT 0
                 );
-                PRAGMA user_version = 5;
+                PRAGMA user_version = 7;
                 """
             )
 

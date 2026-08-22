@@ -131,6 +131,17 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
     assert first_operation["progress_percent"] == 100
     assert first_operation["data"]["include_slave"] is True
     assert first_operation["data"]["reboot_required"] is True
+    history = first_operation["data"]["stage_history"]
+    assert [item["stage"] for item in history] == [
+        "queued",
+        "prechecking",
+        "cleanup",
+        "downloading",
+        "verifying",
+        "synchronizing",
+        "setting_startup",
+        "completed",
+    ]
     assert str(share) not in json.dumps(first_operation, ensure_ascii=False)
     assert waiting["status"] == "waiting_approval"
     assert waiting["stage"] == "reboot_approval"
@@ -141,6 +152,56 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
     assert cancel_waiting["status"] == "waiting_approval"
     assert cancelled.status_code == 200
     assert cancelled.json()["operation"]["status"] == "cancelled"
+
+
+def test_package_upgrade_workflow_completes_through_task_api(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    (share / "images").mkdir(parents=True)
+    (share / "images" / "workflow-v2.cc").write_bytes(b"workflow-package")
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+        transfer_root=share,
+    )
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        device_id = client.get("/api/v1/devices", headers=headers).json()["devices"][0]["id"]
+        session = client.post(
+            "/api/v1/sessions",
+            headers=headers,
+            json={"device_id": device_id, "kind": "simulated"},
+        ).json()
+        created = client.post(
+            "/api/v1/tasks",
+            headers=headers,
+            json={
+                "workflow_id": "package-upgrade",
+                "session_id": session["id"],
+                "steps": [{
+                    "id": "upgrade",
+                    "kind": "execution",
+                    "action": "package_upgrade",
+                    "params": {
+                        "package_path": "images/workflow-v2.cc",
+                        "reboot_after_setting": False,
+                        "wait": True,
+                    },
+                }],
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["task"]["id"]
+        task = {}
+        for _ in range(700):
+            task = client.get(f"/api/v1/tasks/{task_id}", headers=headers).json()["task"]
+            if task["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.02)
+    assert task["status"] == "completed", task
+    assert task["result"]["steps"][0]["status"] == "completed"
+    operation_data = task["result"]["steps"][0]["data"]["operation"]["data"]
+    assert operation_data["stage_history"][-1]["stage"] == "completed"
 
 
 def test_package_upgrade_routes_require_authorization(tmp_path: Path) -> None:

@@ -90,6 +90,10 @@ class AppControlClient:
     def close(self) -> None:
         self._pool.close()
 
+    def mcp_tool(self, tool: str, **payload: Any) -> dict[str, Any]:
+        """Call a namespaced Backend MCP capability when supported."""
+        return self._request("POST", f"/v1/mcp/{quote(tool, safe='')}", payload)
+
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/v1/health", authenticated=False)
 

@@ -93,6 +93,9 @@ def test_qt_free_mcp_facade_covers_registered_tool_surface() -> None:
         "ai_execute_command", "ai_execute_batch", "ai_execute_script",
         "ai_upload_file", "ai_download_file", "ai_get_result", "ai_run_skill",
         "ai_list_skills", "approval_get",
+        "task_create", "task_get", "task_list", "task_resume", "task_cancel",
+        "workflow_list", "workflow_plan_validate", "workflow_plan_get", "workflow_plan_approve", "workflow_run",
+        "task_replan", "decision_get", "decision_apply", "tool_execute",
     }
 
     assert all(callable(getattr(service, f"_tool_{tool}", None)) for tool in expected)
@@ -119,3 +122,106 @@ def test_qt_free_mcp_facade_is_idempotent_and_audited() -> None:
 
     assert first["data"]["execution_id"] == second["data"]["execution_id"]
     assert any(entry["tool"] == "terminal_run" for entry in audit.json()["entries"])
+
+
+def test_unified_agent_workflow_capabilities_are_backend_only() -> None:
+    with _client() as client:
+        workflows = _call(client, "workflow.list")
+        devices = _call(client, "device_list")
+        device_id = devices["data"]["devices"][0]["id"]
+        tool = _call(client, "tool.execute", {
+            "name": "terminal_execute",
+            "params": {"device_id": device_id, "command": "display version"},
+        })
+
+    workflow_ids = {item["id"] for item in workflows["data"]["workflows"]}
+    assert "device_upgrade" in workflow_ids
+    assert tool["data"]["status"] == "completed"
+
+
+def test_agent_plan_is_validated_before_running() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        planned = _call(client, "workflow.plan.validate", {
+            "plan": {
+                "plan_id": "agent-version-check",
+                "objective": "读取设备版本",
+                "target": {"device_id": device_id},
+                "steps": [
+                    {
+                        "id": "version",
+                        "capability": "terminal.command",
+                        "params": {"command": "display version"},
+                    }
+                ],
+            }
+        })
+        assert planned["data"]["status"] == "validated"
+        assert planned["data"]["workflow"]["metadata"]["plan_hash"] == planned["data"]["plan_hash"]
+        started = _call(client, "workflow.run", {
+            "plan_id": planned["data"]["plan_id"],
+            "plan_hash": planned["data"]["plan_hash"],
+            "source": "agent",
+        })
+        task_id = started["data"]["task"]["id"]
+        task = _call(client, "task.get", {"task_id": task_id})
+
+    assert task["data"]["task"]["workflow_id"] == "agent-version-check"
+
+
+def test_agent_replan_creates_linked_task_revision() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        first = _call(client, "workflow.plan.validate", {
+            "plan": {
+                "plan_id": "agent-first",
+                "objective": "first check",
+                "target": {"device_id": device_id},
+                "steps": [{"id": "version", "capability": "terminal.command", "params": {"command": "display version"}}],
+            }
+        })
+        started = _call(client, "workflow.run", {"plan_id": first["data"]["plan_id"], "plan_hash": first["data"]["plan_hash"]})
+        replanned = _call(client, "task.replan", {
+            "parent_task_id": started["data"]["task"]["id"],
+            "plan": {
+                "plan_id": "agent-second",
+                "objective": "second check",
+                "target": {"device_id": device_id},
+                "steps": [{"id": "dir", "capability": "terminal.command", "params": {"command": "dir flash:/"}}],
+            },
+        })
+
+    assert replanned["data"]["task"]["parent_task_id"] == started["data"]["task"]["id"]
+    assert replanned["data"]["task"]["plan_revision"] == 2
+
+
+def test_high_risk_plan_requires_explicit_approval() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        planned = _call(client, "workflow.plan.validate", {
+            "plan": {
+                "plan_id": "agent-reboot",
+                "objective": "reboot device",
+                "target": {"device_id": device_id},
+                "steps": [{"id": "reboot", "capability": "device.reboot"}],
+            }
+        })
+        assert planned["data"]["status"] == "requires_confirmation"
+        blocked = client.post(
+            "/api/v1/mcp/workflow.run",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"plan_id": planned["data"]["plan_id"], "plan_hash": planned["data"]["plan_hash"]},
+        )
+        assert blocked.status_code == 400
+        approved = _call(client, "workflow.plan.approve", {
+            "plan_id": planned["data"]["plan_id"],
+            "plan_hash": planned["data"]["plan_hash"],
+            "reason": "approved for maintenance window",
+        })
+        started = _call(client, "workflow.run", {
+            "plan_id": planned["data"]["plan_id"],
+            "plan_hash": planned["data"]["plan_hash"],
+        })
+
+    assert approved["data"]["approved"] is True
+    assert started["data"]["task"]["plan_id"] == "agent-reboot"

@@ -177,12 +177,12 @@ The source-checkout equivalent is:
 python -m device_tui.interfaces.mcp.server
 ```
 
-Common tools include `device_list`, `device_get`, `session_open`, `terminal_run`,
-`terminal_interact`, `file_transfer_start`, `package_upgrade_start`,
-`operation_wait`, and `operation_cancel`. Prefer `terminal_run` for ordinary
-commands and `terminal_interact` for prompt-driven flows. Use the dedicated
-transfer and upgrade tools so credentials and guarded operations stay inside the
-backend.
+The stdio MCP server exposes only the canonical Agent/Workflow boundary:
+`task.create`, `task.get`, `task.list`, `task.resume`, `task.cancel`,
+`workflow.list`, `workflow.run`, `decision.get`, `decision.apply`, and
+`tool.execute`. Device/session/terminal/transfer operations are backend details;
+an Agent may use an allow-listed diagnostic operation through `tool.execute`,
+but must not bypass the Task/Decision API for workflow execution.
 
 ## Security
 

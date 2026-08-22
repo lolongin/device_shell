@@ -174,6 +174,10 @@ class TerminalPlanExecutor(Protocol):
         owner_id: str,
     ) -> dict[str, object]: ...
 
+    def get_execution(self, execution_id: str) -> dict[str, object]: ...
+
+    def cancel_execution(self, execution_id: str) -> dict[str, object]: ...
+
     def cancel_active(self, session_id: str) -> str: ...
 
     def configure_managed_transfer(
@@ -196,6 +200,12 @@ class UnavailableTerminalPlanExecutor:
         return
 
     async def run(self, **_kwargs: object) -> dict[str, object]:
+        raise UnsupportedOperationError("Terminal operations are unavailable.")
+
+    def get_execution(self, _execution_id: str) -> dict[str, object]:
+        raise UnsupportedOperationError("Terminal operations are unavailable.")
+
+    def cancel_execution(self, _execution_id: str) -> dict[str, object]:
         raise UnsupportedOperationError("Terminal operations are unavailable.")
 
     def cancel_active(self, _session_id: str) -> str:
