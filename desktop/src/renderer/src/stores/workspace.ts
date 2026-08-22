@@ -20,6 +20,7 @@ import type {
   SharedTransferFile,
   TransferSettings,
   DeviceListResponse,
+  DeviceFieldDescriptor,
   DeviceSummary,
   DeviceSourceId,
   DeviceSourceStatus,
@@ -52,6 +53,7 @@ function storedViewState(): {
 export const useWorkspaceStore = defineStore('workspace', () => {
   const restored = storedViewState()
   const devices = ref<DeviceSummary[]>([])
+  const deviceFieldSchema = ref<DeviceFieldDescriptor[]>([])
   const sessions = ref<SessionSummary[]>([])
   const profiles = ref<ConnectionProfileSummary[]>([])
   const profileGroups = ref<string[]>([])
@@ -249,6 +251,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function applyDeviceInventory(response: DeviceListResponse): void {
     devices.value = response.devices
+    deviceFieldSchema.value = response.field_schema || []
     currentUser.value = response.current_user
     ownedDeviceIds.value = response.owned_device_ids
   }
@@ -1576,6 +1579,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   return {
     devices,
+    deviceFieldSchema,
     sessions,
     profiles,
     profileGroups,

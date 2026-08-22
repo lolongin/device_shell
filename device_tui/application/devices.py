@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Set as AbstractSet
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from device_tui.domain.devices.models import Device
@@ -215,6 +215,13 @@ class DeviceSnapshot:
     is_temporary: bool
     is_saved_server: bool
     supports_power_off: bool
+    source: str = "unknown"
+    kind: str = "device"
+    attributes: dict[str, object] = field(default_factory=dict)
+    extensions: dict[str, object] = field(default_factory=dict)
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    parent_id: str | None = None
+    children: tuple[str, ...] = ()
 
     @classmethod
     def from_device(
@@ -296,6 +303,43 @@ class DeviceSnapshot:
             is_temporary=temporary,
             is_saved_server=saved_server,
             supports_power_off=device.supports_power_off,
+            source=device.core_source,
+            kind=device.core_kind,
+            attributes=device.public_attributes,
+            extensions=device.public_extensions(),
+            capabilities={
+                "claim": bool(
+                    not simulated
+                    and not temporary
+                    and not saved_server
+                    and supports_occupancy
+                    and not occupied_by_me
+                    and device.owner is None
+                ),
+                "release": bool(
+                    not simulated
+                    and not temporary
+                    and not saved_server
+                    and supports_occupancy
+                    and occupied_by_me
+                ),
+                "power_off": bool(
+                    device.supports_power_off
+                    and occupied_by_me
+                    and not simulated
+                    and not temporary
+                    and supports_occupancy
+                ),
+                "connect": bool(
+                    ssh_endpoint or telnet_endpoint or serial_endpoint
+                ),
+            },
+            parent_id=str(device.extra.get("parent_id") or "") or None,
+            children=tuple(
+                str(item).strip()
+                for item in (device.extra.get("children") or ())
+                if str(item).strip()
+            ),
         )
 
 

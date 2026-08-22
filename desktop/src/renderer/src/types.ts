@@ -1,3 +1,14 @@
+export interface DeviceFieldDescriptor {
+  key: string
+  label: string
+  kind: 'text' | 'number' | 'boolean' | 'datetime' | 'enum'
+  group: string
+  order: number
+  searchable: boolean
+  filterable: boolean
+  default_visible: boolean
+}
+
 export interface DeviceSummary {
   id: string
   row_id: string
@@ -31,6 +42,13 @@ export interface DeviceSummary {
   is_temporary: boolean
   is_saved_server: boolean
   supports_power_off: boolean
+  source: string
+  kind: string
+  attributes: Record<string, unknown>
+  extensions: Record<string, unknown>
+  capabilities: Record<string, boolean>
+  parent_id: string | null
+  children: string[]
 }
 
 export interface DeviceActionResponse extends DeviceListResponse {
@@ -379,6 +397,7 @@ export interface DeviceListResponse {
   current_user: string
   owned_device_ids: string[]
   devices: DeviceSummary[]
+  field_schema: DeviceFieldDescriptor[]
 }
 
 export type DeviceSourceId = string

@@ -16,6 +16,7 @@ from device_tui.plugin_api import (
     DeviceSourceDescriptor,
     DeviceSourcePlugin,
     DeviceSourcePluginError,
+    DeviceFieldDescriptor,
     PluginCheckResult,
     PluginConfigField,
     PluginConfigValue,
@@ -49,6 +50,7 @@ class DeviceSourcePluginRegistration:
     plugin: DeviceSourcePlugin
     descriptor: DeviceSourceDescriptor
     config_fields: tuple[PluginConfigField, ...]
+    device_fields: tuple[DeviceFieldDescriptor, ...]
     built_in: bool
 
 
@@ -90,6 +92,10 @@ def validate_device_repository(repository: object) -> DeviceRepository:
 
 class SampleDeviceSourcePlugin:
     @property
+    def device_fields(self) -> tuple[DeviceFieldDescriptor, ...]:
+        return ()
+
+    @property
     def config_fields(self) -> tuple[PluginConfigField, ...]:
         return ()
 
@@ -116,6 +122,10 @@ class SampleDeviceSourcePlugin:
 
 
 class ImportedDeviceSourcePlugin:
+    @property
+    def device_fields(self) -> tuple[DeviceFieldDescriptor, ...]:
+        return ()
+
     @property
     def config_fields(self) -> tuple[PluginConfigField, ...]:
         return ()
@@ -183,6 +193,16 @@ class DeviceSourceRegistry:
                 raise DeviceSourcePluginError(
                     f"Duplicate configuration field in plugin {descriptor.id}."
                 )
+            device_fields = tuple(getattr(plugin, "device_fields", ()) or ())
+            if any(not isinstance(item, DeviceFieldDescriptor) for item in device_fields):
+                raise DeviceSourcePluginError(
+                    "Device source fields must use DeviceFieldDescriptor entries."
+                )
+            field_keys = [item.key for item in device_fields]
+            if len(field_keys) != len(set(field_keys)):
+                raise DeviceSourcePluginError(
+                    f"Duplicate device field in plugin {descriptor.id}."
+                )
         except Exception as exc:
             if strict:
                 raise DeviceSourcePluginError(str(exc)) from exc
@@ -199,6 +219,7 @@ class DeviceSourceRegistry:
             plugin=plugin,
             descriptor=descriptor,
             config_fields=fields,
+            device_fields=device_fields,
             built_in=built_in,
         )
         self.reload(descriptor.id)
@@ -286,6 +307,9 @@ class DeviceSourceRegistry:
 
     def registrations(self) -> tuple[DeviceSourcePluginRegistration, ...]:
         return tuple(self._registrations.values())
+
+    def device_fields(self, source_id: str) -> tuple[DeviceFieldDescriptor, ...]:
+        return self.registration(source_id).device_fields
 
     def enabled(self, source_id: str) -> bool:
         registration = self.registration(source_id)

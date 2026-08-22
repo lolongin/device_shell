@@ -70,6 +70,7 @@ from device_tui.infrastructure.persistence.sqlite_settings import SQLiteSettings
 from device_tui.interfaces.mcp.core import AppControlError
 from .models import (
     DeviceListResponse,
+    DeviceFieldDescriptorModel,
     DeviceActionResponse,
     DeviceImportCommitRequest,
     DeviceImportCommitResponse,
@@ -279,7 +280,30 @@ def _device_summary(device: DeviceSnapshot) -> DeviceSummary:
         is_temporary=device.is_temporary,
         is_saved_server=device.is_saved_server,
         supports_power_off=device.supports_power_off,
+        source=device.source,
+        kind=device.kind,
+        attributes=device.attributes,
+        extensions=device.extensions,
+        capabilities=device.capabilities,
+        parent_id=device.parent_id,
+        children=list(device.children),
     )
+
+
+def _device_field_schema(service: DeviceSourceService) -> list[DeviceFieldDescriptorModel]:
+    return [
+        DeviceFieldDescriptorModel(
+            key=field.key,
+            label=field.label,
+            kind=field.kind,
+            group=field.group,
+            order=field.order,
+            searchable=field.searchable,
+            filterable=field.filterable,
+            default_visible=field.default_visible,
+        )
+        for field in service.registry.device_fields(service.active_source)
+    ]
 
 
 def _internal_auth_status_model(
@@ -1438,12 +1462,14 @@ def create_app(
                     current_user=auth_status.username,
                     owned_device_ids=[],
                     devices=[],
+                    field_schema=_device_field_schema(repo),
                 )
         inventory = desktop.devices.list_inventory()
         return DeviceListResponse(
             current_user=inventory.current_user,
             owned_device_ids=list(inventory.owned_device_ids),
             devices=[_device_summary(device) for device in inventory.devices],
+            field_schema=_device_field_schema(repo),
         )
 
     @app.get(
@@ -1557,6 +1583,7 @@ def create_app(
             current_user=result.inventory.current_user,
             owned_device_ids=list(result.inventory.owned_device_ids),
             devices=[_device_summary(device) for device in result.inventory.devices],
+            field_schema=_device_field_schema(repo),
         )
 
     @app.post(

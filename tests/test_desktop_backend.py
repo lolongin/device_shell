@@ -344,6 +344,25 @@ def test_device_api_includes_legacy_table_presentation_fields() -> None:
     assert "占用时长" in occupied["tooltip"]
 
 
+def test_device_api_exposes_core_contract_and_safe_extensions() -> None:
+    with _client() as client:
+        response = client.get(
+            "/api/v1/devices",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "field_schema" in payload
+    first = payload["devices"][0]
+    for key in ("source", "kind", "attributes", "extensions", "capabilities", "parent_id", "children"):
+        assert key in first
+    assert first["source"]
+    assert first["kind"]
+    assert "password" not in first["extensions"]
+    assert "token" not in first["extensions"]
+
+
 def test_device_api_exposes_legacy_connection_action_rules() -> None:
     with _client() as client:
         response = client.get(

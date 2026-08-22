@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from threading import RLock
 from typing import Iterable, Mapping
 
@@ -273,7 +274,19 @@ class DeviceSourceService:
         return self.repository().current_user()
 
     def fetch_devices(self):
-        return self.repository().fetch_devices()
+        source_id = self.active_source
+        devices = self.repository().fetch_devices()
+        normalized = []
+        for device in devices:
+            current_source = str(device.source or "").strip()
+            if current_source and current_source != "unknown":
+                normalized.append(device)
+                continue
+            kind = str(device.kind or "").strip()
+            if not kind or (kind == "device" and device.board_id):
+                kind = "board" if device.board_id else "device"
+            normalized.append(replace(device, source=source_id, kind=kind))
+        return normalized
 
     def fetch_owned_device_ids(self):
         return self.repository().fetch_owned_device_ids()

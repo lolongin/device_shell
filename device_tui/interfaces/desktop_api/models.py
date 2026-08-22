@@ -10,6 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field
 API_VERSION = 1
 
 
+class DeviceFieldDescriptorModel(BaseModel):
+    key: str
+    label: str
+    kind: Literal["text", "number", "boolean", "datetime", "enum"] = "text"
+    group: str = "其他"
+    order: int = 100
+    searchable: bool = True
+    filterable: bool = False
+    default_visible: bool = False
+
+
 class DeviceSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +56,13 @@ class DeviceSummary(BaseModel):
     is_temporary: bool = False
     is_saved_server: bool = False
     supports_power_off: bool = False
+    source: str = "unknown"
+    kind: str = "device"
+    attributes: dict[str, object] = Field(default_factory=dict)
+    extensions: dict[str, object] = Field(default_factory=dict)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+    parent_id: str | None = None
+    children: list[str] = Field(default_factory=list)
 
 
 class DeviceListResponse(BaseModel):
@@ -52,6 +70,7 @@ class DeviceListResponse(BaseModel):
     current_user: str
     owned_device_ids: list[str]
     devices: list[DeviceSummary]
+    field_schema: list[DeviceFieldDescriptorModel] = Field(default_factory=list)
 
 
 class DeviceSourceOptionModel(BaseModel):
@@ -221,6 +240,7 @@ class DeviceActionResponse(BaseModel):
     current_user: str
     owned_device_ids: list[str]
     devices: list[DeviceSummary]
+    field_schema: list[DeviceFieldDescriptorModel] = Field(default_factory=list)
 
 
 class SessionCreateRequest(BaseModel):

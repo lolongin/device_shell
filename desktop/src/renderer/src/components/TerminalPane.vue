@@ -459,6 +459,9 @@ function terminalThemeFor(mode: 'dark' | 'light') {
       foreground: '#111827',
       cursor: '#15803d',
       selectionBackground: '#bfdbfe',
+      scrollbarSliderBackground: '#c7d0dc',
+      scrollbarSliderHoverBackground: '#94a3b8',
+      scrollbarSliderActiveBackground: '#64748b',
       black: '#0f172a',
       red: '#dc2626',
       green: '#15803d',
@@ -474,6 +477,9 @@ function terminalThemeFor(mode: 'dark' | 'light') {
     foreground: '#f8fafc',
     cursor: '#22c55e',
     selectionBackground: '#315f9f',
+    scrollbarSliderBackground: '#334155',
+    scrollbarSliderHoverBackground: '#475569',
+    scrollbarSliderActiveBackground: '#64748b',
     black: '#020617',
     red: '#f87171',
     green: '#22c55e',
@@ -563,6 +569,7 @@ onMounted(async () => {
     fontSize: fontSize.value,
     lineHeight: 1.25,
     scrollback: 10_000,
+    overviewRuler: { width: 9 },
     theme: terminalThemeFor(readThemeMode())
   })
   terminal.loadAddon(fitAddon)

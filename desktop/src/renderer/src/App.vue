@@ -895,6 +895,13 @@ function visibleDeviceFieldValue(value: string | null | undefined, fallback = '�
   return value && value.trim() ? value : fallback
 }
 
+function dynamicDeviceFieldValue(device: DeviceSummary, key: string): string {
+  const value = device.attributes?.[key] ?? device.extensions?.[key]
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
 function copyDeviceInspectorField(label: string, value: string): void {
   if (!value || value === '—') return
   void copyDeviceText(value, `已复制${label}: ${value}`)
@@ -2274,6 +2281,15 @@ onBeforeUnmount(() => {
                 <div>
                   <dt>串口</dt>
                   <dd class="mono"><span>{{ workspace.selectedDevice.serial_display || workspace.selectedDevice.serial_endpoint || '—' }}</span><button class="property-copy-button" type="button" title="复制串口" @click="copyDeviceInspectorField('串口', visibleDeviceFieldValue(workspace.selectedDevice.serial_display || workspace.selectedDevice.serial_endpoint))">复制</button></dd>
+                </div>
+              </dl>
+              <dl v-if="workspace.deviceFieldSchema.length" class="property-list copyable-property-list extended-property-list dynamic-property-list">
+                <div v-for="field in workspace.deviceFieldSchema" :key="field.key">
+                  <dt>{{ field.label }}</dt>
+                  <dd>
+                    <span>{{ dynamicDeviceFieldValue(workspace.selectedDevice, field.key) }}</span>
+                    <button class="property-copy-button" type="button" :title="`复制${field.label}`" @click="copyDeviceInspectorField(field.label, dynamicDeviceFieldValue(workspace.selectedDevice, field.key))">复制</button>
+                  </dd>
                 </div>
               </dl>
               <button

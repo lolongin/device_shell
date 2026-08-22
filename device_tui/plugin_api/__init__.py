@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Mapping, Protocol, TypeAlias
 
 from .repository import DeviceRepository
+from device_tui.domain.devices.models import DeviceFieldDescriptor
 
 
 DEVICE_SOURCE_PLUGIN_API_VERSION = 1
@@ -165,3 +166,22 @@ class DeviceSourcePlugin(Protocol):
     def config_fields(self) -> tuple[PluginConfigField, ...]: ...
 
     def create_repository(self, context: DeviceSourceContext) -> DeviceRepository: ...
+
+    @property
+    def device_fields(self) -> tuple[DeviceFieldDescriptor, ...]: ...
+
+
+__all__ = [
+    "DEVICE_SOURCE_PLUGIN_API_VERSION",
+    "DEVICE_SOURCE_ENTRY_POINT_GROUP",
+    "DeviceFieldDescriptor",
+    "DeviceSourcePluginError",
+    "PluginConfigOption",
+    "PluginConfigField",
+    "DeviceSourceDescriptor",
+    "PluginSecretReader",
+    "EmptyPluginSecretReader",
+    "DeviceSourceContext",
+    "PluginCheckResult",
+    "DeviceSourcePlugin",
+]
