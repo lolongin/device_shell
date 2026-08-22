@@ -124,6 +124,7 @@ def test_internal_auth_login_persists_safe_defaults_and_logout_clears_session() 
 
     with TestClient(app) as client:
         before = client.get("/api/v1/internal-auth", headers=headers)
+        saved_password = client.get("/api/v1/internal-auth/password", headers=headers)
         logged_in = client.post(
             "/api/v1/internal-auth/login",
             headers=headers,
@@ -150,6 +151,8 @@ def test_internal_auth_login_persists_safe_defaults_and_logout_clears_session() 
 
     assert before.status_code == 200
     assert before.json()["authenticated"] is False
+    assert saved_password.status_code == 200
+    assert saved_password.json()["password"] == ""
     assert logged_in.status_code == 200
     assert logged_in.json() == {
         "api_version": 1,
@@ -166,6 +169,10 @@ def test_internal_auth_login_persists_safe_defaults_and_logout_clears_session() 
     assert "one-time-secret" not in logged_in.text
     assert repository.received_password == "one-time-secret"
     assert secret_store.get(_source_auth_secret_key("sample")) == "one-time-secret"
+    with TestClient(app) as client:
+        saved_password = client.get("/api/v1/internal-auth/password", headers=headers)
+    assert saved_password.status_code == 200
+    assert saved_password.json()["password"] == "one-time-secret"
     assert logged_out.status_code == 200
     assert logged_out.json()["authenticated"] is False
     assert logged_out.json()["username"] == "operator"
@@ -686,8 +693,12 @@ def test_device_claim_and_release_are_exposed_through_application_service() -> N
     assert claimed.status_code == 200
     assert claimed.json()["device"]["owner"] == inventory["current_user"]
     assert claimed.json()["action"] == "claim"
+    assert claimed.json()["current_user"] == inventory["current_user"]
+    assert claimed.json()["devices"]
+    assert device["id"] in claimed.json()["owned_device_ids"]
     assert released.status_code == 200
     assert released.json()["device"]["owner"] is None
+    assert device["id"] not in released.json()["owned_device_ids"]
 
 
 def test_connection_profile_crud_never_returns_password_and_can_create_session() -> None:
@@ -884,6 +895,17 @@ def test_command_workspace_crud_suggestions_and_terminal_dispatch() -> None:
             json={"name": "Operations"},
         )
         group_id = created_group.json()["current_group_id"]
+        second_group = client.post(
+            "/api/v1/commands/groups",
+            headers=headers,
+            json={"name": "Monitoring"},
+        )
+        second_group_id = second_group.json()["current_group_id"]
+        reordered = client.put(
+            "/api/v1/commands/groups/order",
+            headers=headers,
+            json={"group_ids": [second_group_id, group_id, initial.json()["groups"][0]["id"]]},
+        )
         updated = client.put(
             f"/api/v1/commands/groups/{group_id}",
             headers=headers,
@@ -915,9 +937,16 @@ def test_command_workspace_crud_suggestions_and_terminal_dispatch() -> None:
             f"/api/v1/commands/groups/{group_id}",
             headers=headers,
         )
+        removed_second = client.delete(
+            f"/api/v1/commands/groups/{second_group_id}",
+            headers=headers,
+        )
 
     assert initial.status_code == 200
     assert initial.json()["groups"][0]["name"] == "终端"
+    assert second_group.status_code == 200
+    assert reordered.status_code == 200
+    assert [group["id"] for group in reordered.json()["groups"]] == [second_group_id, group_id, initial.json()["groups"][0]["id"]]
     assert updated.status_code == 200
     assert "api-secret" not in updated.text
     assert "password [REDACTED]" in updated.text
@@ -928,7 +957,8 @@ def test_command_workspace_crud_suggestions_and_terminal_dispatch() -> None:
     assert sent.json()["session_ids"] == [session["id"]]
     assert final_workspace.json()["history"][0]["command"] == "password [REDACTED]"
     assert removed.status_code == 200
-    assert len(removed.json()["groups"]) == 1
+    assert removed_second.status_code == 200
+    assert len(removed_second.json()["groups"]) == 1
 
 
 def test_command_workspace_routes_require_authorization() -> None:

@@ -211,6 +211,26 @@ def test_device_service_claim_and_release_return_updated_snapshot() -> None:
     released = application.devices.release(device.id)
 
     assert claimed.device.owner == application.devices.list_inventory().current_user
+    assert claimed.inventory.current_user == application.devices.list_inventory().current_user
     assert claimed.action == "claim"
     assert released.device.owner is None
     assert released.action == "release"
+
+
+def test_frame_occupancy_action_returns_all_updated_board_rows() -> None:
+    application = _application()
+
+    released = application.devices.release("XTN-NJ-018")
+    released_boards = [
+        device for device in released.inventory.devices if device.id == "XTN-NJ-018"
+    ]
+    claimed = application.devices.claim("XTN-NJ-018")
+    claimed_boards = [
+        device for device in claimed.inventory.devices if device.id == "XTN-NJ-018"
+    ]
+
+    assert len(released_boards) == 4
+    assert all(device.owner is None and device.can_claim for device in released_boards)
+    assert len(claimed_boards) == 4
+    assert all(device.owner == claimed.inventory.current_user for device in claimed_boards)
+    assert all(device.can_release for device in claimed_boards)

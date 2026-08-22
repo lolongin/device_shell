@@ -155,6 +155,22 @@ class CommandService:
         self._store.upsert_command_group(updated)
         return updated
 
+    def reorder_groups(self, group_ids: list[str]) -> list[CommandGroup]:
+        groups = self.list_groups()
+        expected = {group.id for group in groups}
+        requested = list(group_ids)
+        if len(requested) != len(set(requested)) or set(requested) != expected:
+            raise UnsupportedOperationError("The command-group order is invalid.")
+        by_id = {group.id: group for group in groups}
+        now = self._now()
+        reordered: list[CommandGroup] = []
+        for sort_order, group_id in enumerate(requested):
+            group = by_id[group_id]
+            updated = replace(group, sort_order=sort_order, updated_at=now)
+            self._store.upsert_command_group(updated)
+            reordered.append(updated)
+        return reordered
+
     def delete_group(self, group_id: str) -> str:
         group = self.get_group(group_id)
         groups = self.list_groups()

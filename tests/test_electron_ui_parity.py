@@ -389,6 +389,9 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     for label in (
         "设备连接入口",
         "复制客户端命令",
+        "手工 FTP 命令",
+        "生成并复制命令",
+        "不会自动发送",
         "FTP 服务运行日志",
         "刷新日志",
         "复制日志",
@@ -407,23 +410,25 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     assert "password?: string" in transport
     assert "transferPasswordInput?.getAttribute('type') === 'password'" in MAIN_TS.read_text(encoding="utf-8")
     assert 'data-testid="transfer-terminal-environment"' not in transfer
-    assert "terminal_environment: commandMode.value === 'ftpget' ? 'linux' : 'vrp'" in transfer
+    assert "startManagedTransfer" not in transfer
+    assert "const commandMode = ref<'ftp' | 'ftpget'>('ftp')" in transfer
+    assert '<option value="ftpget">ftpget 单命令</option>' in transfer
+    assert 'v-model="commandText"' in transfer
+    assert 'aria-label="可编辑 FTP 命令"' in transfer
+    assert "发送到当前终端" not in transfer
     assert "terminal_environment: 'auto' | 'linux' | 'vrp'" in transport
     assert "transferEnvironmentSelect" not in MAIN_TS.read_text(encoding="utf-8")
-    assert "设备访问地址" in transfer
+    assert "设备访问 IP" in transfer
     assert "settingsDraft.advertised_host" in transfer
+    assert "transferNetworkAddresses" in transport
+    assert "/api/v1/file-transfer/network-addresses" in transport
     assert "advertised_host: string" in TYPES_TS.read_text(encoding="utf-8")
     assert "workspace.transferServiceLog.join('\\n')" in transfer
     assert "navigator.clipboard.writeText" in transfer
     assert 'data-testid="transfer-service-log"' in transfer
     assert 'data-testid="transfer-client-command"' in transfer
     assert "FTP 服务器配置" in transfer
-    assert 'data-testid="transfer-command-mode"' in transfer
-    assert '<option value="ftpget">ftpget 单命令</option>' in transfer
-    assert '<option value="vrp">Huawei VRP 交互式 FTP</option>' in transfer
-    assert '<option value="manual">仅启动服务 / 手工输入</option>' in transfer
     assert 'data-testid="transfer-command-preview"' in transfer
-    assert "command_mode: commandMode.value" in transfer
     assert "const settingsDirty = computed" in transfer
     assert "settingsDirty.value && !await saveSettings()" in transfer
     assert "高级设置" not in transfer
@@ -454,19 +459,17 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert 'data-testid="operation-panel-resize-handle"' in app
     assert 'role="region"' in transfer
     assert 'aria-modal="true"' not in transfer
-    assert "发送到当前终端" in transfer
+    assert "不会自动发送" in transfer
     assert "sourceError" in transfer
     assert "destinationError" in transfer
     assert "activeSessionConnected" in transfer
     assert 'class="transfer-settings-actions"' in transfer
     assert 'class="transfer-sort-order"' in transfer
     assert "<ArrowDownUp" in transfer
-    assert 'data-testid="transfer-recovery"' in transfer
-    assert "function recoveryHint" in transfer
-    assert "service_endpoint_unavailable" in transfer
-    assert "transfer_client_unavailable" in transfer
-    assert "检查设置与日志" in transfer
-    assert ".transfer-recovery-card" in styles
+    assert 'data-testid="transfer-command-preview"' in transfer
+    assert "ftpget 单命令" in transfer
+    assert "commandEdited" in transfer
+    assert ".transfer-command-preview textarea" in styles
     assert ".transfer-settings-actions" in styles
     assert ".transfer-sort-order" in styles
     assert 'role="region"' in upgrade
@@ -544,8 +547,8 @@ def test_transfer_workspace_uses_realtime_events_without_polling() -> None:
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
 
     assert "setInterval" not in transfer
-    assert "void workspace.refreshOperations()" in transfer
     assert "void workspace.loadTransferServiceLog()" in transfer
+    assert "void loadNetworkAddresses()" in transfer
     assert "eventConnectedOnce" in store
     assert "target.value[index].revision >= operation.revision" in store
 
@@ -649,7 +652,8 @@ def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> N
 
     assert "const myOccupancyCount = computed" in store
     assert "owned_device_ids: string[]" in types
-    assert "ownedDeviceIds.value = deviceResponse.owned_device_ids" in store
+    assert "applyDeviceInventory(deviceResponse)" in store
+    assert "ownedDeviceIds.value = response.owned_device_ids" in store
     assert "ownedDeviceIdSet.value.has(device.id)" in store
     assert "ownedDeviceIds.value.length" in store
     assert "workspace.myOccupancyCount" in app
@@ -670,6 +674,26 @@ def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> N
     assert ":role=\"workspace.filteredDevices.length ? 'table' : 'region'\"" in app
     assert '@click="workspace.clearDeviceFilters"' in app
     assert ".navigator-empty-state" in styles
+
+
+def test_electron_device_filter_dropdowns_avoid_native_popup_flicker() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    compact_select = Path(
+        "desktop/src/renderer/src/components/CompactSelect.vue"
+    ).read_text(encoding="utf-8")
+
+    assert '<CompactSelect v-model="workspace.domainFilter"' in app
+    assert '<CompactSelect v-model="workspace.statusFilter"' in app
+    assert '<select v-model="workspace.domainFilter"' not in app
+    assert '<select v-model="workspace.statusFilter"' not in app
+    assert 'role="combobox"' in compact_select
+    assert 'role="listbox"' in compact_select
+    assert "handleDocumentPointerDown" in compact_select
+    assert "event.key === 'Escape'" in compact_select
+    assert "event.key === 'ArrowDown'" in compact_select
+    assert ".compact-select-menu" in styles
+    assert ".compact-select-option.active" in styles
 
 
 def test_electron_connection_actions_use_backend_parity_rules() -> None:
@@ -707,6 +731,16 @@ def test_electron_connection_actions_use_backend_parity_rules() -> None:
     assert "!device?.can_connect_telnet" in store
     assert "!device?.can_connect_serial" in store
     assert ".empty-workspace-context" in STYLES_CSS.read_text(encoding="utf-8")
+
+
+def test_electron_device_actions_apply_related_inventory_atomically() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    types = TYPES_TS.read_text(encoding="utf-8")
+
+    assert "function applyDeviceInventory(response: DeviceListResponse)" in store
+    assert "applyDeviceInventory(response)" in store
+    assert "extends DeviceListResponse" in types
+    assert "devices.value.map((device) => device.id === response.device_id" not in store
 
 
 def test_electron_session_creation_deduplicates_rest_and_realtime_results() -> None:
@@ -1122,12 +1156,15 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert 'class="split-pane-session-title"' in split
     assert ':data-session-id="activeSessionFor(pane)!.id"' in split
     assert ".split-pane-session-title" in styles
-    assert "grid-template-rows: minmax(0, 1fr) 34px" in styles
+    assert "grid-template-rows: minmax(0, 1fr) 36px" in styles
     assert ':data-session-kind="session.kind"' in terminal
     assert ':aria-label="`${session.title} 会话控制`"' in terminal
     assert 'class="terminal-toolbar"' not in terminal
     assert ".terminal-bottom-toolbar" in styles
-    assert "bottom: 34px" in styles
+    assert "bottom: 36px" in styles
+    assert ".terminal-search" in styles
+    assert "background: var(--surface-raised)" in styles
+    assert "box-shadow: var(--shadow-card)" in styles
     assert "TerminalQuickToolbar" not in split
     assert '<slot name="bottom-leading"></slot>' not in terminal
     assert 'class="terminal-bottom-spacer"' in terminal
@@ -1345,8 +1382,14 @@ def test_electron_command_workspace_context_menu_labels_actions_precisely() -> N
     assert "grid-template-columns: 32px minmax(0, 1fr)" in styles
     assert "border-right: 0; background: transparent" in styles
     assert ".command-editor-surface:focus-within .command-line-numbers" in styles
+    assert ".command-editor-row textarea::-webkit-scrollbar" in styles
+    assert ".command-editor-row textarea::-webkit-scrollbar-thumb" in styles
+    assert "cursor: default" in styles
     assert 'class="command-target-badge"' in command
     assert 'class="command-dispatch-buttons"' in command
+    assert "if (workspace.commandBusy) return" in command
+    assert "'is-busy': workspace.commandBusy" in command
+    assert ".command-dispatch-buttons.is-busy > button:disabled" in styles
     assert "order: 3" in styles
     assert "commandTabsRect.top >= commandEditorRect.bottom" in MAIN_TS.read_text(encoding="utf-8")
     assert "commandTabsUseAvailableWidthAndKeepLabelsComplete" in MAIN_TS.read_text(encoding="utf-8")
@@ -1380,6 +1423,32 @@ def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
     assert ".command-resize-handle:focus-visible" in styles
     assert "commandPanelDragResizePersistsAndClampsToWindow" in main
     assert "commandPanelHeightRestored" in main
+
+
+def test_electron_command_group_tabs_support_drag_reordering() -> None:
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert "startCommandGroupDrag" in command
+    assert "dropCommandGroup" in command
+    assert '@dragstart="startCommandGroupDrag($event, group.id)"' in command
+    assert '@drop="dropCommandGroup($event, group.id)"' in command
+    assert ':draggable="workspace.commandGroups.length > 1 && !commandGroupDragBusy"' in command
+    assert ".command-tab.drag-over-before" in styles
+    assert ".command-tab.drag-over-after" in styles
+    assert "reorderCommandGroups" in api
+    assert "reorderCommandGroups" in store
+
+
+def test_electron_command_group_tabs_keep_independent_scroll_positions() -> None:
+    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
+
+    assert "const commandGroupScrollTops = new Map<string, number>()" in command
+    assert "commandGroupScrollTops.set(editorGroupId, editor.value.scrollTop)" in command
+    assert "const scrollTop = commandGroupScrollTops.get(editorGroupId) || 0" in command
+    assert "lineNumberGutter.value.scrollTop = scrollTop" in command
 
 
 def test_electron_empty_workspace_does_not_leave_a_dead_command_region() -> None:
@@ -1434,8 +1503,11 @@ def test_electron_device_navigator_can_hide_restore_and_persist() -> None:
     assert "device-tui.desktop-v2.navigator-visible" in app
     assert "const navigatorVisible = ref" in app
     assert "function setNavigatorVisible" in app
+    assert "const hideCurrentSection = navigatorVisible.value" in app
+    assert "activeSection.value === section" in app
+    assert "if (hideCurrentSection)" in app
     assert 'title="隐藏设备工作台"' in app
-    assert "'显示设备工作台'" in app
+    assert "'隐藏设备列表' : '显示设备列表'" in app
     assert 'v-show="navigatorVisible && !operationPanelOpen"' in app
     assert "'navigator-hidden': !operationPanelOpen && !navigatorVisible" in app
     assert ".app-shell.navigator-hidden .workspace-stage { grid-column: 2; }" in styles
@@ -1561,7 +1633,7 @@ def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
     assert 'aria-label="搜索操作帮助"' in help_panel
     assert 'class="help-categories"' in help_panel
     assert "没有匹配的操作" in help_panel
-    assert "启动 FTP/SFTP 服务" in help_panel
+    assert "启动 FTP 服务" in help_panel
     assert "拖动会话页签" in help_panel
     assert "双击分隔线" in help_panel
     assert "async function createNewLog" in terminal
@@ -1729,7 +1801,7 @@ def test_electron_transfer_files_are_height_bounded_and_show_loading_feedback() 
     assert ':aria-busy="workspace.transferFilesLoading"' in transfer
     assert 'class="transfer-file-loading"' in transfer
     assert "正在读取共享目录" in transfer
-    assert "height: min(330px, 38vh); max-height: min(330px, 38vh)" in styles
+    assert "height: min(380px, 42vh); max-height: min(380px, 42vh)" in styles
     assert "grid-template-rows: auto auto minmax(0, 1fr)" in styles
     assert "scrollbar-gutter: stable" in styles
     assert ".transfer-file-loading" in styles

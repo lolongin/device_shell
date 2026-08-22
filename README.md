@@ -28,7 +28,7 @@ Electron Main or Python backend boundaries.
 - Embedded xterm.js SSH, Telnet, serial-over-Telnet, and simulated terminals
 - Saved servers, temporary connections, multi-session navigation, logs, and replay
 - Command history and terminal automation with variables, loops, conditions, and dry runs
-- Backend-managed FTP/SFTP transfer and guarded package upgrade workflows
+- Backend-managed FTP transfer and guarded package upgrade workflows
 - Product-specific device sources: website-only, spreadsheet-only, or universal
 - Local MCP tools for device, session, terminal, transfer, and upgrade operations
 
@@ -150,7 +150,7 @@ See [Device Source Plugins](docs/device-source-plugins.md) and
 
 ## Managed File Transfer
 
-The transfer workspace starts backend-owned FTP/SFTP services on demand and lets
+The transfer workspace starts a backend-owned FTP service on demand and lets
 the user browse a selected shared directory. PC-to-device and device-to-PC plans
 are generated per terminal session for Linux Shell or Huawei VRP syntax. The
 service reports bytes, speed, ETA, cancellation, retry, and recent history.

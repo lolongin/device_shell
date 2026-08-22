@@ -120,28 +120,69 @@ def test_file_service_log_and_client_hint_are_backend_owned(tmp_path: Path) -> N
     )
     transfers = app.state.desktop_application.transfers
     transfers.update_settings(
-        protocol="sftp",
+        protocol="ftp",
         host="0.0.0.0",
-        port=2222,
+        port=2121,
         root=str(share),
         username="device",
         writable=True,
     )
-    transfers._on_service_log("SFTP 登录成功: device")
+    transfers._on_service_log("FTP 登录成功: device")
 
     with TestClient(app) as client:
         headers = {"Authorization": f"Bearer {TOKEN}"}
         loaded = client.get("/api/v1/file-transfer/service/log", headers=headers)
+        addresses = client.get(
+            "/api/v1/file-transfer/network-addresses",
+            headers=headers,
+        )
         cleared = client.delete("/api/v1/file-transfer/service/log", headers=headers)
         reloaded = client.get("/api/v1/file-transfer/service/log", headers=headers)
 
     assert loaded.status_code == 200
-    assert loaded.json()["entries"] == ["SFTP 登录成功: device"]
-    assert loaded.json()["content"] == "SFTP 登录成功: device"
-    assert loaded.json()["client_command"] == "sftp -P 2222 device@<按设备路由自动选择>"
+    assert loaded.json()["entries"] == ["FTP 登录成功: device"]
+    assert loaded.json()["content"] == "FTP 登录成功: device"
+    assert loaded.json()["client_command"] == "ftp <按设备路由自动选择> 2121"
+    assert addresses.status_code == 200
+    assert isinstance(addresses.json()["addresses"], list)
+    assert isinstance(addresses.json()["recommended"], str)
     assert cleared.status_code == 200
     assert cleared.json()["entries"] == []
     assert reloaded.json()["content"] == ""
+
+
+def test_manual_service_api_keeps_ftp_running_until_explicit_stop(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    share.mkdir()
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+        transfer_root=share,
+    )
+    transfers = app.state.desktop_application.transfers
+    transfers.update_settings(
+        protocol="ftp",
+        host="127.0.0.1",
+        port=0,
+        root=str(share),
+        username="device",
+        writable=True,
+    )
+    transfers.IDLE_STOP_SECONDS = 0.05
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    with TestClient(app) as client:
+        started = client.post("/api/v1/file-transfer/service/start", headers=headers)
+        time.sleep(0.15)
+        running = client.get("/api/v1/file-transfer/settings", headers=headers)
+        stopped = client.post("/api/v1/file-transfer/service/stop", headers=headers)
+
+    assert started.status_code == 200
+    assert running.status_code == 200
+    assert running.json()["service_running"] is True
+    assert running.json()["idle_stop_at"] == ""
+    assert stopped.status_code == 200
 
 
 def test_transfer_settings_save_password_only_in_secret_store(tmp_path: Path) -> None:
@@ -178,6 +219,10 @@ def test_transfer_settings_save_password_only_in_secret_store(tmp_path: Path) ->
             headers=headers,
             json={key: value for key, value in payload.items() if key != "password"},
         )
+        resolved = client.get(
+            "/api/v1/file-transfer/password",
+            headers=headers,
+        )
 
     assert saved.status_code == 200
     assert saved.json()["has_password"] is True
@@ -186,7 +231,35 @@ def test_transfer_settings_save_password_only_in_secret_store(tmp_path: Path) ->
     assert secret not in saved.text
     assert retained.status_code == 200
     assert retained.json()["has_password"] is True
+    assert resolved.status_code == 200
+    assert resolved.json()["password"] == secret
     assert transfers.resolve_secret("file_transfer.password") == secret
+
+
+def test_file_transfer_settings_are_ftp_only(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    share.mkdir()
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+        transfer_root=share,
+    )
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/file-transfer/settings",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "protocol": "sftp",
+                "host": "127.0.0.1",
+                "port": 2121,
+                "root": str(share),
+                "username": "device",
+                "writable": True,
+            },
+        )
+
+    assert response.status_code == 422
 
 
 def test_backend_managed_upload_completes_and_verifies_simulated_device(
@@ -569,10 +642,12 @@ def test_file_transfer_routes_require_authorization(tmp_path: Path) -> None:
     with TestClient(app) as client:
         settings = client.get("/api/v1/file-transfer/settings")
         files = client.get("/api/v1/file-transfer/files")
+        addresses = client.get("/api/v1/file-transfer/network-addresses")
         operations = client.get("/api/v1/operations")
 
     assert settings.status_code == 401
     assert files.status_code == 401
+    assert addresses.status_code == 401
     assert operations.status_code == 401
 
 
@@ -644,6 +719,23 @@ def test_file_service_stops_after_configured_idle_period(tmp_path: Path) -> None
         await asyncio.sleep(0.15)
         assert not application.transfers.settings().service_running
         assert application.transfers.settings().idle_stop_at == ""
+
+    asyncio.run(scenario())
+
+
+def test_manual_file_service_start_does_not_schedule_idle_stop(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(),
+            transfer_root=tmp_path,
+        )
+        application.transfers.IDLE_STOP_SECONDS = 0.05
+        await application.transfers.start_service(auto_stop_when_idle=False)
+        await asyncio.sleep(0.15)
+        assert application.transfers.settings().service_running
+        assert application.transfers.settings().idle_stop_at == ""
+        await application.transfers.stop_service()
 
     asyncio.run(scenario())
 

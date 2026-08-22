@@ -7,6 +7,7 @@ from device_tui.interfaces.desktop_api.models import (
     InternalAuthLoginRequest,
     OneTimeCredentialSessionRequest,
     ProfileCredentialUpdateRequest,
+    TransferPasswordResponse,
 )
 
 
@@ -57,6 +58,29 @@ def test_generic_renderer_bridge_rejects_sensitive_body_keys() -> None:
     assert "payload.profile_type !== 'temporary'" in electron_main
     assert "Untrusted temporary-profile caller" in electron_main
     assert "ipcRenderer.invoke('credential:create-temporary-profile', request)" in preload
+
+
+def test_ftp_password_save_and_command_copy_use_isolated_main_process_bridges() -> None:
+    electron_main = (
+        ROOT / "desktop" / "src" / "main" / "index.ts"
+    ).read_text(encoding="utf-8")
+    preload = (
+        ROOT / "desktop" / "src" / "preload" / "index.ts"
+    ).read_text(encoding="utf-8")
+    transfer = (
+        ROOT / "desktop" / "src" / "renderer" / "src" / "components"
+        / "TransferWorkspace.vue"
+    ).read_text(encoding="utf-8")
+
+    assert "request.path === '/api/v1/file-transfer/password'" in electron_main
+    assert "validateTransferSettingsSaveRequest(request)" in electron_main
+    assert "ipcMain.handle(\n    'file-transfer:save-settings'" in electron_main
+    assert "ipcMain.handle(\n    'file-transfer:copy-command'" in electron_main
+    assert "ipcRenderer.invoke('file-transfer:save-settings', request)" in preload
+    assert "ipcRenderer.invoke('file-transfer:copy-command', command)" in preload
+    assert "{{file_transfer.password.shell}}" in transfer
+    assert "workspace.transferSettings?.has_password" in transfer
+    assert "window.desktopApi.copyTransferCommand(commandText.value)" in transfer
 
 
 def test_session_log_export_bridge_is_bounded_and_main_owned() -> None:
@@ -135,11 +159,13 @@ def test_sensitive_backend_models_hide_password_from_repr() -> None:
         password="internal-one-time-secret",
         cid="CID-7",
     )
+    transfer = TransferPasswordResponse(password="ftp-vault-secret")
 
     assert "vault-secret" not in repr(vault)
     assert "one-time-secret" not in repr(one_time)
     assert "direct-one-time-secret" not in repr(direct)
     assert "internal-one-time-secret" not in repr(internal)
+    assert "ftp-vault-secret" not in repr(transfer)
 
 
 def test_internal_login_password_stays_out_of_vue_renderer() -> None:
@@ -174,6 +200,8 @@ def test_internal_login_password_stays_out_of_vue_renderer() -> None:
     assert "记住登录（密码保存到操作系统凭据库）" in credential_dialog
     assert "use_saved_password: !result.password && request.remembered" in electron_main
     assert "auto_login: result.autoLogin === true" in electron_main
+    assert "function credentialDialogPath(): string" in electron_main
+    assert "process.resourcesPath, 'credential-dialog.html'" in electron_main
 
 
 def test_custom_device_connection_uses_isolated_credential_bridge() -> None:

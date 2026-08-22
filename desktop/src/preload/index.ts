@@ -51,6 +51,17 @@ interface SessionLogExportRequest {
   content: string
 }
 
+interface TransferSettingsSaveRequest {
+  protocol: 'ftp'
+  host: string
+  advertised_host: string
+  port: number
+  root: string
+  username: string
+  password?: string
+  writable: boolean
+}
+
 const desktopApi = {
   getRuntimeConfig: (): Promise<RendererRuntime> => ipcRenderer.invoke('runtime:get'),
   request: (request: BackendRequest): Promise<BackendResponse> =>
@@ -69,6 +80,10 @@ const desktopApi = {
     ipcRenderer.invoke('device-source:choose-import'),
   chooseTransferRoot: (): Promise<string> =>
     ipcRenderer.invoke('file-transfer:choose-root'),
+  saveTransferSettings: (request: TransferSettingsSaveRequest): Promise<BackendResponse> =>
+    ipcRenderer.invoke('file-transfer:save-settings', request),
+  copyTransferCommand: (command: string): Promise<boolean> =>
+    ipcRenderer.invoke('file-transfer:copy-command', command),
   chooseSessionLogDirectory: (): Promise<string> =>
     ipcRenderer.invoke('logs:choose-directory'),
   openSessionLogDirectory: (): Promise<boolean> =>

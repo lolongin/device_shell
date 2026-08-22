@@ -69,6 +69,8 @@ def test_electron_builder_includes_pyinstaller_backend_resource() -> None:
     assert "electronDist: node_modules/electron/dist" in builder_config
     assert "compression: store" in builder_config
     assert "output: release" in builder_config
+    assert "from: resources/credential-dialog.html" in builder_config
+    assert "to: credential-dialog.html" in builder_config
     assert "from: resources/backend" in builder_config
     assert "to: backend" in builder_config
     assert "target:\n    - nsis" in builder_config

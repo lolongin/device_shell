@@ -12,6 +12,8 @@ asar: true
 asarUnpack:
   - resources/**
 extraResources:
+  - from: resources/credential-dialog.html
+    to: credential-dialog.html
   - from: resources/backend
     to: backend
     filter:

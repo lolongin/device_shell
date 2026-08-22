@@ -196,6 +196,11 @@ class InternalAuthStatusModel(BaseModel):
     credential_warning: str = ""
 
 
+class InternalAuthPasswordModel(BaseModel):
+    api_version: int = API_VERSION
+    password: str = Field(default="", max_length=4_096, repr=False)
+
+
 class InternalAuthLoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -213,6 +218,9 @@ class DeviceActionResponse(BaseModel):
     action: str
     message: str
     device: DeviceSummary
+    current_user: str
+    owned_device_ids: list[str]
+    devices: list[DeviceSummary]
 
 
 class SessionCreateRequest(BaseModel):
@@ -429,6 +437,12 @@ class CommandGroupUpdateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=1_000_000)
 
 
+class CommandGroupOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class CommandWorkspacePreferencesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -576,7 +590,7 @@ class AutomationDispatchResponse(BaseModel):
 
 class TransferSettingsModel(BaseModel):
     api_version: int = API_VERSION
-    protocol: Literal["ftp", "sftp"]
+    protocol: Literal["ftp"]
     host: str
     advertised_host: str
     port: int
@@ -592,7 +606,7 @@ class TransferSettingsModel(BaseModel):
 class TransferSettingsUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    protocol: Literal["ftp", "sftp"]
+    protocol: Literal["ftp"] = "ftp"
     host: str = Field(default="0.0.0.0", max_length=255)
     advertised_host: str = Field(default="", max_length=255)
     port: int = Field(default=0, ge=0, le=65535)
@@ -602,11 +616,22 @@ class TransferSettingsUpdateRequest(BaseModel):
     writable: bool = True
 
 
+class TransferPasswordResponse(BaseModel):
+    api_version: int = API_VERSION
+    password: str = Field(default="", repr=False)
+
+
 class TransferServiceLogResponse(BaseModel):
     api_version: int = API_VERSION
     entries: list[str]
     content: str
     client_command: str
+
+
+class TransferNetworkAddressesResponse(BaseModel):
+    api_version: int = API_VERSION
+    addresses: list[str]
+    recommended: str = ""
 
 
 class SharedFileModel(BaseModel):

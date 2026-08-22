@@ -48,6 +48,11 @@ const dispatchFeedback = ref('')
 const commandGroupContextMenu = ref<{ groupId: string; name: string; x: number; y: number } | null>(null)
 const commandGroupContextMenuElement = ref<HTMLElement | null>(null)
 const commandGroupContextMenuReturnFocus = ref<HTMLElement | null>(null)
+const draggedGroupId = ref('')
+const dragOverGroupId = ref('')
+const dragOverPosition = ref<'before' | 'after'>('before')
+const commandGroupDragBusy = ref(false)
+const commandGroupScrollTops = new Map<string, number>()
 const editorContextMenu = ref<{ x: number; y: number; hasSelection: boolean; hasCommand: boolean } | null>(null)
 const editorContextMenuElement = ref<HTMLElement | null>(null)
 const editorContextMenuReturnFocus = ref<HTMLElement | null>(null)
@@ -62,6 +67,7 @@ let dispatchFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 let resizeStartY = 0
 let resizeStartHeight = 0
 let panelResizing = false
+let editorGroupId = ''
 let unsubscribeContextMenuOpen: (() => void) | null = null
 
 const currentGroup = computed(() => workspace.currentCommandGroup)
@@ -186,9 +192,20 @@ function resetCommandPanelHeight(): void {
 
 watch(
   () => [currentGroup.value?.id, currentGroup.value?.content] as const,
-  ([, nextContent]) => {
+  async ([nextGroupId, nextContent]) => {
+    const groupChanged = editorGroupId !== (nextGroupId || '')
+    if (groupChanged && editorGroupId && editor.value) {
+      commandGroupScrollTops.set(editorGroupId, editor.value.scrollTop)
+    }
+    editorGroupId = nextGroupId || ''
     content.value = nextContent || ''
     saveState.value = 'saved'
+    if (groupChanged) {
+      await nextTick()
+      const scrollTop = commandGroupScrollTops.get(editorGroupId) || 0
+      if (editor.value) editor.value.scrollTop = scrollTop
+      if (lineNumberGutter.value) lineNumberGutter.value.scrollTop = scrollTop
+    }
   },
   { immediate: true }
 )
@@ -245,6 +262,61 @@ async function removeGroup(groupId: string, name: string): Promise<void> {
   closeCommandGroupContextMenu()
   if (!window.confirm(`确定删除命令页签“${name}”吗？`)) return
   await workspace.deleteCommandGroup(groupId)
+}
+
+function startCommandGroupDrag(event: DragEvent, groupId: string): void {
+  if (workspace.commandGroups.length < 2 || commandGroupDragBusy.value) {
+    event.preventDefault()
+    return
+  }
+  draggedGroupId.value = groupId
+  dragOverGroupId.value = ''
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', groupId)
+  }
+}
+
+function handleCommandGroupDragOver(event: DragEvent, groupId: string): void {
+  if (!draggedGroupId.value || draggedGroupId.value === groupId) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverGroupId.value = groupId
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  dragOverPosition.value = event.clientX >= rect.left + rect.width / 2 ? 'after' : 'before'
+}
+
+function resetCommandGroupDrag(): void {
+  draggedGroupId.value = ''
+  dragOverGroupId.value = ''
+  dragOverPosition.value = 'before'
+}
+
+async function dropCommandGroup(event: DragEvent, targetGroupId: string): Promise<void> {
+  event.preventDefault()
+  const sourceGroupId = draggedGroupId.value || event.dataTransfer?.getData('text/plain') || ''
+  if (!sourceGroupId || sourceGroupId === targetGroupId || commandGroupDragBusy.value) {
+    resetCommandGroupDrag()
+    return
+  }
+  const nextIds = workspace.commandGroups.map((group) => group.id)
+  const sourceIndex = nextIds.indexOf(sourceGroupId)
+  const targetIndex = nextIds.indexOf(targetGroupId)
+  if (sourceIndex < 0 || targetIndex < 0) {
+    resetCommandGroupDrag()
+    return
+  }
+  let insertIndex = targetIndex + (dragOverPosition.value === 'after' ? 1 : 0)
+  nextIds.splice(sourceIndex, 1)
+  if (sourceIndex < insertIndex) insertIndex -= 1
+  nextIds.splice(insertIndex, 0, sourceGroupId)
+  commandGroupDragBusy.value = true
+  resetCommandGroupDrag()
+  try {
+    await workspace.reorderCommandGroups(nextIds)
+  } finally {
+    commandGroupDragBusy.value = false
+  }
 }
 
 function closeCommandGroupContextMenu(): void {
@@ -413,6 +485,7 @@ watch(editorContextMenu, async (menu) => {
 })
 
 async function dispatch(broadcast = false): Promise<void> {
+  if (workspace.commandBusy) return
   const command = selectedCommand()
   if (!command) return
   await saveContent()
@@ -476,6 +549,7 @@ function handleEditorActivity(): void {
 function syncEditorScroll(): void {
   if (!editor.value || !lineNumberGutter.value) return
   lineNumberGutter.value.scrollTop = editor.value.scrollTop
+  if (editorGroupId) commandGroupScrollTops.set(editorGroupId, editor.value.scrollTop)
 }
 
 function findNext(): void {
@@ -598,7 +672,18 @@ onBeforeUnmount(() => {
             v-for="group in workspace.commandGroups"
             :key="group.id"
             class="command-tab"
-            :class="{ active: group.id === workspace.currentCommandGroupId }"
+            :class="{
+              active: group.id === workspace.currentCommandGroupId,
+              dragging: group.id === draggedGroupId,
+              'drag-over-before': group.id === dragOverGroupId && dragOverPosition === 'before',
+              'drag-over-after': group.id === dragOverGroupId && dragOverPosition === 'after'
+            }"
+            :draggable="workspace.commandGroups.length > 1 && !commandGroupDragBusy"
+            :aria-label="`${group.name}，可拖动排序`"
+            @dragstart="startCommandGroupDrag($event, group.id)"
+            @dragover="handleCommandGroupDragOver($event, group.id)"
+            @drop="dropCommandGroup($event, group.id)"
+            @dragend="resetCommandGroupDrag"
           >
             <button
               type="button"
@@ -697,7 +782,7 @@ onBeforeUnmount(() => {
               :data-state="workspace.activeSession ? 'ready' : 'empty'"
               :title="dispatchTargetLabel"
             ><Target :size="12" />{{ dispatchTargetLabel }}</span>
-            <div class="command-dispatch-buttons">
+            <div class="command-dispatch-buttons" :class="{ 'is-busy': workspace.commandBusy }">
               <button
                 class="secondary-button"
                 type="button"

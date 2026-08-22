@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from device_tui.application import ApplicationConflictError, build_desktop_application
+from device_tui.application import (
+    ApplicationConflictError,
+    UnsupportedOperationError,
+    build_desktop_application,
+)
 from device_tui.application.commands import CommandService, redact_command_secrets
 from device_tui.application.credentials import ConnectionTarget
 from device_tui.application.sessions import SessionRecord
@@ -88,23 +92,31 @@ def test_command_groups_crud_preferences_and_persistence(tmp_path: Path) -> None
     commands = application.commands
     default = commands.list_groups()[0]
     created = commands.create_group("Operations")
+    third = commands.create_group("Monitoring")
+    assert [group.id for group in commands.list_groups()] == [default.id, created.id, third.id]
+    commands.reorder_groups([third.id, default.id, created.id])
+    assert [group.id for group in commands.list_groups()] == [third.id, default.id, created.id]
+    with pytest.raises(UnsupportedOperationError):
+        commands.reorder_groups([default.id])
     updated = commands.update_group(
         created.id,
         content="display version\npassword super-secret",
     )
 
     assert updated.content == "display version\npassword [REDACTED]"
-    assert commands.current_group_id() == created.id
+    assert commands.current_group_id() == third.id
     commands.set_enter_sends(True)
     assert commands.enter_sends()
 
     restored = CommandService(store, application.sessions)
     assert restored.get_group(created.id).content == updated.content
-    assert restored.current_group_id() == created.id
+    assert [group.id for group in restored.list_groups()] == [third.id, default.id, created.id]
+    assert restored.current_group_id() == third.id
     assert restored.enter_sends()
 
     commands.delete_group(created.id)
-    assert commands.current_group_id() == default.id
+    assert commands.current_group_id() == third.id
+    commands.delete_group(third.id)
     with pytest.raises(ApplicationConflictError):
         commands.delete_group(default.id)
 

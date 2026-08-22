@@ -19,6 +19,7 @@ import type {
   OperationRecord,
   SharedTransferFile,
   TransferSettings,
+  DeviceListResponse,
   DeviceSummary,
   DeviceSourceId,
   DeviceSourceStatus,
@@ -246,6 +247,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     commandEnterSends.value = response.enter_sends
   }
 
+  function applyDeviceInventory(response: DeviceListResponse): void {
+    devices.value = response.devices
+    currentUser.value = response.current_user
+    ownedDeviceIds.value = response.owned_device_ids
+  }
+
   function upsertSession(session: SessionSummary): void {
     const index = sessions.value.findIndex((item) => item.id === session.id)
     if (index < 0) {
@@ -298,9 +305,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         desktopApi.operations('managed_file_transfer'),
         desktopApi.operations('package_upgrade')
       ])
-      devices.value = deviceResponse.devices
-      currentUser.value = deviceResponse.current_user
-      ownedDeviceIds.value = deviceResponse.owned_device_ids
+      applyDeviceInventory(deviceResponse)
       sessions.value = []
       for (const session of sessionResponse) upsertSession(session)
       profiles.value = profileResponse.profiles
@@ -783,6 +788,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       applyCommandWorkspace(await desktopApi.updateCommandGroup(groupId, update))
       return true
     } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    }
+  }
+
+  async function reorderCommandGroups(groupIds: string[]): Promise<boolean> {
+    const previous = [...commandGroups.value]
+    const byId = new Map(previous.map((group) => [group.id, group]))
+    if (groupIds.length !== previous.length || groupIds.some((groupId) => !byId.has(groupId))) {
+      return false
+    }
+    commandGroups.value = groupIds.map((groupId, sortOrder) => ({
+      ...byId.get(groupId)!,
+      sort_order: sortOrder
+    }))
+    try {
+      applyCommandWorkspace(await desktopApi.reorderCommandGroups(groupIds))
+      return true
+    } catch (cause) {
+      commandGroups.value = previous
       error.value = cause instanceof Error ? cause.message : String(cause)
       return false
     }
@@ -1495,27 +1520,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           : action === 'release'
             ? await desktopApi.releaseDevice(selectedDeviceId.value)
             : await desktopApi.powerOffDevice(selectedDeviceId.value)
-      devices.value = devices.value.map((device) => device.id === response.device_id
-        ? {
-            ...device,
-            status: response.device.status,
-            owner: response.device.owner,
-            status_text: response.device.status_text,
-            tooltip: response.device.tooltip,
-            can_claim: response.device.can_claim,
-            can_release: response.device.can_release,
-            can_power_off: response.device.can_power_off,
-            can_connect_serial: response.device.can_connect_serial,
-            serial_display: response.device.serial_display
-          }
-        : device)
-      if (action === 'claim' && !ownedDeviceIds.value.includes(response.device_id)) {
-        ownedDeviceIds.value = [...ownedDeviceIds.value, response.device_id]
-      } else if (action === 'release') {
-        ownedDeviceIds.value = ownedDeviceIds.value.filter(
-          (deviceId) => deviceId !== response.device_id
-        )
-      }
+      // Frame-level occupancy can update several board rows at once. Apply the
+      // authoritative post-action inventory returned with the same response.
+      applyDeviceInventory(response)
       notice.value = response.message
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
@@ -1655,6 +1662,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     createProfileGroup,
     createCommandGroup,
     updateCommandGroup,
+    reorderCommandGroups,
     deleteCommandGroup,
     selectCommandGroup,
     setCommandEnterSends,

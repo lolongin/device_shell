@@ -23,6 +23,7 @@ import type {
   AutomationWorkspaceResponse,
   TransferSettings,
   TransferServiceLogResponse,
+  TransferNetworkAddressesResponse,
   SharedFileListResponse,
   OperationListResponse,
   OperationResponse,
@@ -206,6 +207,11 @@ export const desktopApi = {
       method: 'PUT',
       body: JSON.stringify(update)
     }),
+  reorderCommandGroups: (groupIds: string[]): Promise<CommandWorkspaceResponse> =>
+    request('/api/v1/commands/groups/order', {
+      method: 'PUT',
+      body: JSON.stringify({ group_ids: groupIds })
+    }),
   deleteCommandGroup: (groupId: string): Promise<CommandWorkspaceResponse> =>
     request(`/api/v1/commands/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' }),
   updateCommandPreferences: (
@@ -323,16 +329,15 @@ export const desktopApi = {
       password?: string
     }
   ): Promise<TransferSettings> =>
-    request('/api/v1/file-transfer/settings', {
-      method: 'PUT',
-      body: JSON.stringify(settings)
-    }),
+    window.desktopApi.saveTransferSettings(settings).then(parseBackendResponse<TransferSettings>),
   startTransferService: (): Promise<TransferSettings> =>
     request('/api/v1/file-transfer/service/start', { method: 'POST' }),
   stopTransferService: (): Promise<TransferSettings> =>
     request('/api/v1/file-transfer/service/stop', { method: 'POST' }),
   transferServiceLog: (): Promise<TransferServiceLogResponse> =>
     request('/api/v1/file-transfer/service/log'),
+  transferNetworkAddresses: (sessionId = ''): Promise<TransferNetworkAddressesResponse> =>
+    request(`/api/v1/file-transfer/network-addresses?session_id=${encodeURIComponent(sessionId)}`),
   clearTransferServiceLog: (): Promise<TransferServiceLogResponse> =>
     request('/api/v1/file-transfer/service/log', { method: 'DELETE' }),
   sharedTransferFiles: (options: {

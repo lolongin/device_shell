@@ -312,6 +312,7 @@ class DeviceActionResult:
     action: str
     message: str
     device: DeviceSnapshot
+    inventory: DeviceInventory
 
 
 class DeviceService:
@@ -400,9 +401,20 @@ class DeviceService:
                 str(exc),
                 details={"device_id": device_id, "action": action},
             ) from exc
+        inventory = self.list_inventory()
+        updated_device = next(
+            (device for device in inventory.devices if device.id == device_id),
+            None,
+        )
+        if updated_device is None:
+            raise ResourceNotFoundError(
+                f"Unknown device after {action}: {device_id}",
+                details={"resource": "device", "device_id": device_id},
+            )
         return DeviceActionResult(
             device_id=device_id,
             action=action,
             message=str(message),
-            device=self.require_device(device_id),
+            device=updated_device,
+            inventory=inventory,
         )

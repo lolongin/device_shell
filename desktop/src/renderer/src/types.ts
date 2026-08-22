@@ -33,8 +33,7 @@ export interface DeviceSummary {
   supports_power_off: boolean
 }
 
-export interface DeviceActionResponse {
-  api_version: number
+export interface DeviceActionResponse extends DeviceListResponse {
   device_id: string
   action: string
   message: string
@@ -259,7 +258,7 @@ export interface AutomationDispatchResponse {
 
 export interface TransferSettings {
   api_version: number
-  protocol: 'ftp' | 'sftp'
+  protocol: 'ftp'
   host: string
   advertised_host: string
   port: number
@@ -277,6 +276,12 @@ export interface TransferServiceLogResponse {
   entries: string[]
   content: string
   client_command: string
+}
+
+export interface TransferNetworkAddressesResponse {
+  api_version: number
+  addresses: string[]
+  recommended: string
 }
 
 export interface SharedTransferFile {

@@ -85,6 +85,7 @@ from .models import (
     DeviceSourceSwitchRequest,
     PluginConfigFieldModel,
     PluginConfigOptionModel,
+    InternalAuthPasswordModel,
     InternalAuthLoginRequest,
     InternalAuthStatusModel,
     ConnectionProfileListResponse,
@@ -97,6 +98,7 @@ from .models import (
     CommandHistoryModel,
     CommandWorkspaceResponse,
     CommandGroupCreateRequest,
+    CommandGroupOrderRequest,
     CommandGroupUpdateRequest,
     CommandWorkspacePreferencesRequest,
     CommandSuggestionResponse,
@@ -120,7 +122,9 @@ from .models import (
     QuickSendDispatchResponse,
     TransferSettingsModel,
     TransferSettingsUpdateRequest,
+    TransferPasswordResponse,
     TransferServiceLogResponse,
+    TransferNetworkAddressesResponse,
     SharedFileModel,
     SharedFileListResponse,
     ManagedTransferStartRequest,
@@ -1326,6 +1330,15 @@ def create_app(
         except RepositoryError as exc:
             raise ApplicationError(str(exc)) from exc
 
+    @app.get(
+        "/api/v1/internal-auth/password",
+        response_model=InternalAuthPasswordModel,
+        dependencies=[Depends(authorize)],
+    )
+    async def internal_auth_password() -> InternalAuthPasswordModel:
+        password = desktop.secrets.get(_source_auth_secret_key(repo.active_source)) or ""
+        return InternalAuthPasswordModel(password=password)
+
     @app.post(
         "/api/v1/internal-auth/login",
         response_model=InternalAuthStatusModel,
@@ -1541,6 +1554,9 @@ def create_app(
             action=result.action,
             message=result.message,
             device=_device_summary(result.device),
+            current_user=result.inventory.current_user,
+            owned_device_ids=list(result.inventory.owned_device_ids),
+            devices=[_device_summary(device) for device in result.inventory.devices],
         )
 
     @app.post(
@@ -1666,6 +1682,17 @@ def create_app(
         request: CommandGroupCreateRequest,
     ) -> CommandWorkspaceResponse:
         desktop.commands.create_group(request.name)
+        return _command_workspace(desktop)
+
+    @app.put(
+        "/api/v1/commands/groups/order",
+        response_model=CommandWorkspaceResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def reorder_command_groups(
+        request: CommandGroupOrderRequest,
+    ) -> CommandWorkspaceResponse:
+        desktop.commands.reorder_groups(request.group_ids)
         return _command_workspace(desktop)
 
     @app.put(
@@ -1970,13 +1997,24 @@ def create_app(
         )
         return _transfer_settings(desktop)
 
+    @app.get(
+        "/api/v1/file-transfer/password",
+        response_model=TransferPasswordResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def file_transfer_password() -> TransferPasswordResponse:
+        return TransferPasswordResponse(
+            password=desktop.transfers.resolve_secret("file_transfer.password"),
+        )
+
     @app.post(
         "/api/v1/file-transfer/service/start",
         response_model=TransferSettingsModel,
         dependencies=[Depends(authorize)],
     )
     async def start_file_transfer_service() -> TransferSettingsModel:
-        await desktop.transfers.start_service()
+        # Manual service starts are user-owned and should keep listening until stopped explicitly.
+        await desktop.transfers.start_service(auto_stop_when_idle=False)
         return _transfer_settings(desktop)
 
     @app.post(
@@ -1999,6 +2037,20 @@ def create_app(
             entries=entries,
             content="\n".join(entries),
             client_command=desktop.transfers.client_command_hint(),
+        )
+
+    @app.get(
+        "/api/v1/file-transfer/network-addresses",
+        response_model=TransferNetworkAddressesResponse,
+        dependencies=[Depends(authorize)],
+    )
+    async def file_transfer_network_addresses(
+        session_id: str = Query(default="", max_length=160),
+    ) -> TransferNetworkAddressesResponse:
+        addresses, recommended = desktop.transfers.network_addresses(session_id)
+        return TransferNetworkAddressesResponse(
+            addresses=addresses,
+            recommended=recommended,
         )
 
     @app.delete(

@@ -52,6 +52,17 @@ interface SessionLogExportRequest {
   content: string
 }
 
+interface TransferSettingsSaveRequest {
+  protocol: 'ftp'
+  host: string
+  advertised_host: string
+  port: number
+  root: string
+  username: string
+  password?: string
+  writable: boolean
+}
+
 interface DesktopApi {
   getRuntimeConfig(): Promise<BackendRuntime>
   request(request: BackendRequest): Promise<BackendResponse>
@@ -62,6 +73,8 @@ interface DesktopApi {
   loginInternalService(request: InternalLoginPromptRequest): Promise<import('./types').InternalAuthStatus | null>
   chooseDeviceImport(): Promise<import('./types').DeviceImportPreview | null>
   chooseTransferRoot(): Promise<string>
+  saveTransferSettings(request: TransferSettingsSaveRequest): Promise<BackendResponse>
+  copyTransferCommand(command: string): Promise<boolean>
   chooseSessionLogDirectory(): Promise<string>
   openSessionLogDirectory(): Promise<boolean>
   openCurrentSessionLog(sessionId: string): Promise<boolean>

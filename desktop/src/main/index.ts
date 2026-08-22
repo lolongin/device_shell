@@ -70,11 +70,72 @@ interface SessionLogExportRequest {
   content: string
 }
 
+interface TransferSettingsSaveRequest {
+  protocol: 'ftp'
+  host: string
+  advertised_host: string
+  port: number
+  root: string
+  username: string
+  password?: string
+  writable: boolean
+}
+
+const TRANSFER_PASSWORD_PLACEHOLDER = '{{file_transfer.password}}'
+const TRANSFER_PASSWORD_SHELL_PLACEHOLDER = '{{file_transfer.password.shell}}'
+
+function credentialDialogPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'credential-dialog.html')
+    : path.join(__dirname, '../../resources/credential-dialog.html')
+}
+
 function hasSensitiveKey(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
   return Object.entries(value).some(([key, child]) =>
     /password|secret|token/i.test(key) || hasSensitiveKey(child)
   )
+}
+
+function validateTransferSettingsSaveRequest(value: unknown): asserts value is TransferSettingsSaveRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid file-transfer settings')
+  }
+  const payload = value as Record<string, unknown>
+  const allowed = new Set([
+    'protocol', 'host', 'advertised_host', 'port', 'root', 'username', 'password', 'writable'
+  ])
+  if (Object.keys(payload).some((key) => !allowed.has(key))) {
+    throw new Error('Invalid file-transfer settings field')
+  }
+  if (
+    payload.protocol !== 'ftp'
+    || typeof payload.host !== 'string'
+    || payload.host.length > 255
+    || typeof payload.advertised_host !== 'string'
+    || payload.advertised_host.length > 255
+    || typeof payload.port !== 'number'
+    || !Number.isInteger(payload.port)
+    || payload.port < 0
+    || payload.port > 65535
+    || typeof payload.root !== 'string'
+    || !payload.root
+    || payload.root.length > 4_096
+    || typeof payload.username !== 'string'
+    || !payload.username
+    || payload.username.length > 255
+    || (payload.password !== undefined && (
+      typeof payload.password !== 'string' || payload.password.length > 1_024
+    ))
+    || typeof payload.writable !== 'boolean'
+  ) {
+    throw new Error('Invalid file-transfer settings')
+  }
+}
+
+function quoteShellArgument(value: string): string {
+  if (/^[A-Za-z0-9_./:#@+-]+$/.test(value)) return value
+  return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
 function validateBackendRequest(request: BackendRequest): void {
@@ -90,8 +151,10 @@ function validateBackendRequest(request: BackendRequest): void {
     request.path.includes('/credentials/')
     || request.path === '/api/v1/sessions/with-credential'
     || request.path === '/api/v1/sessions/direct'
+    || request.path === '/api/v1/internal-auth/password'
     || request.path === '/api/v1/internal-auth/login'
     || request.path === '/api/v1/device-source/import/preview'
+    || request.path === '/api/v1/file-transfer/password'
   ) {
     throw new Error('This endpoint requires an isolated main-process bridge')
   }
@@ -148,6 +211,18 @@ async function promptForCredential(
 ): Promise<CredentialDialogResult> {
   if (!mainWindow) return { action: 'cancel', password: '', save: false }
   let credentialTheme: 'dark' | 'light' = 'dark'
+  let savedInternalPassword = ''
+  if (mode === 'internal' && 'remembered' in request && request.remembered) {
+    try {
+      const response = await fetchBackend(backend.config, '/api/v1/internal-auth/password', 'GET')
+      if (response.status >= 200 && response.status < 300) {
+        const payload = JSON.parse(response.body) as { password?: unknown }
+        savedInternalPassword = typeof payload.password === 'string' ? payload.password : ''
+      }
+    } catch {
+      // The dialog still opens and can accept a newly entered password.
+    }
+  }
   try {
     const rendererTheme = await mainWindow.webContents.executeJavaScript(
       'document.documentElement.dataset.theme',
@@ -246,7 +321,7 @@ async function promptForCredential(
           ? `${request.host}:${request.port}`
           : ''
     credentialWindow.loadFile(
-      path.join(__dirname, '../../resources/credential-dialog.html'),
+      credentialDialogPath(),
       {
         query: {
           mode,
@@ -265,7 +340,12 @@ async function promptForCredential(
           autoLogin: 'autoLogin' in request && request.autoLogin ? '1' : '0'
         }
       }
-    ).then(() => credentialWindow.show()).catch(() => {
+    ).then(() => {
+      if (savedInternalPassword) {
+        credentialWindow.webContents.send('credential-dialog:init', { password: savedInternalPassword })
+      }
+      credentialWindow.show()
+    }).catch(() => {
       finish({ action: 'cancel', password: '', save: false })
     })
   })
@@ -287,6 +367,8 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('logs:save-copy')
   ipcMain.removeHandler('clipboard:read-text')
   ipcMain.removeHandler('clipboard:write-text')
+  ipcMain.removeHandler('file-transfer:save-settings')
+  ipcMain.removeHandler('file-transfer:copy-command')
   ipcMain.removeHandler('window:set-always-on-top')
   ipcMain.handle('runtime:get', () => {
     const runtime = backend.config
@@ -313,6 +395,61 @@ async function createWindow(): Promise<void> {
     clipboard.writeText(value)
     return true
   })
+  ipcMain.handle(
+    'file-transfer:save-settings',
+    async (event, request: unknown): Promise<BackendResponse> => {
+      if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted file-transfer caller')
+      validateTransferSettingsSaveRequest(request)
+      let body = JSON.stringify(request)
+      try {
+        return await fetchBackend(
+          backend.config,
+          '/api/v1/file-transfer/settings',
+          'PUT',
+          body
+        )
+      } finally {
+        body = ''
+        if (request.password !== undefined) request.password = ''
+      }
+    }
+  )
+  ipcMain.handle(
+    'file-transfer:copy-command',
+    async (event, value: unknown): Promise<boolean> => {
+      if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted file-transfer caller')
+      if (typeof value !== 'string' || !value || value.length > 100_000) {
+        throw new Error('Invalid FTP command')
+      }
+      let command = value
+      let password = ''
+      try {
+        if (
+          command.includes(TRANSFER_PASSWORD_PLACEHOLDER)
+          || command.includes(TRANSFER_PASSWORD_SHELL_PLACEHOLDER)
+        ) {
+          const response = await fetchBackend(
+            backend.config,
+            '/api/v1/file-transfer/password'
+          )
+          if (response.status < 200 || response.status >= 300) throw backendError(response)
+          const payload = JSON.parse(response.body) as { password?: unknown }
+          if (typeof payload.password !== 'string' || !payload.password) {
+            throw new Error('FTP 密码尚未设置，请在上方 FTP 配置中输入并保存。')
+          }
+          password = payload.password
+          command = command
+            .replaceAll(TRANSFER_PASSWORD_SHELL_PLACEHOLDER, quoteShellArgument(password))
+            .replaceAll(TRANSFER_PASSWORD_PLACEHOLDER, password)
+        }
+        clipboard.writeText(command)
+        return true
+      } finally {
+        command = ''
+        password = ''
+      }
+    }
+  )
   ipcMain.handle(
     'internal-auth:login',
     async (event, request: InternalLoginPromptRequest): Promise<unknown | null> => {
@@ -2285,7 +2422,7 @@ async function createWindow(): Promise<void> {
                 && Boolean(document.querySelector('.service-state[data-running="true"]'))
                 && transferPasswordInput?.getAttribute('type') === 'password'
                 && transferPasswordInput?.getAttribute('autocomplete') === 'new-password'
-                && ['已安全保存', '未设置'].includes(transferPasswordStatus)
+                && ['已保存，复制时自动填入', '未设置'].includes(transferPasswordStatus)
                 && text('[data-testid="transfer-service-log"] pre').includes('服务已启动')
                 && runningClientCommand.includes('ftp ')
                 && runningClientCommand.includes('<按设备路由自动选择>')

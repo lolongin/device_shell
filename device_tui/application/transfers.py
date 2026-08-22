@@ -277,8 +277,8 @@ class ManagedTransferService:
                 "Stop the file-transfer service before changing its settings."
             )
         normalized_protocol = protocol.strip().casefold()
-        if normalized_protocol not in {"ftp", "sftp"}:
-            raise UnsupportedOperationError(f"Unsupported transfer protocol: {protocol}")
+        if normalized_protocol != "ftp":
+            raise UnsupportedOperationError("当前文件传输仅支持 FTP。")
         if not 0 <= int(port) <= 65535:
             raise UnsupportedOperationError("The transfer port must be between 0 and 65535.")
         normalized_username = username.strip()
@@ -409,6 +409,50 @@ class ManagedTransferService:
         if settings.protocol == "sftp":
             return f"sftp -P {port} {settings.username}@{target}"
         return f"ftp {target} {port}"
+
+    def network_addresses(self, session_id: str = "") -> tuple[list[str], str]:
+        """Return usable local IPv4 addresses with the session route first."""
+        addresses: list[str] = []
+        recommended = ""
+        if session_id:
+            try:
+                target = self._sessions.connection_target(session_id)
+            except ResourceNotFoundError:
+                target = None
+            if target is not None and target.host.strip():
+                try:
+                    recommended = select_route_local_ipv4(target.host, target.port)
+                except OSError:
+                    recommended = ""
+        if recommended:
+            addresses.append(recommended)
+
+        try:
+            candidates = socket.getaddrinfo(
+                socket.gethostname(),
+                None,
+                family=socket.AF_INET,
+                type=socket.SOCK_DGRAM,
+            )
+        except OSError:
+            candidates = []
+        for _family, _socktype, _protocol, _canonical, sockaddr in candidates:
+            raw = str(sockaddr[0]).strip()
+            try:
+                address = ipaddress.ip_address(raw)
+            except ValueError:
+                continue
+            if (
+                not isinstance(address, ipaddress.IPv4Address)
+                or address.is_unspecified
+                or address.is_loopback
+                or address.is_multicast
+            ):
+                continue
+            normalized = str(address)
+            if normalized not in addresses:
+                addresses.append(normalized)
+        return addresses, recommended
 
     def list_files(
         self,
@@ -668,9 +712,7 @@ class ManagedTransferService:
         protected = 0
         if isinstance(raw, dict) and raw:
             config = self._saved_config()
-            protocol = str(raw.get("protocol") or config["protocol"]).casefold()
-            if protocol not in {"ftp", "sftp"}:
-                protocol = "ftp"
+            protocol = "ftp"
             try:
                 port = max(0, min(65535, int(raw.get("port", config["port"]))))
             except (TypeError, ValueError):
@@ -1556,7 +1598,13 @@ class ManagedTransferService:
             return defaults
         if not isinstance(payload, dict):
             return defaults
-        return {**defaults, **payload}
+        merged = {**defaults, **payload}
+        # The current desktop contract is FTP-only. Treat persisted SFTP
+        # settings from older releases as a one-time migration to FTP.
+        if str(merged.get("protocol") or "").casefold() != "ftp":
+            merged["protocol"] = "ftp"
+            self._store.set_meta(self.CONFIG_KEY, json.dumps(merged, ensure_ascii=False))
+        return merged
 
     def _device_host(self, session: SessionRecord, config: TransferServiceConfig) -> str:
         advertised_host = config.advertised_host.strip()

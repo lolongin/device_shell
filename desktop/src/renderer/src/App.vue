@@ -39,6 +39,7 @@ import ConnectionProfileDialog from './components/ConnectionProfileDialog.vue'
 import ConnectionGroupDialog from './components/ConnectionGroupDialog.vue'
 import DeviceImportDialog from './components/DeviceImportDialog.vue'
 import CommandWorkspace from './components/CommandWorkspace.vue'
+import CompactSelect from './components/CompactSelect.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SessionManager from './components/SessionManager.vue'
@@ -76,6 +77,14 @@ const TransferWorkspace = defineAsyncComponent(() => import('./components/Transf
 const UpgradeWorkspace = defineAsyncComponent(() => import('./components/UpgradeWorkspace.vue'))
 
 const workspace = useWorkspaceStore()
+const deviceDomainFilterOptions = computed(() => [
+  { value: '', label: '全部领域' },
+  ...workspace.deviceDomains.map((domain) => ({ value: domain, label: domain }))
+])
+const deviceStatusFilterOptions = computed(() => [
+  { value: '', label: '全部状态' },
+  ...workspace.deviceStatuses.map((status) => ({ value: status, label: status }))
+])
 const activeDeviceSource = computed(() =>
   workspace.deviceSourceStatus.sources.find(
     (source) => source.id === workspace.deviceSourceStatus.active_source
@@ -1317,11 +1326,18 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 }
 
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
+  const hideCurrentSection = navigatorVisible.value
+    && !operationPanelOpen.value
+    && activeSection.value === section
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
-  activeSection.value = section
-  setNavigatorVisible(true)
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
+  if (hideCurrentSection) {
+    setNavigatorVisible(false)
+    return
+  }
+  activeSection.value = section
+  setNavigatorVisible(true)
   if (section !== 'devices') {
     selectedProfileId.value =
       workspace.profiles.find((profile) => profile.profile_type === section)?.id || ''
@@ -1627,13 +1643,13 @@ onBeforeUnmount(() => {
   >
     <nav class="activity-rail" aria-label="主功能">
       <div class="brand-mark" title="Device TUI"><Network :size="20" /></div>
-      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'devices' }" type="button" :title="!navigatorVisible && activeSection === 'devices' ? '显示设备工作台' : '设备与终端'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'devices'" @click="setSection('devices')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'devices' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'devices' ? '隐藏设备列表' : '显示设备列表'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'devices'" @click="setSection('devices')">
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
       </button>
-      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'temporary' }" type="button" :title="!navigatorVisible && activeSection === 'temporary' ? '显示设备工作台' : '临时连接'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'temporary'" @click="setSection('temporary')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'temporary' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'temporary' ? '隐藏临时连接' : '显示临时连接'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'temporary'" @click="setSection('temporary')">
         <Cable :size="19" /><span class="sr-only">临时连接</span>
       </button>
-      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'server' }" type="button" :title="!navigatorVisible && activeSection === 'server' ? '显示设备工作台' : '服务器'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'server'" @click="setSection('server')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'server' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'server' ? '隐藏服务器列表' : '显示服务器列表'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'server'" @click="setSection('server')">
         <ServerCog :size="19" /><span class="sr-only">服务器</span>
       </button>
       <button
@@ -1729,8 +1745,8 @@ onBeforeUnmount(() => {
     <aside v-show="navigatorVisible && !operationPanelOpen" class="navigator">
       <header class="navigator-header">
         <div>
-          <p class="eyebrow">DEVICE OPERATIONS</p>
-          <h1>{{ activeSection === 'devices' ? '设备工作台' : activeSection === 'temporary' ? '临时连接' : '服务器' }}</h1>
+          <p v-if="activeSection !== 'devices'" class="eyebrow">DEVICE OPERATIONS</p>
+          <h1>{{ activeSection === 'devices' ? '设备' : activeSection === 'temporary' ? '临时连接' : '服务器' }}</h1>
         </div>
         <div class="navigator-actions">
           <button v-if="activeSection === 'devices'" class="icon-button" type="button" title="刷新" @click="workspace.initialize">
@@ -1755,22 +1771,23 @@ onBeforeUnmount(() => {
         class="device-source-bar"
         aria-label="设备数据源"
       >
-        <div class="device-source-current">
+        <div
+          class="device-source-current"
+          :title="`${activeDeviceSource?.description || ''} 当前只显示这一来源的设备。`"
+        >
+          <span class="sr-only">当前设备来源</span>
           <span class="device-source-icon" aria-hidden="true">
             <Globe2 v-if="activeDeviceSource?.icon === 'globe'" :size="16" />
             <FileSpreadsheet v-else-if="activeDeviceSource?.icon === 'spreadsheet'" :size="16" />
             <Plug v-else-if="activeDeviceSource?.icon === 'plug'" :size="16" />
             <Database v-else :size="16" />
           </span>
-          <span>
-            <small>当前设备来源</small>
-            <strong>{{ activeDeviceSource?.label || '正在识别…' }}</strong>
-          </span>
+          <strong>{{ activeDeviceSource?.label || '正在识别…' }}</strong>
           <b v-if="workspace.deviceSourceStatus.active_source === workspace.deviceSourceStatus.default_source">默认</b>
           <b v-else data-variant="changed">已切换</b>
         </div>
         <label class="device-source-switch">
-          <span>切换来源</span>
+          <span class="sr-only">切换来源</span>
           <select
             :value="workspace.deviceSourceStatus.active_source"
             :disabled="workspace.deviceSourceBusy || workspace.sessions.length > 0"
@@ -1794,11 +1811,10 @@ onBeforeUnmount(() => {
           @click="chooseDeviceImport($event)"
         ><FileUp :size="13" />{{ workspace.deviceSourceStatus.imported_count ? '重新导入' : '导入 Excel' }}</button>
         <div class="device-source-context">
-          <small v-if="workspace.sessions.length">关闭全部终端后才能切换来源或覆盖导入。</small>
-          <small v-else-if="activeDeviceSource?.supports_import">
-            当前显示 {{ workspace.deviceSourceStatus.imported_file }} 的 {{ workspace.deviceSourceStatus.imported_count }} 台设备。
+          <small v-if="workspace.sessions.length">关闭终端后可切换来源</small>
+          <small v-else-if="activeDeviceSource?.supports_import && workspace.deviceSourceStatus.imported_count">
+            {{ workspace.deviceSourceStatus.imported_count }} 台设备 · {{ workspace.deviceSourceStatus.imported_file }}
           </small>
-          <small v-else>{{ activeDeviceSource?.description }} 当前只显示这一来源的设备。</small>
           <button
             v-if="workspace.deviceSourceStatus.active_source !== workspace.deviceSourceStatus.default_source"
             type="button"
@@ -1850,10 +1866,16 @@ onBeforeUnmount(() => {
           </span>
           <span class="internal-account-copy">
             <strong>{{ workspace.internalAuthStatus.authenticated ? workspace.internalAuthStatus.username : `登录${activeDeviceSource?.label || '设备网站'}` }}</strong>
-            <small v-if="workspace.internalAuthStatus.authenticated">CID {{ workspace.internalAuthStatus.cid }} · Cookie 已连接{{ workspace.internalAuthStatus.auto_login ? ' · 自动登录已开启' : '' }}</small>
-            <small v-else-if="workspace.internalAuthStatus.configured && workspace.internalAuthStatus.remembered">密码已安全保存 · 点击登录</small>
-            <small v-else-if="workspace.internalAuthStatus.configured">输入账号、密码和 CID 后加载设备</small>
-            <small v-else>当前为本地数据 · 点击查看配置要求</small>
+            <small
+              v-if="workspace.internalAuthStatus.authenticated"
+              :title="`Cookie 已连接${workspace.internalAuthStatus.auto_login ? ' · 自动登录已开启' : ''}`"
+            >已连接 · CID {{ workspace.internalAuthStatus.cid }}</small>
+            <small
+              v-else
+              :title="workspace.internalAuthStatus.configured
+                ? (workspace.internalAuthStatus.remembered ? '密码已安全保存 · 点击登录' : '输入账号、密码和 CID 后加载设备')
+                : '当前为本地数据 · 点击查看配置要求'"
+            >点击登录加载设备</small>
           </span>
           <LogIn v-if="!workspace.internalAuthStatus.authenticated" :size="15" aria-hidden="true" />
           <span v-else class="internal-account-switch">切换</span>
@@ -1894,14 +1916,8 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="activeSection === 'devices'" class="device-filter-panel" aria-label="设备筛选">
-        <select v-model="workspace.domainFilter" aria-label="领域">
-          <option value="">全部领域</option>
-          <option v-for="domain in workspace.deviceDomains" :key="domain" :value="domain">{{ domain }}</option>
-        </select>
-        <select v-model="workspace.statusFilter" aria-label="状态">
-          <option value="">全部状态</option>
-          <option v-for="status in workspace.deviceStatuses" :key="status" :value="status">{{ status }}</option>
-        </select>
+        <CompactSelect v-model="workspace.domainFilter" label="领域" :options="deviceDomainFilterOptions" />
+        <CompactSelect v-model="workspace.statusFilter" label="状态" :options="deviceStatusFilterOptions" />
         <input v-model="workspace.cpuFilter" aria-label="CPU" placeholder="CPU" />
         <button
           class="filter-toggle"
@@ -1912,8 +1928,8 @@ onBeforeUnmount(() => {
         >我的 {{ workspace.myOccupancyCount }}</button>
       </div>
 
-      <div v-if="activeSection === 'devices'" class="summary-row" aria-label="设备统计">
-        <span><b>{{ statusCounts.total }}</b> 设备</span>
+      <div v-if="activeSection === 'devices'" class="summary-row compact-summary" aria-label="设备统计">
+        <span><b>{{ statusCounts.total }}</b> 台</span>
         <span class="idle"><b>{{ statusCounts.idle }}</b> 空闲</span>
         <span class="occupied"><b>{{ statusCounts.occupied }}</b> 占用</span>
         <span class="pipeline"><b>{{ statusCounts.pipeline }}</b> 流水线</span>
