@@ -100,6 +100,11 @@ function stageStatus(item: Record<string, unknown>, index: number, history: Arra
 function stageMessage(item: Record<string, unknown>): string {
   return String(item.message || '')
 }
+function stageActions(item: Record<string, unknown>): string[] {
+  const actions = item.actions
+  if (!Array.isArray(actions)) return []
+  return actions.map((action) => String(action || '').trim()).filter(Boolean)
+}
 function stepOutput(state: TaskStepState): string {
   const direct = state.result?.output
   if (typeof direct === 'string' && direct.trim()) return direct
@@ -292,7 +297,7 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
       </div></header>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
       <ol class="task-timeline">
-        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p></div></li></ol></div></li>
+        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p><ul v-if="stageActions(item).length" class="task-stage-actions"><li v-for="action in stageActions(item)" :key="action">{{ action }}</li></ul></div></li></ol></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
       <div v-if="workspace.taskDecision" class="task-decision" role="dialog" aria-labelledby="task-decision-title">

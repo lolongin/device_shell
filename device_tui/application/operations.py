@@ -127,6 +127,7 @@ class OperationManager:
                         "status": status,
                         "message": message,
                         "progress_percent": 0,
+                        "actions": [],
                     }
                 ],
             )
@@ -188,6 +189,7 @@ class OperationManager:
         clear_queue_position: bool = False,
         cancellable: bool | None = None,
         error_code: str | None = None,
+        stage_actions: list[str] | tuple[str, ...] | None = None,
         data: dict[str, object] | None = None,
     ) -> OperationRecord:
         current = self.get(operation_id)
@@ -211,6 +213,7 @@ class OperationManager:
                     "status": next_status,
                     "message": next_message,
                     "progress_percent": next_progress,
+                    "actions": [str(item) for item in (stage_actions or ()) if str(item).strip()],
                 }
             )
             merged_data["stage_history"] = entries[-32:]

@@ -142,6 +142,9 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
         "setting_startup",
         "completed",
     ]
+    assert "display startup" in " ".join(history[1]["actions"])
+    assert any("下载" in action for action in history[3]["actions"])
+    assert any("copy flash:/target-v2.cc" in action for action in history[5]["actions"])
     assert str(share) not in json.dumps(first_operation, ensure_ascii=False)
     assert waiting["status"] == "waiting_approval"
     assert waiting["stage"] == "reboot_approval"

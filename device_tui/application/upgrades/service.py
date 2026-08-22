@@ -141,6 +141,7 @@ class PackageUpgradeService:
             stage="rebooting",
             message="重启已批准，正在等待设备重新进入可交互状态。",
             progress_percent=96,
+            stage_actions=["发送 reboot", "等待设备重新进入可交互状态"],
         )
         approval.set()
         return updated
@@ -358,6 +359,12 @@ class PackageUpgradeService:
                 stage="prechecking",
                 message="正在读取启动项、主控和备控存储。",
                 progress_percent=5,
+                stage_actions=[
+                    "screen-length 0 temporary",
+                    "display startup",
+                    "dir flash:/",
+                    "dir slave#flash:/（检查备控存储）",
+                ],
             )
             await self._command(session, owner_id, "screen-length 0 temporary")
             startup_output = await self._command(session, owner_id, "display startup")
@@ -406,6 +413,11 @@ class PackageUpgradeService:
                     else "存储空间满足要求，无需删除旧包。"
                 ),
                 progress_percent=20,
+                stage_actions=(
+                    [f"delete /unreserved /quiet {path}" for path in cleanup_paths]
+                    if cleanup_paths
+                    else ["无需删除旧包：可用空间满足要求"]
+                ),
                 data={
                     "include_slave": include_slave,
                     "cleanup_paths": cleanup_paths,
@@ -437,6 +449,7 @@ class PackageUpgradeService:
                     stage="verifying",
                     message="主控已存在大小匹配的目标包，跳过下载。",
                     progress_percent=62,
+                    stage_actions=[f"跳过下载：dir {master_package} 已确认文件大小匹配"],
                 )
             if source_fingerprint(initial_source.path) != initial_source.fingerprint:
                 raise _UpgradeRunError("upgrade_source_changed", "升级期间本地系统包发生变化。")
@@ -458,6 +471,10 @@ class PackageUpgradeService:
                     stage="synchronizing",
                     message="正在同步并核对备控系统包。",
                     progress_percent=72,
+                    stage_actions=[
+                        f"copy {master_package} {slave_package}",
+                        f"dir {slave_package}（核对备控文件大小）",
+                    ],
                 )
                 await self._command(
                     session,
@@ -499,6 +516,10 @@ class PackageUpgradeService:
                     stage="completed",
                     message="系统包已核对并设为下次启动项；请在业务窗口人工重启。",
                     progress_percent=100,
+                    stage_actions=[
+                        "确认 display startup 已指向目标系统包",
+                        "不自动重启：等待业务窗口人工重启",
+                    ],
                     data={"reboot_required": True},
                 )
                 return
@@ -510,6 +531,7 @@ class PackageUpgradeService:
                 stage="reboot_approval",
                 message="系统包和启动项已确认，等待人工批准重启。",
                 progress_percent=95,
+                stage_actions=["等待人工批准 reboot"],
                 data={"reboot_required": True},
             )
             await approval.wait()
@@ -520,6 +542,7 @@ class PackageUpgradeService:
                 stage="completed",
                 message="系统包升级完成，设备已重新进入可交互状态。",
                 progress_percent=100,
+                stage_actions=["reboot", "确认设备重新进入可交互状态"],
                 data={"reboot_required": False},
             )
         except asyncio.CancelledError:
@@ -562,6 +585,7 @@ class PackageUpgradeService:
             stage="downloading",
             message=f"正在通过 {prepared.protocol.upper()} 下载系统包到主控。",
             progress_percent=38,
+            stage_actions=self._transfer_actions(steps),
         )
         result = await self._executor.run(
             session_id=session.id,
@@ -575,7 +599,19 @@ class PackageUpgradeService:
             stage="verifying",
             message="系统包下载完成，正在核对主控文件大小。",
             progress_percent=62,
+            stage_actions=[f"dir {master_package}（核对主控文件大小与 SHA/字节数）"],
         )
+
+    @staticmethod
+    def _transfer_actions(steps: list[dict[str, object]]) -> list[str]:
+        """Expose safe transfer-plan labels without leaking credentials."""
+
+        actions: list[str] = []
+        for item in steps:
+            label = str(item.get("label") or "").strip()
+            if label and label not in actions:
+                actions.append(label)
+        return actions or ["执行文件传输计划"]
 
     async def _set_startup(
         self,
@@ -592,6 +628,14 @@ class PackageUpgradeService:
             stage="setting_startup",
             message="正在设置并最终确认下次启动系统包。",
             progress_percent=86,
+            stage_actions=[
+                (
+                    f"startup system-software {master_package} all"
+                    if include_slave
+                    else f"startup system-software {master_package}"
+                ),
+                "display startup（最终确认下次启动项）",
+            ],
         )
         command = (
             f"startup system-software {master_package} all"
