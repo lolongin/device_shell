@@ -136,6 +136,7 @@ def test_unified_agent_workflow_capabilities_are_backend_only() -> None:
 
     workflow_ids = {item["id"] for item in workflows["data"]["workflows"]}
     assert "device_upgrade" in workflow_ids
+    assert "package.upgrade" not in workflows["data"]["capabilities"]
     assert tool["data"]["status"] == "completed"
 
 

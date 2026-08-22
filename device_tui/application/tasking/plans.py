@@ -125,7 +125,6 @@ class WorkflowPlanCompiler:
         "terminal.batch": ("batch", "device"),
         "device.reboot": ("reboot", "device"),
         "file.upload": ("upload", "device"),
-        "package.upgrade": ("package_upgrade", "execution"),
     }
 
     def validate(self, plan: WorkflowPlan) -> PlanValidationResult:
@@ -243,8 +242,6 @@ def _risk_medium() -> Any:
 
 def _step_risk(step: PlanStep) -> Any:
     from device_tui.application.ai.operations import RiskLevel
-    if step.capability == "package.upgrade":
-        return RiskLevel.FLOW
     if step.capability == "file.upload":
         return RiskLevel.MEDIUM
     return _classify(WorkflowPlanCompiler._command(step))

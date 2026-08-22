@@ -32,6 +32,19 @@ def test_plan_compiler_marks_high_risk_steps_for_confirmation() -> None:
     assert result.workflow.steps[0].action.confirmation_required is True
 
 
+def test_plan_compiler_keeps_package_replacement_on_named_device_upgrade_workflow() -> None:
+    plan = WorkflowPlan(
+        "p-package",
+        "replace system package",
+        {"device_id": "d1"},
+        (PlanStep("upgrade", "package.upgrade", {"package_path": "target.cc"}),),
+    )
+    result = WorkflowPlanCompiler().validate(plan)
+    assert result.status == "rejected"
+    assert result.errors[0]["code"] == "capability_not_allowed"
+    assert "package.upgrade" not in WorkflowPlanCompiler.CAPABILITIES
+
+
 def test_plan_hash_is_stable_and_compiled_metadata_keeps_hash() -> None:
     plan = WorkflowPlan(
         "p3",

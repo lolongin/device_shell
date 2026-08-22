@@ -22,7 +22,9 @@ INSTRUCTIONS = (
     "then run only the returned validated plan. Inspect Task and "
     "DecisionContext, return a structured action and reason, then apply it "
     "through decision.apply. Use task.replan for a new revision; never mutate "
-    "WorkflowEngine state or invent device business logic in MCP."
+    "WorkflowEngine state or invent device business logic in MCP. For package "
+    "replacement, use the named device_upgrade workflow through workflow.run "
+    "or task.create; package.upgrade is not a declarative plan capability."
 )
 
 
