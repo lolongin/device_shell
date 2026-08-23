@@ -28,9 +28,19 @@ from .models import (
     WorkflowStepState,
 )
 from .service import TaskManager, WorkflowEngine
-from .workflows import device_upgrade_workflow, package_upgrade_workflow
+from .workflows import device_upgrade_workflow
+from .catalog import (
+    DeviceUpgradeWorkflowProvider,
+    WorkflowCatalog,
+    WorkflowCatalogError,
+    WorkflowDescriptor,
+    WorkflowParameter,
+    WorkflowProvider,
+    WorkflowTarget,
+    build_default_workflow_catalog,
+)
 from .store import MemoryTaskStore, TaskStore
-from .plans import MemoryPlanStore, PlanStep, PlanStore, PlanValidationError, PlanValidationResult, WorkflowPlan, WorkflowPlanCompiler
+from .plans import CapabilityRegistry, CapabilitySpec, MemoryPlanStore, PlanStep, PlanStore, PlanValidationError, PlanValidationResult, WorkflowPlan, WorkflowPlanCompiler
 
 __all__ = [
     "DecisionEngine",
@@ -63,11 +73,20 @@ __all__ = [
     "WorkflowStep",
     "WorkflowStepResult",
     "WorkflowStepState",
-    "package_upgrade_workflow",
     "device_upgrade_workflow",
+    "DeviceUpgradeWorkflowProvider",
+    "WorkflowCatalog",
+    "WorkflowCatalogError",
+    "WorkflowDescriptor",
+    "WorkflowParameter",
+    "WorkflowProvider",
+    "WorkflowTarget",
+    "build_default_workflow_catalog",
     "MemoryTaskStore",
     "TaskStore",
     "PlanStep",
+    "CapabilityRegistry",
+    "CapabilitySpec",
     "PlanValidationError",
     "PlanValidationResult",
     "WorkflowPlan",

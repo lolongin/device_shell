@@ -12,6 +12,7 @@ from .models import (
     SessionView,
     TransferRequest,
 )
+from .lease import DeviceLease, DeviceLeaseService
 from .service import DeviceControlService
 
 __all__ = [
@@ -26,4 +27,6 @@ __all__ = [
     "SendResult",
     "SessionView",
     "TransferRequest",
+    "DeviceLease",
+    "DeviceLeaseService",
 ]

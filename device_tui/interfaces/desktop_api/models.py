@@ -688,10 +688,12 @@ class PackageUpgradeStartRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=160)
     package_path: str = Field(min_length=1, max_length=4_096)
     include_slave: bool = True
+    standby_required: bool = False
     auto_delete_old_packages: bool = True
     reboot_after_setting: bool = False
-    master_storage: str = Field(default="flash:/", min_length=1, max_length=255)
-    slave_storage: str = Field(default="slave#flash:/", min_length=1, max_length=255)
+    master_storage: str = Field(default="", max_length=255)
+    slave_storage: str = Field(default="", max_length=255)
+    driver_id: str = Field(default="auto", min_length=1, max_length=160)
 
 
 class PackageUpgradeManualPlanRequest(BaseModel):
@@ -850,6 +852,8 @@ class TaskCreateRequest(BaseModel):
     protocol: Literal["auto", "simulated", "ssh", "telnet", "serial"] = "auto"
     source: str = Field(default="desktop-api", max_length=64)
     context: dict[str, object] = Field(default_factory=dict)
+    parameters: dict[str, object] = Field(default_factory=dict)
+    # Compatibility fields for clients predating WorkflowCatalog.
     package: str = Field(default="", max_length=1024)
     options: dict[str, object] = Field(default_factory=dict)
     steps: list[WorkflowStepRequest] = Field(default_factory=list, max_length=50)

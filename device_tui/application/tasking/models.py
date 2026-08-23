@@ -56,6 +56,9 @@ class WorkflowStepResult(ProtocolModel):
     error_code: str = ""
     message: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    operation_id: str = ""
+    execution_id: str = ""
+    evidence: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> WorkflowStepResult:
@@ -69,6 +72,9 @@ class WorkflowStepResult(ProtocolModel):
             error_code=str(payload.get("error_code") or ""),
             message=str(payload.get("message") or ""),
             data=dict(payload.get("data") or {}),
+            operation_id=str(payload.get("operation_id") or ""),
+            execution_id=str(payload.get("execution_id") or ""),
+            evidence=tuple(dict(item) for item in payload.get("evidence", ()) if isinstance(item, Mapping)),
         )
 
 

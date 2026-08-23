@@ -23,58 +23,45 @@ def device_upgrade_workflow(
     if not str(package).strip():
         raise ValueError("package is required")
     opts = dict(options or {})
-    package_name = str(package).replace("\\", "/").rsplit("/", 1)[-1]
-    destination = str(opts.get("destination_path") or f"flash:/{package_name}")
     retry = lambda attempts: {"max_attempts": max(1, int(attempts)), "deterministic": True, "retryable": True}
-    steps = (
-        WorkflowStep("precheck", kind="device", action="precheck", params={"device_id": device_id, "commands": opts.get("precheck_commands", ("display version",)), "timeout_seconds": opts.get("timeout_seconds", 30)}, retry_policy={"terminal": True}),
-        WorkflowStep("backup", kind="device", action="backup", depends_on=("precheck",), params={"device_id": device_id, "commands": opts.get("backup_commands", ("display startup",))}),
-        WorkflowStep("upload", kind="device", action="upload", depends_on=("backup",), params={"device_id": device_id, "package": package, "source_path": package, "destination_path": destination, "overwrite": bool(opts.get("overwrite", True)), "timeout_seconds": opts.get("upload_timeout_seconds", 300)}, retry_policy=retry(3)),
-        WorkflowStep("verify", kind="device", action="verify", depends_on=("upload",), params={"device_id": device_id, "commands": opts.get("verify_commands", (f"dir {destination}",))}, retry_policy=retry(2)),
-        WorkflowStep("activate", kind="device", action="activate", depends_on=("verify",), params={"device_id": device_id, "commands": opts.get("activate_commands", (str(opts.get("activate_command") or f"startup system-software {destination}"),))}, retry_policy=retry(2)),
-        WorkflowStep("reboot", kind="device", action=Action("reboot", risk="high", confirmation_required=True), depends_on=("activate",), params={"device_id": device_id, "timeout_seconds": opts.get("reboot_timeout_seconds", 190)}, retry_policy=retry(2)),
-        WorkflowStep("wait_online", kind="device", action="wait_online", depends_on=("reboot",), params={"device_id": device_id, "timeout_seconds": opts.get("online_timeout_seconds", 180)}, retry_policy=retry(3)),
-        WorkflowStep("verify_version", kind="device", action="verify_version", depends_on=("wait_online",), params={"device_id": device_id, "commands": opts.get("version_commands", ("display version",)), "expected_version": opts.get("expected_version", "")}, retry_policy=retry(2)),
-        # The simulator supports ``display version`` as a healthy validation
-        # probe.  Callers can override this with an unsupported command to
-        # exercise terminal workflow failure handling.
-        WorkflowStep("validation", kind="device", action="validation", depends_on=("verify_version",), params={"device_id": device_id, "commands": opts.get("validation_commands", ("display version",))}, retry_policy={"terminal": True}),
+    topology_policy = str(opts.get("topology_policy") or "auto")
+    cleanup_policy = str(opts.get("cleanup_policy") or "never")
+    activation_policy = str(opts.get("activation_policy") or "stage_only")
+    if topology_policy not in {"auto", "single", "required"}:
+        raise ValueError("topology_policy must be auto, single, or required")
+    if cleanup_policy not in {"never", "auto"}:
+        raise ValueError("cleanup_policy must be never or auto")
+    if activation_policy not in {"stage_only", "reboot"}:
+        raise ValueError("activation_policy must be stage_only or reboot")
+    prepare = WorkflowStep(
+        "prepare_upgrade",
+        kind="device",
+        action=Action("prepare_upgrade", risk="high", confirmation_required=True),
+        params={
+            "device_id": device_id,
+            "package_path": package,
+            "include_slave": topology_policy != "single",
+            "standby_required": topology_policy == "required",
+            "auto_delete_old_packages": cleanup_policy == "auto",
+            "reboot_after_setting": False,
+            "wait": True,
+            "driver_id": str(opts.get("driver_id") or "auto"),
+            "master_storage": str(opts.get("master_storage") or ""),
+            "slave_storage": str(opts.get("slave_storage") or ""),
+            "timeout_seconds": int(opts.get("prepare_timeout_seconds") or 900),
+        },
+        retry_policy=retry(2),
+        metadata={"phase": "prepare", "result_state": "staged"},
     )
+    steps: list[WorkflowStep] = [prepare]
+    if activation_policy == "reboot":
+        steps.extend((
+            WorkflowStep("reboot", kind="device", action=Action("reboot", risk="high", confirmation_required=True), depends_on=("prepare_upgrade",), params={"device_id": device_id, "timeout_seconds": opts.get("reboot_timeout_seconds", 190)}, retry_policy=retry(2), metadata={"phase": "activate"}),
+            WorkflowStep("wait_online", kind="device", action="wait_online", depends_on=("reboot",), params={"device_id": device_id, "timeout_seconds": opts.get("online_timeout_seconds", 180)}, retry_policy=retry(3), metadata={"phase": "recover"}),
+            WorkflowStep("verify_version", kind="device", action="verify_version", depends_on=("wait_online",), params={"device_id": device_id, "commands": opts.get("version_commands", ("display version",)), "expected_version": opts.get("expected_version", "")}, retry_policy=retry(2), metadata={"phase": "verify"}),
+            WorkflowStep("validation", kind="device", action="validation", depends_on=("verify_version",), params={"device_id": device_id, "commands": opts.get("validation_commands", ("display version",))}, retry_policy={"terminal": True}, metadata={"phase": "postcheck"}),
+        ))
     return WorkflowDefinition(
-        id="device_upgrade", name="Device upgrade", description="Checkpointed device package upgrade",
-        steps=steps, metadata={"device_id": device_id, "package": package, "options": opts},
-    )
-
-
-def package_upgrade_workflow(
-    *,
-    package_path: str,
-    include_slave: bool = True,
-    auto_delete_old_packages: bool = True,
-    reboot_after_setting: bool = False,
-    approve_reboot: bool = False,
-    timeout_seconds: int = 900,
-    master_storage: str = "flash:",
-    slave_storage: str = "slave#flash:",
-) -> WorkflowDefinition:
-    """Build the standard verified package replacement workflow.
-
-    The detailed precheck, cleanup, transfer, verification, startup-setting,
-    reboot approval and reconnect logic remains owned by PackageUpgradeService.
-    """
-
-    params: dict[str, Any] = {
-        "package_path": package_path,
-        "include_slave": include_slave,
-        "auto_delete_old_packages": auto_delete_old_packages,
-        "reboot_after_setting": reboot_after_setting,
-        "approve_reboot": approve_reboot,
-        "timeout_seconds": timeout_seconds,
-        "wait": True,
-        "master_storage": master_storage,
-        "slave_storage": slave_storage,
-    }
-    return WorkflowDefinition(
-        id="package-upgrade",
-        steps=(WorkflowStep(id="upgrade", kind="execution", action="package_upgrade", params=params),),
+        id="device_upgrade", name="Device upgrade", description="Driver-backed checkpointed device upgrade",
+        steps=tuple(steps), metadata={"device_id": device_id, "package": package, "options": opts, "activation_policy": activation_policy},
     )

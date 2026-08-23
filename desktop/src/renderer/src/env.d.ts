@@ -74,6 +74,7 @@ interface DesktopApi {
   chooseDeviceImport(): Promise<import('./types').DeviceImportPreview | null>
   chooseTransferRoot(): Promise<string>
   choosePackage(defaultPath?: string): Promise<string>
+  chooseWorkflowFile(request: { defaultPath?: string; label?: string; extensions?: string[] }): Promise<string>
   saveTransferSettings(request: TransferSettingsSaveRequest): Promise<BackendResponse>
   copyTransferCommand(command: string): Promise<boolean>
   chooseSessionLogDirectory(): Promise<string>

@@ -10,7 +10,7 @@ from .automation import AutomationService, AutomationStore, MemoryAutomationStor
 from .credentials import CredentialResolver, RepositoryCredentialResolver
 from .commands import CommandService, CommandStore, MemoryCommandStore
 from .devices import DeviceService
-from .device_control import DeviceControlService
+from .device_control import DeviceControlService, DeviceLeaseService
 from .events import EventBus
 from .profiles import (
     CompositeCredentialResolver,
@@ -30,7 +30,14 @@ from .transfers import (
     UnavailableTerminalPlanExecutor,
 )
 from .upgrades import PackageUpgradeService
-from .tasking import DeviceExecutionTool, MemoryTaskStore, TaskManager, TaskStore
+from .tasking import (
+    DeviceExecutionTool,
+    MemoryTaskStore,
+    TaskManager,
+    TaskStore,
+    WorkflowCatalog,
+    build_default_workflow_catalog,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,8 +54,10 @@ class DesktopApplication:
     operations: OperationManager
     transfers: ManagedTransferService
     upgrades: PackageUpgradeService
+    leases: DeviceLeaseService
     control: DeviceControlService
     tasks: TaskManager
+    workflows: WorkflowCatalog
 
 
 def build_desktop_application(
@@ -65,6 +74,7 @@ def build_desktop_application(
     terminal_executor: TerminalPlanExecutor | None = None,
     transfer_root: Path | None = None,
     task_store: TaskStore | None = None,
+    workflow_catalog: WorkflowCatalog | None = None,
 ) -> DesktopApplication:
     events = EventBus()
     devices = DeviceService(repository)
@@ -88,7 +98,7 @@ def build_desktop_application(
     operations = OperationManager(
         events,
         operation_store or MemoryOperationStore(),
-        persistent_kinds={"managed_file_transfer"},
+        persistent_kinds={"managed_file_transfer", "package_upgrade"},
         history_limit=200,
     )
     executor = terminal_executor or UnavailableTerminalPlanExecutor()
@@ -101,9 +111,19 @@ def build_desktop_application(
         terminal_executor=executor,
         default_root=transfer_root,
     )
-    upgrades = PackageUpgradeService(sessions, operations, transfers, executor)
-    control = DeviceControlService(devices, sessions, transfers, operations, executor, upgrades)
-    tasks = TaskManager(DeviceExecutionTool(control), events, store=task_store or MemoryTaskStore())
+    upgrades = PackageUpgradeService(sessions, operations, transfers, executor, devices=devices)
+    # Device upgrades and long terminal plans may legitimately run beyond the
+    # short operation timeout. Process restart clears these in-memory leases;
+    # normal completion, pause, and cancellation release them explicitly.
+    leases = DeviceLeaseService(ttl_seconds=21_600)
+    control = DeviceControlService(devices, sessions, transfers, operations, executor, upgrades, leases=leases)
+    tasks = TaskManager(
+        DeviceExecutionTool(control),
+        events,
+        store=task_store or MemoryTaskStore(),
+        leases=leases,
+    )
+    workflows = workflow_catalog or build_default_workflow_catalog()
     return DesktopApplication(
         devices=devices,
         sessions=sessions,
@@ -117,6 +137,8 @@ def build_desktop_application(
         operations=operations,
         transfers=transfers,
         upgrades=upgrades,
+        leases=leases,
         control=control,
         tasks=tasks,
+        workflows=workflows,
     )

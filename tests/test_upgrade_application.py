@@ -72,7 +72,7 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
             client,
             headers,
             first.json()["operation"]["id"],
-            {"completed", "failed", "cancelled"},
+            {"staged", "completed", "failed", "cancelled"},
         )
 
         gated = client.post(
@@ -122,13 +122,13 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
         )
 
     assert first.status_code == 200
-    assert first_operation["status"] == "completed", (
+    assert first_operation["status"] == "staged", (
         first_operation["stage"],
         first_operation["message"],
         first_operation["error_code"],
         first_operation["data"],
     )
-    assert first_operation["progress_percent"] == 100
+    assert first_operation["progress_percent"] == 90
     assert first_operation["data"]["include_slave"] is True
     assert first_operation["data"]["reboot_required"] is True
     history = first_operation["data"]["stage_history"]
@@ -140,7 +140,7 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
         "verifying",
         "synchronizing",
         "setting_startup",
-        "completed",
+        "staged",
     ]
     assert "display startup" in " ".join(history[1]["actions"])
     assert any("下载" in action for action in history[3]["actions"])
@@ -196,15 +196,24 @@ def test_package_upgrade_workflow_completes_through_task_api(tmp_path: Path) -> 
         assert created.status_code == 200, created.text
         task_id = created.json()["task"]["id"]
         task = {}
+        approved_prepare = False
         for _ in range(700):
             task = client.get(f"/api/v1/tasks/{task_id}", headers=headers).json()["task"]
+            if task["status"] == "waiting_for_user" and not approved_prepare:
+                decision = client.post(
+                    f"/api/v1/tasks/{task_id}/decision",
+                    headers=headers,
+                    json={"action": "approve", "target_step": "prepare_upgrade"},
+                )
+                assert decision.status_code == 200, decision.text
+                approved_prepare = True
             if task["status"] in {"completed", "failed", "cancelled"}:
                 break
             time.sleep(0.02)
     assert task["status"] == "completed", task
     assert task["result"]["steps"][0]["status"] == "completed"
     operation_data = task["result"]["steps"][0]["data"]["operation"]["data"]
-    assert operation_data["stage_history"][-1]["stage"] == "completed"
+    assert operation_data["stage_history"][-1]["stage"] == "staged"
 
 
 def test_package_upgrade_routes_require_authorization(tmp_path: Path) -> None:

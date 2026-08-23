@@ -69,11 +69,18 @@ class DeviceExecutionTool:
                 ),
                 context=context,
             )
+            self._notify(context, "execution", result.execution_id)
             self._raise_for_failed_result(result.status, result.error_code, result.output or "Device command failed.")
             expected = str(params.get("expected_version") or "")
             if action == "verify_version" and expected and expected not in result.output:
                 raise DeviceWorkflowExecutionError("version_mismatch", f"Expected version {expected!r} was not observed.")
-            return {**dict(result.data), "output": result.output, "status": result.status}
+            return {
+                **dict(result.data),
+                "output": result.output,
+                "status": result.status,
+                "execution_id": result.execution_id,
+                "evidence": ({"kind": "terminal_execution", "execution_id": result.execution_id, "steps": list(result.steps)},),
+            }
         if action == "upload":
             package = str(params.get("source_path") or params.get("package") or "")
             destination = str(params.get("destination_path") or "")
@@ -87,6 +94,7 @@ class DeviceExecutionTool:
                 ),
                 context=context,
             )
+            self._notify(context, "operation", operation.operation_id)
             return await self._wait_operation(operation.operation_id, timeout_seconds=int(params.get("timeout_seconds") or 300))
         if action == "wait_online":
             view = await self._control.open_session(target, reuse=True, context=context)
@@ -111,8 +119,15 @@ class DeviceExecutionTool:
                 ),
                 context=context,
             )
+            self._notify(context, "execution", result.execution_id)
             self._raise_for_failed_result(result.status, result.error_code, result.output or "Device command failed.")
-            return dict(result.data)
+            return {
+                **dict(result.data),
+                "output": result.output,
+                "status": result.status,
+                "execution_id": result.execution_id,
+                "evidence": ({"kind": "terminal_execution", "execution_id": result.execution_id, "steps": list(result.steps)},),
+            }
         if action in {"send", "raw", "send_raw"}:
             text = str(params.get("text") or params.get("command") or "")
             if not text.strip():
@@ -147,8 +162,14 @@ class DeviceExecutionTool:
                 ),
                 context=context,
             )
-            return {"operation_id": operation.operation_id, "status": operation.status, "data": operation.data}
-        if action in {"package_upgrade", "upgrade"}:
+            self._notify(context, "operation", operation.operation_id)
+            return {
+                "operation_id": operation.operation_id,
+                "status": operation.status,
+                "data": operation.data,
+                "evidence": (self._operation_evidence(operation),),
+            }
+        if action in {"prepare_upgrade", "package_upgrade", "upgrade"}:
             package_path = str(params.get("package_path") or "")
             if not package_path.strip():
                 raise UnsupportedOperationError("Package upgrade requires package_path.")
@@ -157,22 +178,26 @@ class DeviceExecutionTool:
                 PackageUpgradeRequest(
                     package_path=package_path,
                     include_slave=bool(params.get("include_slave", True)),
+                    standby_required=bool(params.get("standby_required", False)),
                     auto_delete_old_packages=bool(params.get("auto_delete_old_packages", True)),
                     reboot_after_setting=bool(params.get("reboot_after_setting", False)),
-                    master_storage=str(params.get("master_storage") or "flash:"),
-                    slave_storage=str(params.get("slave_storage") or "slave#flash:"),
+                    master_storage=str(params.get("master_storage") or ""),
+                    slave_storage=str(params.get("slave_storage") or ""),
+                    driver_id=str(params.get("driver_id") or "auto"),
                 ),
                 context=context,
             )
+            self._notify(context, "operation", operation.operation_id)
             payload = {"operation_id": operation.operation_id, "status": operation.status, "data": operation.data}
             if bool(params.get("wait", True)):
                 payload["operation"] = await self._wait_upgrade(
                     operation.operation_id,
                     approve_reboot=bool(params.get("approve_reboot", False)),
                     timeout_seconds=int(params.get("timeout_seconds") or 900),
+                    context=context,
                 )
                 final_status = str(payload["operation"].get("status") or "")
-                if final_status != "completed":
+                if final_status not in {"staged", "completed"}:
                     raise PackageUpgradeError(
                         str(payload["operation"].get("message") or "Package upgrade failed."),
                         details={
@@ -181,12 +206,30 @@ class DeviceExecutionTool:
                             "error_code": payload["operation"].get("error_code", ""),
                         },
                     )
+            evidence_operation = payload.get("operation") if isinstance(payload.get("operation"), dict) else {
+                "operation_id": operation.operation_id,
+                "status": operation.status,
+                "stage": operation.stage,
+                "progress_percent": operation.progress_percent,
+                "data": operation.data,
+            }
+            payload["evidence"] = ({"kind": "operation", **dict(evidence_operation)},)
             return payload
         if action in {"operation_wait", "wait_operation", "upgrade_wait"}:
             operation_id = str(params.get("operation_id") or "")
             if not operation_id:
                 raise UnsupportedOperationError("operation_wait requires operation_id.")
-            return {"operation": await self._wait_upgrade(operation_id, approve_reboot=bool(params.get("approve_reboot", False)), timeout_seconds=int(params.get("timeout_seconds") or 900))}
+            operation = await self._wait_upgrade(
+                operation_id,
+                approve_reboot=bool(params.get("approve_reboot", False)),
+                timeout_seconds=int(params.get("timeout_seconds") or 900),
+                context=context,
+            )
+            return {
+                "operation_id": operation_id,
+                "operation": operation,
+                "evidence": ({"kind": "operation", **operation},),
+            }
         if action in {"approve_reboot", "upgrade_approve_reboot"}:
             operation_id = str(params.get("operation_id") or "")
             if not operation_id:
@@ -194,6 +237,38 @@ class DeviceExecutionTool:
             operation = self._control.approve_package_upgrade_reboot(operation_id, context=context)
             return {"operation_id": operation.operation_id, "status": operation.status, "data": operation.data}
         raise ValueError(f"Unsupported workflow action: {step.action or step.kind}")
+
+    @staticmethod
+    def _notify(context: ControlContext, kind: str, resource_id: str) -> None:
+        callback = context.operation_callback
+        if callback is not None and str(resource_id).strip():
+            callback(kind, str(resource_id))
+
+    def cancel_resource(self, kind: str, resource_id: str) -> dict[str, object]:
+        """Cancel a resource registered by a running workflow step."""
+        if str(kind) == "execution":
+            return self._control.cancel_execution(str(resource_id))
+        return self._control.cancel_operation(str(resource_id))
+
+    def cancel_target(self, target: DeviceTarget) -> str:
+        """Fallback cancellation for a terminal run still being registered."""
+        return self._control.cancel_active_execution(target)
+
+    def get_resource(self, kind: str, resource_id: str) -> dict[str, Any]:
+        """Return a redacted resource snapshot used during restart reconcile."""
+        if str(kind) == "execution":
+            return self._control.get_execution(str(resource_id))
+        operation = self._control.get_operation(str(resource_id))
+        return {
+            "operation_id": operation.operation_id,
+            "kind": operation.kind,
+            "status": operation.status,
+            "stage": operation.stage,
+            "message": operation.message,
+            "error_code": operation.error_code,
+            "revision": operation.revision,
+            "data": dict(operation.data),
+        }
 
     @staticmethod
     def _default_command(action: str, params: dict[str, Any]) -> str:
@@ -229,8 +304,13 @@ class DeviceExecutionTool:
             operation = self._control.get_operation(operation_id)
             status = str(operation.status).casefold()
             if status in {"completed", "success", "succeeded"}:
-                return {"operation_id": operation.operation_id, "status": operation.status, "data": operation.data}
-            if status in {"failed", "cancelled", "canceled", "timeout", "timed_out"}:
+                return {
+                    "operation_id": operation.operation_id,
+                    "status": operation.status,
+                    "data": operation.data,
+                    "evidence": (self._operation_evidence(operation),),
+                }
+            if status in {"failed", "cancelled", "canceled", "timeout", "timed_out", "interrupted"}:
                 timeout = "timeout" in status or "timeout" in str(operation.error_code).casefold()
                 raise DeviceWorkflowExecutionError(
                     str(operation.error_code or status), str(operation.message or "Device operation failed."),
@@ -246,15 +326,16 @@ class DeviceExecutionTool:
         *,
         approve_reboot: bool,
         timeout_seconds: int,
+        context: ControlContext,
     ) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + max(1, min(timeout_seconds, 3_600))
         approved = False
         while True:
             operation = self._control.get_operation(operation_id)
             if operation.status == "waiting_approval" and approve_reboot and not approved:
-                operation = self._control.approve_package_upgrade_reboot(operation_id)
+                operation = self._control.approve_package_upgrade_reboot(operation_id, context=context)
                 approved = True
-            if operation.status in {"completed", "failed", "cancelled"}:
+            if operation.status in {"staged", "completed", "failed", "cancelled", "interrupted"}:
                 return {
                     "operation_id": operation.operation_id,
                     "status": operation.status,
@@ -267,3 +348,16 @@ class DeviceExecutionTool:
             if asyncio.get_running_loop().time() >= deadline:
                 raise UnsupportedOperationError("Package upgrade operation timed out while waiting.")
             await asyncio.sleep(0.2)
+
+    @staticmethod
+    def _operation_evidence(operation: Any) -> dict[str, Any]:
+        return {
+            "kind": "operation",
+            "operation_id": str(operation.operation_id),
+            "operation_kind": str(operation.kind),
+            "status": str(operation.status),
+            "stage": str(operation.stage),
+            "progress_percent": int(operation.progress_percent),
+            "revision": int(operation.revision),
+            "data": dict(operation.data),
+        }

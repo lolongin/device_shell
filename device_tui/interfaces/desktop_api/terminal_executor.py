@@ -69,9 +69,10 @@ class BackendTerminalExecutor:
         device_id: str,
         plan: TerminalExecutionPlan,
         owner_id: str,
+        execution_id: str | None = None,
     ) -> dict[str, object]:
         loop = asyncio.get_running_loop()
-        execution_id = str(uuid4())
+        execution_id = execution_id or str(uuid4())
         self._execution_owners[execution_id] = owner_id
         completed: asyncio.Future[dict[str, object]] = loop.create_future()
         try:

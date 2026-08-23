@@ -15,6 +15,7 @@ from device_tui.application.errors import (
     ResourceNotFoundError,
     UnsupportedOperationError,
 )
+from device_tui.application.devices import DeviceService
 from device_tui.application.operations import (
     OperationManager,
     OperationRecord,
@@ -44,6 +45,11 @@ from device_tui.application.upgrades.package import (
     parse_display_startup,
     parse_free_space_bytes,
     startup_uses_package,
+)
+from device_tui.application.upgrades.drivers import (
+    UpgradeDriver,
+    UpgradeDriverRegistry,
+    UpgradeTargetFacts,
 )
 from device_tui.infrastructure.transfers.managed_file_transfer import (
     build_managed_transfer_steps,
@@ -76,11 +82,15 @@ class PackageUpgradeService:
         operations: OperationManager,
         transfers: ManagedTransferService,
         terminal_executor: TerminalPlanExecutor,
+        devices: DeviceService | None = None,
+        drivers: UpgradeDriverRegistry | None = None,
     ) -> None:
         self._sessions = sessions
         self._operations = operations
         self._transfers = transfers
         self._executor = terminal_executor
+        self._devices = devices
+        self._drivers = drivers or UpgradeDriverRegistry()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._reboot_approvals: dict[str, asyncio.Event] = {}
 
@@ -90,15 +100,22 @@ class PackageUpgradeService:
         session_id: str,
         package_path: str,
         include_slave: bool = True,
+        standby_required: bool = False,
         auto_delete_old_packages: bool = True,
         reboot_after_setting: bool = False,
         master_storage: str = DEFAULT_MASTER_STORAGE,
         slave_storage: str = DEFAULT_SLAVE_STORAGE,
+        driver_id: str = "auto",
     ) -> OperationRecord:
         session = self._connected_session(session_id)
         source = self._transfers.resolve_source(package_path)
-        if Path(source.name).suffix.casefold() != ".cc":
-            raise UnsupportedOperationError("Package upgrades require a .cc system package.")
+        driver = self._resolve_driver(session, driver_id)
+        try:
+            driver.validate_artifact(source.path)
+        except ValueError as exc:
+            raise UnsupportedOperationError(str(exc)) from exc
+        primary_storage = master_storage or driver.default_primary_storage
+        standby_storage = slave_storage or driver.default_standby_storage
         record = self._operations.create(
             kind="package_upgrade",
             direction="upgrade",
@@ -111,10 +128,13 @@ class PackageUpgradeService:
                 "package_name": source.name,
                 "package_size": source.size_bytes,
                 "include_slave": bool(include_slave),
+                "standby_required": bool(standby_required),
                 "auto_delete_old_packages": bool(auto_delete_old_packages),
                 "reboot_after_setting": bool(reboot_after_setting),
-                "master_storage": master_storage,
-                "slave_storage": slave_storage,
+                "master_storage": primary_storage,
+                "slave_storage": standby_storage,
+                "driver_id": driver.id,
+                "driver_name": driver.display_name,
             },
         )
         task = asyncio.create_task(
@@ -189,12 +209,21 @@ class PackageUpgradeService:
 
         session = self._connected_session(session_id)
         source = self._transfers.resolve_source(package_path)
-        if source.path.suffix.casefold() != ".cc":
-            raise UnsupportedOperationError("Package upgrades require a .cc system package.")
+        driver = self._resolve_driver(session, "auto")
+        try:
+            driver.validate_artifact(source.path)
+        except ValueError as exc:
+            raise UnsupportedOperationError(str(exc)) from exc
+        if driver.id != "huawei-vrp":
+            raise UnsupportedOperationError(
+                f"{driver.display_name} 暂不支持手工脚本回退，请使用标准 Task 流程。"
+            )
+        master_storage = master_storage or driver.default_primary_storage
+        slave_storage = slave_storage or driver.default_standby_storage
         prepared = await self._transfers.prepare_upload_source(
             session,
             source_path=source.relative_path,
-            destination_path=join_storage_path(master_storage, source.name),
+            destination_path=driver.package_path(master_storage, source.name),
         )
         settings = self._transfers.settings()
         cleanup_entries, cleanup_notes = self._manual_cleanup_entries(
@@ -207,7 +236,7 @@ class PackageUpgradeService:
             slave_output=slave_dir_output,
             auto_delete=auto_delete_old_packages,
         )
-        plan = generate_huawei_upgrade_plan(PackageUpgradeConfig(
+        plan = driver.manual_plan(PackageUpgradeConfig(
             package_path=source.path,
             server_host=prepared.host,
             protocol=prepared.protocol or settings.protocol,
@@ -229,7 +258,7 @@ class PackageUpgradeService:
         return ManualUpgradePlan(
             script="\n".join(plan.commands),
             package_name=source.name,
-            cleanup_paths=plan.cleanup_paths,
+            cleanup_paths=list(plan.cleanup_paths),
             notes=notes,
         )
 
@@ -348,6 +377,7 @@ class PackageUpgradeService:
         owner_id = f"package-upgrade:{operation_id}"
         acquired = False
         try:
+            driver = self._drivers.get(str(self._operations.get(operation_id).data["driver_id"]))
             self._executor.acquire(
                 session.id,
                 owner_id,
@@ -360,20 +390,21 @@ class PackageUpgradeService:
                 message="正在读取启动项、主控和备控存储。",
                 progress_percent=5,
                 stage_actions=[
-                    "screen-length 0 temporary",
-                    "display startup",
-                    "dir flash:/",
-                    "dir slave#flash:/（检查备控存储）",
+                    driver.disable_paging_command(),
+                    driver.startup_query_command(),
+                    driver.storage_query_command(str(self._operations.get(operation_id).data["master_storage"])),
+                    f'{driver.storage_query_command(str(self._operations.get(operation_id).data["slave_storage"]))}（检查备控存储）',
                 ],
             )
-            await self._command(session, owner_id, "screen-length 0 temporary")
-            startup_output = await self._command(session, owner_id, "display startup")
+            await self._command(session, owner_id, driver.disable_paging_command(), driver=driver)
+            startup_output = await self._command(session, owner_id, driver.startup_query_command(), driver=driver)
             master_storage = str(record.data["master_storage"])
             slave_storage = str(record.data["slave_storage"])
             master_output = await self._command(
                 session,
                 owner_id,
-                f"dir {master_storage}",
+                driver.storage_query_command(master_storage),
+                driver=driver,
             )
             include_slave = bool(record.data["include_slave"])
             slave_output = ""
@@ -381,11 +412,17 @@ class PackageUpgradeService:
                 slave_output = await self._command(
                     session,
                     owner_id,
-                    f"dir {slave_storage}",
+                    driver.storage_query_command(slave_storage),
                     allow_failure_output=True,
+                    driver=driver,
                 )
-                standby = classify_standby_storage(slave_output, slave_storage)
+                standby = driver.classify_standby(slave_output, slave_storage)
                 if standby == STANDBY_STORAGE_ABSENT:
+                    if bool(record.data.get("standby_required", False)):
+                        raise _UpgradeRunError(
+                            "standby_storage_required",
+                            "升级策略要求备控，但设备未检测到备控存储。",
+                        )
                     include_slave = False
                 elif standby != STANDBY_STORAGE_AVAILABLE:
                     raise _UpgradeRunError(
@@ -401,6 +438,7 @@ class PackageUpgradeService:
                 slave_storage=slave_storage,
                 slave_output=slave_output,
                 auto_delete=bool(record.data["auto_delete_old_packages"]),
+                driver=driver,
             )
             if source_fingerprint(initial_source.path) != initial_source.fingerprint:
                 raise _UpgradeRunError("upgrade_source_changed", "预检期间本地系统包发生变化。")
@@ -414,7 +452,7 @@ class PackageUpgradeService:
                 ),
                 progress_percent=20,
                 stage_actions=(
-                    [f"delete /unreserved /quiet {path}" for path in cleanup_paths]
+                    [driver.cleanup_command(path) for path in cleanup_paths]
                     if cleanup_paths
                     else ["无需删除旧包：可用空间满足要求"]
                 ),
@@ -427,14 +465,15 @@ class PackageUpgradeService:
                 await self._command(
                     session,
                     owner_id,
-                    f"delete /unreserved /quiet {cleanup_path}",
+                    driver.cleanup_command(cleanup_path),
+                    driver=driver,
                 )
-            master_package = join_storage_path(master_storage, initial_source.name)
-            if not dir_contains_package(
+            master_package = driver.package_path(master_storage, initial_source.name)
+            if not driver.package_is_present(
                 master_output,
                 storage=master_storage,
                 package_name=initial_source.name,
-                expected_size=initial_source.size_bytes,
+                package_size=initial_source.size_bytes,
             ):
                 await self._download(
                     operation_id,
@@ -442,6 +481,7 @@ class PackageUpgradeService:
                     owner_id,
                     initial_source,
                     master_package,
+                    driver,
                 )
             else:
                 self._operations.update(
@@ -449,22 +489,24 @@ class PackageUpgradeService:
                     stage="verifying",
                     message="主控已存在大小匹配的目标包，跳过下载。",
                     progress_percent=62,
-                    stage_actions=[f"跳过下载：dir {master_package} 已确认文件大小匹配"],
+                    stage_actions=[f"跳过下载：{driver.storage_query_command(master_package)} 已确认文件大小匹配"],
                 )
             if source_fingerprint(initial_source.path) != initial_source.fingerprint:
                 raise _UpgradeRunError("upgrade_source_changed", "升级期间本地系统包发生变化。")
             verified_master = await self._command(
                 session,
                 owner_id,
-                f"dir {master_package}",
+                driver.storage_query_command(master_package),
+                driver=driver,
             )
             self._require_package(
                 verified_master,
                 master_storage,
                 initial_source,
                 "主控",
+                driver,
             )
-            slave_package = join_storage_path(slave_storage, initial_source.name)
+            slave_package = driver.package_path(slave_storage, initial_source.name)
             if include_slave:
                 self._operations.update(
                     operation_id,
@@ -472,26 +514,24 @@ class PackageUpgradeService:
                     message="正在同步并核对备控系统包。",
                     progress_percent=72,
                     stage_actions=[
-                        f"copy {master_package} {slave_package}",
-                        f"dir {slave_package}（核对备控文件大小）",
+                        *driver.sync_commands(master_package, slave_package),
+                        f"{driver.storage_query_command(slave_package)}（核对备控文件大小）",
                     ],
                 )
-                await self._command(
-                    session,
-                    owner_id,
-                    f"copy {master_package} {slave_package}",
-                    timeout_seconds=90,
-                )
+                for command in driver.sync_commands(master_package, slave_package):
+                    await self._command(session, owner_id, command, timeout_seconds=90, driver=driver)
                 verified_slave = await self._command(
                     session,
                     owner_id,
-                    f"dir {slave_package}",
+                    driver.storage_query_command(slave_package),
+                    driver=driver,
                 )
                 self._require_package(
                     verified_slave,
                     slave_storage,
                     initial_source,
                     "备控",
+                    driver,
                 )
             await self._set_startup(
                 operation_id,
@@ -501,9 +541,10 @@ class PackageUpgradeService:
                 master_package,
                 slave_package,
                 include_slave,
+                driver,
             )
-            confirmed = await self._command(session, owner_id, "display startup")
-            if not startup_uses_package(confirmed, initial_source.name):
+            confirmed = await self._command(session, owner_id, driver.startup_query_command(), driver=driver)
+            if not driver.startup_uses_artifact(confirmed, initial_source.name):
                 raise _UpgradeRunError(
                     "startup_verification_failed",
                     "最终 display startup 未确认目标包为下次启动系统包。",
@@ -512,10 +553,10 @@ class PackageUpgradeService:
             if not bool(record.data["reboot_after_setting"]):
                 self._operations.update(
                     operation_id,
-                    status="completed",
-                    stage="completed",
-                    message="系统包已核对并设为下次启动项；请在业务窗口人工重启。",
-                    progress_percent=100,
+                    status="staged",
+                    stage="staged",
+                    message="系统包已核对并设为下次启动项，尚未重启激活。",
+                    progress_percent=90,
                     stage_actions=[
                         "确认 display startup 已指向目标系统包",
                         "不自动重启：等待业务窗口人工重启",
@@ -535,7 +576,7 @@ class PackageUpgradeService:
                 data={"reboot_required": True},
             )
             await approval.wait()
-            await self._reboot(session, owner_id)
+            await self._reboot(session, owner_id, driver)
             self._operations.update(
                 operation_id,
                 status="completed",
@@ -566,6 +607,7 @@ class PackageUpgradeService:
         owner_id: str,
         source: PreparedTransferSource,
         master_package: str,
+        driver: UpgradeDriver,
     ) -> None:
         prepared = await self._transfers.prepare_upload_source(
             session,
@@ -599,7 +641,7 @@ class PackageUpgradeService:
             stage="verifying",
             message="系统包下载完成，正在核对主控文件大小。",
             progress_percent=62,
-            stage_actions=[f"dir {master_package}（核对主控文件大小与 SHA/字节数）"],
+            stage_actions=[f"{driver.storage_query_command(master_package)}（核对主控文件大小）"],
         )
 
     @staticmethod
@@ -622,33 +664,33 @@ class PackageUpgradeService:
         master_package: str,
         slave_package: str,
         include_slave: bool,
+        driver: UpgradeDriver,
     ) -> None:
+        primary_commands, fallback_commands = driver.activation_commands(
+            master_package,
+            slave_package,
+            include_slave,
+        )
         self._operations.update(
             operation_id,
             stage="setting_startup",
             message="正在设置并最终确认下次启动系统包。",
             progress_percent=86,
             stage_actions=[
-                (
-                    f"startup system-software {master_package} all"
-                    if include_slave
-                    else f"startup system-software {master_package}"
-                ),
-                "display startup（最终确认下次启动项）",
+                *primary_commands,
+                f"{driver.startup_query_command()}（最终确认下次启动项）",
             ],
         )
-        command = (
-            f"startup system-software {master_package} all"
-            if include_slave
-            else f"startup system-software {master_package}"
-        )
-        output = await self._command(
-            session,
-            owner_id,
-            command,
-            allow_failure_output=include_slave,
-        )
-        failure = find_upgrade_failure(output)
+        output = ""
+        for command in primary_commands:
+            output = await self._command(
+                session,
+                owner_id,
+                command,
+                allow_failure_output=bool(fallback_commands),
+                driver=driver,
+            )
+        failure = driver.failure_marker(output)
         if not failure:
             return
         if not include_slave:
@@ -656,30 +698,17 @@ class PackageUpgradeService:
                 "startup_command_failed",
                 f"设置启动项失败，设备输出包含: {failure}",
             )
-        await self._command(
-            session,
-            owner_id,
-            f"startup system-software {master_package}",
-        )
-        await self._command(
-            session,
-            owner_id,
-            f"startup system-software {slave_package} slave-board",
-        )
+        for command in fallback_commands:
+            await self._command(session, owner_id, command, driver=driver)
 
-    async def _reboot(self, session: SessionRecord, owner_id: str) -> None:
+    async def _reboot(
+        self,
+        session: SessionRecord,
+        owner_id: str,
+        driver: UpgradeDriver,
+    ) -> None:
         plan = parse_terminal_plan(
-            [
-                {"type": "send", "text": "reboot", "label": "发送 reboot"},
-                {
-                    "type": "expect",
-                    "success": ["device_prompt", "login_prompt", "username_prompt"],
-                    "failures": [],
-                    "timeout_seconds": 180,
-                    "label": "等待设备重启完成",
-                    "max_output_chars": 32_768,
-                },
-            ],
+            list(driver.reboot_plan_steps()),
             total_timeout_seconds=190,
         )
         result = await self._executor.run(
@@ -698,6 +727,7 @@ class PackageUpgradeService:
         *,
         timeout_seconds: int = 30,
         allow_failure_output: bool = False,
+        driver: UpgradeDriver | None = None,
     ) -> str:
         last_result: dict[str, object] = {}
         for attempt in range(2):
@@ -729,7 +759,7 @@ class PackageUpgradeService:
             if str(last_result.get("status") or "") == "completed":
                 output = self._result_output(last_result)
                 if not allow_failure_output:
-                    failure = find_upgrade_failure(output)
+                    failure = driver.failure_marker(output) if driver is not None else find_upgrade_failure(output)
                     if failure:
                         raise _UpgradeRunError(
                             "upgrade_command_failed",
@@ -753,8 +783,8 @@ class PackageUpgradeService:
         slave_storage: str,
         slave_output: str,
         auto_delete: bool,
+        driver: UpgradeDriver,
     ) -> list[str]:
-        startup = parse_display_startup(startup_output)
         paths: list[str] = []
         for label, storage, output in (
             ("主控", master_storage, master_output),
@@ -762,28 +792,26 @@ class PackageUpgradeService:
         ):
             if label == "备控" and not include_slave:
                 continue
-            free_bytes = parse_free_space_bytes(output)
-            if free_bytes <= 0:
+            plan = driver.cleanup_plan(
+                storage=storage,
+                output=output,
+                startup_output=startup_output,
+                package_name=source.name,
+                package_size=source.size_bytes,
+            )
+            if plan.free_bytes <= 0:
                 raise _UpgradeRunError(
                     "storage_space_indeterminate",
                     f"无法确认{label}剩余空间。",
                 )
-            plan = build_cleanup_plan(
-                storage=storage,
-                free_bytes=free_bytes,
-                target_bytes=source.size_bytes,
-                entries=parse_dir_entries(output, storage),
-                startup=startup,
-                target_package_name=source.name,
-            )
             if not plan.has_enough_space:
                 raise _UpgradeRunError(
                     "insufficient_space",
                     f"{label}清理后空间仍不足。",
                 )
             if auto_delete:
-                paths.extend(entry.path for entry in plan.delete_entries)
-            elif plan.delete_entries:
+                paths.extend(plan.delete_paths)
+            elif plan.delete_paths:
                 raise _UpgradeRunError(
                     "cleanup_required",
                     f"{label}需要清理旧包，但自动删除已关闭。",
@@ -796,12 +824,13 @@ class PackageUpgradeService:
         storage: str,
         source: PreparedTransferSource,
         label: str,
+        driver: UpgradeDriver,
     ) -> None:
-        if not dir_contains_package(
+        if not driver.package_is_present(
             output,
             storage=storage,
             package_name=source.name,
-            expected_size=source.size_bytes,
+            package_size=source.size_bytes,
         ):
             raise _UpgradeRunError(
                 "package_verification_failed",
@@ -881,6 +910,24 @@ class PackageUpgradeService:
         if session.status != "connected":
             raise ApplicationConflictError("The terminal session is not connected.")
         return session
+
+    def _resolve_driver(self, session: SessionRecord, requested: str) -> UpgradeDriver:
+        if self._devices is None:
+            facts = UpgradeTargetFacts(session.device_id)
+        else:
+            device = self._devices.require_device(session.device_id)
+            facts = UpgradeTargetFacts(
+                device_id=device.id,
+                vendor=device.vendor,
+                model=device.model,
+                platform=str(getattr(device, "hardware_platform", "") or getattr(device, "cpu", "")),
+            )
+        try:
+            return self._drivers.resolve(facts, requested)
+        except KeyError as exc:
+            raise UnsupportedOperationError(
+                f"设备 {facts.device_id} 没有可用的系统包升级驱动，请先配置对应厂商驱动。"
+            ) from exc
 
 
 class _UpgradeRunError(PackageUpgradeError):

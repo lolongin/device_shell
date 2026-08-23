@@ -82,6 +82,8 @@ const desktopApi = {
     ipcRenderer.invoke('file-transfer:choose-root'),
   choosePackage: (defaultPath?: string): Promise<string> =>
     ipcRenderer.invoke('file-transfer:choose-package', defaultPath),
+  chooseWorkflowFile: (request: { defaultPath?: string; label?: string; extensions?: string[] }): Promise<string> =>
+    ipcRenderer.invoke('workflow:choose-file', request),
   saveTransferSettings: (request: TransferSettingsSaveRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('file-transfer:save-settings', request),
   copyTransferCommand: (command: string): Promise<boolean> =>

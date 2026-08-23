@@ -20,12 +20,11 @@ from device_tui.application import (
     PackageUpgradeRequest,
     TransferRequest,
     TaskCreate,
-    WorkflowDefinition,
-    WorkflowStep,
+    WorkflowCatalogError,
+    WorkflowTarget,
     WorkflowPlan,
     WorkflowPlanCompiler,
     PlanStore,
-    device_upgrade_workflow,
 )
 from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
 from .terminal_executor import BackendTerminalExecutor
@@ -45,7 +44,7 @@ class DesktopMcpService:
         self.terminal_executor = terminal_executor
         self.ai = ai
         self._selected_device_id = ""
-        self._plan_compiler = WorkflowPlanCompiler()
+        self._plan_compiler = WorkflowPlanCompiler(catalog=desktop.workflows)
         self._plans: dict[str, tuple[WorkflowPlan, Any]] = {}
         self._approved_plans: set[str] = set()
         self._plan_store = plan_store
@@ -157,25 +156,28 @@ class DesktopMcpService:
         workflow_id = str(params.get("workflow_id") or "task")
         if compiled is not None:
             workflow = compiled
-        elif workflow_id == "device_upgrade":
-            package = str(params.get("package") or "")
-            if not package:
-                raise UnsupportedOperationError("package is required for device_upgrade")
-            workflow = device_upgrade_workflow(device_id=device_id, package=package, options=dict(params.get("options") or {}))
-        else:
+        elif self.desktop.workflows.contains(workflow_id):
+            parameters = {
+                **(dict(params.get("options") or {}) if isinstance(params.get("options"), dict) else {}),
+                **(dict(params.get("parameters") or {}) if isinstance(params.get("parameters"), dict) else {}),
+            }
+            if params.get("package"):
+                parameters.setdefault("package_path", str(params["package"]))
             raw_steps = params.get("steps")
-            if not isinstance(raw_steps, list) or not raw_steps:
-                raise UnsupportedOperationError("Task steps must be a non-empty list.")
-            steps = tuple(
-                WorkflowStep(
-                    id=str(item.get("id") or ""), kind=str(item.get("kind") or "command"), action=str(item.get("action") or ""),
-                    depends_on=tuple(str(dep) for dep in item.get("depends_on", []) if isinstance(dep, str)), params=dict(item.get("params") or {}),
+            legacy_steps = tuple(item for item in raw_steps if isinstance(item, dict)) if isinstance(raw_steps, list) else ()
+            try:
+                workflow = self.desktop.workflows.build(
+                    workflow_id,
+                    WorkflowTarget(device_id=device_id, session_id=session_id, protocol=str(params.get("protocol") or "auto")),
+                    parameters,
+                    legacy_steps=legacy_steps,
                 )
-                for item in raw_steps if isinstance(item, dict)
+            except WorkflowCatalogError as exc:
+                raise UnsupportedOperationError(str(exc)) from exc
+        else:
+            raise UnsupportedOperationError(
+                f"Unknown workflow_id: {workflow_id}. Register a WorkflowProvider or submit a WorkflowPlan."
             )
-            if not steps or any(not item.id for item in steps):
-                raise UnsupportedOperationError("Each task step requires an id.")
-            workflow = WorkflowDefinition(id=workflow_id, steps=steps)
         source = str(params.get("source") or "mcp").strip() or "mcp"
         task_context = dict(params.get("context") or {}) if isinstance(params.get("context"), dict) else {}
         if validated_plan_id in self._approved_plans:
@@ -268,7 +270,13 @@ class DesktopMcpService:
             raise UnsupportedOperationError("task.replan requires a plan object.")
         plan_raw = dict(raw)
         plan_raw["parent_task_id"] = parent_task_id
-        plan_raw.setdefault("revision", max(1, int(getattr(parent, "plan_revision", 0) or 0) + 1))
+        parent_revision = max(1, int(getattr(parent, "plan_revision", 0) or 1))
+        plan_raw.setdefault("revision", parent_revision + 1)
+        requested_revision = int(plan_raw.get("revision") or 1)
+        if requested_revision <= parent_revision:
+            raise UnsupportedOperationError("A replanned task must use a newer plan revision.")
+        if requested_revision > self._plan_compiler.MAX_REPLANS + 1:
+            raise UnsupportedOperationError("The task replan budget has been exhausted.")
         plan = WorkflowPlan.from_dict(plan_raw)
         if not plan.plan_id:
             plan = WorkflowPlan(
@@ -279,7 +287,7 @@ class DesktopMcpService:
                 success_criteria=plan.success_criteria,
                 budget=plan.budget,
                 parent_task_id=parent_task_id,
-                revision=plan.revision + 1,
+                revision=plan.revision,
                 metadata=plan.metadata,
             )
         validation = self._plan_compiler.validate(plan)
@@ -308,7 +316,11 @@ class DesktopMcpService:
     @staticmethod
     def _restore_plan(payload: dict[str, Any]) -> tuple[WorkflowPlan, Any, bool] | None:
         try:
-            from device_tui.application.tasking import Action, PlanValidationResult
+            from device_tui.application.tasking import (
+                Action,
+                PlanValidationResult,
+                WorkflowDefinition,
+            )
             raw_plan = payload.get("plan")
             if not isinstance(raw_plan, dict):
                 return None
@@ -381,13 +393,10 @@ class DesktopMcpService:
 
     async def _tool_workflow_list(self, _params: dict[str, Any]) -> dict[str, Any]:
         workflows = []
-        for workflow in (
-            device_upgrade_workflow(device_id="<device_id>", package="<package>"),
-        ):
+        for descriptor in self.desktop.workflows.list():
+            workflow = self.desktop.workflows.preview(descriptor.id)
             workflows.append({
-                "id": workflow.id,
-                "name": workflow.name,
-                "description": workflow.description,
+                **descriptor.public_dict(),
                 "steps": [
                     {"id": step.id, "kind": step.kind, "action": step.action.name if isinstance(step.action, Action) else str(step.action), "depends_on": list(step.depends_on), "params": dict(step.params), "retry_policy": dict(step.retry_policy)}
                     for step in workflow.steps
@@ -395,7 +404,8 @@ class DesktopMcpService:
             })
         return {
             "workflows": workflows,
-            "capabilities": sorted(self._plan_compiler.CAPABILITIES),
+            "capabilities": sorted(self._plan_compiler.registered_capability_specs()),
+            "capability_specs": self._plan_compiler.registered_capability_specs(),
             "plan_limits": {
                 "max_steps": self._plan_compiler.MAX_STEPS,
                 "max_replans": self._plan_compiler.MAX_REPLANS,

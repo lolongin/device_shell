@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from device_tui.application.device_control import ControlContext, DeviceTarget
+from device_tui.application.device_control import ControlContext, DeviceLeaseService, DeviceTarget
 from device_tui.application.errors import ApplicationError, ResourceNotFoundError
 from device_tui.application.events import EventBus
 
@@ -160,7 +160,7 @@ class WorkflowEngine:
                 task_id=task.id, workflow_id=self._workflow.id, current_step=failed_id,
                 error=failed_state.error if failed_state else None,
                 result=failed_state.result if failed_state else None,
-                context={**self._context, "outputs": dict(self._outputs)},
+                context={**self._checkpoint_context(), "outputs": dict(self._outputs)},
                 available_actions=actions,
                 workflow_instance_id=task.workflow_instance_id, checkpoint_revision=self._revision + 1,
             )
@@ -199,6 +199,9 @@ class WorkflowEngine:
                     tool=str(step.action or step.kind), status=ToolStatus.SUCCEEDED,
                     facts=dict(data) if isinstance(data, dict) else {"value": data},
                     output=str(data.get("output") or "") if isinstance(data, dict) else str(data), attempt=attempt,
+                    operation_id=str(data.get("operation_id") or "") if isinstance(data, dict) else "",
+                    execution_id=str(data.get("execution_id") or "") if isinstance(data, dict) else "",
+                    evidence=tuple(dict(item) for item in data.get("evidence", ()) if isinstance(item, dict)) if isinstance(data, dict) else (),
                 )
                 if not result.evidence:
                     result = replace(
@@ -347,7 +350,7 @@ class WorkflowEngine:
         available_actions = self._decision_actions(step_id, user_confirmation=waiting_status == TaskStatus.WAITING_FOR_USER.value)
         context = DecisionContext(
             task_id=self.task.id, workflow_id=workflow.id, current_step=step_id,
-            error=error, result=result, context={**self._context, "outputs": dict(self._outputs)},
+            error=error, result=result, context={**self._checkpoint_context(), "outputs": dict(self._outputs)},
             available_actions=available_actions,
             workflow_instance_id=self.task.workflow_instance_id, checkpoint_revision=self._revision + 1,
         )
@@ -464,7 +467,13 @@ class WorkflowEngine:
     async def _invoke(self, step: WorkflowStep) -> Any:
         if self._execution is None:
             raise RuntimeError("Workflow execution tool is not configured")
-        context = ControlContext(source=str(self._context.get("source") or "task"))
+        context = ControlContext(
+            source=str(self._context.get("source") or "task"),
+            task_id=self.task.id,
+            step_id=step.id,
+            lease_token=str(self._context.get("lease_token") or ""),
+            operation_callback=self._context.get("operation_callback"),
+        )
         if hasattr(self._execution, "execute"):
             value = self._execution.execute(self._target, step, context=context)
         else:
@@ -490,9 +499,10 @@ class WorkflowEngine:
             revision=self._revision, current_step=current,
             completed_steps=tuple(step.id for step in self._require_workflow().steps if step.id in self._completed_ids()),
             step_states=tuple(self._states.values()), outputs=dict(self._outputs),
-            context={**self._context, "approved_steps": tuple(sorted(self._approved_steps))},
+            context={**self._checkpoint_context(), "approved_steps": tuple(sorted(self._approved_steps))},
             failed_step_id=next((sid for sid, state in self._states.items() if state.status == StepStatus.FAILED), ""),
             attempts=dict(self._attempts),
+            operation_ids=tuple(str(item) for item in self._context.get("operation_ids", ()) if str(item)),
             pending_decision_id=self._pending_decision_id if pending_decision_id is None else pending_decision_id,
             error_code=next((state.error.code for state in self._states.values() if state.error), ""),
             error_message=next((state.error.message for state in self._states.values() if state.error), ""),
@@ -505,6 +515,11 @@ class WorkflowEngine:
                            step_states=tuple(self._states.values()), checkpoint=cp, updated_at=self._now(), decisions=tuple(self._decisions))
         self._task = replace(self.task, status=status or self.task.status, updated_at=self._now(), workflow=instance, checkpoint=cp, decisions=tuple(self._decisions))
         return self._task
+
+    def _checkpoint_context(self) -> dict[str, Any]:
+        """Return context that is safe to persist and expose through APIs."""
+        internal_keys = {"lease_token", "operation_callback", "operation_ids"}
+        return {key: value for key, value in self._context.items() if key not in internal_keys}
 
     async def run(
         self,
@@ -553,9 +568,28 @@ class WorkflowEngine:
                     result = WorkflowStepResult(ready.id, "completed" if decision_result.approved else "failed", ready.action, decision_result.reason, data=data)
                 else:
                     execution_context = {**context, "outputs": dict(outputs)}
-                    data = await execution.execute(target, ready, context=ControlContext(source=str(execution_context.get("source") or "task")))
+                    data = await execution.execute(
+                        target,
+                        ready,
+                        context=ControlContext(
+                            source=str(execution_context.get("source") or "task"),
+                            task_id=task_id,
+                            step_id=ready.id,
+                            lease_token=str(execution_context.get("lease_token") or ""),
+                            operation_callback=execution_context.get("operation_callback"),
+                        ),
+                    )
                     output = str(data.get("output") or "")
-                    result = WorkflowStepResult(ready.id, "completed", ready.action, output, data=data)
+                    result = WorkflowStepResult(
+                        ready.id,
+                        "completed",
+                        ready.action,
+                        output,
+                        data=data,
+                        operation_id=str(data.get("operation_id") or ""),
+                        execution_id=str(data.get("execution_id") or ""),
+                        evidence=tuple(dict(item) for item in data.get("evidence", ()) if isinstance(item, dict)),
+                    )
                 results.append(result)
                 outputs[ready.id] = result.data
                 if result.status == "completed":
@@ -566,7 +600,14 @@ class WorkflowEngine:
             except asyncio.CancelledError:
                 raise
             except (ApplicationError, ValueError) as exc:
-                result = WorkflowStepResult(ready.id, "failed", ready.action, error_code=getattr(exc, "code", "execution_failed"), message=str(exc))
+                result = WorkflowStepResult(
+                    ready.id,
+                    "failed",
+                    ready.action,
+                    error_code=getattr(exc, "code", "execution_failed"),
+                    message=str(exc),
+                    evidence=({"kind": "error", "step_id": ready.id, "error_code": getattr(exc, "code", "execution_failed"), "message": str(exc)},),
+                )
                 results.append(result)
                 failed.add(ready.id)
                 resolved.add(ready.id)
@@ -589,6 +630,7 @@ class TaskManager:
         workflow_engine: WorkflowEngine | None = None,
         decision_engine: DecisionEngine | None = None,
         store: TaskStore | None = None,
+        leases: DeviceLeaseService | None = None,
     ) -> None:
         self._execution = execution
         self._events = events
@@ -600,16 +642,35 @@ class TaskManager:
         self._completed_steps: dict[str, int] = {}
         self._requests: dict[str, TaskCreate] = {}
         self._stateful_engines: dict[str, WorkflowEngine] = {}
+        self._leases = leases
+        self._lease_tokens: dict[str, tuple[str, str]] = {}
+        self._resources: dict[str, set[tuple[str, str]]] = {}
         self._store = store
         if store is not None:
             for record, request in store.list_tasks():
+                interrupted = self._interrupted_operation(record)
                 if record.status in {"running", "pending"}:
-                    record = replace(record, status="paused", message="应用重启后任务等待恢复。")
+                    record = replace(
+                        record,
+                        status="paused",
+                        message=(
+                            "应用重启，关联设备操作已中断；请从断点恢复或重新规划。"
+                            if interrupted else "应用重启后任务等待恢复。"
+                        ),
+                        error_code="operation_interrupted" if interrupted else "app_restarted",
+                    )
                 self._records[record.id] = record
                 self._requests[record.id] = request
+                if record.checkpoint is not None:
+                    self._resources[record.id] = {("operation", item) for item in record.checkpoint.operation_ids}
+                store.upsert_task(record, request)
 
     def create(self, request: TaskCreate) -> TaskRecord:
         task_id = str(uuid4())
+        device_id = str(request.target.device_id or "").strip()
+        if self._leases is not None and device_id:
+            lease = self._leases.acquire(device_id, task_id)
+            self._lease_tokens[task_id] = (device_id, lease.token)
         now = self._now()
         metadata = dict(request.workflow.metadata)
         record = TaskRecord(
@@ -631,6 +692,7 @@ class TaskManager:
         self._requests[task_id] = request
         cancel_event = asyncio.Event()
         self._cancel[task_id] = cancel_event
+        self._resources[task_id] = set()
         self._completed_steps[task_id] = 0
         # Agent-authored plans need the resumable engine for every workflow,
         # not only the legacy device-upgrade state machine.  Keep the old
@@ -649,7 +711,7 @@ class TaskManager:
             device_id=request.target.device_id, source=request.source,
             created_at=record.created_at, updated_at=record.updated_at, checkpoint=record.checkpoint, context=dict(request.context),
         )
-        engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context={**request.context, "source": request.source})
+        engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context=self._execution_context(task_id, request))
         self._stateful_engines[task_id] = engine
         try:
             engine.start(task, execution=self._execution, target=request.target)
@@ -664,16 +726,19 @@ class TaskManager:
             self._update(task_id, status=TaskStatus.FAILED.value, message=str(exc), error_code="task_failed")
         finally:
             self._jobs.pop(task_id, None)
+            if self.get(task_id).status not in {TaskStatus.WAITING_FOR_DECISION.value, TaskStatus.WAITING_FOR_USER.value, TaskStatus.PAUSED.value}:
+                self._release_task_resources(task_id)
 
     def apply_decision(self, task_id: str, decision: Any) -> TaskRecord:
         request = self._requests.get(task_id)
         if request is None:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
+        self._ensure_lease(task_id, request.target.device_id)
         engine = self._stateful_engines.get(task_id)
         if engine is None:
             record = self.get(task_id)
             task = Task(id=task_id, workflow_instance_id=f"workflow-{task_id}", status=record.status, device_id=request.target.device_id, source=request.source, checkpoint=record.checkpoint, context=dict(request.context))
-            engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context={**request.context, "source": request.source})
+            engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context=self._execution_context(task_id, request))
             engine.start(task, execution=self._execution, target=request.target)
             self._stateful_engines[task_id] = engine
         engine.apply_decision(decision)
@@ -701,7 +766,18 @@ class TaskManager:
         result = WorkflowResult(
             status=status,
             steps=tuple(
-                WorkflowStepResult(state.step_id, state.status, workflow.steps[index].action if index < len(workflow.steps) else "", output=state.result.output if state.result else "", error_code=state.error.code if state.error else "", message=state.error.message if state.error else "", data=state.result.facts if state.result else {})
+                WorkflowStepResult(
+                    state.step_id,
+                    state.status,
+                    workflow.steps[index].action if index < len(workflow.steps) else "",
+                    output=state.result.output if state.result else "",
+                    error_code=state.error.code if state.error else "",
+                    message=state.error.message if state.error else "",
+                    data=state.result.facts if state.result else {},
+                    operation_id=state.result.operation_id if state.result else "",
+                    execution_id=state.result.execution_id if state.result else "",
+                    evidence=state.result.evidence if state.result else (),
+                )
                 for index, state in enumerate(task.workflow.step_states if task.workflow else ())
             ),
             outputs=dict(task.workflow.outputs if task.workflow else {}),
@@ -717,7 +793,7 @@ class TaskManager:
                 request.workflow,
                 task_id=task_id,
                 target=request.target,
-                context={**request.context, "source": request.source},
+                context=self._execution_context(task_id, request),
                 decision=self._decision,
                 execution=self._execution,
                 cancel_event=self._cancel[task_id],
@@ -735,6 +811,7 @@ class TaskManager:
         finally:
             self._jobs.pop(task_id, None)
             self._completed_steps.pop(task_id, None)
+            self._release_task_resources(task_id)
 
     def resume(self, task_id: str, *, context: dict[str, Any] | None = None, step_id: str = "") -> TaskRecord:
         """Resume a paused task after an operator or agent has repaired the device."""
@@ -744,12 +821,13 @@ class TaskManager:
         request = self._requests.get(task_id)
         if request is None:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
+        self._ensure_lease(task_id, request.target.device_id)
         if request.workflow.id == "device_upgrade" or request.source in {"agent", "mcp-agent"}:
             engine = self._stateful_engines.get(task_id)
             if engine is None:
                 record = self.get(task_id)
                 restored = Task(id=task_id, workflow_instance_id=f"workflow-{task_id}", status=record.status, device_id=request.target.device_id, source=request.source, checkpoint=record.checkpoint, context=dict(request.context))
-                engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context={**request.context, "source": request.source})
+                engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context=self._execution_context(task_id, request))
                 engine.start(restored, execution=self._execution, target=request.target)
                 self._stateful_engines[task_id] = engine
             if step_id:
@@ -783,12 +861,14 @@ class TaskManager:
             engine = self._stateful_engines.get(task_id)
             if engine is not None:
                 engine.pause()
+            self._cancel_underlying(task_id)
             job = self._jobs.get(task_id)
             if job is not None:
                 job.cancel()
             self._update(task_id, status=TaskStatus.PAUSED.value, checkpoint=engine.task.checkpoint if engine else record.checkpoint, message="Task paused.")
             return self.get(task_id)
         self._update(task_id, status=TaskStatus.PAUSED.value, message="Task paused.")
+        self._cancel_underlying(task_id)
         job = self._jobs.get(task_id)
         if job is not None:
             job.cancel()
@@ -802,7 +882,7 @@ class TaskManager:
         engine = self._stateful_engines.get(task_id)
         if engine is None:
             task = Task(id=task_id, workflow_instance_id=f"workflow-{task_id}", status=record.status, device_id=request.target.device_id, source=request.source, checkpoint=record.checkpoint, context=dict(request.context))
-            engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context={**request.context, "source": request.source})
+            engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context=self._execution_context(task_id, request))
             engine.start(task, execution=self._execution, target=request.target)
             self._stateful_engines[task_id] = engine
         return engine.pending_decision
@@ -824,20 +904,98 @@ class TaskManager:
         record = self.get(task_id)
         if record.status in {"completed", "failed", "cancelled"}:
             return record
-        self._cancel[task_id].set()
+        self._cancel.setdefault(task_id, asyncio.Event()).set()
+        self._cancel_underlying(task_id)
         job = self._jobs.get(task_id)
         if job is not None:
             job.cancel()
         self._update(task_id, status="cancelled", message="Task cancelled.", error_code="task_cancelled")
+        self._release_task_resources(task_id)
         return self.get(task_id)
 
     async def close(self) -> None:
+        for task_id in tuple(self._jobs):
+            self._cancel_underlying(task_id)
         for task in list(self._jobs.values()):
             task.cancel()
         if self._jobs:
             await asyncio.gather(*self._jobs.values(), return_exceptions=True)
         self._jobs.clear()
         self._stateful_engines.clear()
+        for task_id in tuple(self._lease_tokens):
+            self._release_task_resources(task_id)
+
+    def _execution_context(self, task_id: str, request: TaskCreate) -> dict[str, Any]:
+        lease_token = self._lease_tokens.get(task_id, ("", ""))[1]
+        record = self._records.get(task_id)
+        operation_ids = list(record.checkpoint.operation_ids if record is not None and record.checkpoint is not None else ())
+        return {
+            **request.context,
+            "source": request.source,
+            "task_id": task_id,
+            "lease_token": lease_token,
+            "operation_ids": operation_ids,
+            "operation_callback": lambda kind, resource_id: self._register_resource(task_id, kind, resource_id, operation_ids),
+        }
+
+    def _register_resource(self, task_id: str, kind: str, resource_id: str, operation_ids: list[str] | None = None) -> None:
+        resource = (str(kind), str(resource_id))
+        self._resources.setdefault(task_id, set()).add(resource)
+        if operation_ids is not None and resource_id not in operation_ids:
+            operation_ids.append(str(resource_id))
+        record = self._records.get(task_id)
+        request = self._requests.get(task_id)
+        if record is None or request is None:
+            return
+        checkpoint = record.checkpoint or Checkpoint(task_id=task_id, current_step=record.current_step_id)
+        if resource_id in checkpoint.operation_ids:
+            return
+        checkpoint = replace(checkpoint, operation_ids=(*checkpoint.operation_ids, str(resource_id)))
+        updated = replace(record, checkpoint=checkpoint, updated_at=self._now())
+        self._records[task_id] = updated
+        self._persist(updated, request)
+
+    def _cancel_underlying(self, task_id: str) -> None:
+        cancel = getattr(self._execution, "cancel_resource", None)
+        if callable(cancel):
+            for kind, resource_id in tuple(self._resources.get(task_id, ())):
+                try:
+                    cancel(kind, resource_id)
+                except Exception:
+                    continue
+        request = self._requests.get(task_id)
+        cancel_target = getattr(self._execution, "cancel_target", None)
+        if request is not None and callable(cancel_target):
+            try:
+                cancel_target(request.target)
+            except Exception:
+                pass
+
+    def _release_task_resources(self, task_id: str) -> None:
+        self._resources.pop(task_id, None)
+        lease = self._lease_tokens.pop(task_id, None)
+        if lease is not None and self._leases is not None:
+            self._leases.release(lease[0], lease[1])
+
+    def _ensure_lease(self, task_id: str, device_id: str) -> None:
+        if self._leases is None or not str(device_id).strip() or task_id in self._lease_tokens:
+            return
+        lease = self._leases.acquire(device_id, task_id)
+        self._lease_tokens[task_id] = (device_id, lease.token)
+        self._resources.setdefault(task_id, set())
+
+    def _interrupted_operation(self, record: TaskRecord) -> bool:
+        get_resource = getattr(self._execution, "get_resource", None)
+        if record.checkpoint is None or not callable(get_resource):
+            return False
+        for operation_id in record.checkpoint.operation_ids:
+            try:
+                snapshot = get_resource("operation", operation_id)
+            except Exception:
+                continue
+            if str(snapshot.get("status") or "").casefold() == "interrupted":
+                return True
+        return False
 
     def _step_update(self, task_id: str, workflow: WorkflowDefinition, step: WorkflowStepResult) -> None:
         total = max(1, len(workflow.steps))

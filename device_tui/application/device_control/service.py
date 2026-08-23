@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from uuid import uuid4
 
 from device_tui.application.devices import DeviceActionResult, DeviceService
 from device_tui.application.commands import CommandService
 from device_tui.application.credentials import ConnectionTarget
-from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
+from device_tui.application.errors import ApplicationConflictError, ResourceNotFoundError, UnsupportedOperationError
 from device_tui.application.operations import OperationManager, OperationRecord
 from device_tui.application.sessions import SessionRecord, SessionService
 from device_tui.application.terminal.orchestration import (
@@ -30,6 +31,7 @@ from .models import (
     SessionView,
     TransferRequest,
 )
+from .lease import DeviceLeaseService
 
 
 class DeviceControlService:
@@ -48,6 +50,7 @@ class DeviceControlService:
         operations: OperationManager,
         terminal_executor: TerminalPlanExecutor,
         upgrades: PackageUpgradeService,
+        leases: DeviceLeaseService | None = None,
     ) -> None:
         self._devices = devices
         self._sessions = sessions
@@ -55,6 +58,7 @@ class DeviceControlService:
         self._operations = operations
         self._executor = terminal_executor
         self._upgrades = upgrades
+        self._leases = leases
 
     async def open_session(
         self,
@@ -135,7 +139,7 @@ class DeviceControlService:
         *,
         context: ControlContext | None = None,
     ) -> SendResult:
-        del context
+        self._validate_task_lease(target, context)
         value = str(text)
         if not value.strip():
             raise UnsupportedOperationError("Command text cannot be empty.")
@@ -174,7 +178,7 @@ class DeviceControlService:
         *,
         context: ControlContext | None = None,
     ) -> CommandResult:
-        del context
+        self._validate_task_lease(target, context)
         session = self._connected_session_for_target(target)
         mode = request.mode.casefold()
         if mode == "interactive":
@@ -201,12 +205,20 @@ class DeviceControlService:
                 raise UnsupportedOperationError(str(exc), details={"code": exc.code}) from exc
         execution_id = str(uuid4())
         owner_id = f"device-control:{execution_id}"
-        result = await self._executor.run(
-            session_id=session.id,
-            device_id=session.device_id,
-            plan=plan,
-            owner_id=owner_id,
-        )
+        if context is not None and context.operation_callback is not None:
+            context.operation_callback("execution", execution_id)
+        run_args = {
+            "session_id": session.id,
+            "device_id": session.device_id,
+            "plan": plan,
+            "owner_id": owner_id,
+        }
+        # Older injected test/plugin executors predate preallocated execution
+        # ids. The bundled executor accepts the id, allowing Task cancellation
+        # to address the terminal run before it has completed.
+        if "execution_id" in inspect.signature(self._executor.run).parameters:
+            run_args["execution_id"] = execution_id
+        result = await self._executor.run(**run_args)
         data = dict(result)
         status = str(data.get("status") or "failed")
         output = "".join(
@@ -235,7 +247,7 @@ class DeviceControlService:
         *,
         context: ControlContext | None = None,
     ) -> OperationView:
-        del context
+        self._validate_task_lease(target, context)
         session = self._connected_session_for_target(target)
         direction = request.direction.casefold()
         if direction == "upload":
@@ -267,7 +279,7 @@ class DeviceControlService:
         timeout_seconds: int = 190,
         context: ControlContext | None = None,
     ) -> CommandResult:
-        del context
+        self._validate_task_lease(target, context)
         return await self.execute(
             target,
             CommandRequest(
@@ -286,6 +298,7 @@ class DeviceControlService:
                     },
                 ),
             ),
+            context=context,
         )
 
     def power_off(
@@ -294,7 +307,7 @@ class DeviceControlService:
         *,
         context: ControlContext | None = None,
     ) -> DeviceActionResult:
-        del context
+        self._validate_task_lease(DeviceTarget(device_id=device_id), context)
         return self._devices.power_off(device_id)
 
     def start_package_upgrade(
@@ -304,16 +317,18 @@ class DeviceControlService:
         *,
         context: ControlContext | None = None,
     ) -> OperationView:
-        del context
+        self._validate_task_lease(target, context)
         session = self._session_for_target(target)
         record = self._upgrades.start(
             session_id=session.id,
             package_path=request.package_path,
             include_slave=request.include_slave,
+            standby_required=request.standby_required,
             auto_delete_old_packages=request.auto_delete_old_packages,
             reboot_after_setting=request.reboot_after_setting,
             master_storage=request.master_storage,
             slave_storage=request.slave_storage,
+            driver_id=request.driver_id,
         )
         return self._operation_view(record)
 
@@ -323,8 +338,29 @@ class DeviceControlService:
         *,
         context: ControlContext | None = None,
     ) -> OperationView:
-        del context
+        record = self._operations.get(operation_id)
+        self._validate_task_lease(DeviceTarget(device_id=record.device_id, session_id=record.session_id), context)
         return self._operation_view(self._upgrades.approve_reboot(operation_id))
+
+    def _validate_task_lease(self, target: DeviceTarget, context: ControlContext | None) -> None:
+        if self._leases is None:
+            return
+        device_id = target.device_id
+        if not device_id and target.session_id:
+            device_id = self._session(target.session_id).device_id
+        if not device_id:
+            return
+        current = self._leases.get(device_id)
+        if current is None:
+            if context is not None and context.task_id and context.lease_token:
+                self._leases.renew(device_id, context.lease_token)
+            return
+        if context is None or not context.task_id or not context.lease_token:
+            raise ApplicationConflictError(
+                "设备正在由任务执行，当前操作已被策略拒绝。",
+                details={"device_id": device_id, "owner_id": current.owner_id},
+            )
+        self._leases.renew(device_id, context.lease_token)
 
     def get_operation(self, operation_id: str) -> OperationView:
         return self._operation_view(self._operations.get(operation_id))
@@ -340,6 +376,10 @@ class DeviceControlService:
 
     def cancel_execution(self, execution_id: str) -> dict[str, object]:
         return dict(self._executor.cancel_execution(execution_id))
+
+    def cancel_active_execution(self, target: DeviceTarget) -> str:
+        """Cancel the active terminal plan for a task target."""
+        return self._executor.cancel_active(self._session_for_target(target).id)
 
     def _session_for_target(self, target: DeviceTarget) -> SessionRecord:
         if target.session_id:

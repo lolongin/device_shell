@@ -11,7 +11,7 @@ from .errors import ResourceNotFoundError, UnsupportedOperationError
 from .events import EventBus
 
 
-TERMINAL_OPERATION_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
+TERMINAL_OPERATION_STATUSES = {"staged", "completed", "failed", "cancelled", "interrupted"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,11 +312,12 @@ class OperationManager:
             for stored in self._store.list_operations(kind=kind, limit=self._history_limit + 500):
                 record = stored
                 if record.status not in TERMINAL_OPERATION_STATUSES:
+                    subject = "换包操作" if record.kind == "package_upgrade" else "文件传输"
                     record = replace(
                         record,
                         status="interrupted",
                         stage="interrupted",
-                        message="应用重启，传输任务已中断。",
+                        message=f"应用重启，{subject}已中断。",
                         cancellable=False,
                         error_code="operation_interrupted",
                         queue_position=None,

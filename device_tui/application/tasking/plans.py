@@ -14,6 +14,7 @@ import json
 from typing import Any, Mapping, Protocol
 
 from .protocol import Action, ProtocolModel, WorkflowDefinition, WorkflowStep
+from .catalog import WorkflowCatalog, WorkflowCatalogError, WorkflowTarget, build_default_workflow_catalog
 
 
 class PlanValidationError(ValueError):
@@ -113,19 +114,112 @@ class MemoryPlanStore:
             self._items[plan_id] = dict(payload)
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilitySpec:
+    action: str
+    kind: str = "device"
+    required_params: tuple[str, ...] = ()
+    param_types: dict[str, tuple[type, ...]] = field(default_factory=dict)
+    description: str = ""
+    workflow_id: str = ""
+    risk: str = ""
+    confirmation_required: bool = False
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "kind": self.kind,
+            "required_params": list(self.required_params),
+            "param_types": {
+                name: [item.__name__ for item in accepted]
+                for name, accepted in self.param_types.items()
+            },
+            "description": self.description,
+            "workflow_id": self.workflow_id,
+            "risk": self.risk,
+            "confirmation_required": self.confirmation_required,
+        }
+
+
+class CapabilityRegistry:
+    """Allow-listed capabilities available to Agent-authored plans."""
+
+    def __init__(self, specs: Mapping[str, CapabilitySpec] | None = None) -> None:
+        self._specs = dict(specs or {})
+
+    def register(self, name: str, spec: CapabilitySpec) -> None:
+        normalized = name.strip()
+        if not normalized or normalized in self._specs:
+            raise ValueError(f"capability already registered: {name}")
+        self._specs[normalized] = spec
+
+    def contains(self, name: str) -> bool:
+        return name in self._specs
+
+    def get(self, name: str) -> CapabilitySpec:
+        return self._specs[name]
+
+    def action_map(self) -> dict[str, tuple[str, str]]:
+        return {name: (spec.action, spec.kind) for name, spec in self._specs.items()}
+
+    def public_specs(self) -> dict[str, dict[str, Any]]:
+        return {name: spec.public_dict() for name, spec in self._specs.items()}
+
+
+DEFAULT_CAPABILITY_SPECS = {
+    "session.open": CapabilitySpec("wait_online", description="Open or reuse a device session."),
+    "device.wait_online": CapabilitySpec("wait_online", description="Wait until the device session is online."),
+    "device.version_check": CapabilitySpec("verify_version", description="Run a version query and optionally verify expected_version."),
+    "terminal.command": CapabilitySpec("command", required_params=("command",), param_types={"command": (str,)}, description="Run one allow-listed terminal command."),
+    "terminal.batch": CapabilitySpec("batch", required_params=("commands",), param_types={"commands": (list, tuple)}, description="Run an ordered terminal command batch."),
+    "device.reboot": CapabilitySpec("reboot", description="Reboot the device after confirmation.", risk="high", confirmation_required=True),
+    "device.power_off": CapabilitySpec("power_off", description="Power off the device after confirmation.", risk="high", confirmation_required=True),
+    "file.upload": CapabilitySpec("upload", required_params=("source_path", "destination_path"), param_types={"source_path": (str,), "destination_path": (str,)}, description="Upload a file through the managed transfer service.", risk="medium", confirmation_required=True),
+    "file.download": CapabilitySpec("download", required_params=("source_path", "destination_path"), param_types={"source_path": (str,), "destination_path": (str,)}, description="Download a file through the managed transfer service."),
+    "device.upgrade": CapabilitySpec("device_upgrade", required_params=("package_path",), param_types={"package_path": (str,)}, description="Compile the canonical driver-backed device upgrade workflow.", workflow_id="device_upgrade", risk="high", confirmation_required=True),
+    "operation.wait": CapabilitySpec("operation_wait", required_params=("operation_id",), param_types={"operation_id": (str,)}, description="Wait for a registered operation and capture its evidence."),
+}
+
+
 class WorkflowPlanCompiler:
     """Validate Agent plans and compile allow-listed capabilities."""
 
     MAX_STEPS = 50
     MAX_REPLANS = 3
-    CAPABILITIES = {
-        "session.open": ("wait_online", "device"),
-        "device.wait_online": ("wait_online", "device"),
-        "terminal.command": ("command", "device"),
-        "terminal.batch": ("batch", "device"),
-        "device.reboot": ("reboot", "device"),
-        "file.upload": ("upload", "device"),
-    }
+    CAPABILITY_SPECS = DEFAULT_CAPABILITY_SPECS
+    CAPABILITIES = {name: (spec.action, spec.kind) for name, spec in CAPABILITY_SPECS.items()}
+
+    def __init__(
+        self,
+        catalog: WorkflowCatalog | None = None,
+        capabilities: CapabilityRegistry | None = None,
+    ) -> None:
+        self._catalog = catalog or build_default_workflow_catalog()
+        self._capabilities = capabilities or CapabilityRegistry(self.CAPABILITY_SPECS)
+        for descriptor in self._catalog.list():
+            if not descriptor.capability or self._capabilities.contains(descriptor.capability):
+                continue
+            parameter_types = {
+                parameter.name: {
+                    "string": (str,),
+                    "integer": (int,),
+                    "boolean": (bool,),
+                    "array": (list, tuple),
+                }.get(parameter.type, (object,))
+                for parameter in descriptor.parameters
+            }
+            self._capabilities.register(
+                descriptor.capability,
+                CapabilitySpec(
+                    descriptor.capability_action or descriptor.id,
+                    required_params=tuple(item.name for item in descriptor.parameters if item.required),
+                    param_types=parameter_types,
+                    description=descriptor.description,
+                    workflow_id=descriptor.id,
+                    risk=descriptor.risk,
+                    confirmation_required=descriptor.confirmation_required,
+                ),
+            )
 
     def validate(self, plan: WorkflowPlan) -> PlanValidationResult:
         errors: list[dict[str, str]] = []
@@ -146,8 +240,10 @@ class WorkflowPlanCompiler:
             elif step.id in ids:
                 errors.append({"code": "duplicate_step", "path": f"steps.{step.id}", "message": "step id must be unique"})
             ids.add(step.id)
-            if step.capability not in self.CAPABILITIES:
+            if not self._capabilities.contains(step.capability):
                 errors.append({"code": "capability_not_allowed", "path": f"steps.{step.id}.capability", "message": f"unsupported capability: {step.capability}"})
+            else:
+                errors.extend(self._validate_params(step))
             for dependency in step.depends_on:
                 if dependency not in {item.id for item in plan.steps}:
                     errors.append({"code": "unknown_dependency", "path": f"steps.{step.id}.depends_on", "message": f"unknown dependency: {dependency}"})
@@ -155,10 +251,11 @@ class WorkflowPlanCompiler:
             if retry_max < 1 or retry_max > 5:
                 errors.append({"code": "retry_budget_exceeded", "path": f"steps.{step.id}.retry_policy", "message": "retry attempts must be between 1 and 5"})
             command = self._command(step)
-            risk = _step_risk(step)
-            confirmation = risk >= _risk_medium() or step.capability == "device.reboot"
+            risk = self._step_risk(step)
+            spec = self._capabilities.get(step.capability) if self._capabilities.contains(step.capability) else None
+            confirmation = bool(spec and spec.confirmation_required) or risk >= _risk_medium()
             if confirmation:
-                required.append(Action(name=self.CAPABILITIES.get(step.capability, (step.capability, ""))[0], risk=risk.name.lower(), confirmation_required=True, target_step=step.id))
+                required.append(Action(name=spec.action if spec else step.capability, risk=risk.name.lower(), confirmation_required=True, target_step=step.id))
                 warnings.append(f"step {step.id} requires confirmation ({risk.name.lower()})")
         if not self._acyclic(plan.steps):
             errors.append({"code": "workflow_cycle", "path": "steps", "message": "workflow dependencies contain a cycle"})
@@ -173,23 +270,52 @@ class WorkflowPlanCompiler:
 
     def compile(self, plan: WorkflowPlan) -> WorkflowDefinition:
         steps: list[WorkflowStep] = []
+        named_workflows: dict[str, WorkflowDefinition] = {}
+        dependency_tails: dict[str, tuple[str, ...]] = {}
         for item in plan.steps:
-            action_name, kind = self.CAPABILITIES[item.capability]
+            spec = self._capabilities.get(item.capability)
+            if spec.workflow_id:
+                workflow = self._catalog.build(
+                    spec.workflow_id,
+                    WorkflowTarget(
+                        device_id=str(plan.target.get("device_id") or ""),
+                        session_id=str(plan.target.get("session_id") or ""),
+                        protocol=str(plan.target.get("protocol") or "auto"),
+                    ),
+                    item.params,
+                )
+                named_workflows[item.id] = workflow
+                dependency_tails[item.id] = tuple(
+                    f"{item.id}.{step_id}" for step_id in self._terminal_step_ids(workflow)
+                )
+            else:
+                dependency_tails[item.id] = (item.id,)
+        for item in plan.steps:
+            dependencies = tuple(
+                tail
+                for dependency in item.depends_on
+                for tail in dependency_tails.get(dependency, (dependency,))
+            )
+            if item.id in named_workflows:
+                steps.extend(self._compile_named_workflow(item, named_workflows[item.id], dependencies))
+                continue
+            spec = self._capabilities.get(item.capability)
+            action_name, kind = spec.action, spec.kind
             params = dict(item.params)
             if item.capability == "terminal.command":
                 params = {**params, "command": str(params.get("command") or "")}
             if item.capability == "terminal.batch":
                 params = {**params, "commands": list(params.get("commands") or [])}
             command = self._command(item)
-            risk = _step_risk(item)
+            risk = self._step_risk(item)
             action = Action(
                 name=action_name,
                 parameters=dict(params),
                 target_step=item.id,
                 risk=risk.name.lower(),
-                confirmation_required=risk >= _risk_medium() or item.capability == "device.reboot",
+                confirmation_required=spec.confirmation_required or risk >= _risk_medium(),
             )
-            steps.append(WorkflowStep(item.id, kind=kind, action=action, depends_on=item.depends_on, params=params, retry_policy=dict(item.retry_policy), metadata={**item.metadata, "capability": item.capability}))
+            steps.append(WorkflowStep(item.id, kind=kind, action=action, depends_on=dependencies, params=params, retry_policy=dict(item.retry_policy), metadata={**item.metadata, "capability": item.capability}))
         return WorkflowDefinition(
             id=plan.plan_id or "agent-plan",
             version=str(plan.revision),
@@ -201,6 +327,73 @@ class WorkflowPlanCompiler:
         )
 
     @staticmethod
+    def _compile_named_workflow(
+        item: PlanStep,
+        workflow: WorkflowDefinition,
+        dependencies: tuple[str, ...],
+    ) -> tuple[WorkflowStep, ...]:
+        compiled: list[WorkflowStep] = []
+        for step in workflow.steps:
+            step_id = f"{item.id}.{step.id}"
+            internal_dependencies = tuple(f"{item.id}.{dep}" for dep in step.depends_on)
+            compiled.append(WorkflowStep(
+                id=step_id,
+                kind=step.kind,
+                action=step.action,
+                depends_on=dependencies if not step.depends_on else internal_dependencies,
+                params=dict(step.params),
+                retry_policy=dict(step.retry_policy),
+                metadata={**item.metadata, **step.metadata, "capability": item.capability, "plan_step_id": item.id},
+            ))
+        return tuple(compiled)
+
+    @staticmethod
+    def _terminal_step_ids(workflow: WorkflowDefinition) -> tuple[str, ...]:
+        depended_on = {dependency for step in workflow.steps for dependency in step.depends_on}
+        return tuple(step.id for step in workflow.steps if step.id not in depended_on)
+
+    @classmethod
+    def capability_specs(cls) -> dict[str, dict[str, Any]]:
+        return {name: spec.public_dict() for name, spec in cls.CAPABILITY_SPECS.items()}
+
+    def registered_capability_specs(self) -> dict[str, dict[str, Any]]:
+        return self._capabilities.public_specs()
+
+    def _validate_params(self, step: PlanStep) -> list[dict[str, str]]:
+        spec = self._capabilities.get(step.capability)
+        errors: list[dict[str, str]] = []
+        for name in spec.required_params:
+            value = step.params.get(name)
+            missing = value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, (list, tuple)) and not value)
+            if missing:
+                errors.append({"code": "parameter_required", "path": f"steps.{step.id}.params.{name}", "message": f"{name} is required for {step.capability}"})
+        for name, accepted in spec.param_types.items():
+            value = step.params.get(name)
+            if value is not None and not isinstance(value, accepted):
+                expected = " or ".join(item.__name__ for item in accepted)
+                errors.append({"code": "parameter_type_invalid", "path": f"steps.{step.id}.params.{name}", "message": f"{name} must be {expected}"})
+        if step.capability == "terminal.batch":
+            commands = step.params.get("commands")
+            if isinstance(commands, (list, tuple)) and any(not isinstance(item, str) or not item.strip() for item in commands):
+                errors.append({"code": "parameter_value_invalid", "path": f"steps.{step.id}.params.commands", "message": "commands must contain non-empty strings"})
+        if spec.workflow_id:
+            try:
+                self._catalog.normalize_parameters(spec.workflow_id, step.params)
+            except WorkflowCatalogError as exc:
+                errors.append({"code": "parameter_value_invalid", "path": f"steps.{step.id}.params", "message": str(exc)})
+        return errors
+
+    def _step_risk(self, step: PlanStep) -> Any:
+        if not self._capabilities.contains(step.capability):
+            return _classify(self._command(step))
+        spec = self._capabilities.get(step.capability)
+        if spec.risk == "high":
+            return _risk_high()
+        if spec.risk == "medium":
+            return _risk_medium()
+        return _classify(self._command(step))
+
+    @staticmethod
     def _command(step: PlanStep) -> str:
         if step.capability == "terminal.command":
             return str(step.params.get("command") or "")
@@ -208,6 +401,12 @@ class WorkflowPlanCompiler:
             return "\n".join(str(item) for item in step.params.get("commands", ()) if str(item).strip())
         if step.capability == "device.reboot":
             return "reboot"
+        if step.capability == "device.power_off":
+            return "power_off"
+        if step.capability == "device.upgrade":
+            return str(step.params.get("package_path") or step.params.get("package") or "package_upgrade")
+        if step.capability == "device.version_check":
+            return str(step.params.get("command") or "display version")
         return ""
 
     @staticmethod
@@ -238,10 +437,3 @@ def _risk_high() -> Any:
 def _risk_medium() -> Any:
     from device_tui.application.ai.operations import RiskLevel
     return RiskLevel.MEDIUM
-
-
-def _step_risk(step: PlanStep) -> Any:
-    from device_tui.application.ai.operations import RiskLevel
-    if step.capability == "file.upload":
-        return RiskLevel.MEDIUM
-    return _classify(WorkflowPlanCompiler._command(step))

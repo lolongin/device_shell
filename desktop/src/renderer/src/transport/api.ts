@@ -39,6 +39,7 @@ import type {
   TaskListResponse,
   TaskDecisionResponse,
   TaskDecisionActionPayload,
+  WorkflowCatalogResponse,
   AiPlanResponse,
   AiApprovalListResponse,
   AiApproval,
@@ -376,7 +377,8 @@ export const desktopApi = {
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/approve`, { method: 'POST' }),
   aiReject: (approvalId: string): Promise<{ approval: AiApproval }> =>
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/reject`, { method: 'POST' }),
-  createTask: (payload: { workflow_id: string; device_id: string; package: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>
+  workflows: (): Promise<WorkflowCatalogResponse> => request('/api/v1/workflows'),
+  createTask: (payload: { workflow_id: string; device_id: string; parameters?: Record<string, unknown>; package?: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>
     request('/api/v1/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   workflowPlanValidate: (plan: Record<string, unknown>): Promise<McpResponse<WorkflowPlanValidation>> =>
     request('/api/v1/mcp/workflow.plan.validate', { method: 'POST', body: JSON.stringify({ plan, source: 'desktop' }) }),

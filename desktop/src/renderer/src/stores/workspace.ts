@@ -32,7 +32,8 @@ import type {
   ApplicationEvent,
   TaskRecord,
   TaskDecisionContext,
-  TaskDecisionActionPayload
+  TaskDecisionActionPayload,
+  WorkflowDescriptor
 } from '../types'
 
 const VIEW_STATE_KEY = 'device-tui.desktop-v2.workspace'
@@ -95,6 +96,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   )
   const upgradeBusy = ref(false)
   const tasks = ref<TaskRecord[]>([])
+  const workflows = ref<WorkflowDescriptor[]>([])
   const activeTaskId = ref('')
   const taskBusy = ref(false)
   const taskDecision = ref<TaskDecisionContext | null>(null)
@@ -311,7 +313,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         transferLogResponse,
         operationResponse,
         upgradeOperationResponse,
-        taskResponse
+        taskResponse,
+        workflowResponse
       ] = await Promise.all([
         desktopApi.devices(),
         desktopApi.sessions(),
@@ -325,7 +328,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         desktopApi.listTasks().catch((cause) => {
           taskError.value = cause instanceof Error ? cause.message : String(cause)
           return { api_version: 1, tasks: [] }
-        })
+        }),
+        desktopApi.workflows().catch(() => ({ workflows: [] }))
       ])
       applyDeviceInventory(deviceResponse)
       sessions.value = []
@@ -340,6 +344,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       operations.value = operationResponse.operations
       upgradeOperations.value = upgradeOperationResponse.operations
       tasks.value = taskResponse.tasks
+      workflows.value = workflowResponse.workflows
       const restoredDevice = devices.value.find(
         (device) => device.row_id === selectedDeviceRowId.value
       ) || devices.value.find((device) => device.id === selectedDeviceRowId.value)
@@ -1397,19 +1402,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function createDeviceUpgradeTask(packagePath: string, options: Record<string, unknown> = {}): Promise<boolean> {
+  async function refreshWorkflows(): Promise<void> {
+    try {
+      workflows.value = (await desktopApi.workflows()).workflows
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+    }
+  }
+
+  async function createNamedWorkflowTask(workflowId: string, parameters: Record<string, unknown>): Promise<boolean> {
     const deviceId = selectedDeviceId.value
-    if (!deviceId || !packagePath) return false
+    if (!deviceId || !workflowId) return false
     taskBusy.value = true
     error.value = ''
     taskError.value = ''
     try {
-      const response = await desktopApi.createTask({ workflow_id: 'device_upgrade', device_id: deviceId, package: packagePath, options, source: 'desktop' })
+      const response = await desktopApi.createTask({ workflow_id: workflowId, device_id: deviceId, parameters, source: 'desktop' })
       activeTaskId.value = response.task.id
       tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== response.task.id)]
       await syncTaskSession(response.task)
       taskDecision.value = null
-      notice.value = '换包任务已创建'
+      notice.value = 'Workflow Task 已创建'
       startTaskPolling()
       return true
     } catch (cause) {
@@ -1418,6 +1431,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } finally {
       taskBusy.value = false
     }
+  }
+
+  async function createDeviceUpgradeTask(packagePath: string, options: Record<string, unknown> = {}): Promise<boolean> {
+    return createNamedWorkflowTask('device_upgrade', { package_path: packagePath, ...options })
   }
 
   async function createWorkflowPlanTask(objective: string, command: string): Promise<boolean> {
@@ -1813,11 +1830,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     upgradePanelOpen,
     upgradeBusy,
     tasks,
+    workflows,
     activeTaskId,
     taskBusy,
     taskDecision,
     taskError,
     refreshTasks,
+    refreshWorkflows,
+    createNamedWorkflowTask,
     createDeviceUpgradeTask,
     createWorkflowPlanTask,
     getTask,

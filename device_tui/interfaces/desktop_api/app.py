@@ -53,9 +53,9 @@ from device_tui.application import (
     SessionCredential,
     TransferRequest,
     TaskCreate,
-    WorkflowDefinition,
-    WorkflowStep,
-    device_upgrade_workflow,
+    WorkflowCatalogError,
+    WorkflowCatalog,
+    WorkflowTarget,
     ProfileEndpoint,
     redact_command_secrets,
     build_desktop_application,
@@ -771,6 +771,7 @@ def create_app(
     discover_source_plugins: bool = True,
     product_mode: str | None = None,
     product_source: str | None = None,
+    workflow_catalog: WorkflowCatalog | None = None,
 ) -> FastAPI:
     access_token = token if token is not None else os.getenv("DEVICE_TUI_DESKTOP_TOKEN", "")
     data_root = Path(
@@ -915,6 +916,7 @@ def create_app(
         terminal_executor=terminal_executor,
         transfer_root=transfer_root,
         task_store=desktop_store,
+        workflow_catalog=workflow_catalog,
     )
     _attempt_internal_auto_login(
         repo,
@@ -1075,35 +1077,54 @@ def create_app(
         if not session_id:
             view = await desktop.control.open_session(DeviceTarget(device_id=device_id, protocol=request.protocol), reuse=True, context=ControlContext(source=request.source))
             session_id = view.session_id
-        if request.workflow_id == "device_upgrade":
-            if not request.package:
-                raise UnsupportedOperationError("package is required for device_upgrade")
-            package = request.package
-            package_path = Path(package).expanduser()
-            if package_path.is_absolute():
+        if desktop.workflows.contains(request.workflow_id):
+            parameters = {**dict(request.options), **dict(request.parameters)}
+            if request.package:
+                parameters.setdefault("package_path", request.package)
+            descriptor = desktop.workflows.descriptor(request.workflow_id)
+            for definition in descriptor.parameters:
+                if not definition.stage_to_transfer_root:
+                    continue
+                raw_value = parameters.get(definition.name)
+                if not isinstance(raw_value, str) or not raw_value.strip():
+                    continue
+                local_path = Path(raw_value).expanduser()
+                if not local_path.is_absolute():
+                    continue
                 if request.source != "desktop":
-                    raise UnsupportedOperationError("An absolute package path is only accepted from the desktop file picker.")
-                if package_path.suffix.casefold() != ".cc" or not package_path.is_file():
-                    raise UnsupportedOperationError("请选择存在的 .cc 软件包文件。")
+                    raise UnsupportedOperationError("An absolute workflow file path is only accepted from the desktop file picker.")
+                if definition.file_extensions and local_path.suffix.casefold() not in {item.casefold() for item in definition.file_extensions}:
+                    raise UnsupportedOperationError(f"请选择 {', '.join(definition.file_extensions)} 文件。")
+                if not local_path.is_file():
+                    raise UnsupportedOperationError("请选择存在的文件。")
                 transfer_root = Path(desktop.transfers.settings().root).resolve()
                 transfer_root.mkdir(parents=True, exist_ok=True)
-                staged_path = (transfer_root / package_path.name).resolve()
-                if staged_path != package_path.resolve():
+                staged_path = (transfer_root / local_path.name).resolve()
+                if staged_path != local_path.resolve():
                     try:
-                        shutil.copy2(package_path, staged_path)
+                        shutil.copy2(local_path, staged_path)
                     except OSError as exc:
-                        raise UnsupportedOperationError(f"无法将软件包放入文件服务目录：{exc}") from exc
-                package = staged_path.relative_to(transfer_root).as_posix()
-            workflow = device_upgrade_workflow(device_id=device_id, package=package, options=dict(request.options))
+                        raise UnsupportedOperationError(f"无法将文件放入文件服务目录：{exc}") from exc
+                parameters[definition.name] = staged_path.relative_to(transfer_root).as_posix()
+            try:
+                workflow = desktop.workflows.build(
+                    request.workflow_id,
+                    WorkflowTarget(device_id=device_id, session_id=session_id, protocol=request.protocol),
+                    parameters,
+                    legacy_steps=tuple(item.model_dump() for item in request.steps),
+                )
+            except WorkflowCatalogError as exc:
+                raise UnsupportedOperationError(str(exc)) from exc
         else:
-            if not request.steps:
-                raise UnsupportedOperationError("Task steps must be a non-empty list.")
-            workflow = WorkflowDefinition(
-                id=request.workflow_id,
-                steps=tuple(WorkflowStep(id=item.id, kind=item.kind, action=item.action, depends_on=tuple(item.depends_on), params=dict(item.params)) for item in request.steps),
+            raise UnsupportedOperationError(
+                f"Unknown workflow_id: {request.workflow_id}. Register a WorkflowProvider or submit a WorkflowPlan."
             )
         record = desktop.tasks.create(TaskCreate(workflow=workflow, target=DeviceTarget(device_id=device_id, session_id=session_id, protocol=request.protocol), source=request.source, context=dict(request.context)))
         return TaskResponse(task=_task_model(record))
+
+    @app.get("/api/v1/workflows", dependencies=[Depends(authorize)])
+    async def workflow_catalog() -> dict[str, object]:
+        return {"workflows": [item.public_dict() for item in desktop.workflows.list()]}
 
     @app.get("/api/v1/tasks", response_model=TaskListResponse, dependencies=[Depends(authorize)])
     async def task_list(limit: int = Query(default=200, ge=1, le=500)) -> TaskListResponse:
@@ -2365,10 +2386,12 @@ def create_app(
             PackageUpgradeRequest(
                 package_path=request.package_path,
                 include_slave=request.include_slave,
+                standby_required=request.standby_required,
                 auto_delete_old_packages=request.auto_delete_old_packages,
                 reboot_after_setting=request.reboot_after_setting,
                 master_storage=request.master_storage,
                 slave_storage=request.slave_storage,
+                driver_id=request.driver_id,
             ),
             context=ControlContext(source="electron"),
         )

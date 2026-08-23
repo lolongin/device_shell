@@ -324,7 +324,7 @@ export interface OperationRecord {
   direction: string
   device_id: string
   session_id: string
-  status: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  status: 'queued' | 'running' | 'waiting_approval' | 'staged' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
   stage: string
   message: string
   progress_percent: number
@@ -364,6 +364,9 @@ export interface TaskStepState {
     output?: string
     facts?: Record<string, unknown>
     data?: Record<string, unknown>
+    operation_id?: string
+    execution_id?: string
+    evidence?: Array<Record<string, unknown>>
     error?: { code?: string; message?: string; error_class?: string; retryable?: boolean }
   } | null
   error?: { code?: string; message?: string; error_class?: string; retryable?: boolean } | null
@@ -382,6 +385,7 @@ export interface TaskCheckpoint {
   failed_step_id: string
   attempts: Record<string, number>
   pending_decision_id: string
+  operation_ids: string[]
   error_code: string
   error_message: string
   decisions: Array<Record<string, unknown>>
@@ -395,6 +399,9 @@ export interface TaskResultStep {
   error_code?: string
   message?: string
   data?: Record<string, unknown>
+  operation_id?: string
+  execution_id?: string
+  evidence?: Array<Record<string, unknown>>
 }
 
 export interface TaskResult {
@@ -441,6 +448,36 @@ export interface WorkflowPlanValidation {
   warnings: string[]
   required_actions: Array<Record<string, unknown>>
   workflow?: Record<string, unknown> | null
+}
+
+export interface WorkflowParameterDescriptor {
+  name: string
+  type: 'string' | 'integer' | 'boolean' | 'array' | string
+  label: string
+  description?: string
+  required: boolean
+  default?: unknown
+  enum?: unknown[]
+  enum_labels?: Record<string, string>
+  control: 'text' | 'select' | 'file' | 'checkbox' | string
+  advanced?: boolean
+  file_extensions?: string[]
+  stage_to_transfer_root?: boolean
+}
+
+export interface WorkflowDescriptor {
+  id: string
+  version: string
+  name: string
+  description: string
+  aliases: string[]
+  parameters: WorkflowParameterDescriptor[]
+  input_schema: Record<string, unknown>
+  metadata: Record<string, unknown>
+}
+
+export interface WorkflowCatalogResponse {
+  workflows: WorkflowDescriptor[]
 }
 
 export interface TaskResponse {

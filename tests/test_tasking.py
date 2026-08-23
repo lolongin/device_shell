@@ -7,6 +7,7 @@ from device_tui.application.tasking import (
     TaskCreate,
     TaskManager,
     TaskRecord,
+    MemoryTaskStore,
     WorkflowDefinition,
     WorkflowEngine,
     WorkflowResult,
@@ -28,6 +29,41 @@ class FakeDecision:
         from device_tui.application.tasking import DecisionResult
 
         return DecisionResult(bool(request.step.params.get("approved")))
+
+
+class BlockingExecution:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled: list[tuple[str, str]] = []
+
+    async def execute(self, target, step, *, context: ControlContext):
+        del target, step
+        assert context.operation_callback is not None
+        context.operation_callback("operation", "operation-1")
+        self.started.set()
+        await asyncio.Event().wait()
+
+    def cancel_resource(self, kind: str, resource_id: str):
+        self.cancelled.append((kind, resource_id))
+        return {}
+
+
+class EvidenceExecution:
+    async def execute(self, target, step, *, context: ControlContext):
+        del target, step, context
+        return {
+            "operation_id": "operation-2",
+            "execution_id": "execution-2",
+            "output": "display version\nVersion 1",
+            "evidence": ({"kind": "terminal_execution", "execution_id": "execution-2"},),
+        }
+
+
+class InterruptedExecution:
+    def get_resource(self, kind: str, resource_id: str):
+        assert kind == "operation"
+        assert resource_id == "operation-interrupted"
+        return {"status": "interrupted"}
 
 
 def test_workflow_skips_dependents_after_failure():
@@ -122,3 +158,75 @@ def test_sqlite_task_store_round_trips_task_history(tmp_path):
     assert restored.result.steps[0].output == "ok"
     assert restored_request.workflow.steps[0].id == "precheck"
     assert restored_request.target.session_id == "s"
+
+
+def test_task_cancel_propagates_to_registered_operation_and_checkpoints_id() -> None:
+    async def scenario() -> None:
+        execution = BlockingExecution()
+        manager = TaskManager(execution, EventBus())
+        record = manager.create(TaskCreate(
+            workflow=WorkflowDefinition("wf", (WorkflowStep("run", action="command"),)),
+            target=DeviceTarget(device_id="d"),
+            source="agent",
+        ))
+        await asyncio.wait_for(execution.started.wait(), timeout=1)
+        cancelled = manager.cancel(record.id)
+        await asyncio.sleep(0)
+
+        assert cancelled.status == "cancelled"
+        assert ("operation", "operation-1") in execution.cancelled
+        assert cancelled.checkpoint is not None
+        assert "operation-1" in cancelled.checkpoint.operation_ids
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_stateful_task_projects_execution_ids_and_evidence() -> None:
+    async def scenario() -> None:
+        manager = TaskManager(EvidenceExecution(), EventBus())
+        record = manager.create(TaskCreate(
+            workflow=WorkflowDefinition("wf", (WorkflowStep("version", action="command"),)),
+            target=DeviceTarget(device_id="d"),
+            source="agent",
+        ))
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if manager.get(record.id).status == "completed":
+                break
+        completed = manager.get(record.id)
+        assert completed.result is not None
+        step = completed.result.steps[0]
+        assert step.operation_id == "operation-2"
+        assert step.execution_id == "execution-2"
+        assert step.evidence[0]["kind"] == "terminal_execution"
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_task_restore_reconciles_interrupted_operation() -> None:
+    store = MemoryTaskStore()
+    request = TaskCreate(
+        workflow=WorkflowDefinition("wf", (WorkflowStep("upgrade", action="package_upgrade"),)),
+        target=DeviceTarget(device_id="d"),
+        source="agent",
+    )
+    store.upsert_task(
+        TaskRecord(
+            id="task-interrupted",
+            status="running",
+            workflow_id="wf",
+            device_id="d",
+            checkpoint=Checkpoint(task_id="task-interrupted", operation_ids=("operation-interrupted",)),
+        ),
+        request,
+    )
+
+    manager = TaskManager(InterruptedExecution(), EventBus(), store=store)
+    restored = manager.get("task-interrupted")
+
+    assert restored.status == "paused"
+    assert restored.error_code == "operation_interrupted"
+    assert "重新规划" in restored.message
+    assert store.list_tasks()[0][0].status == "paused"

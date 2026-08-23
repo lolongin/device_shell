@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,10 @@ class ControlContext:
     idempotency_key: str = ""
     actor: str = ""
     approval_token: str = ""
+    lease_token: str = ""
+    task_id: str = ""
+    step_id: str = ""
+    operation_callback: Callable[[str, str], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,10 +92,12 @@ class TransferRequest:
 class PackageUpgradeRequest:
     package_path: str
     include_slave: bool = True
+    standby_required: bool = False
     auto_delete_old_packages: bool = True
     reboot_after_setting: bool = False
-    master_storage: str = "flash:"
-    slave_storage: str = "slave#flash:"
+    master_storage: str = ""
+    slave_storage: str = ""
+    driver_id: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)

@@ -600,6 +600,32 @@ async function createWindow(): Promise<void> {
     return selected.canceled ? '' : selected.filePaths[0] || ''
   })
 
+  ipcMain.handle('workflow:choose-file', async (event, request?: unknown): Promise<string> => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) {
+      throw new Error('Untrusted workflow file caller')
+    }
+    const payload = request && typeof request === 'object' ? request as Record<string, unknown> : {}
+    const defaultPath = typeof payload.defaultPath === 'string' && payload.defaultPath.trim()
+      ? path.resolve(payload.defaultPath.trim())
+      : undefined
+    const label = typeof payload.label === 'string' && payload.label.trim()
+      ? payload.label.trim().slice(0, 80)
+      : 'Workflow 文件'
+    const extensions = Array.isArray(payload.extensions)
+      ? payload.extensions
+          .map((item) => String(item).trim().replace(/^\./, '').toLowerCase())
+          .filter((item) => /^[a-z0-9]{1,12}$/.test(item))
+          .slice(0, 20)
+      : []
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: `选择${label}`,
+      properties: ['openFile'],
+      ...(extensions.length ? { filters: [{ name: label, extensions }] } : {}),
+      ...(defaultPath ? { defaultPath } : {})
+    })
+    return selected.canceled ? '' : selected.filePaths[0] || ''
+  })
+
   ipcMain.handle('device-source:choose-import', async (event): Promise<unknown | null> => {
     if (event.sender !== mainWindow?.webContents || !mainWindow) {
       throw new Error('Untrusted device-import caller')

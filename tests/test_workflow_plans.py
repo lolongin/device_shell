@@ -56,3 +56,44 @@ def test_plan_hash_is_stable_and_compiled_metadata_keeps_hash() -> None:
     assert result.plan_hash == plan.content_hash()
     assert result.workflow is not None
     assert result.workflow.metadata["plan_hash"] == result.plan_hash
+
+
+def test_plan_compiler_publishes_capability_contracts_and_validates_params() -> None:
+    specs = WorkflowPlanCompiler.capability_specs()
+    assert specs["device.upgrade"]["required_params"] == ["package_path"]
+    assert "package.upgrade" not in specs
+
+    result = WorkflowPlanCompiler().validate(WorkflowPlan(
+        "missing-package",
+        "upgrade device",
+        {"device_id": "d1"},
+        (PlanStep("upgrade", "device.upgrade"),),
+    ))
+    assert result.status == "rejected"
+    assert result.errors[0]["code"] == "parameter_required"
+
+
+def test_device_upgrade_plan_expands_to_canonical_activation_steps() -> None:
+    plan = WorkflowPlan(
+        "p-upgrade",
+        "stage and activate package",
+        {"device_id": "d1"},
+        (
+            PlanStep(
+                "upgrade",
+                "device.upgrade",
+                {"package_path": "target.cc", "activation_policy": "reboot"},
+            ),
+        ),
+    )
+    result = WorkflowPlanCompiler().validate(plan)
+    assert result.status == "requires_confirmation"
+    assert result.workflow is not None
+    assert [step.id for step in result.workflow.steps] == [
+        "upgrade.prepare_upgrade",
+        "upgrade.reboot",
+        "upgrade.wait_online",
+        "upgrade.verify_version",
+        "upgrade.validation",
+    ]
+    assert result.workflow.steps[0].action.name == "prepare_upgrade"

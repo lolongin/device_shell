@@ -2,17 +2,20 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, FileArchive, RotateCcw, ShieldAlert, Workflow, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
-import type { TaskDecisionActionPayload, TaskRecord, TaskStepState } from '../types'
+import type { TaskDecisionActionPayload, TaskRecord, TaskStepState, WorkflowParameterDescriptor } from '../types'
 
 const workspace = useWorkspaceStore()
 const taskMode = ref<'upgrade' | 'plan'>('upgrade')
-const selectedPackage = ref('')
+const workflowId = ref('')
+const workflowParameters = ref<Record<string, unknown>>({})
 const planObjective = ref('')
 const planCommand = ref('')
 const localError = ref('')
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
-const packages = computed(() => workspace.transferFiles.filter((file) => file.name.toLowerCase().endsWith('.cc')))
+const workflowOptions = computed(() => workspace.workflows)
+const selectedWorkflow = computed(() => workflowOptions.value.find((item) => item.id === workflowId.value) || workflowOptions.value[0] || null)
+const workflowParametersVisible = computed(() => selectedWorkflow.value?.parameters.filter((item) => !item.advanced) || [])
 const selectedTask = computed(() => workspace.tasks.find((task) => task.id === workspace.activeTaskId) || null)
 const taskSteps = computed<TaskStepState[]>(() => {
   const task = selectedTask.value
@@ -26,7 +29,10 @@ const taskSteps = computed<TaskStepState[]>(() => {
       status: step.status,
       output: step.output || '',
       facts: step.data || {},
-      data: step.data || {}
+      data: step.data || {},
+      operation_id: step.operation_id || '',
+      execution_id: step.execution_id || '',
+      evidence: step.evidence || []
     },
     error: step.error_code
       ? { code: step.error_code, message: step.message || step.error_code }
@@ -48,7 +54,7 @@ const previousStepId = computed(() => {
 const labels: Record<string, string> = {
   precheck: '预检', backup: '备份', upload: '上传', verify: '校验', activate: '激活',
   reboot: '重启', wait_online: '等待上线', verify_version: '版本确认', validation: '最终验证',
-  package_upgrade: '换包流程',
+  prepare_upgrade: '准备系统包并设置启动项', package_upgrade: '换包流程',
 }
 
 const upgradeStageLabels: Record<string, string> = {
@@ -59,6 +65,7 @@ const upgradeStageLabels: Record<string, string> = {
   verifying: '校验主控系统包',
   synchronizing: '同步并校验备控系统包',
   setting_startup: '设置下次启动项',
+  staged: '已暂存，等待重启激活',
   reboot_approval: '等待重启确认',
   rebooting: '重启设备并等待上线',
   completed: '换包完成',
@@ -66,7 +73,10 @@ const upgradeStageLabels: Record<string, string> = {
   cancelled: '已取消',
 }
 
-function stepLabel(stepId: string): string { return labels[stepId] || stepId }
+function stepLabel(stepId: string): string {
+  const leaf = stepId.split('.').pop() || stepId
+  return labels[leaf] || stepId
+}
 function stepIcon(state: TaskStepState): string {
   if (state.status === 'completed' || state.status === 'success') return '✓'
   if (state.status === 'failed') return '✕'
@@ -93,6 +103,7 @@ function stageLabel(stage: unknown): string {
 function stageStatus(item: Record<string, unknown>, index: number, history: Array<Record<string, unknown>>): string {
   const status = String(item.status || '')
   if (status === 'waiting_approval') return 'waiting_for_decision'
+  if (status === 'staged') return 'completed'
   if (status === 'failed' || status === 'cancelled') return status
   if (index < history.length - 1) return 'completed'
   return status === 'completed' ? 'completed' : 'running'
@@ -129,6 +140,17 @@ function stepOutput(state: TaskStepState): string {
     }
   }
   return ''
+}
+function stepEvidence(state: TaskStepState): Array<Record<string, unknown>> {
+  const evidence = state.result?.evidence
+  return Array.isArray(evidence)
+    ? evidence.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    : []
+}
+function evidenceTitle(item: Record<string, unknown>): string {
+  const kind = String(item.kind || 'evidence')
+  const id = String(item.execution_id || item.operation_id || '')
+  return id ? `${kind} · ${id}` : kind
 }
 function decisionReason(decision: Record<string, unknown>): string {
   const reason = decision.reason
@@ -194,21 +216,71 @@ function isLocalPackage(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('/') || value.startsWith('\\\\')
 }
 
-async function choosePackage(): Promise<void> {
+function parameterValue(parameter: WorkflowParameterDescriptor): unknown {
+  return workflowParameters.value[parameter.name]
+}
+
+function parameterLabel(parameter: WorkflowParameterDescriptor): string {
+  return parameter.label || parameter.name
+}
+
+function setParameter(name: string, value: unknown): void {
+  workflowParameters.value = { ...workflowParameters.value, [name]: value }
+}
+
+function initializeWorkflowParameters(workflow = selectedWorkflow.value): void {
+  if (!workflow) return
+  const next: Record<string, unknown> = {}
+  for (const parameter of workflow.parameters) {
+    if (parameter.control === 'file') {
+      const current = workflowParameters.value[parameter.name]
+      next[parameter.name] = current || workflowFiles(parameter)[0]?.relative_path || ''
+    } else if (parameter.default !== undefined) {
+      next[parameter.name] = parameter.default
+    }
+  }
+  workflowParameters.value = next
+}
+
+function workflowParameterOptions(parameter: WorkflowParameterDescriptor): Array<{ value: string; label: string }> {
+  return (parameter.enum || []).map((value) => ({
+    value: String(value),
+    label: parameter.enum_labels?.[String(value)] || String(value),
+  }))
+}
+
+function workflowFiles(parameter: WorkflowParameterDescriptor) {
+  const extensions = (parameter.file_extensions || []).map((item) => item.toLowerCase())
+  if (!extensions.length) return workspace.transferFiles
+  return workspace.transferFiles.filter((file) => extensions.some((extension) => file.name.toLowerCase().endsWith(extension)))
+}
+
+function onParameterInput(parameter: WorkflowParameterDescriptor, event: Event): void {
+  const input = event.target as HTMLInputElement | HTMLSelectElement
+  if (parameter.type === 'boolean') {
+    setParameter(parameter.name, (input as HTMLInputElement).checked)
+  } else if (parameter.type === 'integer') {
+    setParameter(parameter.name, Number(input.value))
+  } else {
+    setParameter(parameter.name, input.value)
+  }
+}
+
+async function chooseWorkflowFile(parameter: WorkflowParameterDescriptor): Promise<void> {
   localError.value = ''
   try {
-    const selected = await window.desktopApi.choosePackage(workspace.transferSettings?.root || '')
-    if (selected) selectedPackage.value = selected
+    const selected = await window.desktopApi.chooseWorkflowFile({
+      defaultPath: workspace.transferSettings?.root || '',
+      label: parameterLabel(parameter),
+      extensions: parameter.file_extensions || [],
+    })
+    if (selected) {
+      setParameter(parameter.name, selected)
+    }
   } catch (cause) {
     localError.value = cause instanceof Error ? cause.message : String(cause)
   }
 }
-
-watch(packages, (files) => {
-  if (!selectedPackage.value || (!isLocalPackage(selectedPackage.value) && !files.some((file) => file.relative_path === selectedPackage.value))) {
-    selectedPackage.value = files[0]?.relative_path || ''
-  }
-}, { immediate: true })
 
 async function createTask(): Promise<void> {
   localError.value = ''
@@ -220,11 +292,30 @@ async function createTask(): Promise<void> {
     await workspace.createWorkflowPlanTask(planObjective.value, planCommand.value)
     return
   }
-  if (!workspace.selectedDeviceId || !selectedPackage.value) {
-    localError.value = '请选择设备和软件包。'
+  if (!workspace.selectedDeviceId) {
+    localError.value = '请选择设备。'
     return
   }
-  await workspace.createDeviceUpgradeTask(selectedPackage.value, { expected_version: workspace.selectedDevice?.version || '' })
+  if (!selectedWorkflow.value) {
+    localError.value = 'Workflow 目录尚未加载。'
+    return
+  }
+  const missing = selectedWorkflow.value.parameters.find((parameter) => {
+    if (!parameter.required) return false
+    const value = workflowParameters.value[parameter.name]
+    return value === undefined || value === null || String(value).trim() === ''
+  })
+  if (missing) {
+    localError.value = `请填写${parameterLabel(missing)}。`
+    return
+  }
+  if (selectedWorkflow.value.parameters.some((item) => item.name === 'expected_version')) {
+    workflowParameters.value = {
+      ...workflowParameters.value,
+      expected_version: workflowParameters.value.expected_version || workspace.selectedDevice?.version || '',
+    }
+  }
+  await workspace.createNamedWorkflowTask(selectedWorkflow.value.id, workflowParameters.value)
 }
 async function applyAction(action: TaskDecisionActionPayload): Promise<void> {
   await workspace.applyTaskDecision({ name: action.name, target_step: actionTarget(action), parameters: action.parameters }, actionLabel(action.name, actionTarget(action)))
@@ -245,12 +336,19 @@ function openLatestTask(): void {
 }
 
 onMounted(async () => {
-  selectedPackage.value = packages.value[0]?.relative_path || ''
   await workspace.refreshTasks()
+  await workspace.refreshWorkflows()
+  initializeWorkflowParameters()
   refreshTimer = setInterval(() => { void workspace.refreshTasks() }, 1000)
   openLatestTask()
 })
 onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
+
+watch(selectedWorkflow, (workflow) => {
+  if (workflow && workflowId.value !== workflow.id) workflowId.value = workflow.id
+  initializeWorkflowParameters(workflow)
+}, { immediate: true })
+watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { deep: true })
 </script>
 
 <template>
@@ -262,13 +360,33 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
     <div class="task-ui-create">
       <div class="task-mode-tabs" role="tablist" aria-label="任务类型">
-        <button type="button" :class="{ active: taskMode === 'upgrade' }" @click="taskMode = 'upgrade'"><RotateCcw :size="13" />换包任务</button>
+        <button type="button" :class="{ active: taskMode === 'upgrade' }" @click="taskMode = 'upgrade'"><RotateCcw :size="13" />Workflow</button>
         <button type="button" :class="{ active: taskMode === 'plan' }" @click="taskMode = 'plan'"><Workflow :size="13" />制定任务</button>
       </div>
       <label><span>设备</span><select :value="workspace.selectedDeviceId" @change="onDeviceChange"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.id" :value="device.id">{{ device.name }} · {{ device.id }}</option></select></label>
       <template v-if="taskMode === 'upgrade'">
-        <label><span>软件包</span><div class="task-package-picker"><select v-model="selectedPackage"><option value="" disabled>选择 .cc 软件包</option><option v-if="selectedPackage && !packages.some((file) => file.relative_path === selectedPackage)" :value="selectedPackage">{{ packageName(selectedPackage) }}</option><option v-for="file in packages" :key="file.relative_path" :value="file.relative_path">{{ file.name }}</option></select><button class="secondary-button" type="button" title="从本机选择 .cc 文件" @click="choosePackage"><FileArchive :size="13" />选择文件</button></div><small v-if="selectedPackage && !packages.some((file) => file.relative_path === selectedPackage)" class="task-package-hint">本地文件将在创建 Task 时放入文件服务目录</small></label>
-        <button class="primary-button" type="button" :disabled="workspace.taskBusy || !selectedPackage || !workspace.selectedDeviceId" @click="createTask"><RotateCcw :size="14" />创建换包 Task</button>
+        <label><span>Workflow</span><select v-model="workflowId"><option v-for="workflow in workflowOptions" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option></select></label>
+        <p v-if="selectedWorkflow?.description" class="task-workflow-description">{{ selectedWorkflow.description }}</p>
+        <div class="task-upgrade-options task-workflow-parameters">
+          <label v-for="parameter in workflowParametersVisible" :key="parameter.name">
+            <span>{{ parameterLabel(parameter) }}</span>
+            <div v-if="parameter.control === 'file'" class="task-package-picker">
+              <select :value="String(parameterValue(parameter) || '')" @change="onParameterInput(parameter, $event)">
+                <option value="" disabled>选择{{ parameterLabel(parameter) }}</option>
+                <option v-if="parameterValue(parameter) && !workflowFiles(parameter).some((file) => file.relative_path === parameterValue(parameter))" :value="String(parameterValue(parameter))">{{ packageName(String(parameterValue(parameter))) }}</option>
+                <option v-for="file in workflowFiles(parameter)" :key="file.relative_path" :value="file.relative_path">{{ file.name }}</option>
+              </select>
+              <button class="secondary-button" type="button" :title="`从本机选择${parameterLabel(parameter)}`" @click="chooseWorkflowFile(parameter)"><FileArchive :size="13" />选择文件</button>
+            </div>
+            <select v-else-if="parameter.control === 'select'" :value="String(parameterValue(parameter) ?? '')" @change="onParameterInput(parameter, $event)">
+              <option v-for="option in workflowParameterOptions(parameter)" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <input v-else-if="parameter.type === 'boolean'" type="checkbox" :checked="Boolean(parameterValue(parameter))" @change="onParameterInput(parameter, $event)" />
+            <input v-else :type="parameter.type === 'integer' ? 'number' : 'text'" :value="String(parameterValue(parameter) ?? '')" @input="onParameterInput(parameter, $event)" />
+            <small v-if="parameter.control === 'file' && parameterValue(parameter) && isLocalPackage(String(parameterValue(parameter)))" class="task-package-hint">本地文件将在创建 Task 时放入文件服务目录</small>
+          </label>
+        </div>
+        <button class="primary-button" type="button" :disabled="workspace.taskBusy || !selectedWorkflow || !workspace.selectedDeviceId" @click="createTask"><RotateCcw :size="14" />创建 Workflow Task</button>
       </template>
       <template v-else>
         <label><span>任务目标</span><input v-model="planObjective" placeholder="例如：检查设备版本" /></label>
@@ -284,7 +402,7 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
       <button v-for="task in workspace.tasks" :key="task.id" type="button" class="task-row" :data-active="task.id === workspace.activeTaskId" @click="chooseTask(task)">
         <span class="task-row-status" :data-status="task.status"></span><span><strong>{{ task.workflow_id }}</strong><small>{{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b>
       </button>
-      <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择“换包任务”或“制定任务”开始。</p>
+      <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择 Workflow 或“制定任务”开始。</p>
     </div>
 
     <article v-if="selectedTask" class="task-detail">
@@ -297,7 +415,7 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
       </div></header>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
       <ol class="task-timeline">
-        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p><ul v-if="stageActions(item).length" class="task-stage-actions"><li v-for="action in stageActions(item)" :key="action">{{ action }}</li></ul></div></li></ol></div></li>
+        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result?.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p><ul v-if="stageActions(item).length" class="task-stage-actions"><li v-for="action in stageActions(item)" :key="action">{{ action }}</li></ul></div></li></ol></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
       <div v-if="workspace.taskDecision" class="task-decision" role="dialog" aria-labelledby="task-decision-title">

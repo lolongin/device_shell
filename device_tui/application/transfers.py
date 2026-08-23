@@ -172,6 +172,7 @@ class TerminalPlanExecutor(Protocol):
         device_id: str,
         plan: TerminalExecutionPlan,
         owner_id: str,
+        execution_id: str | None = None,
     ) -> dict[str, object]: ...
 
     def get_execution(self, execution_id: str) -> dict[str, object]: ...
