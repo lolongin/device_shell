@@ -249,6 +249,10 @@ function workflowParameterOptions(parameter: WorkflowParameterDescriptor): Array
   }))
 }
 
+function usesDevicePackage(): boolean {
+  return String(workflowParameters.value.package_source || 'local') === 'device'
+}
+
 function workflowFiles(parameter: WorkflowParameterDescriptor) {
   const extensions = (parameter.file_extensions || []).map((item) => item.toLowerCase())
   if (!extensions.length) return workspace.transferFiles
@@ -370,7 +374,10 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
         <div class="task-upgrade-options task-workflow-parameters">
           <label v-for="parameter in workflowParametersVisible" :key="parameter.name">
             <span>{{ parameterLabel(parameter) }}</span>
-            <div v-if="parameter.control === 'file'" class="task-package-picker">
+            <div v-if="parameter.control === 'file' && parameter.name === 'package_path' && usesDevicePackage()" class="task-device-package-input">
+              <input type="text" :value="String(parameterValue(parameter) ?? '')" placeholder="例如 flash:/S5735-V200R023C00.cc" @input="onParameterInput(parameter, $event)" />
+            </div>
+            <div v-else-if="parameter.control === 'file'" class="task-package-picker">
               <select :value="String(parameterValue(parameter) || '')" @change="onParameterInput(parameter, $event)">
                 <option value="" disabled>选择{{ parameterLabel(parameter) }}</option>
                 <option v-if="parameterValue(parameter) && !workflowFiles(parameter).some((file) => file.relative_path === parameterValue(parameter))" :value="String(parameterValue(parameter))">{{ packageName(String(parameterValue(parameter))) }}</option>
@@ -383,7 +390,8 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
             </select>
             <input v-else-if="parameter.type === 'boolean'" type="checkbox" :checked="Boolean(parameterValue(parameter))" @change="onParameterInput(parameter, $event)" />
             <input v-else :type="parameter.type === 'integer' ? 'number' : 'text'" :value="String(parameterValue(parameter) ?? '')" @input="onParameterInput(parameter, $event)" />
-            <small v-if="parameter.control === 'file' && parameterValue(parameter) && isLocalPackage(String(parameterValue(parameter)))" class="task-package-hint">本地文件将在创建 Task 时放入文件服务目录</small>
+            <small v-if="parameter.control === 'file' && parameter.name === 'package_path' && usesDevicePackage()" class="task-package-hint">使用设备已有包，不启动本地 FTP 传输</small>
+            <small v-else-if="parameter.control === 'file' && parameterValue(parameter) && isLocalPackage(String(parameterValue(parameter)))" class="task-package-hint">本地文件将在创建 Task 时放入文件服务目录</small>
           </label>
         </div>
         <button class="primary-button" type="button" :disabled="workspace.taskBusy || !selectedWorkflow || !workspace.selectedDeviceId" @click="createTask"><RotateCcw :size="14" />创建 Workflow Task</button>

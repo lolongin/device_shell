@@ -107,6 +107,7 @@ def test_simulated_session_supports_package_upgrade_success_path() -> None:
     asyncio.run(run())
 
     text = "".join(output)
+    assert "User(10.10.10.1):(none):" in text
     assert "Current startup system software: flash:/current.cc" in text
     assert "target.cc" in text
     assert "123,456" in text

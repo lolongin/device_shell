@@ -624,55 +624,59 @@ class TerminalExecutionRunner:
         )
 
     def _apply_responses_locked(self, step: ExpectStep) -> None:
-        while self.status == "running":
-            matched_rule: tuple[int, ResponseRule, tuple[str, int]] | None = None
-            for index, rule in enumerate(step.responses):
-                found = _match_token(
-                    self._scan_buffer,
-                    rule.match,
-                    case_sensitive=rule.case_sensitive,
-                )
-                if found is None:
-                    continue
-                if matched_rule is None or found[1] < matched_rule[2][1]:
-                    matched_rule = (index, rule, found)
-            if matched_rule is None:
-                return
-            index, rule, found = matched_rule
-            count = self._response_counts.get(index, 0) + 1
-            self._response_counts[index] = count
-            if count > rule.max_matches:
-                self._finish_active_step_locked(
-                    "failed",
-                    matched=found[0],
-                    error_code="response_limit_exceeded",
-                    message=f"自动响应超过上限: {rule.match}",
-                )
-                self._finish_locked(
-                    "failed",
-                    error_code="response_limit_exceeded",
-                    message=f"步骤 {self.current_step} 自动响应超过上限。",
-                )
-                return
-            try:
-                payload = self._input_for(
-                    text=rule.text,
-                    control=rule.control,
-                    secret_ref=rule.secret_ref,
-                    append_enter=rule.append_enter,
-                )
-            except TerminalPlanError as exc:
-                self._finish_active_step_locked(
-                    "failed",
-                    error_code=exc.code,
-                    message=str(exc),
-                )
-                self._finish_locked("failed", error_code=exc.code, message=str(exc))
-                return
-            assert self._active_result is not None
-            self._active_result.response_count += 1
-            self._scan_buffer = self._scan_buffer[found[1] :]
-            self.send_input(self.session_id, payload, self.execution_id)
+        matched_rule: tuple[int, ResponseRule, tuple[str, int]] | None = None
+        for index, rule in enumerate(step.responses):
+            found = _match_token(
+                self._scan_buffer,
+                rule.match,
+                case_sensitive=rule.case_sensitive,
+            )
+            if found is None:
+                continue
+            if matched_rule is None or found[1] < matched_rule[2][1]:
+                matched_rule = (index, rule, found)
+        if matched_rule is None:
+            return
+        index, rule, found = matched_rule
+        count = self._response_counts.get(index, 0) + 1
+        self._response_counts[index] = count
+        if count > rule.max_matches:
+            self._finish_active_step_locked(
+                "failed",
+                matched=found[0],
+                error_code="response_limit_exceeded",
+                message=f"自动响应超过上限: {rule.match}",
+            )
+            self._finish_locked(
+                "failed",
+                error_code="response_limit_exceeded",
+                message=f"步骤 {self.current_step} 自动响应超过上限。",
+            )
+            return
+        try:
+            payload = self._input_for(
+                text=rule.text,
+                control=rule.control,
+                secret_ref=rule.secret_ref,
+                append_enter=rule.append_enter,
+            )
+        except TerminalPlanError as exc:
+            self._finish_active_step_locked(
+                "failed",
+                error_code=exc.code,
+                message=str(exc),
+            )
+            self._finish_locked("failed", error_code=exc.code, message=str(exc))
+            return
+        assert self._active_result is not None
+        self._active_result.response_count += 1
+        # Consume only the prompt that triggered this response. Do not loop
+        # through the remaining buffer: devices may coalesce ``User:`` and
+        # ``Password:`` in one output event. Keep the unconsumed tail so the
+        # next output event can confirm the next prompt without sending it in
+        # the same event as the preceding credential.
+        self._scan_buffer = self._scan_buffer[found[1] :]
+        self.send_input(self.session_id, payload, self.execution_id)
 
     def _input_for(
         self,
@@ -1256,8 +1260,11 @@ def _match_token(
     alias_patterns = {
         "ftp_prompt": r"(?im)(?:^|\n)\s*ftp>\s*$",
         "sftp_prompt": r"(?im)(?:^|\n)\s*(?:sftp|sftp-client)>\s*$",
-        "username_prompt": r"(?i)(?:user(?:name)?|name)(?:\s*\([^\r\n)]{0,160}\))?\s*:\s*$",
-        "password_prompt": r"(?i)password\s*:\s*$",
+        # Keep the prompt boundary line-local. ``\s*$`` can consume the
+        # newline before a following password prompt and then miss the
+        # username prompt entirely when a device batches both lines.
+        "username_prompt": r"(?i)(?:user(?:name)?|name)(?:[ \t]*\([^\r\n)]{0,160}\))*[ \t]*:[ \t]*(?:\([^\r\n)]{0,160}\)[ \t]*:)?[ \t]*(?=\r?$|\r?\n)",
+        "password_prompt": r"(?i)password[ \t]*:[ \t]*(?=\r?$|\r?\n)",
         "host_key_prompt": r"(?i)(?:yes/no|continue connecting).{0,80}$",
         "pagination_prompt": r"(?i)(?:----\s*more\s*----|--more--)\s*$",
         "confirmation_prompt": r"(?i)(?:\[y/n\]|\(y/n\)|yes/no)\s*:?\s*$",

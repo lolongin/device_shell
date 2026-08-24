@@ -33,6 +33,9 @@ def device_upgrade_workflow(
         raise ValueError("cleanup_policy must be never or auto")
     if activation_policy not in {"stage_only", "reboot"}:
         raise ValueError("activation_policy must be stage_only or reboot")
+    package_source = str(opts.get("package_source") or "local")
+    if package_source not in {"local", "device"}:
+        raise ValueError("package_source must be local or device")
     prepare = WorkflowStep(
         "prepare_upgrade",
         kind="device",
@@ -40,6 +43,7 @@ def device_upgrade_workflow(
         params={
             "device_id": device_id,
             "package_path": package,
+            "package_source": package_source,
             "include_slave": topology_policy != "single",
             "standby_required": topology_policy == "required",
             "auto_delete_old_packages": cleanup_policy == "auto",

@@ -211,9 +211,30 @@ class HuaweiVrpUpgradeDriver:
         return UpgradeManualPlan(tuple(plan.commands), tuple(plan.cleanup_paths), tuple(plan.notes))
 
 
+class SimulatedVrpUpgradeDriver(HuaweiVrpUpgradeDriver):
+    """VRP-compatible driver for the built-in simulator.
+
+    The simulator intentionally exposes the same command vocabulary as the
+    Huawei workflow, but its device identity is ``SIM-TERMINAL``/``SimOS``.
+    Keeping that identity match in a separate driver prevents the generic
+    Huawei driver from being selected for an unrelated real vendor.
+    """
+
+    id = "simulated-vrp"
+    display_name = "Simulated VRP"
+
+    def matches(self, target: UpgradeTargetFacts) -> bool:
+        identity = " ".join((target.device_id, target.vendor, target.model, target.platform)).casefold()
+        return (
+            target.device_id.casefold() == "sim-terminal"
+            or "simos" in identity
+            or "simulated" in identity
+        )
+
+
 class UpgradeDriverRegistry:
     def __init__(self, drivers: tuple[UpgradeDriver, ...] | None = None) -> None:
-        self._drivers = tuple(drivers or (HuaweiVrpUpgradeDriver(),))
+        self._drivers = tuple(drivers or (SimulatedVrpUpgradeDriver(), HuaweiVrpUpgradeDriver()))
 
     def get(self, driver_id: str) -> UpgradeDriver:
         for driver in self._drivers:
@@ -236,6 +257,7 @@ class UpgradeDriverRegistry:
 
 __all__ = [
     "HuaweiVrpUpgradeDriver",
+    "SimulatedVrpUpgradeDriver",
     "UpgradeCleanupDecision",
     "UpgradeDriver",
     "UpgradeDriverRegistry",

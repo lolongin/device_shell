@@ -18,6 +18,7 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
         device_id: str,
         package: str = "",
         options: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | None = None,
         protocol: str = "auto",
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -29,6 +30,7 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
             device_id=device_id,
             package=package,
             options=options or {},
+            parameters=parameters or {},
             protocol=protocol,
             context=context or {},
             source="agent",
@@ -53,6 +55,11 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
     def task_cancel(task_id: str) -> dict[str, Any]:
         """Cancel a backend Task."""
         return gateway.call("mcp_tool", "task.cancel", task_id=task_id)
+
+    @mcp.tool(name="task.pause")
+    def task_pause(task_id: str) -> dict[str, Any]:
+        """Pause a backend Task at its checkpoint."""
+        return gateway.call("mcp_tool", "task.pause", task_id=task_id)
 
     @mcp.tool(name="workflow.list")
     def workflow_list() -> dict[str, Any]:
@@ -80,6 +87,7 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
         device_id: str = "",
         package: str = "",
         options: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | None = None,
         protocol: str = "auto",
         context: dict[str, Any] | None = None,
         plan_id: str = "",
@@ -93,6 +101,7 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
             device_id=device_id,
             package=package,
             options=options or {},
+            parameters=parameters or {},
             protocol=protocol,
             context=context or {},
             plan_id=plan_id,

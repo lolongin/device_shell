@@ -36,6 +36,9 @@ class DesktopApiClient:
     def system_status(self) -> dict[str, Any]:
         return self._tool("system_status")
 
+    def app_capabilities(self) -> dict[str, Any]:
+        return self._tool("app.capabilities")
+
     def device_list(self) -> dict[str, Any]:
         return self._tool("device_list")
 
@@ -44,6 +47,12 @@ class DesktopApiClient:
 
     def device_select(self, device_id: str) -> dict[str, Any]:
         return self._tool("device_select", device_id=device_id)
+
+    def device_open(self, device_id: str, protocol: str = "auto") -> dict[str, Any]:
+        return self._tool("device.open", device_id=device_id, protocol=protocol)
+
+    def connection_open(self, profile_id: str, protocol: str = "ssh", title: str = "") -> dict[str, Any]:
+        return self._tool("connection.open", profile_id=profile_id, protocol=protocol, title=title)
 
     def session_open(self, device_id: str) -> dict[str, Any]:
         return self._tool("session_open", device_id=device_id)

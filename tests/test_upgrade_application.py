@@ -216,6 +216,44 @@ def test_package_upgrade_workflow_completes_through_task_api(tmp_path: Path) -> 
     assert operation_data["stage_history"][-1]["stage"] == "staged"
 
 
+def test_package_upgrade_can_use_package_already_on_device(tmp_path: Path) -> None:
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+        transfer_root=tmp_path,
+    )
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        session = client.post(
+            "/api/v1/sessions",
+            headers=headers,
+            json={"device_id": "SIM-TERMINAL", "kind": "simulated"},
+        ).json()
+        started = client.post(
+            "/api/v1/package-upgrades",
+            headers=headers,
+            json={
+                "session_id": session["id"],
+                "package_path": "flash:/current.cc",
+                "package_source": "device",
+                "include_slave": True,
+                "reboot_after_setting": False,
+            },
+        )
+        operation = _wait_operation(
+            client,
+            headers,
+            started.json()["operation"]["id"],
+            {"staged", "completed", "failed", "cancelled"},
+        )
+
+    assert started.status_code == 200
+    assert operation["status"] == "staged", operation
+    assert operation["data"]["package_source"] == "device"
+    assert all(item["stage"] != "downloading" for item in operation["data"]["stage_history"])
+
+
 def test_package_upgrade_routes_require_authorization(tmp_path: Path) -> None:
     app = create_app(
         token=TOKEN,

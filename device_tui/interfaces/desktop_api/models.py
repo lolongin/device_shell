@@ -687,6 +687,7 @@ class PackageUpgradeStartRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=160)
     package_path: str = Field(min_length=1, max_length=4_096)
+    package_source: Literal["local", "device"] = "local"
     include_slave: bool = True
     standby_required: bool = False
     auto_delete_old_packages: bool = True

@@ -1,6 +1,7 @@
 import asyncio
 
 from device_tui.application.device_control import DeviceTarget
+from device_tui.application.errors import PackageUpgradeError, UnsupportedOperationError
 from device_tui.application.tasking import (
     Action,
     Decision,
@@ -176,6 +177,52 @@ def test_ambiguous_command_failure_waits_for_human_confirmation() -> None:
         assert {action.name for action in engine.pending_decision.available_actions} >= {"retry", "continue", "cancel"}
         engine.apply_decision(Action("continue", target_step="prepare_upgrade"))
         assert engine.task.workflow.current_step == ""
+
+    asyncio.run(scenario())
+
+
+def test_upgrade_driver_failure_cannot_be_accepted_as_success() -> None:
+    async def fail_upgrade(target, step, *, context):
+        if step.id == "prepare_upgrade":
+            raise UnsupportedOperationError("No upgrade driver matched target SIM-TERMINAL")
+        return {"output": step.id, "status": "completed"}
+
+    async def scenario() -> None:
+        workflow = device_upgrade_workflow(device_id="SIM-TERMINAL", package="router.cc")
+        engine = WorkflowEngine(workflow, fail_upgrade, target=DeviceTarget("SIM-TERMINAL"))
+        engine.start(make_task())
+        await engine.execute_step()
+        engine.apply_decision(Action("approve", target_step="prepare_upgrade"))
+        failed = await engine.execute_step()
+        assert failed.status == TaskStatus.FAILED.value
+        assert engine.pending_decision is None
+        state = failed.checkpoint.step_states[0]
+        assert state.error is not None
+        assert state.error.code == "unsupported_operation"
+
+    asyncio.run(scenario())
+
+
+def test_package_upgrade_failure_does_not_expose_continue_action() -> None:
+    async def fail_upgrade(target, step, *, context):
+        raise PackageUpgradeError("系统包下载失败。")
+
+    async def scenario() -> None:
+        workflow = device_upgrade_workflow(device_id="SIM-TERMINAL", package="router.cc")
+        engine = WorkflowEngine(workflow, fail_upgrade, target=DeviceTarget("SIM-TERMINAL"))
+        engine.start(make_task())
+        await engine.execute_step()
+        engine.apply_decision(Action("approve", target_step="prepare_upgrade"))
+        waiting = await engine.execute_step()
+        assert waiting.status == TaskStatus.WAITING_FOR_DECISION.value
+        assert engine.pending_decision is not None
+        assert "continue" not in {item.name for item in engine.pending_decision.available_actions}
+        try:
+            engine.apply_decision(Action("continue", target_step="prepare_upgrade"))
+        except ValueError as exc:
+            assert "not available" in str(exc)
+        else:
+            raise AssertionError("continue must not bypass package-upgrade failure handling")
 
     asyncio.run(scenario())
 

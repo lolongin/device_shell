@@ -126,6 +126,38 @@ def test_interactive_plan_handles_split_prompts_and_local_secrets() -> None:
     assert "super-secret" not in str(result)
 
 
+def test_login_does_not_send_password_from_same_coalesced_output_event() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 2121"},
+            {
+                "type": "expect",
+                "success": ["ftp_prompt"],
+                "responses": [
+                    {"match": "username_prompt", "secret_ref": "transfer.username"},
+                    {"match": "password_prompt", "secret_ref": "transfer.password"},
+                ],
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    coordinator.on_output("tab-1", "Connected\nUser(10.10.10.1):(none):\nPassword: ")
+    assert [item[1].text for item in harness.sent] == [
+        "ftp 192.0.2.10 2121\r",
+        "device-user\r",
+    ]
+    coordinator.on_output("tab-1", "Password: ")
+    assert [item[1].text for item in harness.sent] == [
+        "ftp 192.0.2.10 2121\r",
+        "device-user\r",
+        "super-secret\r",
+    ]
+    coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
+    assert runner.public_dict()["status"] == "completed"
+
+
 def test_secret_send_affixes_build_linux_sftp_command_and_redact_username() -> None:
     harness = Harness()
     coordinator = harness.coordinator()

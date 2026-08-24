@@ -91,6 +91,7 @@ class TransferRequest:
 @dataclass(frozen=True, slots=True)
 class PackageUpgradeRequest:
     package_path: str
+    package_source: str = "local"
     include_slave: bool = True
     standby_required: bool = False
     auto_delete_old_packages: bool = True

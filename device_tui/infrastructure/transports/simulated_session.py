@@ -249,7 +249,11 @@ class SimulatedTerminalSession:
             self._transfer_mode = "sftp" if lowered.startswith("sftp ") else "ftp"
             self._transfer_phase = "username"
             self._transfer_binary = self._transfer_mode == "sftp"
-            self.callbacks.on_output("Connected to simulated transfer service.\nUser: ")
+            # Huawei VRP FTP clients expose the peer address and the current
+            # local-user context in the username prompt. Keep this shape in
+            # the simulator so transfer automation is tested against the
+            # device prompt users actually see.
+            self.callbacks.on_output("Connected to simulated transfer service.\nUser(10.10.10.1):(none): ")
             self._arm_transfer_timeout()
             return
         if lowered.startswith("copy "):

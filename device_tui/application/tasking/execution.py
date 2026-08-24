@@ -177,6 +177,7 @@ class DeviceExecutionTool:
                 target,
                 PackageUpgradeRequest(
                     package_path=package_path,
+                    package_source=str(params.get("package_source") or "local"),
                     include_slave=bool(params.get("include_slave", True)),
                     standby_required=bool(params.get("standby_required", False)),
                     auto_delete_old_packages=bool(params.get("auto_delete_old_packages", True)),

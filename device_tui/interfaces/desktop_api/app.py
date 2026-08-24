@@ -933,7 +933,13 @@ def create_app(
         audit_max_bytes=audit_log_max_bytes,
         audit_backup_count=audit_log_backups,
     )
-    mcp_service = DesktopMcpService(desktop, terminal_executor, ai_service, plan_store=desktop_store)
+    mcp_service = DesktopMcpService(
+        desktop,
+        terminal_executor,
+        ai_service,
+        plan_store=desktop_store,
+        source_service=repo,
+    )
     legacy_import = (
         desktop.profiles.import_legacy_state(legacy_state_path)
         if should_import_legacy and legacy_state_path is not None
@@ -2385,6 +2391,7 @@ def create_app(
             DeviceTarget(device_id=session.device_id, session_id=session.id),
             PackageUpgradeRequest(
                 package_path=request.package_path,
+                package_source=request.package_source,
                 include_slave=request.include_slave,
                 standby_required=request.standby_required,
                 auto_delete_old_packages=request.auto_delete_old_packages,

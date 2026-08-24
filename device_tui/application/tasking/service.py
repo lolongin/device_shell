@@ -243,7 +243,11 @@ class WorkflowEngine:
                 # Human-reviewable device responses (for example, an
                 # unrecognised command) must reach a Decision Point even when
                 # the step normally has a terminal policy.
-                terminal = not requires_judgment and (bool(step.retry_policy.get("terminal", False)) or error.error_class.casefold() in {"terminal", "fatal"})
+                terminal = not requires_judgment and (
+                    bool(step.retry_policy.get("terminal", False))
+                    or error.error_class.casefold() in {"terminal", "fatal"}
+                    or error.code == "unsupported_operation"
+                )
                 if terminal:
                     return self._save(status=TaskStatus.FAILED.value, current_step=step.id)
                 # An explicit max_attempts policy is the declaration that this
@@ -378,6 +382,12 @@ class WorkflowEngine:
         name = action.name.casefold()
         if name not in {"retry", "retry_step", "resume_from", "resume-from", "cancel", "pause", "resume", "continue", "accept", "accept_failure", "accept-failure", "approve"}:
             raise ValueError(f"Unsupported workflow decision action: {action.name}")
+        allowed_names = {
+            item.name.casefold()
+            for item in self._pending_context.available_actions
+        }
+        if name not in allowed_names:
+            raise ValueError(f"Workflow decision action is not available: {action.name}")
         self._decisions.append(decision)
         self._pending_context = None
         self._pending_decision_id = ""
@@ -421,7 +431,10 @@ class WorkflowEngine:
             return (Action("retry", target_step=step_id), Action("cancel"))
         actions = [Action("retry", target_step=step_id)]
         state = self._states.get(step_id)
-        if state is not None and state.error is not None:
+        if state is not None and state.error is not None and state.error.code not in {
+            "unsupported_operation",
+            "package_upgrade_error",
+        }:
             actions.append(Action("continue", target_step=step_id))
         if index > 0:
             actions.append(Action("resume_from", target_step=steps[index - 1].id))

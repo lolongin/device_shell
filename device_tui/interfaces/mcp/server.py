@@ -9,8 +9,11 @@ from .tools import register_all_tools
 
 
 INSTRUCTIONS = (
-    "Operate devices through the running Device TUI backend. The public MCP "
-    "surface is intentionally limited to the namespaced Task/Workflow/Decision "
+    "Operate the running Device TUI application through its policy-controlled "
+    "application control plane. Discover the available resources with "
+    "app.capabilities. The public MCP surface includes app, device, session, "
+    "source, profile, command, automation, transfer, and namespaced "
+    "Task/Workflow/Decision "
     "capabilities: task.create, task.get, task.list, task.resume, task.cancel, "
     "workflow.list, workflow.plan.validate, workflow.plan.get, "
     "workflow.plan.approve, workflow.run, "

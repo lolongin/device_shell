@@ -6,6 +6,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+import posixpath
 import re
 
 from device_tui.application.errors import (
@@ -99,6 +100,7 @@ class PackageUpgradeService:
         *,
         session_id: str,
         package_path: str,
+        package_source: str = "local",
         include_slave: bool = True,
         standby_required: bool = False,
         auto_delete_old_packages: bool = True,
@@ -108,10 +110,17 @@ class PackageUpgradeService:
         driver_id: str = "auto",
     ) -> OperationRecord:
         session = self._connected_session(session_id)
-        source = self._transfers.resolve_source(package_path)
+        package_source = str(package_source or "local").casefold()
+        if package_source not in {"local", "device"}:
+            raise UnsupportedOperationError("package_source must be local or device.")
+        source = self._transfers.resolve_source(package_path) if package_source == "local" else None
+        package_name = source.name if source is not None else posixpath.basename(package_path.replace("\\", "/").rstrip("/"))
+        if not package_name or package_name in {".", ".."}:
+            raise UnsupportedOperationError("设备上的系统包路径无效。")
         driver = self._resolve_driver(session, driver_id)
         try:
-            driver.validate_artifact(source.path)
+            if source is not None:
+                driver.validate_artifact(source.path)
         except ValueError as exc:
             raise UnsupportedOperationError(str(exc)) from exc
         primary_storage = master_storage or driver.default_primary_storage
@@ -124,9 +133,10 @@ class PackageUpgradeService:
             stage="queued",
             message="系统包升级已排队。",
             data={
-                "package_path": source.relative_path,
-                "package_name": source.name,
-                "package_size": source.size_bytes,
+                "package_path": source.relative_path if source is not None else package_path,
+                "package_source": package_source,
+                "package_name": package_name,
+                "package_size": source.size_bytes if source is not None else 0,
                 "include_slave": bool(include_slave),
                 "standby_required": bool(standby_required),
                 "auto_delete_old_packages": bool(auto_delete_old_packages),
@@ -372,7 +382,7 @@ class PackageUpgradeService:
         self,
         operation_id: str,
         session: SessionRecord,
-        initial_source: PreparedTransferSource,
+        initial_source: PreparedTransferSource | None,
     ) -> None:
         owner_id = f"package-upgrade:{operation_id}"
         acquired = False
@@ -430,7 +440,8 @@ class PackageUpgradeService:
                         "无法确认备控存储是否存在，升级已停止。",
                     )
             cleanup_paths = self._cleanup_paths(
-                source=initial_source,
+                package_name=str(record.data["package_name"]),
+                package_size=int(record.data.get("package_size") or 0),
                 startup_output=startup_output,
                 master_storage=master_storage,
                 master_output=master_output,
@@ -440,7 +451,7 @@ class PackageUpgradeService:
                 auto_delete=bool(record.data["auto_delete_old_packages"]),
                 driver=driver,
             )
-            if source_fingerprint(initial_source.path) != initial_source.fingerprint:
+            if initial_source is not None and source_fingerprint(initial_source.path) != initial_source.fingerprint:
                 raise _UpgradeRunError("upgrade_source_changed", "预检期间本地系统包发生变化。")
             self._operations.update(
                 operation_id,
@@ -468,21 +479,22 @@ class PackageUpgradeService:
                     driver.cleanup_command(cleanup_path),
                     driver=driver,
                 )
-            master_package = driver.package_path(master_storage, initial_source.name)
+            package_name = str(record.data["package_name"])
+            package_size = int(record.data.get("package_size") or 0)
+            master_package = (
+                str(record.data["package_path"])
+                if str(record.data.get("package_source")) == "device"
+                else driver.package_path(master_storage, package_name)
+            )
             if not driver.package_is_present(
                 master_output,
                 storage=master_storage,
-                package_name=initial_source.name,
-                package_size=initial_source.size_bytes,
+                package_name=package_name,
+                package_size=package_size,
             ):
-                await self._download(
-                    operation_id,
-                    session,
-                    owner_id,
-                    initial_source,
-                    master_package,
-                    driver,
-                )
+                if initial_source is None:
+                    raise _UpgradeRunError("device_package_missing", f"设备主控未找到系统包 {master_package}，已跳过传包。")
+                await self._download(operation_id, session, owner_id, initial_source, master_package, driver)
             else:
                 self._operations.update(
                     operation_id,
@@ -491,7 +503,7 @@ class PackageUpgradeService:
                     progress_percent=62,
                     stage_actions=[f"跳过下载：{driver.storage_query_command(master_package)} 已确认文件大小匹配"],
                 )
-            if source_fingerprint(initial_source.path) != initial_source.fingerprint:
+            if initial_source is not None and source_fingerprint(initial_source.path) != initial_source.fingerprint:
                 raise _UpgradeRunError("upgrade_source_changed", "升级期间本地系统包发生变化。")
             verified_master = await self._command(
                 session,
@@ -502,11 +514,12 @@ class PackageUpgradeService:
             self._require_package(
                 verified_master,
                 master_storage,
-                initial_source,
+                package_name,
+                package_size,
                 "主控",
                 driver,
             )
-            slave_package = driver.package_path(slave_storage, initial_source.name)
+            slave_package = driver.package_path(slave_storage, package_name)
             if include_slave:
                 self._operations.update(
                     operation_id,
@@ -529,7 +542,8 @@ class PackageUpgradeService:
                 self._require_package(
                     verified_slave,
                     slave_storage,
-                    initial_source,
+                    package_name,
+                    package_size,
                     "备控",
                     driver,
                 )
@@ -537,14 +551,14 @@ class PackageUpgradeService:
                 operation_id,
                 session,
                 owner_id,
-                initial_source,
+                package_name,
                 master_package,
                 slave_package,
                 include_slave,
                 driver,
             )
             confirmed = await self._command(session, owner_id, driver.startup_query_command(), driver=driver)
-            if not driver.startup_uses_artifact(confirmed, initial_source.name):
+            if not driver.startup_uses_artifact(confirmed, package_name):
                 raise _UpgradeRunError(
                     "startup_verification_failed",
                     "最终 display startup 未确认目标包为下次启动系统包。",
@@ -660,7 +674,7 @@ class PackageUpgradeService:
         operation_id: str,
         session: SessionRecord,
         owner_id: str,
-        source: PreparedTransferSource,
+        package_name: str,
         master_package: str,
         slave_package: str,
         include_slave: bool,
@@ -775,7 +789,8 @@ class PackageUpgradeService:
     def _cleanup_paths(
         self,
         *,
-        source: PreparedTransferSource,
+        package_name: str,
+        package_size: int,
         startup_output: str,
         master_storage: str,
         master_output: str,
@@ -796,8 +811,8 @@ class PackageUpgradeService:
                 storage=storage,
                 output=output,
                 startup_output=startup_output,
-                package_name=source.name,
-                package_size=source.size_bytes,
+                package_name=package_name,
+                package_size=package_size,
             )
             if plan.free_bytes <= 0:
                 raise _UpgradeRunError(
@@ -822,19 +837,20 @@ class PackageUpgradeService:
     def _require_package(
         output: str,
         storage: str,
-        source: PreparedTransferSource,
+        package_name: str,
+        package_size: int,
         label: str,
         driver: UpgradeDriver,
     ) -> None:
         if not driver.package_is_present(
             output,
             storage=storage,
-            package_name=source.name,
-            package_size=source.size_bytes,
+            package_name=package_name,
+            package_size=package_size,
         ):
             raise _UpgradeRunError(
                 "package_verification_failed",
-                f"{label}未确认到目标包，或文件大小与本地系统包不匹配。",
+                f"{label}未确认到目标系统包，或文件大小校验失败。",
             )
 
     @classmethod

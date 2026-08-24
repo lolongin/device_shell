@@ -254,6 +254,10 @@ class DeviceUpgradeWorkflowProvider:
                 file_extensions=(".cc",), stage_to_transfer_root=True,
             ),
             WorkflowParameter(
+                "package_source", label="软件包来源", default="local", control="select",
+                enum=("local", "device"), enum_labels={"local": "本地传包", "device": "设备已有包"},
+            ),
+            WorkflowParameter(
                 "topology_policy", label="设备拓扑", default="auto", control="select",
                 enum=("auto", "single", "required"),
                 enum_labels={"auto": "自动识别备控", "single": "仅升级主控", "required": "必须有备控"},

@@ -75,11 +75,16 @@ class DeviceControlService:
             session = self._session(target.session_id)
             return self._session_view(session, reused=True)
         device_id = self._required_device_id(target)
+        requested_protocol = target.protocol.casefold()
         if reuse:
             for session in self._sessions.list_sessions():
-                if session.device_id == device_id and session.status == "connected":
+                same_protocol = (
+                    requested_protocol == "auto"
+                    or session.kind.casefold() == requested_protocol
+                )
+                if session.device_id == device_id and session.status == "connected" and same_protocol:
                     return self._session_view(session, reused=True)
-        protocol = target.protocol.casefold()
+        protocol = requested_protocol
         if protocol == "auto":
             protocol = self._protocol_for(self._devices.require_device(device_id))
         session = await self._sessions.create(device_id, protocol, title, term_size)
@@ -322,6 +327,7 @@ class DeviceControlService:
         record = self._upgrades.start(
             session_id=session.id,
             package_path=request.package_path,
+            package_source=request.package_source,
             include_slave=request.include_slave,
             standby_required=request.standby_required,
             auto_delete_old_packages=request.auto_delete_old_packages,

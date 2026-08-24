@@ -26,6 +26,7 @@ from device_tui.application import (
     WorkflowPlanCompiler,
     PlanStore,
 )
+from device_tui.application.profiles import ConnectionProfileDraft, ProfileEndpoint
 from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
 from .terminal_executor import BackendTerminalExecutor
 
@@ -39,10 +40,12 @@ class DesktopMcpService:
         terminal_executor: BackendTerminalExecutor,
         ai: AiApplicationService,
         plan_store: PlanStore | None = None,
+        source_service: Any | None = None,
     ) -> None:
         self.desktop = desktop
         self.terminal_executor = terminal_executor
         self.ai = ai
+        self.source_service = source_service
         self._selected_device_id = ""
         self._plan_compiler = WorkflowPlanCompiler(catalog=desktop.workflows)
         self._plans: dict[str, tuple[WorkflowPlan, Any]] = {}
@@ -97,6 +100,285 @@ class DesktopMcpService:
             "sessions": [self._session_payload(item) for item in self.desktop.sessions.list_sessions()],
             "operations": [asdict(item) for item in self.desktop.control.list_operations(limit=50)],
         }
+
+    async def _tool_app_capabilities(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """Describe the supported application control-plane resources."""
+        return {
+            "resources": {
+                "devices": {"read": ["list", "get", "select"], "write": ["open", "action"]},
+                "sessions": {"read": ["list", "status"], "write": ["open", "reconnect", "disconnect", "close"]},
+                "workflows": {"read": ["list", "plan.get"], "write": ["run", "plan.validate", "plan.approve", "replan"]},
+                "tasks": {"read": ["list", "get", "decision.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply"]},
+                "terminal": {"read": ["read", "execution.get"], "write": ["execute", "batch", "interact", "execution.cancel"]},
+                "profiles": {"read": ["list"], "write": ["save", "delete"]},
+                "connections": {"write": ["open"]},
+                "commands": {"read": ["workspace"], "write": ["group.save", "group.delete", "group.reorder", "preferences"]},
+                "automation": {"read": ["workspace", "preview"], "write": ["rule.save", "rule.delete", "rule.clone", "rule.enable", "rule.trigger", "cancel", "quick_send.save", "quick_send.delete", "quick_send.send"]},
+                "transfers": {"read": ["settings", "files", "operation.get", "operation.wait"], "write": ["settings", "service.start", "service.stop", "service.log.clear", "start", "operation.cancel"]},
+                "device_sources": {"read": ["status", "plugins"], "write": ["switch", "plugin.update", "plugin.test"]},
+                "ai": {"read": ["skills", "result", "approval", "audit"], "write": ["execute", "approval"]},
+            },
+            "boundaries": {
+                "workflow_engine": "task_only",
+                "arbitrary_method_dispatch": False,
+                "raw_device_commands": "policy_checked_terminal_tools",
+                "credentials": "never_returned",
+            },
+        }
+
+    async def _tool_device_action(self, params: dict[str, Any]) -> dict[str, Any]:
+        device_id = self._text(params, "device_id")
+        action = self._text(params, "action").casefold()
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("device.action requires confirm=true.")
+        operations = {
+            "claim": self.desktop.devices.claim,
+            "release": self.desktop.devices.release,
+            "toggle": self.desktop.devices.toggle,
+            "power_off": self.desktop.devices.power_off,
+        }
+        operation = operations.get(action)
+        if operation is None:
+            raise UnsupportedOperationError(f"Unsupported device action: {action}")
+        result = operation(device_id)
+        return {"action": action, "device_id": device_id, "message": result.message, "device": self._device_payload(result.device)}
+
+    async def _tool_device_open(self, params: dict[str, Any]) -> dict[str, Any]:
+        device_id = self._text(params, "device_id")
+        protocol = str(params.get("protocol") or "auto").casefold()
+        if protocol not in {"auto", "ssh", "telnet", "serial", "simulated"}:
+            raise UnsupportedOperationError(
+                "protocol must be one of auto, ssh, telnet, serial, simulated."
+            )
+        session, reused = await self._open_or_reuse(device_id, protocol)
+        return {
+            "device_id": device_id,
+            "protocol": session.kind,
+            "requested_protocol": protocol,
+            "reused": reused,
+            "session": self._session_payload(session),
+        }
+
+    async def _tool_connection_open(self, params: dict[str, Any]) -> dict[str, Any]:
+        profile_id = self._text(params, "profile_id")
+        protocol = str(params.get("protocol") or "ssh").casefold()
+        if protocol not in {"ssh", "telnet", "serial"}:
+            raise UnsupportedOperationError("profile connection protocol must be ssh, telnet, or serial.")
+        target = self.desktop.profiles.resolve_target(profile_id, protocol)
+        view = await self.desktop.control.open_connection(
+            target,
+            reuse=True,
+            title=str(params.get("title") or ""),
+            term_size=(int(params.get("cols") or 160), int(params.get("rows") or 40)),
+            context=ControlContext(source="mcp"),
+        )
+        session = next(
+            (item for item in self.desktop.sessions.list_sessions() if item.id == view.session_id),
+            None,
+        )
+        if session is None:
+            raise ResourceNotFoundError("Session disappeared after opening", details={"session_id": view.session_id})
+        return {
+            "profile_id": profile_id,
+            "device_id": session.device_id,
+            "protocol": session.kind,
+            "reused": view.reused,
+            "session": self._session_payload(session),
+        }
+
+    async def _tool_source_status(self, _params: dict[str, Any]) -> dict[str, Any]:
+        service = self._require_source_service()
+        return self._source_status_payload(service)
+
+    async def _tool_source_plugins(self, _params: dict[str, Any]) -> dict[str, Any]:
+        service = self._require_source_service()
+        plugins: list[dict[str, Any]] = []
+        for registration in service.registry.registrations():
+            descriptor = registration.descriptor
+            values = service.registry.configuration(descriptor.id)
+            plugins.append({
+                "id": descriptor.id,
+                "label": descriptor.label,
+                "description": descriptor.description,
+                "version": descriptor.version,
+                "publisher": descriptor.publisher,
+                "built_in": registration.built_in,
+                "enabled": service.registry.enabled(descriptor.id),
+                "available": descriptor.id in service.source_ids(),
+                "active": descriptor.id == service.active_source,
+                "default": descriptor.id == service.default_source,
+                "requires_login": descriptor.requires_login,
+                "supports_import": descriptor.supports_import,
+                "unavailable_reason": service.registry.unavailable_reason(descriptor.id),
+                "config": {item.key: values.get(item.key) for item in registration.config_fields if item.kind != "secret"},
+                "secrets_configured": [item.key for item in registration.config_fields if item.kind == "secret" and service.registry.secret_configured(descriptor.id, item.key)],
+            })
+        return {"plugins": plugins, "warnings": list(service.registry.warnings())}
+
+    async def _tool_source_switch(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._require_source_service()
+        if not service.product_profile.allow_source_switch:
+            raise UnsupportedOperationError("The current product policy does not allow source switching.")
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("source.switch requires confirm=true.")
+        source_id = self._text(params, "source")
+        descriptor = service.activate(source_id)
+        return {"active_source": descriptor.id, "source": self._source_status_payload(service)}
+
+    async def _tool_source_plugin_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._require_source_service()
+        if not service.product_profile.allow_plugin_management:
+            raise UnsupportedOperationError("The current product policy does not allow plugin management.")
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("source.plugin.update requires confirm=true.")
+        source_id = self._text(params, "source_id")
+        config = params.get("config") if isinstance(params.get("config"), dict) else {}
+        secrets = params.get("secrets") if isinstance(params.get("secrets"), dict) else {}
+        service.apply_plugin_configuration(source_id, config_updates=config, secret_updates=secrets, enabled=params.get("enabled"))
+        return await self._tool_source_plugins({})
+
+    async def _tool_source_plugin_test(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._require_source_service()
+        result = service.test_plugin_configuration(self._text(params, "source_id"))
+        return {"success": result.success, "message": result.message}
+
+    async def _tool_profile_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return {"profiles": [self._profile_payload(item) for item in self.desktop.profiles.list_profiles()], "groups": self.desktop.profiles.list_groups()}
+
+    async def _tool_profile_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        profile = self.desktop.profiles.save(self._profile_draft(params), allow_duplicate=bool(params.get("allow_duplicate", False)))
+        return {"profile": self._profile_payload(profile)}
+
+    async def _tool_profile_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        profile_id = self._text(params, "profile_id")
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("profile.delete requires confirm=true.")
+        self.desktop.profiles.delete(profile_id)
+        return {"profile_id": profile_id, "deleted": True}
+
+    async def _tool_command_workspace(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return {"groups": [asdict(item) for item in self.desktop.commands.list_groups()], "current_group_id": self.desktop.commands.current_group_id(), "enter_sends": self.desktop.commands.enter_sends(), "history": [asdict(item) for item in self.desktop.commands.history(limit=200)]}
+
+    async def _tool_command_group_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        group_id = str(params.get("group_id") or "").strip()
+        if group_id:
+            name = str(params.get("name") or "").strip() or None
+            group = self.desktop.commands.update_group(group_id, name=name, content=str(params.get("content") or ""))
+        else:
+            group = self.desktop.commands.create_group(str(params.get("name") or ""))
+            if "content" in params:
+                group = self.desktop.commands.update_group(group.id, content=str(params.get("content") or ""))
+        return {"group": asdict(group)}
+
+    async def _tool_command_group_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        group_id = self._text(params, "group_id")
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("command.group.delete requires confirm=true.")
+        self.desktop.commands.delete_group(group_id)
+        return {"group_id": group_id, "deleted": True}
+
+    async def _tool_command_group_reorder(self, params: dict[str, Any]) -> dict[str, Any]:
+        group_ids = params.get("group_ids")
+        if not isinstance(group_ids, list):
+            raise UnsupportedOperationError("group_ids must be a list")
+        return {"groups": [asdict(item) for item in self.desktop.commands.reorder_groups([str(item) for item in group_ids]) ]}
+
+    async def _tool_command_preferences(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("current_group_id") is not None:
+            self.desktop.commands.set_current_group(str(params["current_group_id"]))
+        if params.get("enter_sends") is not None:
+            self.desktop.commands.set_enter_sends(bool(params["enter_sends"]))
+        return await self._tool_command_workspace({})
+
+    async def _tool_automation_workspace(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return {"rules": [self._automation_rule_payload(item) for item in self.desktop.automation.list_rules()], "sessions": [asdict(item) for item in self.desktop.automation.statuses()], "quick_send_buttons": [asdict(item) for item in self.desktop.automation.list_quick_send_buttons()], "activity": [asdict(item) for item in self.desktop.automation.activities(limit=100)]}
+
+    async def _tool_automation_rule_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw = params.get("rule")
+        if not isinstance(raw, dict):
+            raise UnsupportedOperationError("rule must be an object")
+        rule = self.desktop.automation.deserialize_rule(raw)
+        rule_id = str(params.get("rule_id") or "").strip()
+        record = self.desktop.automation.update_rule(rule_id, rule) if rule_id else self.desktop.automation.create_rule(rule)
+        return {"rule": self._automation_rule_payload(record)}
+
+    async def _tool_automation_rule_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        rule_id = self._text(params, "rule_id")
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("automation.rule.delete requires confirm=true.")
+        self.desktop.automation.delete_rule(rule_id)
+        return {"rule_id": rule_id, "deleted": True}
+
+    async def _tool_automation_rule_clone(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"rule": self._automation_rule_payload(self.desktop.automation.clone_rule(self._text(params, "rule_id")))}
+
+    async def _tool_automation_rule_enable(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"rule": self._automation_rule_payload(self.desktop.automation.set_enabled(self._text(params, "rule_id"), bool(params.get("enabled", True))))}
+
+    async def _tool_automation_rule_trigger(self, params: dict[str, Any]) -> dict[str, Any]:
+        rule_id, session_id = self._text(params, "rule_id"), self._text(params, "session_id")
+        self.desktop.automation.trigger_rule(rule_id, session_id)
+        return {"rule_id": rule_id, "session_id": session_id, "status": "started"}
+
+    async def _tool_automation_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._text(params, "session_id")
+        self.desktop.automation.cancel_session(session_id, reason="mcp_cancel")
+        return {"session_id": session_id, "status": "cancelled"}
+
+    async def _tool_automation_quick_send_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        button_id = str(params.get("button_id") or "").strip()
+        values = {key: params[key] for key in ("name", "response_text", "append_enter", "sensitive") if key in params}
+        button = self.desktop.automation.update_quick_send_button(button_id, **values) if button_id else self.desktop.automation.create_quick_send_button(**values)
+        return {"button": asdict(button)}
+
+    async def _tool_automation_quick_send_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        button_id = self._text(params, "button_id")
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("automation.quick_send.delete requires confirm=true.")
+        self.desktop.automation.delete_quick_send_button(button_id)
+        return {"button_id": button_id, "deleted": True}
+
+    async def _tool_automation_quick_send_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        button_id, session_id = self._text(params, "button_id"), self._text(params, "session_id")
+        await self.desktop.automation.send_quick_send_button(button_id, session_id)
+        return {"button_id": button_id, "session_id": session_id, "status": "sent"}
+
+    async def _tool_transfer_settings(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return {"settings": asdict(self.desktop.transfers.settings())}
+
+    async def _tool_transfer_service(self, params: dict[str, Any]) -> dict[str, Any]:
+        action = self._text(params, "action").casefold()
+        if action == "start":
+            await self.desktop.transfers.start_service(auto_stop_when_idle=False)
+        elif action == "stop":
+            await self.desktop.transfers.stop_service()
+        elif action == "clear_log":
+            self.desktop.transfers.clear_service_log()
+        else:
+            raise UnsupportedOperationError(f"Unsupported transfer service action: {action}")
+        return {"action": action, "settings": asdict(self.desktop.transfers.settings()), "log": self.desktop.transfers.service_log()}
+
+    async def _tool_transfer_files(self, params: dict[str, Any]) -> dict[str, Any]:
+        catalog = self.desktop.transfers.list_files(
+            relative_path=str(params.get("path") or ""),
+            recursive=bool(params.get("recursive", True)),
+            limit=min(1_000, max(1, int(params.get("limit") or 200))),
+        )
+        return {"files": [item.public_dict() for item in catalog.files], "truncated": catalog.truncated}
+
+    async def _tool_transfer_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._tool_file_transfer_start(params)
+
+    async def _tool_automation_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw = params.get("rule")
+        if not isinstance(raw, dict):
+            raise UnsupportedOperationError("rule must be an object")
+        return self.desktop.automation.preview_rule(
+            self.desktop.automation.deserialize_rule(raw),
+            session_id=str(params.get("session_id") or ""),
+            sample_output=str(params.get("sample_output") or ""),
+            max_steps=min(500, max(1, int(params.get("max_steps") or 200))),
+        )
 
     async def _tool_device_list(self, _params: dict[str, Any]) -> dict[str, Any]:
         inventory = self.desktop.devices.list_inventory()
@@ -443,6 +725,8 @@ class DesktopMcpService:
     async def _tool_session_manage(self, params: dict[str, Any]) -> dict[str, Any]:
         action = self._text(params, "action").casefold()
         protocol = str(params.get("protocol") or "auto").casefold()
+        if protocol not in {"auto", "ssh", "telnet", "serial", "simulated"}:
+            raise UnsupportedOperationError("protocol must be one of auto, ssh, telnet, serial, simulated.")
         device_id = str(params.get("device_id") or "")
         session_id = str(params.get("session_id") or "")
         if action == "open":
@@ -614,6 +898,8 @@ class DesktopMcpService:
             await asyncio.sleep(0.1)
 
     async def _tool_operation_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not bool(params.get("confirm", False)):
+            raise UnsupportedOperationError("operation.cancel requires confirm=true.")
         operation = self.desktop.control.cancel_operation(self._text(params, "operation_id"))
         return {"operation": self._operation_view_payload(operation)}
 
@@ -762,6 +1048,92 @@ class DesktopMcpService:
         payload = dict(result)
         payload["timing"] = {"total_ms": payload.get("duration_ms", 0)}
         return payload
+
+    def _require_source_service(self) -> Any:
+        if self.source_service is None:
+            raise UnsupportedOperationError("Device source control is unavailable in this application instance.")
+        return self.source_service
+
+    @staticmethod
+    def _source_status_payload(service: Any) -> dict[str, Any]:
+        metadata = service.imported_store.imported_device_metadata()
+        return {
+            "active_source": service.active_source,
+            "default_source": service.default_source,
+            "source_ids": list(service.source_ids()),
+            "product_mode": service.product_profile.mode,
+            "source_locked": service.product_profile.source_locked,
+            "allow_source_switch": service.product_profile.allow_source_switch,
+            "allow_plugin_management": service.product_profile.allow_plugin_management,
+            "allow_import": service.product_profile.allow_import,
+            "imported": {
+                "count": metadata.row_count,
+                "source_name": metadata.source_name,
+                "sheet_name": metadata.sheet_name,
+                "imported_at": metadata.imported_at,
+            },
+        }
+
+    @staticmethod
+    def _profile_payload(profile: Any) -> dict[str, Any]:
+        def endpoint(value: Any) -> dict[str, Any]:
+            return {"host": value.host, "port": value.port, "username": value.username}
+        return {
+            "id": profile.id,
+            "profile_type": profile.profile_type,
+            "name": profile.name,
+            "group": profile.group,
+            "notes": profile.notes,
+            "preferred_protocol": profile.preferred_protocol,
+            "telnet": endpoint(profile.telnet),
+            "ssh": endpoint(profile.ssh),
+            "serial": endpoint(profile.serial),
+            "created_at": profile.created_at,
+            "updated_at": profile.updated_at,
+        }
+
+    @staticmethod
+    def _profile_draft(params: dict[str, Any]) -> ConnectionProfileDraft:
+        def endpoint(name: str, default_port: int) -> ProfileEndpoint:
+            raw = params.get(name)
+            value = raw if isinstance(raw, dict) else {}
+            return ProfileEndpoint(
+                host=str(value.get("host") or ""),
+                port=int(value.get("port") or default_port),
+                username=str(value.get("username") or ""),
+            )
+        profile_type = str(params.get("profile_type") or "server")
+        if profile_type not in {"temporary", "server"}:
+            raise UnsupportedOperationError("profile_type must be temporary or server")
+        preferred = str(params.get("preferred_protocol") or "ssh")
+        if preferred not in {"simulated", "ssh", "telnet", "serial"}:
+            raise UnsupportedOperationError("Unsupported preferred_protocol")
+        return ConnectionProfileDraft(
+            profile_type=profile_type,  # type: ignore[arg-type]
+            profile_id=str(params.get("profile_id") or ""),
+            name=str(params.get("name") or ""),
+            group=str(params.get("group") or ""),
+            notes=str(params.get("notes") or ""),
+            preferred_protocol=preferred,  # type: ignore[arg-type]
+            telnet=endpoint("telnet", 23),
+            ssh=endpoint("ssh", 22),
+            serial=endpoint("serial", 23),
+            passwords={
+                protocol: params[f"{protocol}_password"]
+                for protocol in ("telnet", "ssh", "serial")
+                if f"{protocol}_password" in params
+            },
+        )
+
+    def _automation_rule_payload(self, record: Any) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "rule": self.desktop.automation.serialize_rule(
+                self.desktop.automation.public_rule(record)
+            ),
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+        }
 
     @staticmethod
     def _text(params: dict[str, Any], name: str) -> str:

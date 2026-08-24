@@ -124,6 +124,42 @@ def test_qt_free_mcp_facade_is_idempotent_and_audited() -> None:
     assert any(entry["tool"] == "terminal_run" for entry in audit.json()["entries"])
 
 
+def test_mcp_application_control_plane_discovers_and_controls_app_resources() -> None:
+    with _client() as client:
+        capabilities = _call(client, "app.capabilities")
+        devices = _call(client, "device.list")
+        sources = _call(client, "source.status")
+        denied_response = client.post(
+            "/api/v1/mcp/device.action",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "device_id": devices["data"]["devices"][0]["id"],
+                "action": "power_off",
+            },
+        )
+        denied = denied_response.json()
+
+    assert capabilities["data"]["resources"]["workflows"]["write"] == [
+        "run", "plan.validate", "plan.approve", "replan",
+    ]
+    assert sources["data"]["active_source"]
+    assert denied_response.status_code == 400
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "unsupported_operation"
+
+
+def test_mcp_device_open_accepts_explicit_transport_protocol() -> None:
+    with _client() as client:
+        devices = _call(client, "device.list")
+        device_id = devices["data"]["devices"][0]["id"]
+        opened = _call(client, "device.open", {"device_id": device_id, "protocol": "simulated"})
+
+    assert opened["ok"] is True
+    assert opened["data"]["requested_protocol"] == "simulated"
+    assert opened["data"]["protocol"] == "simulated"
+    assert opened["data"]["session"]["device_id"] == device_id
+
+
 def test_unified_agent_workflow_capabilities_are_backend_only() -> None:
     with _client() as client:
         workflows = _call(client, "workflow.list")
