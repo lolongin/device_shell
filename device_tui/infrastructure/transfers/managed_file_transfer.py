@@ -22,6 +22,26 @@ TERMINAL_ENVIRONMENTS = frozenset({"auto", "linux", "vrp"})
 _LINUX_MARKER_PREFIX = "__DEVICE_TUI_TRANSFER_"
 
 
+@dataclass(frozen=True, slots=True)
+class TransferInteractionProfile:
+    """Device/client-specific terminal vocabulary for a managed transfer."""
+
+    id: str = "generic-ftp"
+    connect_template: str = "{protocol} {host} {port}"
+    binary_command: str = "binary"
+    download_template: str = "get {source} {destination}"
+    upload_template: str = "put {source} {destination}"
+    quit_command: str = "quit"
+    host_key_prompt: str = "host_key_prompt"
+    username_prompt: str = "username_prompt"
+    password_prompt: str = "password_prompt"
+    login_label: str = "本地自动登录文件服务"
+    connect_timeout_code: str = "ftp_login_timeout"
+    binary_timeout_code: str = "ftp_binary_prompt_timeout"
+    transfer_timeout_code: str = "ftp_transfer_timeout"
+    exit_timeout_code: str = "ftp_exit_timeout"
+
+
 class ManagedTransferError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -376,20 +396,23 @@ def _managed_transfer_connect_steps(
     timeout_seconds: int,
     terminal_environment: str = "vrp",
     connect_secret_ref: str = "",
+    profile: TransferInteractionProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Shared connect/login/binary-mode steps for App-managed FTP/SCP transfers."""
     normalized_protocol = protocol.strip().casefold()
+    profile = profile or TransferInteractionProfile()
     prompt = "sftp_prompt" if normalized_protocol == "sftp" else "ftp_prompt"
     protocol_steps: list[dict[str, Any]] = []
     if normalized_protocol == "ftp":
         protocol_steps = [
-            {"type": "send", "text": "binary", "label": "切换二进制模式"},
+            {"type": "send", "text": profile.binary_command, "label": "切换二进制模式"},
             {
                 "type": "expect",
                 "success": ["ftp_prompt"],
                 "failures": ["500 ", "502 ", "Unknown FTP command", "Error:"],
                 "timeout_seconds": 30,
                 "label": "确认二进制模式",
+                "timeout_code": profile.binary_timeout_code,
             },
         ]
     environment = normalize_terminal_environment(terminal_environment)
@@ -411,7 +434,7 @@ def _managed_transfer_connect_steps(
     else:
         connect_step = {
             "type": "send",
-            "text": f"{normalized_protocol} {host} {port}",
+            "text": profile.connect_template.format(protocol=normalized_protocol, host=host, port=int(port)),
             "label": f"连接 {normalized_protocol.upper()} 服务",
         }
     return [
@@ -429,7 +452,8 @@ def _managed_transfer_connect_steps(
                 "421 ",
             ],
             "timeout_seconds": timeout_seconds,
-            "label": "本地自动登录文件服务",
+            "label": profile.login_label,
+            "timeout_code": profile.connect_timeout_code,
         },
         *protocol_steps,
     ]
@@ -438,20 +462,22 @@ def _managed_transfer_connect_steps(
 def _managed_transfer_login_responses(
     username_secret_ref: str = "file_transfer.username",
     password_secret_ref: str = "file_transfer.password",
+    profile: TransferInteractionProfile | None = None,
 ) -> list[dict[str, Any]]:
+    profile = profile or TransferInteractionProfile()
     return [
         {
-            "match": "host_key_prompt",
+            "match": profile.host_key_prompt,
             "text": "yes",
             "max_matches": 1,
         },
         {
-            "match": "username_prompt",
+            "match": profile.username_prompt,
             "secret_ref": username_secret_ref,
             "max_matches": 1,
         },
         {
-            "match": "password_prompt",
+            "match": profile.password_prompt,
             "secret_ref": password_secret_ref,
             "max_matches": 2,
         },
@@ -470,6 +496,7 @@ def build_managed_transfer_steps(
     password_secret_ref: str = "file_transfer.password",
     terminal_environment: str = "vrp",
     connect_secret_ref: str = "",
+    profile: TransferInteractionProfile | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     normalized_protocol = protocol.strip().casefold()
     if normalized_protocol not in {"ftp", "sftp"}:
@@ -484,19 +511,25 @@ def build_managed_transfer_steps(
     prompt = "sftp_prompt" if normalized_protocol == "sftp" else "ftp_prompt"
     source = quote_transfer_argument(source_path)
     destination = quote_transfer_argument(destination_path)
+    profile = profile or TransferInteractionProfile()
     steps: list[dict[str, Any]] = [
         *_managed_transfer_connect_steps(
             normalized_protocol,
             host,
             port,
-            _managed_transfer_login_responses(username_secret_ref, password_secret_ref),
+            _managed_transfer_login_responses(
+                username_secret_ref,
+                password_secret_ref,
+                profile,
+            ),
             timeout_seconds=45,
             terminal_environment=terminal_environment,
             connect_secret_ref=connect_secret_ref,
+            profile=profile,
         ),
         {
             "type": "send",
-            "text": f"get {source} {destination}",
+            "text": profile.download_template.format(source=source, destination=destination),
             "label": f"下载 {source_path}",
         },
         {
@@ -515,15 +548,17 @@ def build_managed_transfer_steps(
             ],
             "timeout_seconds": transfer_timeout,
             "label": "等待文件下载完成",
+            "timeout_code": profile.transfer_timeout_code,
             "max_output_chars": 32_768,
         },
-        {"type": "send", "text": "quit", "label": "退出文件客户端"},
+        {"type": "send", "text": profile.quit_command, "label": "退出文件客户端"},
         {
             "type": "expect",
             "success": ["device_prompt"],
             "failures": ["Error:", "500 ", "502 ", "550 "],
             "timeout_seconds": 30,
             "label": "返回设备命令行",
+            "timeout_code": profile.exit_timeout_code,
         },
     ]
     return steps, min(3_600, transfer_timeout + 120)
@@ -611,6 +646,7 @@ def build_managed_transfer_download_steps(
     password_secret_ref: str = "file_transfer.password",
     terminal_environment: str = "vrp",
     connect_secret_ref: str = "",
+    profile: TransferInteractionProfile | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Build FTP/SCP steps for a device->PC transfer (device 'put' to PC server)."""
     normalized_protocol = protocol.strip().casefold()
@@ -626,19 +662,25 @@ def build_managed_transfer_download_steps(
     prompt = "sftp_prompt" if normalized_protocol == "sftp" else "ftp_prompt"
     source = quote_transfer_argument(source_path)
     destination = quote_transfer_argument(destination_path)
+    profile = profile or TransferInteractionProfile()
     steps: list[dict[str, Any]] = [
         *_managed_transfer_connect_steps(
             normalized_protocol,
             host,
             port,
-            _managed_transfer_login_responses(username_secret_ref, password_secret_ref),
+            _managed_transfer_login_responses(
+                username_secret_ref,
+                password_secret_ref,
+                profile,
+            ),
             timeout_seconds=45,
             terminal_environment=terminal_environment,
             connect_secret_ref=connect_secret_ref,
+            profile=profile,
         ),
         {
             "type": "send",
-            "text": f"put {source} {destination}",
+            "text": profile.upload_template.format(source=source, destination=destination),
             "label": f"上传 {source_path}",
         },
         {
@@ -657,15 +699,17 @@ def build_managed_transfer_download_steps(
             ],
             "timeout_seconds": transfer_timeout,
             "label": "等待文件上传完成",
+            "timeout_code": profile.transfer_timeout_code,
             "max_output_chars": 32_768,
         },
-        {"type": "send", "text": "quit", "label": "退出文件客户端"},
+        {"type": "send", "text": profile.quit_command, "label": "退出文件客户端"},
         {
             "type": "expect",
             "success": ["device_prompt"],
             "failures": ["Error:", "500 ", "502 ", "550 "],
             "timeout_seconds": 30,
             "label": "返回设备命令行",
+            "timeout_code": profile.exit_timeout_code,
         },
     ]
     return steps, min(3_600, transfer_timeout + 120)

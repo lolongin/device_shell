@@ -130,6 +130,12 @@ def test_backend_package_upgrade_verification_reboot_approval_and_cancel(
     )
     assert first_operation["progress_percent"] == 90
     assert first_operation["data"]["include_slave"] is True
+    topology = first_operation["data"]["topology_detection"]
+    assert topology["policy"] == "auto"
+    assert topology["master_storage"] == "flash:/"
+    assert topology["standby_storage"] == "slave#flash:/"
+    assert topology["standby_status"] == "available"
+    assert topology["decision"] == "dual_controller"
     assert first_operation["data"]["reboot_required"] is True
     history = first_operation["data"]["stage_history"]
     assert [item["stage"] for item in history] == [
@@ -214,6 +220,7 @@ def test_package_upgrade_workflow_completes_through_task_api(tmp_path: Path) -> 
     assert task["result"]["steps"][0]["status"] == "completed"
     operation_data = task["result"]["steps"][0]["data"]["operation"]["data"]
     assert operation_data["stage_history"][-1]["stage"] == "staged"
+    assert operation_data["topology_detection"]["decision"] == "dual_controller"
 
 
 def test_package_upgrade_can_use_package_already_on_device(tmp_path: Path) -> None:

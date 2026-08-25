@@ -58,6 +58,17 @@ const upgradeErrorMessage = computed(() => {
   if (/no connected terminal session is available/i.test(message)) return ''
   return message
 })
+const transferDiagnostics = computed(() => {
+  const value = currentOperation.value?.data?.transfer_diagnostics
+  if (!value || typeof value !== 'object') return null
+  const item = value as Record<string, unknown>
+  return {
+    failedStep: String(item.failed_step || ''),
+    errorCode: String(item.error_code || ''),
+    lastOutput: String(item.last_output || ''),
+    responsesSent: Array.isArray(item.responses_sent) ? item.responses_sent.map(String) : []
+  }
+})
 const stages = [
   ['prechecking', '安全预检', 5],
   ['cleanup', '空间清理', 20],
@@ -415,6 +426,13 @@ onBeforeUnmount(() => {
               type="button"
               @click="workspace.cancelOperation(currentOperation.id)"
             ><CircleStop :size="13" />取消任务</button>
+          </div>
+          <div v-if="transferDiagnostics" class="upgrade-transfer-diagnostics" data-testid="upgrade-transfer-diagnostics">
+            <strong>传输诊断</strong>
+            <span v-if="transferDiagnostics?.failedStep">失败步骤：{{ transferDiagnostics?.failedStep }}</span>
+            <span v-if="transferDiagnostics?.errorCode">错误码：{{ transferDiagnostics?.errorCode }}</span>
+            <span v-if="transferDiagnostics?.responsesSent.length">已响应：{{ transferDiagnostics?.responsesSent.join('、') }}</span>
+            <pre v-if="transferDiagnostics?.lastOutput">最后输出：{{ transferDiagnostics?.lastOutput }}</pre>
           </div>
         </section>
 

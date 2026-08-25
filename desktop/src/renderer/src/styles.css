@@ -2305,6 +2305,9 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .task-substeps li p { color: var(--muted); }
 .task-stage-actions { display: grid; gap: 2px; margin: 3px 0 0; padding: 0 0 0 14px; color: var(--text); list-style: disc; }
 .task-stage-actions li { display: list-item; padding: 0; color: var(--soft); font: 10px/1.35 'Fira Code', monospace; overflow-wrap: anywhere; }
+.task-topology-evidence { display: grid; gap: 2px; margin-top: 5px; padding: 6px 8px; border-left: 2px solid #38bdf8; background: color-mix(in srgb, #0ea5e9 10%, transparent); }
+.task-topology-evidence strong { font-size: 11px; }
+.task-topology-evidence p, .task-topology-evidence small { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.35; }
 .task-decision { display: grid; gap: 8px; padding: 9px; border: 1px solid color-mix(in srgb, var(--warning) 42%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .task-decision-heading { gap: 7px; color: var(--warning); }
 .task-decision-heading > div { display: grid; gap: 2px; }
@@ -2439,6 +2442,9 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .upgrade-current-operation strong, .upgrade-current-operation span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upgrade-current-operation strong { font-size: 10.5px; }
 .upgrade-current-operation > div span { color: var(--muted); font-size: 9.5px; }
+.upgrade-transfer-diagnostics { margin: 0 12px 10px; padding: 8px 9px; display: grid; gap: 3px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 7%, transparent); color: var(--muted); font-size: 9.5px; }
+.upgrade-transfer-diagnostics strong { color: var(--text); font-size: 10px; }
+.upgrade-transfer-diagnostics pre { max-height: 90px; margin: 3px 0 0; overflow: auto; white-space: pre-wrap; color: var(--text); font: inherit; }
 .upgrade-current-operation .operation-progress { grid-column: 1 / -1; }
 .upgrade-history-card { min-height: 180px; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .upgrade-history-card > div { min-height: 0; padding: 6px; overflow-y: auto; }

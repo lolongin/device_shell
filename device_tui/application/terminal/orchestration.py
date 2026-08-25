@@ -38,6 +38,7 @@ PROMPT_ALIASES = {
     "pagination_prompt",
     "confirmation_prompt",
 }
+RESPONSE_RETRY_DELAY_MS = 120
 
 
 class TerminalPlanError(ValueError):
@@ -86,6 +87,7 @@ class ExpectStep:
     idle_seconds: float = 0.0
     case_sensitive: bool = False
     max_output_chars: int = 16_384
+    timeout_code: str = "step_timeout"
     label: str = ""
     name: str = ""
     on_match: str = ""
@@ -102,6 +104,7 @@ class WaitStateStep:
     on_match: str = ""
     on_failure: str = ""
     max_retries: int = 0
+    timeout_code: str = "step_timeout"
 
 
 TerminalStep = SendStep | ExpectStep | WaitStateStep
@@ -124,6 +127,7 @@ class TerminalStepResult:
     output: str = ""
     matched: str = ""
     response_count: int = 0
+    responses_sent: list[str] = field(default_factory=list)
     error_code: str = ""
     message: str = ""
 
@@ -137,6 +141,7 @@ class TerminalStepResult:
             "output": output,
             "matched": self.matched,
             "response_count": self.response_count,
+            "responses_sent": list(self.responses_sent),
             "duration_ms": round(
                 max(0.0, self.completed_monotonic - self.started_monotonic) * 1000,
                 2,
@@ -475,6 +480,7 @@ class TerminalExecutionRunner:
                     output=self._active_result.output,
                     matched=self._active_result.matched,
                     response_count=self._active_result.response_count,
+                    responses_sent=list(self._active_result.responses_sent),
                     error_code=self._active_result.error_code,
                     message=self._active_result.message,
                 )
@@ -495,6 +501,13 @@ class TerminalExecutionRunner:
                 else 0.0,
                 "error_code": self.error_code,
                 "message": self.message,
+                "failed_step": next(
+                    (
+                        item for item in reversed(step_results)
+                        if item.get("status") in {"timed_out", "failed"}
+                    ),
+                    None,
+                ),
                 "lease_released": self.is_terminal,
             }
 
@@ -670,6 +683,7 @@ class TerminalExecutionRunner:
             return
         assert self._active_result is not None
         self._active_result.response_count += 1
+        self._active_result.responses_sent.append(rule.match)
         # Consume only the prompt that triggered this response. Do not loop
         # through the remaining buffer: devices may coalesce ``User:`` and
         # ``Password:`` in one output event. Keep the unconsumed tail so the
@@ -677,6 +691,43 @@ class TerminalExecutionRunner:
         # the same event as the preceding credential.
         self._scan_buffer = self._scan_buffer[found[1] :]
         self.send_input(self.session_id, payload, self.execution_id)
+        # Some real VRP devices emit the username and password prompts in one
+        # terminal event and do not echo the username. Re-check the retained
+        # tail after a short device-processing delay so the login cannot stall,
+        # while still avoiding a same-event password race.
+        if any(
+            _match_token(self._scan_buffer, candidate.match, case_sensitive=candidate.case_sensitive)
+            is not None
+            for index, candidate in enumerate(step.responses)
+            if self._response_counts.get(index, 0) < candidate.max_matches
+        ):
+            token = self._step_token
+            self.schedule(
+                RESPONSE_RETRY_DELAY_MS,
+                lambda token=token: self._on_response_retry(token),
+            )
+
+    def _on_response_retry(self, token: int) -> None:
+        with self._lock:
+            if self.status != "running" or token != self._step_token:
+                return
+            step = self._current_plan_step()
+            if not isinstance(step, ExpectStep):
+                return
+            before = dict(self._response_counts)
+            self._apply_responses_locked(step)
+            if self.status != "running" or self._response_counts == before:
+                return
+            success = _first_match(
+                self._scan_buffer,
+                step.success,
+                case_sensitive=step.case_sensitive,
+            )
+            if success is not None:
+                self._finish_active_step_locked("completed", matched=success[0])
+                if not self._take_branch_locked(step, step.on_match, reason="match"):
+                    self.current_step += 1
+                    self._advance_locked()
 
     def _input_for(
         self,
@@ -768,8 +819,8 @@ class TerminalExecutionRunner:
             step = self._current_plan_step()
             self._finish_active_step_locked(
                 "timed_out",
-                error_code="step_timeout",
-                message=f"步骤 {self.current_step} 等待超时。",
+                error_code=(step.timeout_code if isinstance(step, (ExpectStep, WaitStateStep)) else "step_timeout"),
+                message=f"步骤 {self.current_step}「{step.label or self.current_step}」等待超时。",
             )
             if (
                 isinstance(step, (ExpectStep, WaitStateStep))
@@ -782,8 +833,8 @@ class TerminalExecutionRunner:
                 return
             self._finish_locked(
                 "timed_out",
-                error_code="step_timeout",
-                message=f"步骤 {self.current_step} 等待超时。",
+                error_code=(step.timeout_code if isinstance(step, (ExpectStep, WaitStateStep)) else "step_timeout"),
+                message=f"步骤 {self.current_step}「{step.label or self.current_step}」等待超时。",
             )
 
     def _on_idle_timeout(self, token: int) -> None:
@@ -1061,6 +1112,7 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
             maximum=MAX_STEP_OUTPUT_CHARS,
         )
     )
+    timeout_code = _timeout_code(raw.get("timeout_code"), index)
     return ExpectStep(
         success=success,
         responses=tuple(responses),
@@ -1070,6 +1122,7 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
         idle_seconds=idle,
         case_sensitive=bool(raw.get("case_sensitive", False)),
         max_output_chars=output_limit,
+        timeout_code=timeout_code,
         label=str(raw.get("label") or ""),
         name=_step_name(raw, index),
         on_match=str(raw.get("on_match") or "").strip(),
@@ -1098,6 +1151,7 @@ def _parse_wait_state_step(raw: dict[str, Any], index: int) -> WaitStateStep:
         minimum=0.05,
         maximum=3600,
     )
+    timeout_code = _timeout_code(raw.get("timeout_code"), index)
     return WaitStateStep(
         state=state,
         timeout_seconds=timeout,
@@ -1113,7 +1167,15 @@ def _parse_wait_state_step(raw: dict[str, Any], index: int) -> WaitStateStep:
                 maximum=100,
             )
         ),
+        timeout_code=timeout_code,
     )
+
+
+def _timeout_code(value: Any, index: int) -> str:
+    code = str(value or "step_timeout").strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", code):
+        raise TerminalPlanError("invalid_plan", f"步骤 {index} timeout_code 无效。")
+    return code
 
 
 def _step_name(raw: dict[str, Any], index: int) -> str:
@@ -1263,8 +1325,12 @@ def _match_token(
         # Keep the prompt boundary line-local. ``\s*$`` can consume the
         # newline before a following password prompt and then miss the
         # username prompt entirely when a device batches both lines.
-        "username_prompt": r"(?i)(?:user(?:name)?|name)(?:[ \t]*\([^\r\n)]{0,160}\))*[ \t]*:[ \t]*(?:\([^\r\n)]{0,160}\)[ \t]*:)?[ \t]*(?=\r?$|\r?\n)",
-        "password_prompt": r"(?i)password[ \t]*:[ \t]*(?=\r?$|\r?\n)",
+        # VRP commonly emits both ``User(10.10.10.1):(none):`` and
+        # ``User(10.10.10.1:(none)):``. Keep the body non-greedy so a
+        # coalesced prompt does not consume a following password prompt, and
+        # accept the extra carriage return used by some Telnet servers.
+        "username_prompt": r"(?i)(?:(?:user(?:name)?)[ \t]*\([^()\r\n]*(?:\([^()\r\n]*\)[^()\r\n]*)?\)[ \t]*:(?:[ \t]*\([^()\r\n]*\)[ \t]*:)?|(?:user(?:name)?|name|account|login)[^\r\n]{0,200}?):[ \t]*(?=[ \t]*(?:password[ \t]*:[ \t]*)?(?:\r+$|\r+\n|\n|$))",
+        "password_prompt": r"(?i)password[ \t]*:[ \t]*(?=\r+$|\r+\n|\n|$)",
         "host_key_prompt": r"(?i)(?:yes/no|continue connecting).{0,80}$",
         "pagination_prompt": r"(?i)(?:----\s*more\s*----|--more--)\s*$",
         "confirmation_prompt": r"(?i)(?:\[y/n\]|\(y/n\)|yes/no)\s*:?\s*$",

@@ -28,6 +28,7 @@ from .package import (
     parse_free_space_bytes,
     startup_uses_package,
 )
+from device_tui.infrastructure.transfers.managed_file_transfer import TransferInteractionProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class UpgradeDriver(Protocol):
     def failure_marker(self, output: str) -> str: ...
     def reboot_plan_steps(self) -> tuple[dict[str, object], ...]: ...
     def manual_plan(self, config: PackageUpgradeConfig) -> UpgradeManualPlan: ...
+    def transfer_profile(self, protocol: str, terminal_environment: str = "vrp") -> TransferInteractionProfile: ...
 
 
 class HuaweiVrpUpgradeDriver:
@@ -209,6 +211,12 @@ class HuaweiVrpUpgradeDriver:
     def manual_plan(config: PackageUpgradeConfig) -> UpgradeManualPlan:
         plan = generate_huawei_upgrade_plan(config)
         return UpgradeManualPlan(tuple(plan.commands), tuple(plan.cleanup_paths), tuple(plan.notes))
+
+    @staticmethod
+    def transfer_profile(protocol: str, terminal_environment: str = "vrp") -> TransferInteractionProfile:
+        # Keep terminal vocabulary in the selected driver so vendor/client
+        # differences do not leak into the generic transfer builder.
+        return TransferInteractionProfile(id=f"huawei-vrp-{protocol.casefold()}")
 
 
 class SimulatedVrpUpgradeDriver(HuaweiVrpUpgradeDriver):

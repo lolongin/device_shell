@@ -36,6 +36,8 @@ class SimulatedTerminalSession:
         self._upgrade_fail_download = False
         self._upgrade_fail_space = False
         self._upgrade_fail_startup = False
+        self._upgrade_require_startup_confirmation = False
+        self._startup_confirmation_command = ""
         self._workflow_fail_next = False
         self._transfer_mode = ""
         self._transfer_phase = ""
@@ -48,6 +50,11 @@ class SimulatedTerminalSession:
         self._transfer_size_mismatch = False
         self._transfer_input_timeout = 0.0
         self._transfer_timeout_task: asyncio.Task[None] | None = None
+        # VRP emits FTP prompts as separate terminal packets. Keep a small
+        # delay by default so automation is exercised against that timing.
+        self._transfer_output_delay_seconds = 0.005
+        self._transfer_password_delay_seconds = 0.01
+        self._send_lock = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:
@@ -90,11 +97,13 @@ class SimulatedTerminalSession:
         package_size: int,
         username: str = "device",
         password: str = "device",
+        require_startup_confirmation: bool = False,
     ) -> None:
         self._upgrade_package_name = package_name or self._upgrade_package_name
         self._upgrade_package_size = max(1, package_size)
         self._transfer_username = username
         self._transfer_password = password
+        self._upgrade_require_startup_confirmation = bool(require_startup_confirmation)
         self._transfer_source_path = self._upgrade_package_name
         self._transfer_source_size = self._upgrade_package_size
         self._transfer_destination_path = ""
@@ -120,7 +129,25 @@ class SimulatedTerminalSession:
     def configure_transfer_input_timeout(self, seconds: float) -> None:
         self._transfer_input_timeout = max(0.0, float(seconds))
 
+    def configure_transfer_prompt_timing(
+        self,
+        *,
+        output_delay_seconds: float | None = None,
+        password_delay_seconds: float | None = None,
+    ) -> None:
+        """Configure simulated VRP FTP packet delays for deterministic tests."""
+        if output_delay_seconds is not None:
+            self._transfer_output_delay_seconds = max(0.0, float(output_delay_seconds))
+        if password_delay_seconds is not None:
+            self._transfer_password_delay_seconds = max(
+                0.0, float(password_delay_seconds)
+            )
+
     async def send_text(self, text: str) -> None:
+        async with self._send_lock:
+            await self._send_text(text)
+
+    async def _send_text(self, text: str) -> None:
         if not self.is_connected:
             return
         for char in text:
@@ -139,7 +166,12 @@ class SimulatedTerminalSession:
                     self.callbacks.on_output("\n<sim> ")
                 continue
             self._line_buffer += char
-            self.callbacks.on_output(char)
+            # Real FTP clients do not echo password characters. Username and
+            # regular command input remain visible as normal terminal echo.
+            if not (
+                self._transfer_mode and self._transfer_phase == "password"
+            ):
+                self.callbacks.on_output(char)
 
     def _start_boot_sequence(self) -> None:
         if self._boot_task is not None:
@@ -150,16 +182,22 @@ class SimulatedTerminalSession:
         self._boot_waiting = False
         self.callbacks.on_output("Power on self-test...\n")
         await asyncio.sleep(0.4)
+        if not self._connected or self._transfer_mode:
+            return
         self.callbacks.on_output("Memory test passed.\n")
         await asyncio.sleep(0.4)
+        if not self._connected or self._transfer_mode:
+            return
         self._boot_waiting = True
         self.callbacks.on_output("Press Ctrl+B to enter BOOT menu: ")
         await asyncio.sleep(3.0)
-        if not self._connected or not self._boot_waiting:
+        if not self._connected or self._transfer_mode or not self._boot_waiting:
             return
         self._boot_waiting = False
         self.callbacks.on_output("\nAutoboot continuing...\n")
         await asyncio.sleep(0.4)
+        if not self._connected or self._transfer_mode:
+            return
         self.callbacks.on_output("System ready.\n<sim> ")
 
     def _enter_boot_menu(self) -> None:
@@ -195,10 +233,23 @@ class SimulatedTerminalSession:
 
     async def _handle_command(self, command: str) -> None:
         lowered = command.lower()
-        self.callbacks.on_output("\n")
+        if self._startup_confirmation_command:
+            pending = self._startup_confirmation_command
+            self._startup_confirmation_command = ""
+            if lowered in {"y", "yes"}:
+                require_confirmation = self._upgrade_require_startup_confirmation
+                self._upgrade_require_startup_confirmation = False
+                try:
+                    self._handle_startup_system_software(pending)
+                finally:
+                    self._upgrade_require_startup_confirmation = require_confirmation
+            else:
+                self.callbacks.on_output("Info: startup system-software cancelled.\n<sim> ")
+            return
         if self._transfer_mode:
             await self._handle_transfer_command(command)
             return
+        self.callbacks.on_output("\n")
         if lowered == "help":
             self.callbacks.on_output(
                 "Commands: help, reboot, display version, display startup, dir flash:/, ftpget, "
@@ -253,7 +304,10 @@ class SimulatedTerminalSession:
             # local-user context in the username prompt. Keep this shape in
             # the simulator so transfer automation is tested against the
             # device prompt users actually see.
-            self.callbacks.on_output("Connected to simulated transfer service.\nUser(10.10.10.1):(none): ")
+            await self._emit_transfer_chunks(
+                "Connected to simulated transfer service.\r\r\n",
+                "User(10.10.10.1):(none): ",
+            )
             self._arm_transfer_timeout()
             return
         if lowered.startswith("copy "):
@@ -394,41 +448,59 @@ class SimulatedTerminalSession:
         if self._transfer_phase == "username":
             self._cancel_transfer_timeout()
             if command != self._transfer_username:
-                self.callbacks.on_output("530 Login incorrect.\n<sim> ")
+                await self._emit_transfer_chunks(
+                    "\r\r\n530 Login incorrect.\r\r\n",
+                    "<sim> ",
+                )
                 self._reset_transfer_state()
                 return
             self._transfer_phase = "password"
-            self.callbacks.on_output("Password: ")
+            await self._emit_transfer_chunks(
+                "\r\r\n",
+                "Password: ",
+                delay_seconds=self._transfer_password_delay_seconds,
+            )
             self._arm_transfer_timeout()
             return
         if self._transfer_phase == "password":
             self._cancel_transfer_timeout()
             if command != self._transfer_password:
-                self.callbacks.on_output("530 Login incorrect.\n<sim> ")
+                await self._emit_transfer_chunks(
+                    "\r\r\n530 Login incorrect.\r\r\n",
+                    "<sim> ",
+                )
                 self._reset_transfer_state()
                 return
             self._transfer_phase = "ready"
-            self.callbacks.on_output(f"230 User logged in.\n{self._transfer_prompt()} ")
+            await self._emit_transfer_chunks(
+                "\r\r\n230 User logged in.\r\r\n",
+                f"{self._transfer_prompt()} ",
+            )
             return
         if lowered == "binary":
             if self._transfer_mode != "ftp":
-                self.callbacks.on_output(
-                    f"500 Unknown SFTP command: {command}\n{self._transfer_prompt()} "
+                await self._emit_transfer_chunks(
+                    f"\r\r\n500 Unknown SFTP command: {command}\r\r\n",
+                    f"{self._transfer_prompt()} ",
                 )
                 return
             self._transfer_binary = True
-            self.callbacks.on_output(f"200 Type set to I.\n{self._transfer_prompt()} ")
+            await self._emit_transfer_chunks(
+                "\r\r\n200 Type set to I.\r\r\n",
+                f"{self._transfer_prompt()} ",
+            )
             return
         if lowered.startswith("get "):
             if self._transfer_mode == "ftp" and not self._transfer_binary:
-                self.callbacks.on_output(
-                    f"503 Use binary mode before get.\n{self._transfer_prompt()} "
+                await self._emit_transfer_chunks(
+                    "\r\r\n503 Use binary mode before get.\r\r\n",
+                    f"{self._transfer_prompt()} ",
                 )
                 return
             if self._upgrade_fail_download:
-                self.callbacks.on_output(
-                    "550 Failed to download file from simulated server.\n"
-                    f"{self._transfer_prompt()} "
+                await self._emit_transfer_chunks(
+                    "\r\r\n550 Failed to download file from simulated server.\r\r\n",
+                    f"{self._transfer_prompt()} ",
                 )
                 return
             try:
@@ -436,23 +508,26 @@ class SimulatedTerminalSession:
             except ValueError:
                 parts = []
             if len(parts) != 3:
-                self.callbacks.on_output(
-                    f"501 Usage: get source destination\n{self._transfer_prompt()} "
+                await self._emit_transfer_chunks(
+                    "\r\r\n501 Usage: get source destination\r\r\n",
+                    f"{self._transfer_prompt()} ",
                 )
                 return
             remote_name = parts[1].replace("\\", "/")
             local_path = parts[2].replace("\\", "/")
             if remote_name != self._transfer_source_path.replace("\\", "/"):
-                self.callbacks.on_output(
-                    f"550 Source file not found: {remote_name}\n{self._transfer_prompt()} "
+                await self._emit_transfer_chunks(
+                    f"\r\r\n550 Source file not found: {remote_name}\r\r\n",
+                    f"{self._transfer_prompt()} ",
                 )
                 return
             if (
                 self._transfer_destination_path
                 and local_path != self._transfer_destination_path
             ):
-                self.callbacks.on_output(
-                    f"550 Unexpected destination: {local_path}\n{self._transfer_prompt()} "
+                await self._emit_transfer_chunks(
+                    f"\r\r\n550 Unexpected destination: {local_path}\r\r\n",
+                    f"{self._transfer_prompt()} ",
                 )
                 return
             storage = self._normalize_storage(local_path)
@@ -461,25 +536,48 @@ class SimulatedTerminalSession:
             if self._transfer_size_mismatch:
                 stored_size = max(1, stored_size - 1)
             self._files_by_storage.setdefault(storage, {})[local_name] = stored_size
-            self.callbacks.on_output(
-                f"226 Transfer complete. {local_name} saved to {storage}\n"
-                f"{self._transfer_prompt()} "
+            await self._emit_transfer_chunks(
+                f"\r\r\n226 Transfer complete. {local_name} saved to {storage}\r\r\n",
+                f"{self._transfer_prompt()} ",
             )
             return
         if lowered in {"quit", "bye"}:
             self._cancel_transfer_timeout()
-            self.callbacks.on_output("221 Goodbye.\n<sim> ")
+            await self._emit_transfer_chunks(
+                "\r\r\n221 Goodbye.\r\r\n",
+                "<sim> ",
+            )
             self._reset_transfer_state()
             return
         if lowered.startswith("put "):
-            self.callbacks.on_output(
-                f"502 PUT is not supported by the simulated device client.\n"
-                f"{self._transfer_prompt()} "
+            await self._emit_transfer_chunks(
+                "\r\r\n502 PUT is not supported by the simulated device client.\r\r\n",
+                f"{self._transfer_prompt()} ",
             )
             return
-        self.callbacks.on_output(
-            f"500 Unknown FTP command: {command}\n{self._transfer_prompt()} "
+        await self._emit_transfer_chunks(
+            f"\r\r\n500 Unknown FTP command: {command}\r\r\n",
+            f"{self._transfer_prompt()} ",
         )
+
+    async def _emit_transfer_chunks(
+        self,
+        *chunks: str,
+        delay_seconds: float | None = None,
+    ) -> None:
+        """Emit transfer output as ordered packets, like a real terminal."""
+        delay = (
+            self._transfer_output_delay_seconds
+            if delay_seconds is None
+            else max(0.0, float(delay_seconds))
+        )
+        for index, chunk in enumerate(chunks):
+            if not self.is_connected:
+                return
+            if chunk:
+                self.callbacks.on_output(chunk)
+            if index + 1 < len(chunks) and delay > 0:
+                await asyncio.sleep(delay)
 
     def _arm_transfer_timeout(self) -> None:
         self._cancel_transfer_timeout()
@@ -541,6 +639,12 @@ class SimulatedTerminalSession:
         name = self._basename(package_path)
         if name not in self._files_by_storage.get(storage, {}):
             self.callbacks.on_output(f"Error: system software {package_path} not found.\n<sim> ")
+            return
+        if self._upgrade_require_startup_confirmation:
+            self._startup_confirmation_command = command
+            self.callbacks.on_output(
+                "Warning: this will change the next startup system software. Continue? [Y/N]: "
+            )
             return
         self._next_system = package_path
         self.callbacks.on_output(f"Info: Succeeded in setting next startup software to {package_path}.\n<sim> ")

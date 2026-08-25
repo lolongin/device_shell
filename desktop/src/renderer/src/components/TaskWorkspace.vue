@@ -11,6 +11,7 @@ const workflowParameters = ref<Record<string, unknown>>({})
 const planObjective = ref('')
 const planCommand = ref('')
 const localError = ref('')
+let initializedWorkflowId = ''
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const workflowOptions = computed(() => workspace.workflows)
@@ -115,6 +116,27 @@ function stageActions(item: Record<string, unknown>): string[] {
   const actions = item.actions
   if (!Array.isArray(actions)) return []
   return actions.map((action) => String(action || '').trim()).filter(Boolean)
+}
+function topologyDetection(state: TaskStepState): Record<string, unknown> | null {
+  const data = state.result?.data
+  if (!data || typeof data !== 'object') return null
+  const operation = data.operation
+  const operationData = operation && typeof operation === 'object'
+    ? (operation as Record<string, unknown>).data
+    : null
+  const detection = operationData && typeof operationData === 'object'
+    ? (operationData as Record<string, unknown>).topology_detection
+    : data.topology_detection
+  return detection && typeof detection === 'object' ? detection as Record<string, unknown> : null
+}
+function topologyDecisionLabel(value: unknown): string {
+  return ({
+    dual_controller: '已识别主备双控，将同步主控和备控',
+    auto_downgrade_to_single_controller: '未检测到备控，已自动降级为单主控',
+    single_controller_policy: '按策略仅升级主控',
+    required_but_absent: '策略要求备控，但未检测到备控',
+    indeterminate_stop: '备控状态无法确认，流程已停止',
+  } as Record<string, string>)[String(value || '')] || String(value || '拓扑未决')
 }
 function stepOutput(state: TaskStepState): string {
   const direct = state.result?.output
@@ -230,16 +252,21 @@ function setParameter(name: string, value: unknown): void {
 
 function initializeWorkflowParameters(workflow = selectedWorkflow.value): void {
   if (!workflow) return
+  const current = initializedWorkflowId === workflow.id ? workflowParameters.value : {}
   const next: Record<string, unknown> = {}
   for (const parameter of workflow.parameters) {
-    if (parameter.control === 'file') {
-      const current = workflowParameters.value[parameter.name]
-      next[parameter.name] = current || workflowFiles(parameter)[0]?.relative_path || ''
+    const hasCurrent = Object.prototype.hasOwnProperty.call(current, parameter.name)
+    const currentValue = current[parameter.name]
+    if (hasCurrent && !(parameter.control === 'file' && !String(currentValue || '').trim())) {
+      next[parameter.name] = currentValue
+    } else if (parameter.control === 'file') {
+      next[parameter.name] = workflowFiles(parameter)[0]?.relative_path || ''
     } else if (parameter.default !== undefined) {
       next[parameter.name] = parameter.default
     }
   }
   workflowParameters.value = next
+  initializedWorkflowId = workflow.id
 }
 
 function workflowParameterOptions(parameter: WorkflowParameterDescriptor): Array<{ value: string; label: string }> {
@@ -276,7 +303,11 @@ async function chooseWorkflowFile(parameter: WorkflowParameterDescriptor): Promi
     const selected = await window.desktopApi.chooseWorkflowFile({
       defaultPath: workspace.transferSettings?.root || '',
       label: parameterLabel(parameter),
-      extensions: parameter.file_extensions || [],
+      // Workflow descriptors are reactive objects. Convert the extension
+      // list to plain data before crossing Electron's structured-clone IPC.
+      extensions: Array.isArray(parameter.file_extensions)
+        ? parameter.file_extensions.map((extension) => String(extension))
+        : [],
     })
     if (selected) {
       setParameter(parameter.name, selected)
@@ -330,13 +361,15 @@ async function retryFailedStep(): Promise<void> {
 async function resumeFromPreviousStep(): Promise<void> {
   if (previousStepId.value) await workspace.resumeTask(workspace.activeTaskId, previousStepId.value)
 }
-async function chooseTask(task: TaskRecord): Promise<void> {
+async function chooseTask(task: TaskRecord, focus = true): Promise<void> {
   workspace.activeTaskId = task.id
-  await workspace.getTask(task.id)
+  await workspace.getTask(task.id, focus)
 }
 function openLatestTask(): void {
   const latest = workspace.tasks[0]
-  if (latest) void chooseTask(latest)
+  // Restoring task details must not replace the device the user currently has
+  // open in the main workspace. Explicit task clicks still focus their device.
+  if (latest) void chooseTask(latest, false)
 }
 
 onMounted(async () => {
@@ -423,7 +456,7 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
       </div></header>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
       <ol class="task-timeline">
-        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result?.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p><ul v-if="stageActions(item).length" class="task-stage-actions"><li v-for="action in stageActions(item)" :key="action">{{ action }}</li></ul></div></li></ol></div></li>
+        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result?.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><div v-if="topologyDetection(state)" class="task-topology-evidence"><strong>设备拓扑识别</strong><p>{{ topologyDecisionLabel(topologyDetection(state)?.decision) }}</p><small>主控：{{ String(topologyDetection(state)?.master_storage || '-') }} · 备控：{{ String(topologyDetection(state)?.standby_storage || '-') }} · 探测：{{ String(topologyDetection(state)?.standby_status || '-') }}</small></div><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p><ul v-if="stageActions(item).length" class="task-stage-actions"><li v-for="action in stageActions(item)" :key="action">{{ action }}</li></ul></div></li></ol></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
       <div v-if="workspace.taskDecision" class="task-decision" role="dialog" aria-labelledby="task-decision-title">

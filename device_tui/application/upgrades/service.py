@@ -139,6 +139,9 @@ class PackageUpgradeService:
                 "package_size": source.size_bytes if source is not None else 0,
                 "include_slave": bool(include_slave),
                 "standby_required": bool(standby_required),
+                "topology_policy": (
+                    "required" if standby_required else "single" if not include_slave else "auto"
+                ),
                 "auto_delete_old_packages": bool(auto_delete_old_packages),
                 "reboot_after_setting": bool(reboot_after_setting),
                 "master_storage": primary_storage,
@@ -418,6 +421,15 @@ class PackageUpgradeService:
             )
             include_slave = bool(record.data["include_slave"])
             slave_output = ""
+            topology_policy = str(record.data.get("topology_policy") or ("auto" if include_slave else "single"))
+            topology_detection: dict[str, object] = {
+                "policy": topology_policy,
+                "master_storage": master_storage,
+                "standby_storage": slave_storage,
+                "standby_status": "not_requested" if not include_slave else "indeterminate",
+                "include_slave": include_slave,
+                "decision": "single_controller_policy" if not include_slave else "pending",
+            }
             if include_slave:
                 slave_output = await self._command(
                     session,
@@ -427,18 +439,43 @@ class PackageUpgradeService:
                     driver=driver,
                 )
                 standby = driver.classify_standby(slave_output, slave_storage)
+                topology_detection["standby_status"] = standby
                 if standby == STANDBY_STORAGE_ABSENT:
                     if bool(record.data.get("standby_required", False)):
+                        topology_detection["decision"] = "required_but_absent"
+                        self._operations.update(operation_id, data={"topology_detection": topology_detection})
                         raise _UpgradeRunError(
                             "standby_storage_required",
                             "升级策略要求备控，但设备未检测到备控存储。",
                         )
                     include_slave = False
+                    topology_detection["include_slave"] = False
+                    topology_detection["decision"] = "auto_downgrade_to_single_controller"
                 elif standby != STANDBY_STORAGE_AVAILABLE:
+                    topology_detection["decision"] = "indeterminate_stop"
+                    self._operations.update(operation_id, data={"topology_detection": topology_detection})
                     raise _UpgradeRunError(
                         "standby_storage_indeterminate",
                         "无法确认备控存储是否存在，升级已停止。",
                     )
+                else:
+                    topology_detection["decision"] = "dual_controller"
+            self._operations.update(
+                operation_id,
+                message=(
+                    "已识别主备双控，执行主控与备控同步。"
+                    if topology_detection["decision"] == "dual_controller"
+                    else "未检测到备控，自动按单主控执行。"
+                    if topology_detection["decision"] == "auto_downgrade_to_single_controller"
+                    else "按策略仅检查并升级主控。"
+                    if topology_detection["decision"] == "single_controller_policy"
+                    else None
+                ),
+                data={
+                    "topology_detection": topology_detection,
+                    "include_slave": include_slave,
+                },
+            )
             cleanup_paths = self._cleanup_paths(
                 package_name=str(record.data["package_name"]),
                 package_size=int(record.data.get("package_size") or 0),
@@ -607,6 +644,7 @@ class PackageUpgradeService:
                 operation_id,
                 getattr(exc, "code", "package_upgrade_failed"),
                 str(exc),
+                details=getattr(exc, "details", None),
             )
         finally:
             self._reboot_approvals.pop(operation_id, None)
@@ -635,6 +673,7 @@ class PackageUpgradeService:
             source_path=prepared.relative_path,
             destination_path=master_package,
             source_size=prepared.size_bytes,
+            profile=driver.transfer_profile(prepared.protocol),
         )
         self._operations.update(
             operation_id,
@@ -702,6 +741,7 @@ class PackageUpgradeService:
                 owner_id,
                 command,
                 allow_failure_output=bool(fallback_commands),
+                allow_confirmation=True,
                 driver=driver,
             )
         failure = driver.failure_marker(output)
@@ -713,7 +753,13 @@ class PackageUpgradeService:
                 f"设置启动项失败，设备输出包含: {failure}",
             )
         for command in fallback_commands:
-            await self._command(session, owner_id, command, driver=driver)
+            await self._command(
+                session,
+                owner_id,
+                command,
+                allow_confirmation=True,
+                driver=driver,
+            )
 
     async def _reboot(
         self,
@@ -741,6 +787,7 @@ class PackageUpgradeService:
         *,
         timeout_seconds: int = 30,
         allow_failure_output: bool = False,
+        allow_confirmation: bool = False,
         driver: UpgradeDriver | None = None,
     ) -> str:
         last_result: dict[str, object] = {}
@@ -760,6 +807,16 @@ class PackageUpgradeService:
                         "timeout_seconds": timeout_seconds,
                         "label": f"等待 {command}",
                         "max_output_chars": 32_768,
+                        "responses": (
+                            [{"match": "confirmation_prompt", "text": "y", "max_matches": 1}]
+                            if allow_confirmation
+                            else []
+                        ),
+                        "timeout_code": (
+                            "startup_confirmation_timeout"
+                            if allow_confirmation
+                            else "step_timeout"
+                        ),
                     },
                 ],
                 total_timeout_seconds=timeout_seconds + 5,
@@ -861,10 +918,29 @@ class PackageUpgradeService:
         if status in {"cancelled", "cancelled_by_user"}:
             raise _UpgradeRunError("package_upgrade_cancelled", "系统包升级已取消。")
         if status == "timed_out":
-            raise _UpgradeRunError("package_upgrade_timeout", f"{label}超时。")
+            failed = result.get("failed_step")
+            details: dict[str, object] = {
+                "upgrade_code": "package_upgrade_timeout",
+                "terminal_status": status,
+                "terminal_error_code": result.get("error_code"),
+            }
+            if isinstance(failed, dict):
+                details["transfer_diagnostics"] = {
+                    "failed_step": failed.get("label"),
+                    "error_code": failed.get("error_code"),
+                    "last_output": failed.get("output"),
+                    "responses_sent": failed.get("responses_sent", []),
+                    "matched": failed.get("matched", ""),
+                }
+            raise _UpgradeRunError(
+                str(result.get("error_code") or "package_upgrade_timeout"),
+                str(result.get("message") or f"{label}超时。"),
+                details=details,
+            )
         raise _UpgradeRunError(
             "package_upgrade_command_failed",
             str(result.get("message") or f"{label}失败。"),
+            details={"terminal_result": result},
         )
 
     @staticmethod
@@ -898,7 +974,14 @@ class PackageUpgradeService:
             error_code="package_upgrade_cancelled",
         )
 
-    def _mark_failed(self, operation_id: str, code: str, message: str) -> None:
+    def _mark_failed(
+        self,
+        operation_id: str,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
         record = self._operations.get(operation_id)
         if record.status in TERMINAL_OPERATION_STATUSES:
             return
@@ -911,6 +994,7 @@ class PackageUpgradeService:
             stage=record.stage,
             message=message,
             error_code=code,
+            data=details or {},
         )
 
     def _connected_session(self, session_id: str) -> SessionRecord:
@@ -947,6 +1031,6 @@ class PackageUpgradeService:
 
 
 class _UpgradeRunError(PackageUpgradeError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message, details={"upgrade_code": code})
+    def __init__(self, code: str, message: str, *, details: dict[str, object] | None = None) -> None:
+        super().__init__(message, details={"upgrade_code": code, **(details or {})})
         self.code = code

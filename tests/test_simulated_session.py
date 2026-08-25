@@ -115,6 +115,70 @@ def test_simulated_session_supports_package_upgrade_success_path() -> None:
     assert "Next startup system software: flash:/target.cc" in text
 
 
+def test_simulated_session_can_require_startup_confirmation() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(on_output=output.append, on_status=lambda _status: None)
+    )
+    session.configure_package_upgrade(
+        "target.cc",
+        123_456,
+        require_startup_confirmation=True,
+    )
+
+    async def run() -> None:
+        await session.connect()
+        await session.send_command("startup system-software flash:/current.cc")
+        await session.send_command("y")
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+    text = "".join(output)
+    assert "Continue? [Y/N]:" in text
+    assert "Succeeded in setting next startup software to flash:/current.cc" in text
+
+
+def test_simulated_ftp_emits_vrp_prompts_as_ordered_packets() -> None:
+    output: list[str] = []
+    session = SimulatedTerminalSession(
+        SessionCallbacks(
+            on_output=output.append,
+            on_status=lambda _status: None,
+        )
+    )
+    session.configure_transfer_prompt_timing(
+        output_delay_seconds=0.001,
+        password_delay_seconds=0.001,
+    )
+
+    async def run() -> None:
+        await session.connect()
+        output.clear()
+
+        await session.send_command("ftp 192.0.2.10 2121")
+        assert [
+            item
+            for item in output
+            if item.startswith("Connected to")
+            or item.startswith("User(10.10.10.1)")
+        ] == [
+            "Connected to simulated transfer service.\r\r\n",
+            "User(10.10.10.1):(none): ",
+        ]
+
+        output.clear()
+        await session.send_command("device")
+        assert output[-2:] == ["\r\r\n", "Password: "]
+
+        output.clear()
+        await session.send_command("device")
+        assert output == ["\r\r\n230 User logged in.\r\r\n", "ftp> "]
+        await session.disconnect("")
+
+    asyncio.run(run())
+
+
 def test_simulated_session_can_inject_upgrade_failures() -> None:
     output: list[str] = []
     session = SimulatedTerminalSession(

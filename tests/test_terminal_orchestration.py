@@ -143,7 +143,7 @@ def test_login_does_not_send_password_from_same_coalesced_output_event() -> None
         ]
     )
     runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
-    coordinator.on_output("tab-1", "Connected\nUser(10.10.10.1):(none):\nPassword: ")
+    coordinator.on_output("tab-1", "Connected\r\r\nUser(10.10.10.1):(none):\r\r\nPassword: ")
     assert [item[1].text for item in harness.sent] == [
         "ftp 192.0.2.10 2121\r",
         "device-user\r",
@@ -154,6 +154,62 @@ def test_login_does_not_send_password_from_same_coalesced_output_event() -> None
         "device-user\r",
         "super-secret\r",
     ]
+    coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
+    assert runner.public_dict()["status"] == "completed"
+
+
+def test_login_retries_coalesced_vrp_password_prompt_after_device_delay() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 2121"},
+            {
+                "type": "expect",
+                "success": ["ftp_prompt"],
+                "responses": [
+                    {"match": "username_prompt", "secret_ref": "transfer.username"},
+                    {"match": "password_prompt", "secret_ref": "transfer.password"},
+                ],
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    coordinator.on_output("tab-1", "User(10.10.10.1:(none)):\nPassword: ")
+    assert [item[1].text for item in harness.sent] == [
+        "ftp 192.0.2.10 2121\r",
+        "device-user\r",
+    ]
+    harness.scheduler.advance(0.12)
+    assert harness.sent[-1][1].text == "super-secret\r"
+    coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
+    assert runner.public_dict()["status"] == "completed"
+
+
+def test_login_handles_vrp_prompts_on_one_output_line() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 2121"},
+            {
+                "type": "expect",
+                "success": ["ftp_prompt"],
+                "responses": [
+                    {"match": "username_prompt", "secret_ref": "transfer.username"},
+                    {"match": "password_prompt", "secret_ref": "transfer.password"},
+                ],
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    coordinator.on_output("tab-1", "User(10.10.10.1):(none): Password: ")
+    assert [item[1].text for item in harness.sent] == [
+        "ftp 192.0.2.10 2121\r",
+        "device-user\r",
+    ]
+    harness.scheduler.advance(0.12)
+    assert harness.sent[-1][1].text == "super-secret\r"
     coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
     assert runner.public_dict()["status"] == "completed"
 
@@ -295,6 +351,36 @@ def test_step_timeout_preserves_partial_output() -> None:
     assert result["status"] == "timed_out"
     assert result["error_code"] == "step_timeout"
     assert result["steps"][1]["output"] == "working..."
+
+
+def test_step_timeout_exposes_phase_and_safe_response_diagnostics() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 21"},
+            {
+                "type": "expect",
+                "success": ["ftp_prompt"],
+                "responses": [
+                    {"match": "username_prompt", "secret_ref": "transfer.username"},
+                    {"match": "password_prompt", "secret_ref": "transfer.password"},
+                ],
+                "timeout_seconds": 2,
+                "timeout_code": "ftp_password_prompt_timeout",
+                "label": "等待 FTP 密码提示",
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    coordinator.on_output("tab-1", "User(10.10.10.1):(none):\r\n")
+    harness.scheduler.advance(2)
+
+    result = runner.public_dict()
+    assert result["error_code"] == "ftp_password_prompt_timeout"
+    assert result["failed_step"]["label"] == "等待 FTP 密码提示"
+    assert result["failed_step"]["responses_sent"] == ["username_prompt"]
+    assert "super-secret" not in str(result)
 
 
 def test_plan_rejects_unapproved_secret_reference() -> None:

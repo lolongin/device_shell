@@ -1,10 +1,22 @@
 import path from 'node:path'
+import { existsSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { PythonBackend } from './python-backend.js'
 
 let mainWindow: BrowserWindow | null = null
+
+function validDialogDefaultPath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  try {
+    const candidate = path.resolve(value.trim())
+    if (!existsSync(candidate)) return undefined
+    return statSync(candidate).isDirectory() ? candidate : path.dirname(candidate)
+  } catch {
+    return undefined
+  }
+}
 
 const backend = new PythonBackend((details) => {
   mainWindow?.webContents.send('backend:exit', details)
@@ -605,9 +617,7 @@ async function createWindow(): Promise<void> {
       throw new Error('Untrusted workflow file caller')
     }
     const payload = request && typeof request === 'object' ? request as Record<string, unknown> : {}
-    const defaultPath = typeof payload.defaultPath === 'string' && payload.defaultPath.trim()
-      ? path.resolve(payload.defaultPath.trim())
-      : undefined
+    const defaultPath = validDialogDefaultPath(payload.defaultPath)
     const label = typeof payload.label === 'string' && payload.label.trim()
       ? payload.label.trim().slice(0, 80)
       : 'Workflow 文件'

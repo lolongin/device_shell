@@ -1381,7 +1381,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const active = tasks.value.find((item) => item.id === activeTaskId.value)
         const isTerminal = Boolean(active && ['completed', 'failed', 'cancelled'].includes(active.status))
         const isWaiting = Boolean(active && ['waiting_for_decision', 'waiting_for_user'].includes(active.status))
-        if (active) await syncTaskSession(active)
+        // Keep task/session data fresh without taking the foreground away from
+        // a device or session the user selected while the task is running.
+        if (active) await syncTaskSession(active, false)
         if (isTerminal && taskRefreshTimer) {
           clearInterval(taskRefreshTimer)
           taskRefreshTimer = null
@@ -1478,11 +1480,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function getTask(taskId: string): Promise<TaskRecord | null> {
+  async function getTask(taskId: string, focus = true): Promise<TaskRecord | null> {
     try {
       const response = await desktopApi.getTask(taskId)
       tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
-      if (taskId === activeTaskId.value) await syncTaskSession(response.task)
+      if (taskId === activeTaskId.value) await syncTaskSession(response.task, focus)
       if (taskId === activeTaskId.value && ['waiting_for_decision', 'waiting_for_user'].includes(response.task.status)) {
         taskDecision.value = (await desktopApi.getTaskDecision(taskId)).decision
       } else if (taskId === activeTaskId.value) {
@@ -1497,8 +1499,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function syncTaskSession(task: TaskRecord): Promise<void> {
-    if (task.device_id) selectDevice(task.device_id)
+  async function syncTaskSession(task: TaskRecord, focus = true): Promise<void> {
+    if (focus && task.device_id) selectDevice(task.device_id)
     if (!task.session_id) return
 
     let session = sessions.value.find((item) => item.id === task.session_id)
@@ -1514,7 +1516,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         taskError.value = cause instanceof Error ? cause.message : String(cause)
       }
     }
-    if (session) activeSessionId.value = session.id
+    if (focus && session) activeSessionId.value = session.id
   }
 
   async function pauseTask(taskId = activeTaskId.value): Promise<void> {
