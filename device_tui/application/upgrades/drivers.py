@@ -201,6 +201,11 @@ class HuaweiVrpUpgradeDriver:
                 "type": "expect",
                 "success": ["device_prompt", "login_prompt", "username_prompt"],
                 "failures": [],
+                # VRP can emit more than one confirmation while rebooting;
+                # handle those terminal prompts automatically.
+                "responses": [
+                    {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
+                ],
                 "timeout_seconds": 180,
                 "label": "等待设备重启完成",
                 "max_output_chars": 32_768,

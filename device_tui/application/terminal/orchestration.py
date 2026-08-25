@@ -1342,7 +1342,11 @@ def _match_token(
         "password_prompt": r"(?i)password[ \t]*:[ \t]*(?=\r+$|\r+\n|\n|$)",
         "host_key_prompt": r"(?i)(?:yes/no|continue connecting).{0,80}$",
         "pagination_prompt": r"(?i)(?:----\s*more\s*----|--more--)\s*$",
-        "confirmation_prompt": r"(?i)(?:\[y/n\]|\(y/n\)|yes/no)\s*:?\s*$",
+        # Match the first complete confirmation line in a coalesced output
+        # packet as well as a prompt that is still at the end of the buffer.
+        # Using ``$`` here alone skips earlier prompts when VRP sends several
+        # confirmations in one event.
+        "confirmation_prompt": r"(?i)(?:\[y/n\]|\(y/n\)|yes/no)[ \t]*:?[ \t]*(?=\r?$|\r?\n)",
     }
     if token in alias_patterns:
         match = re.search(alias_patterns[token], text)

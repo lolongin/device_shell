@@ -26,6 +26,10 @@ def test_huawei_driver_owns_commands_and_artifact_policy() -> None:
     )
     with pytest.raises(ValueError):
         driver.validate_artifact(Path("target.bin"))
+    reboot_expect = driver.reboot_plan_steps()[1]
+    assert reboot_expect["responses"] == [
+        {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
+    ]
 
 
 def test_simulated_driver_reuses_vrp_command_contract() -> None:

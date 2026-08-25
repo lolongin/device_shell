@@ -297,6 +297,14 @@ class DeviceControlService:
                         "type": "expect",
                         "success": ["device_prompt", "login_prompt", "username_prompt"],
                         "failures": [],
+                        # Huawei VRP may ask one or more destructive-action
+                        # confirmations after ``reboot``. These are device
+                        # prompts, not task approvals; answer them inside the
+                        # interactive command plan so the workflow can reach
+                        # the post-reboot wait/verification steps.
+                        "responses": [
+                            {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
+                        ],
                         "timeout_seconds": timeout_seconds - 10,
                         "label": "等待设备重启完成",
                         "max_output_chars": 32_768,

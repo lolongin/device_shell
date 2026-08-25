@@ -584,6 +584,32 @@ def test_failure_word_on_confirmation_line_answers_instead_of_aborting() -> None
     assert runner.public_dict()["status"] == "completed"
 
 
+def test_reboot_answers_multiple_device_confirmations() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "reboot"},
+            {
+                "type": "expect",
+                "success": ["device_prompt"],
+                "responses": [
+                    {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
+                ],
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "Continue? [Y/N]:\nAre you sure? [Y/N]: ")
+    harness.scheduler.advance(0.2)
+    assert [item[1].text for item in harness.sent] == ["reboot\r", "y\r", "y\r"]
+
+    coordinator.on_output("tab-1", "\n<sim> ")
+    assert runner.public_dict()["status"] == "completed"
+    assert runner.public_dict()["steps"][1]["response_count"] == 2
+
+
 def test_success_marker_wins_over_failure_word() -> None:
     """A step with explicit success markers completes when a success marker is
     present, even if a failure-looking word also appears in the output. This
