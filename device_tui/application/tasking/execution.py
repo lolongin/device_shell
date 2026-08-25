@@ -104,9 +104,27 @@ class DeviceExecutionTool:
                     device_id=target.device_id,
                     protocol=recovery_protocol,
                 )
+            timeout = max(1, min(int(params.get("timeout_seconds") or 180), 3_600))
+            deadline = asyncio.get_running_loop().time() + timeout
             view = await self._control.open_session(recovery_target, reuse=True, context=context)
-            if str(view.status).casefold() not in {"connected", "ready", "open"}:
-                raise DeviceWorkflowExecutionError("device_offline", "Device is not online.", error_class="transient", retryable=True)
+            # A newly created or reconnected session is returned before its
+            # transport handshake finishes. Keep polling that same session;
+            # otherwise every retry creates another connection and the task
+            # eventually reports a misleading signal/online timeout.
+            while str(view.status).casefold() not in {"connected", "ready", "open"}:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise DeviceWorkflowExecutionError(
+                        "device_offline",
+                        "Device did not return online before the recovery timeout.",
+                        error_class="transient",
+                        retryable=True,
+                    )
+                await asyncio.sleep(0.2)
+                view = await self._control.open_session(
+                    DeviceTarget(session_id=view.session_id),
+                    reuse=True,
+                    context=context,
+                )
             return {
                 "session_id": view.session_id,
                 "device_id": view.device_id,
