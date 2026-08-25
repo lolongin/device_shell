@@ -76,6 +76,21 @@ def test_batch_plan_arms_prompt_before_sending() -> None:
     assert coordinator.active_execution_id("tab-1") == ""
 
 
+def test_vrp_bracket_ftp_prompt_completes_login_step() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 2121"},
+            {"type": "expect", "success": ["ftp_prompt"]},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+    coordinator.on_output("tab-1", "230 User logged in.\r\n[ftp] ")
+
+    assert runner.public_dict()["status"] == "completed"
+
+
 def test_interactive_plan_handles_split_prompts_and_local_secrets() -> None:
     harness = Harness()
     coordinator = harness.coordinator()

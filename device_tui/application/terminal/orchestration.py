@@ -1326,8 +1326,11 @@ def _match_token(
         prompt = detect_terminal_prompt(text)
         return (prompt, len(text)) if prompt else None
     alias_patterns = {
-        "ftp_prompt": r"(?im)(?:^|\n)\s*ftp>\s*$",
-        "sftp_prompt": r"(?im)(?:^|\n)\s*(?:sftp|sftp-client)>\s*$",
+        # Huawei VRP renders the FTP client prompt as ``[ftp]`` while the
+        # simulator and several Unix clients use ``ftp>``. Both are the same
+        # protocol state and must unlock the following binary/get step.
+        "ftp_prompt": r"(?im)(?:^|\n)\s*(?:ftp>|\[ftp\])\s*$",
+        "sftp_prompt": r"(?im)(?:^|\n)\s*(?:(?:sftp|sftp-client)>|\[sftp(?:-client)?\])\s*$",
         # Keep the prompt boundary line-local. ``\s*$`` can consume the
         # newline before a following password prompt and then miss the
         # username prompt entirely when a device batches both lines.
