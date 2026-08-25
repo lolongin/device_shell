@@ -361,15 +361,17 @@ async function retryFailedStep(): Promise<void> {
 async function resumeFromPreviousStep(): Promise<void> {
   if (previousStepId.value) await workspace.resumeTask(workspace.activeTaskId, previousStepId.value)
 }
-async function chooseTask(task: TaskRecord, focus = true): Promise<void> {
+async function chooseTask(task: TaskRecord): Promise<void> {
   workspace.activeTaskId = task.id
-  await workspace.getTask(task.id, focus)
+  // Selecting a record is a read-only action. Do not steal the terminal
+  // focus from a device/session the operator is currently inspecting.
+  await workspace.getTask(task.id, false)
 }
 function openLatestTask(): void {
   const latest = workspace.tasks[0]
-  // Restoring task details must not replace the device the user currently has
-  // open in the main workspace. Explicit task clicks still focus their device.
-  if (latest) void chooseTask(latest, false)
+  // Restoring task details must not replace the device or terminal currently
+  // open in the main workspace.
+  if (latest) void chooseTask(latest)
 }
 
 onMounted(async () => {
