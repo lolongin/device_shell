@@ -400,7 +400,7 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
         <button type="button" :class="{ active: taskMode === 'upgrade' }" @click="taskMode = 'upgrade'"><RotateCcw :size="13" />Workflow</button>
         <button type="button" :class="{ active: taskMode === 'plan' }" @click="taskMode = 'plan'"><Workflow :size="13" />制定任务</button>
       </div>
-      <label><span>设备</span><select :value="workspace.selectedDeviceId" @change="onDeviceChange"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.id" :value="device.id">{{ device.name }} · {{ device.id }}</option></select></label>
+      <label><span>设备</span><select :value="workspace.selectedDeviceRowId" @change="onDeviceChange"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.row_id" :value="device.row_id">{{ device.name }} · {{ device.id }}</option></select></label>
       <template v-if="taskMode === 'upgrade'">
         <label><span>Workflow</span><select v-model="workflowId"><option v-for="workflow in workflowOptions" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option></select></label>
         <p v-if="selectedWorkflow?.description" class="task-workflow-description">{{ selectedWorkflow.description }}</p>

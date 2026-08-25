@@ -176,7 +176,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   )
 
   function selectDevice(deviceId: string): void {
-    const device = devices.value.find((item) => item.id === deviceId || item.row_id === deviceId)
+    // Prefer the stable row identity. Device IDs can appear on multiple
+    // controller rows, while row_id identifies the exact selectable entry.
+    const device = devices.value.find((item) => item.row_id === deviceId)
+      || devices.value.find((item) => item.id === deviceId)
     if (device) selectedDeviceRowId.value = device.row_id
   }
   const currentCommandGroup = computed(
@@ -348,7 +351,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const restoredDevice = devices.value.find(
         (device) => device.row_id === selectedDeviceRowId.value
       ) || devices.value.find((device) => device.id === selectedDeviceRowId.value)
-      selectedDeviceRowId.value = restoredDevice?.row_id || devices.value[0]?.row_id || ''
+      // A refresh must not silently move the user's selection to the first
+      // device (usually the simulator). Only choose a default on first load.
+      if (restoredDevice) {
+        selectedDeviceRowId.value = restoredDevice.row_id
+      } else if (!selectedDeviceRowId.value) {
+        selectedDeviceRowId.value = devices.value[0]?.row_id || ''
+      }
       if (!sessions.value.some((session) => session.id === activeSessionId.value)) {
         activeSessionId.value = sessions.value[0]?.id || ''
       }
@@ -1770,11 +1779,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     )
   })
   watch(filteredDevices, (visibleDevices) => {
-    if (!visibleDevices.length) {
-      selectedDeviceRowId.value = ''
-      return
-    }
-    if (!visibleDevices.some((device) => device.row_id === selectedDeviceRowId.value)) {
+    // Filtering changes the visible list, not the user's selected device.
+    // Keep the selection stable so task controls cannot jump to the first row.
+    if (!selectedDeviceRowId.value && visibleDevices.length) {
       selectedDeviceRowId.value = visibleDevices[0].row_id
     }
   })
