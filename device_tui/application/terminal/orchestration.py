@@ -38,7 +38,6 @@ PROMPT_ALIASES = {
     "pagination_prompt",
     "confirmation_prompt",
 }
-RESPONSE_RETRY_DELAY_MS = 120
 
 
 class TerminalPlanError(ValueError):
@@ -684,50 +683,15 @@ class TerminalExecutionRunner:
         assert self._active_result is not None
         self._active_result.response_count += 1
         self._active_result.responses_sent.append(rule.match)
-        # Consume only the prompt that triggered this response. Do not loop
-        # through the remaining buffer: devices may coalesce ``User:`` and
-        # ``Password:`` in one output event. Keep the unconsumed tail so the
-        # next output event can confirm the next prompt without sending it in
-        # the same event as the preceding credential.
-        self._scan_buffer = self._scan_buffer[found[1] :]
+        # A response is a protocol boundary. Discard every byte from this
+        # terminal-output event after responding, including a coalesced next
+        # prompt. In particular, never send an FTP password based on output
+        # delivered with the username prompt: real devices can emit buffered
+        # prompts before they are ready to receive the preceding credential.
+        # The next automated response must be triggered by a fresh device
+        # output event after this input has been sent.
+        self._scan_buffer = ""
         self.send_input(self.session_id, payload, self.execution_id)
-        # Some real VRP devices emit the username and password prompts in one
-        # terminal event and do not echo the username. Re-check the retained
-        # tail after a short device-processing delay so the login cannot stall,
-        # while still avoiding a same-event password race.
-        if any(
-            _match_token(self._scan_buffer, candidate.match, case_sensitive=candidate.case_sensitive)
-            is not None
-            for index, candidate in enumerate(step.responses)
-            if self._response_counts.get(index, 0) < candidate.max_matches
-        ):
-            token = self._step_token
-            self.schedule(
-                RESPONSE_RETRY_DELAY_MS,
-                lambda token=token: self._on_response_retry(token),
-            )
-
-    def _on_response_retry(self, token: int) -> None:
-        with self._lock:
-            if self.status != "running" or token != self._step_token:
-                return
-            step = self._current_plan_step()
-            if not isinstance(step, ExpectStep):
-                return
-            before = dict(self._response_counts)
-            self._apply_responses_locked(step)
-            if self.status != "running" or self._response_counts == before:
-                return
-            success = _first_match(
-                self._scan_buffer,
-                step.success,
-                case_sensitive=step.case_sensitive,
-            )
-            if success is not None:
-                self._finish_active_step_locked("completed", matched=success[0])
-                if not self._take_branch_locked(step, step.on_match, reason="match"):
-                    self.current_step += 1
-                    self._advance_locked()
 
     def _input_for(
         self,

@@ -158,7 +158,7 @@ def test_login_does_not_send_password_from_same_coalesced_output_event() -> None
     assert runner.public_dict()["status"] == "completed"
 
 
-def test_login_retries_coalesced_vrp_password_prompt_after_device_delay() -> None:
+def test_login_waits_for_a_fresh_output_after_coalesced_vrp_prompts() -> None:
     harness = Harness()
     coordinator = harness.coordinator()
     plan = parse_terminal_plan(
@@ -180,7 +180,11 @@ def test_login_retries_coalesced_vrp_password_prompt_after_device_delay() -> Non
         "ftp 192.0.2.10 2121\r",
         "device-user\r",
     ]
-    harness.scheduler.advance(0.12)
+    # A password prompt in the same terminal-output event is deliberately
+    # ignored; the device must emit a fresh prompt after accepting username.
+    harness.scheduler.advance(1)
+    assert len(harness.sent) == 2
+    coordinator.on_output("tab-1", "Password: ")
     assert harness.sent[-1][1].text == "super-secret\r"
     coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
     assert runner.public_dict()["status"] == "completed"
@@ -209,6 +213,8 @@ def test_login_handles_vrp_prompts_on_one_output_line() -> None:
         "device-user\r",
     ]
     harness.scheduler.advance(0.12)
+    assert harness.sent[-1][1].text == "device-user\r"
+    coordinator.on_output("tab-1", "Password: ")
     assert harness.sent[-1][1].text == "super-secret\r"
     coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
     assert runner.public_dict()["status"] == "completed"
