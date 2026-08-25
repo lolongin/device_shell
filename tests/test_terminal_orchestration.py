@@ -118,12 +118,37 @@ def test_interactive_plan_handles_split_prompts_and_local_secrets() -> None:
         "device-user\r",
         "super-secret\r",
     ]
-    assert harness.sent[1][1].sensitive
+    assert not harness.sent[1][1].sensitive
     assert harness.sent[2][1].secret_ref == "transfer.password"
     result = runner.public_dict()
     assert result["status"] == "completed"
     assert result["steps"][1]["response_count"] == 2
     assert "super-secret" not in str(result)
+
+
+def test_short_username_is_not_used_as_a_global_output_mask() -> None:
+    harness = Harness()
+    coordinator = TerminalExecutionCoordinator(
+        send_input=lambda session_id, payload, execution_id: harness.sent.append(
+            (session_id, payload, execution_id)
+        ),
+        resolve_secret=lambda name: "p" if name == "transfer.username" else "super-secret",
+        schedule=harness.scheduler.schedule,
+        clock=lambda: harness.scheduler.now,
+    )
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "secret_ref": "transfer.username"},
+            {"type": "expect", "success": ["device_prompt"]},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    # The first send happens during start; the username is allowed to remain
+    # visible while later output containing the same character stays intact.
+    assert harness.sent[0][1].text == "p\r"
+    assert not harness.sent[0][1].sensitive
+    assert coordinator.redact_output("tab-1", "copy package.cc\r\n") == "copy package.cc\r\n"
 
 
 def test_login_does_not_send_password_from_same_coalesced_output_event() -> None:
@@ -244,8 +269,8 @@ def test_secret_send_affixes_build_linux_sftp_command_and_redact_username() -> N
 
     runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
     assert harness.sent[0][1].text == "sftp -P 2222 device-user@192.0.2.10\r"
-    assert harness.sent[0][1].sensitive
-    assert coordinator.redact_output("tab-1", "device-user@192.0.2.10's password:") == "***@192.0.2.10's password:"
+    assert not harness.sent[0][1].sensitive
+    assert coordinator.redact_output("tab-1", "device-user@192.0.2.10's password:") == "device-user@192.0.2.10's password:"
 
     coordinator.on_output("tab-1", "device-user@192.0.2.10's password: ")
     coordinator.on_output("tab-1", "Connected\nsftp> ")

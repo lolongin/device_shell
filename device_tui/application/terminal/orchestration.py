@@ -759,11 +759,13 @@ class TerminalExecutionRunner:
                     "secret_unavailable",
                     f"本地凭据为空: {secret_ref}",
                 )
-            self._known_secrets.append(value)
+            redact_output = _secret_ref_requires_redaction(secret_ref)
+            if redact_output:
+                self._known_secrets.append(value)
             rendered = f"{secret_prefix}{value}{secret_suffix}"
             return TerminalInput(
                 rendered + ("\r" if append_enter else ""),
-                sensitive=True,
+                sensitive=redact_output,
                 secret_ref=secret_ref,
             )
         return TerminalInput(text + ("\r" if append_enter else ""))
@@ -1356,3 +1358,8 @@ def _redact_values(text: str, values: tuple[str, ...]) -> str:
         if value:
             redacted = redacted.replace(value, "***")
     return redacted
+
+
+def _secret_ref_requires_redaction(secret_ref: str) -> bool:
+    """Usernames are identifiers; passwords and runtime commands are secrets."""
+    return not secret_ref.casefold().endswith(".username")
