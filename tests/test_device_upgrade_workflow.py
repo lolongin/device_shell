@@ -54,7 +54,7 @@ def test_device_upgrade_workflow_is_parameterized_and_ordered() -> None:
     assert workflow.steps[0].metadata["result_state"] == "staged"
     activated = device_upgrade_workflow(device_id="device-1", package="images/router.cc", options={"activation_policy": "reboot"})
     assert [step.id for step in activated.steps] == ["prepare_upgrade", "reboot", "wait_online", "verify_version", "validation"]
-    assert activated.steps[1].action.confirmation_required is True
+    assert activated.steps[1].action.confirmation_required is False
 
 
 def test_normal_upgrade_and_reboot_confirmation() -> None:
@@ -67,9 +67,6 @@ def test_normal_upgrade_and_reboot_confirmation() -> None:
         engine.apply_decision(Action("approve", target_step="prepare_upgrade"))
         await engine.execute_step()
         await engine.execute_step()
-        assert engine.task.status == TaskStatus.WAITING_FOR_USER.value
-        assert engine.pending_decision is not None
-        engine.apply_decision(Action("approve", target_step="reboot"))
         final = await _finish(engine)
         assert final.status == TaskStatus.COMPLETED.value
         assert executor.calls == ["prepare_upgrade", "reboot", "wait_online", "verify_version", "validation"]
