@@ -93,6 +93,7 @@ class ExpectStep:
     on_match: str = ""
     on_failure: str = ""
     max_retries: int = 0
+    disconnect_is_success: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,6 +417,12 @@ class TerminalExecutionRunner:
             if isinstance(step, WaitStateStep) and normalized == step.state:
                 self._finish_active_step_locked("completed", matched=normalized)
                 if not self._take_branch_locked(step, step.on_match, reason="match"):
+                    self.current_step += 1
+                    self._advance_locked()
+                return
+            if normalized == "disconnected" and isinstance(step, ExpectStep) and step.disconnect_is_success:
+                self._finish_active_step_locked("completed", matched="disconnected")
+                if not self._take_branch_locked(step, step.on_match, reason="disconnect"):
                     self.current_step += 1
                     self._advance_locked()
                 return
@@ -1141,6 +1148,7 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
                 maximum=100,
             )
         ),
+        disconnect_is_success=bool(raw.get("disconnect_is_success", False)),
     )
 
 

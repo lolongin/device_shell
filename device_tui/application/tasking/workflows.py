@@ -34,8 +34,11 @@ def device_upgrade_workflow(
     if activation_policy not in {"stage_only", "reboot"}:
         raise ValueError("activation_policy must be stage_only or reboot")
     package_source = str(opts.get("package_source") or "local")
+    recovery_protocol = str(opts.get("recovery_protocol") or "").casefold()
     if package_source not in {"local", "device"}:
         raise ValueError("package_source must be local or device")
+    if recovery_protocol not in {"", "same", "auto", "ssh", "telnet", "serial"}:
+        raise ValueError("recovery_protocol must be same, auto, ssh, telnet, or serial")
     prepare = WorkflowStep(
         "prepare_upgrade",
         kind="device",
@@ -65,7 +68,7 @@ def device_upgrade_workflow(
             # second confirmation here leaves the task permanently waiting
             # after the startup item is set instead of running activation.
             WorkflowStep("reboot", kind="device", action=Action("reboot", risk="high", confirmation_required=False), depends_on=("prepare_upgrade",), params={"device_id": device_id, "timeout_seconds": opts.get("reboot_timeout_seconds", 190)}, retry_policy=retry(2), metadata={"phase": "activate"}),
-            WorkflowStep("wait_online", kind="device", action="wait_online", depends_on=("reboot",), params={"device_id": device_id, "timeout_seconds": opts.get("online_timeout_seconds", 180)}, retry_policy=retry(3), metadata={"phase": "recover"}),
+            WorkflowStep("wait_online", kind="device", action="wait_online", depends_on=("reboot",), params={"device_id": device_id, "recovery_protocol": recovery_protocol, "timeout_seconds": opts.get("online_timeout_seconds", 180)}, retry_policy=retry(3), metadata={"phase": "recover"}),
             WorkflowStep("verify_version", kind="device", action="verify_version", depends_on=("wait_online",), params={"device_id": device_id, "commands": opts.get("version_commands", ("display version",)), "expected_version": opts.get("expected_version", "")}, retry_policy=retry(2), metadata={"phase": "verify"}),
             WorkflowStep("validation", kind="device", action="validation", depends_on=("verify_version",), params={"device_id": device_id, "commands": opts.get("validation_commands", ("display version",))}, retry_policy={"terminal": True}, metadata={"phase": "postcheck"}),
         ))

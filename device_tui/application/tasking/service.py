@@ -128,6 +128,7 @@ class WorkflowEngine:
         checkpoint = task.checkpoint or (instance.checkpoint if instance else None)
         self._revision = checkpoint.revision if checkpoint else 0
         self._outputs = dict(checkpoint.outputs if checkpoint else (instance.outputs if instance else {}))
+        self._restore_recovery_target()
         self._attempts = dict(checkpoint.attempts if checkpoint else {})
         self._decisions = list(checkpoint.decisions if checkpoint else getattr(task, "decisions", ()))
         self._pending_decision_id = checkpoint.pending_decision_id if checkpoint else ""
@@ -216,6 +217,7 @@ class WorkflowEngine:
                         ),
                     )
                 self._outputs[step.id] = result.facts or {"output": result.output}
+                self._remember_recovery_target(step, result.facts)
                 self._states[step.id] = replace(self._states[step.id], status=StepStatus.COMPLETED, result=result, error=None)
                 next_step = self._next_ready(step.id)
                 status = TaskStatus.COMPLETED.value if not next_step else TaskStatus.RUNNING.value
@@ -533,6 +535,27 @@ class WorkflowEngine:
         """Return context that is safe to persist and expose through APIs."""
         internal_keys = {"lease_token", "operation_callback", "operation_ids"}
         return {key: value for key, value in self._context.items() if key not in internal_keys}
+
+    def _remember_recovery_target(self, step: WorkflowStep, facts: dict[str, Any]) -> None:
+        if str(step.action or step.kind).casefold() != "wait_online":
+            return
+        session_id = str(facts.get("session_id") or "").strip()
+        if not session_id:
+            return
+        self._target = DeviceTarget(
+            device_id=str(facts.get("device_id") or self._target.device_id),
+            session_id=session_id,
+            protocol=str(facts.get("recovery_protocol") or self._target.protocol or "auto"),
+        )
+
+    def _restore_recovery_target(self) -> None:
+        for step_id, facts in self._outputs.items():
+            if not isinstance(facts, dict) or not step_id.casefold().endswith("wait_online"):
+                continue
+            self._remember_recovery_target(
+                WorkflowStep(step_id, kind="device", action="wait_online"),
+                facts,
+            )
 
     async def run(
         self,

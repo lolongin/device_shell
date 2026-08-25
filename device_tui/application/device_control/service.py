@@ -73,6 +73,8 @@ class DeviceControlService:
         del timeout_seconds, context
         if target.session_id:
             session = self._session(target.session_id)
+            if session.status.casefold() in {"disconnected", "failed"}:
+                session = await self._sessions.reconnect(session.id)
             return self._session_view(session, reused=True)
         device_id = self._required_device_id(target)
         requested_protocol = target.protocol.casefold()
@@ -285,7 +287,7 @@ class DeviceControlService:
         context: ControlContext | None = None,
     ) -> CommandResult:
         self._validate_task_lease(target, context)
-        return await self.execute(
+        result = await self.execute(
             target,
             CommandRequest(
                 commands=("reboot",),
@@ -305,6 +307,11 @@ class DeviceControlService:
                         "responses": [
                             {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
                         ],
+                        # A management SSH/Telnet link normally drops as soon
+                        # as reboot is accepted. That disconnect is evidence
+                        # of activation, not an execution failure; the next
+                        # workflow step is responsible for reconnecting.
+                        "disconnect_is_success": True,
                         "timeout_seconds": timeout_seconds - 10,
                         "label": "等待设备重启完成",
                         "max_output_chars": 32_768,
@@ -312,6 +319,30 @@ class DeviceControlService:
                 ),
             ),
             context=context,
+        )
+        data = dict(result.data)
+        data.update({
+            "reboot_command_sent": any(
+                str(step.get("type") or "") == "send"
+                and str(step.get("status") or "") == "completed"
+                for step in result.steps
+            ),
+            "reboot_disconnect_observed": any(
+                str(step.get("matched") or "").casefold() == "disconnected"
+                for step in result.steps
+            ),
+        })
+        return CommandResult(
+            operation_id=result.operation_id,
+            execution_id=result.execution_id,
+            session_id=result.session_id,
+            device_id=result.device_id,
+            status=result.status,
+            output=result.output,
+            error_code=result.error_code,
+            steps=result.steps,
+            duration_ms=result.duration_ms,
+            data=data,
         )
 
     def power_off(

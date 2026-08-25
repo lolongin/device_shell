@@ -55,6 +55,12 @@ def test_device_upgrade_workflow_is_parameterized_and_ordered() -> None:
     activated = device_upgrade_workflow(device_id="device-1", package="images/router.cc", options={"activation_policy": "reboot"})
     assert [step.id for step in activated.steps] == ["prepare_upgrade", "reboot", "wait_online", "verify_version", "validation"]
     assert activated.steps[1].action.confirmation_required is False
+    serial_recovery = device_upgrade_workflow(
+        device_id="device-1",
+        package="images/router.cc",
+        options={"activation_policy": "reboot", "recovery_protocol": "serial"},
+    )
+    assert serial_recovery.steps[2].params["recovery_protocol"] == "serial"
 
 
 def test_normal_upgrade_and_reboot_confirmation() -> None:
@@ -70,6 +76,42 @@ def test_normal_upgrade_and_reboot_confirmation() -> None:
         final = await _finish(engine)
         assert final.status == TaskStatus.COMPLETED.value
         assert executor.calls == ["prepare_upgrade", "reboot", "wait_online", "verify_version", "validation"]
+
+    asyncio.run(scenario())
+
+
+def test_recovered_session_is_used_for_post_reboot_checks() -> None:
+    async def scenario() -> None:
+        workflow = device_upgrade_workflow(
+            device_id="device-1",
+            package="router.cc",
+            options={"activation_policy": "reboot", "recovery_protocol": "serial"},
+        )
+        seen: list[tuple[str, str, str]] = []
+
+        class RecoveryExecutor:
+            async def execute(self, target, step, *, context):
+                del context
+                seen.append((step.id, target.session_id, target.protocol))
+                if step.id == "wait_online":
+                    return {
+                        "session_id": "serial-session",
+                        "device_id": "device-1",
+                        "status": "connected",
+                        "recovery_protocol": "serial",
+                    }
+                return {"output": step.id, "status": "completed"}
+
+        engine = WorkflowEngine(workflow, RecoveryExecutor(), target=DeviceTarget("device-1"))
+        engine.start(make_task())
+        await engine.execute_step()
+        engine.apply_decision(Action("approve", target_step="prepare_upgrade"))
+        final = await _finish(engine)
+        assert final.status == TaskStatus.COMPLETED.value
+        verify_target = next(item for item in seen if item[0] == "verify_version")
+        validation_target = next(item for item in seen if item[0] == "validation")
+        assert verify_target[1:] == ("serial-session", "serial")
+        assert validation_target[1:] == ("serial-session", "serial")
 
     asyncio.run(scenario())
 

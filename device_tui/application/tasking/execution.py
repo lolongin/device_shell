@@ -97,10 +97,22 @@ class DeviceExecutionTool:
             self._notify(context, "operation", operation.operation_id)
             return await self._wait_operation(operation.operation_id, timeout_seconds=int(params.get("timeout_seconds") or 300))
         if action == "wait_online":
-            view = await self._control.open_session(target, reuse=True, context=context)
+            recovery_protocol = str(params.get("recovery_protocol") or "").strip().casefold()
+            recovery_target = target
+            if recovery_protocol and recovery_protocol != "same":
+                recovery_target = DeviceTarget(
+                    device_id=target.device_id,
+                    protocol=recovery_protocol,
+                )
+            view = await self._control.open_session(recovery_target, reuse=True, context=context)
             if str(view.status).casefold() not in {"connected", "ready", "open"}:
                 raise DeviceWorkflowExecutionError("device_offline", "Device is not online.", error_class="transient", retryable=True)
-            return {"session_id": view.session_id, "device_id": view.device_id, "status": view.status}
+            return {
+                "session_id": view.session_id,
+                "device_id": view.device_id,
+                "status": view.status,
+                "recovery_protocol": recovery_protocol if recovery_protocol and recovery_protocol != "same" else view.protocol,
+            }
         if action in {"command", "execute", "batch"}:
             commands = params.get("commands")
             if not isinstance(commands, (list, tuple)):

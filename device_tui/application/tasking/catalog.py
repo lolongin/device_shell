@@ -272,6 +272,12 @@ class DeviceUpgradeWorkflowProvider:
                 enum=("stage_only", "reboot"),
                 enum_labels={"stage_only": "只设置下次启动项", "reboot": "确认后重启并验证"},
             ),
+            WorkflowParameter(
+                "recovery_protocol", label="重启后恢复通道", default="same", control="select",
+                enum=("same", "serial"),
+                enum_labels={"same": "原管理口自动重连", "serial": "串口监控并确认上线"},
+                advanced=True,
+            ),
             WorkflowParameter("expected_version", label="期望版本", default="", advanced=True),
             WorkflowParameter("driver_id", label="升级驱动", default="auto", advanced=True),
             WorkflowParameter("master_storage", label="主控存储", default="", advanced=True),
