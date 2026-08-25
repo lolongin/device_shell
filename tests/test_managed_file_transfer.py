@@ -159,6 +159,30 @@ def test_managed_plan_uses_local_secrets_and_device_side_get() -> None:
     assert timeout >= 120
 
 
+def test_managed_ftp_plan_keeps_credential_prompts_in_protocol_order() -> None:
+    steps, _ = build_managed_transfer_steps(
+        protocol="ftp",
+        host="192.0.2.10",
+        port=2121,
+        source_path="packages/target.cc",
+        destination_path="flash:/target.cc",
+        source_size=1_024,
+    )
+
+    labels = [step.get("label") for step in steps]
+    assert labels[:5] == [
+        "连接 FTP 服务",
+        "等待 FTP 用户名提示",
+        "发送 FTP 用户名",
+        "等待 FTP 密码提示",
+        "发送 FTP 密码",
+    ]
+    assert steps[1]["success"] == ["username_prompt"]
+    assert steps[3]["success"] == ["password_prompt"]
+    assert "responses" not in steps[1]
+    assert "responses" not in steps[3]
+
+
 def test_ftpget_plan_uses_exact_one_command_contract_and_protected_reference() -> None:
     command = build_ftpget_command(
         username="transfer-user",

@@ -397,6 +397,8 @@ def _managed_transfer_connect_steps(
     terminal_environment: str = "vrp",
     connect_secret_ref: str = "",
     profile: TransferInteractionProfile | None = None,
+    username_secret_ref: str = "",
+    password_secret_ref: str = "",
 ) -> list[dict[str, Any]]:
     """Shared connect/login/binary-mode steps for App-managed FTP/SCP transfers."""
     normalized_protocol = protocol.strip().casefold()
@@ -437,26 +439,70 @@ def _managed_transfer_connect_steps(
             "text": profile.connect_template.format(protocol=normalized_protocol, host=host, port=int(port)),
             "label": f"连接 {normalized_protocol.upper()} 服务",
         }
-    return [
-        connect_step,
-        {
-            "type": "expect",
-            "success": [prompt, "ftp_prompt"],
-            "responses": responses,
-            "failures": [
-                "Login incorrect",
-                "Authentication failed",
-                "Permission denied",
-                "Host key verification failed",
-                "530 ",
-                "421 ",
-            ],
-            "timeout_seconds": timeout_seconds,
-            "label": profile.login_label,
-            "timeout_code": profile.connect_timeout_code,
-        },
-        *protocol_steps,
+    failures = [
+        "Login incorrect",
+        "Authentication failed",
+        "Permission denied",
+        "Host key verification failed",
+        "530 ",
+        "421 ",
     ]
+    if normalized_protocol == "ftp" and username_secret_ref and password_secret_ref:
+        # FTP login is deliberately modeled as separate protocol states. A
+        # prompt is evidence that the device accepted the previous input;
+        # output batching must not turn username and password into one
+        # unordered response list.
+        login_steps: list[dict[str, Any]] = [
+            {
+                "type": "expect",
+                "success": [profile.username_prompt],
+                "failures": failures,
+                "timeout_seconds": timeout_seconds,
+                "label": "等待 FTP 用户名提示",
+                "timeout_code": f"{profile.connect_timeout_code}_username",
+            },
+            {
+                "type": "send",
+                "secret_ref": username_secret_ref,
+                "label": "发送 FTP 用户名",
+            },
+            {
+                "type": "expect",
+                "success": [profile.password_prompt],
+                "failures": failures,
+                "timeout_seconds": timeout_seconds,
+                "label": "等待 FTP 密码提示",
+                "timeout_code": f"{profile.connect_timeout_code}_password",
+            },
+            {
+                "type": "send",
+                "secret_ref": password_secret_ref,
+                "label": "发送 FTP 密码",
+            },
+            {
+                "type": "expect",
+                "success": [prompt, "ftp_prompt"],
+                "failures": failures,
+                "timeout_seconds": timeout_seconds,
+                "label": profile.login_label,
+                "timeout_code": profile.connect_timeout_code,
+            },
+        ]
+    else:
+        # SFTP may need a host-key response and different clients have
+        # optional credential prompts, so retain its response-driven flow.
+        login_steps = [
+            {
+                "type": "expect",
+                "success": [prompt, "ftp_prompt"],
+                "responses": responses,
+                "failures": failures,
+                "timeout_seconds": timeout_seconds,
+                "label": profile.login_label,
+                "timeout_code": profile.connect_timeout_code,
+            }
+        ]
+    return [connect_step, *login_steps, *protocol_steps]
 
 
 def _managed_transfer_login_responses(
@@ -517,15 +563,17 @@ def build_managed_transfer_steps(
             normalized_protocol,
             host,
             port,
-            _managed_transfer_login_responses(
-                username_secret_ref,
-                password_secret_ref,
-                profile,
-            ),
+        _managed_transfer_login_responses(
+            username_secret_ref,
+            password_secret_ref,
+            profile,
+        ),
             timeout_seconds=45,
             terminal_environment=terminal_environment,
             connect_secret_ref=connect_secret_ref,
             profile=profile,
+            username_secret_ref=username_secret_ref,
+            password_secret_ref=password_secret_ref,
         ),
         {
             "type": "send",
