@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 from functools import partial
 import ipaddress
@@ -29,6 +29,7 @@ from device_tui.infrastructure.transfers.file_transfer_service import (
 )
 from device_tui.infrastructure.transfers.managed_file_transfer import (
     ManagedTransferError,
+    TransferInteractionProfile,
     SharedFileCatalog,
     _validate_relative_path,
     build_ftpget_command,
@@ -569,6 +570,7 @@ class ManagedTransferService:
         overwrite: bool = False,
         terminal_environment: str = "auto",
         command_mode: str = "vrp",
+        interaction_profile: dict[str, str] | None = None,
         retry_of: str | None = None,
     ) -> OperationRecord:
         session = self._connected_session(session_id)
@@ -615,6 +617,7 @@ class ManagedTransferService:
                 "terminal_environment_requested": requested_environment,
                 "terminal_environment": resolved_environment,
                 "command_mode": normalized_command_mode,
+                "interaction_profile": dict(interaction_profile or {}),
             },
         )
         del source, fingerprint
@@ -630,6 +633,7 @@ class ManagedTransferService:
         overwrite: bool = False,
         terminal_environment: str = "auto",
         command_mode: str = "vrp",
+        interaction_profile: dict[str, str] | None = None,
         retry_of: str | None = None,
     ) -> OperationRecord:
         session = self._connected_session(session_id)
@@ -672,6 +676,7 @@ class ManagedTransferService:
                 "terminal_environment_requested": requested_environment,
                 "terminal_environment": resolved_environment,
                 "command_mode": normalized_command_mode,
+                "interaction_profile": dict(interaction_profile or {}),
             },
         )
         self._enqueue(record)
@@ -701,6 +706,7 @@ class ManagedTransferService:
                 or "auto"
             ),
             command_mode=str(payload.get("command_mode") or "vrp"),
+            interaction_profile=dict(payload.get("interaction_profile") or {}),
             retry_of=original.id,
         )
 
@@ -898,6 +904,7 @@ class ManagedTransferService:
                 password_secret_ref=password_ref,
                 terminal_environment=terminal_environment,
                 connect_secret_ref=connect_secret_ref,
+                profile=self._interaction_profile(current.data.get("interaction_profile")),
             )
             self._operations.update(
                 operation_id,
@@ -1182,6 +1189,7 @@ class ManagedTransferService:
                 password_secret_ref=password_ref,
                 terminal_environment=terminal_environment,
                 connect_secret_ref=connect_secret_ref,
+                profile=self._interaction_profile(current.data.get("interaction_profile")),
             )
             self._operations.update(
                 operation_id,
@@ -1318,6 +1326,18 @@ class ManagedTransferService:
                 f"不支持的设备 FTP 命令方式: {command_mode}",
             )
         return normalized
+
+    @staticmethod
+    def _interaction_profile(value: object) -> TransferInteractionProfile | None:
+        if not isinstance(value, dict) or not value:
+            return None
+        valid_fields = {item.name for item in fields(TransferInteractionProfile)}
+        values = {
+            str(key): str(raw)
+            for key, raw in value.items()
+            if str(key) in valid_fields and isinstance(raw, str)
+        }
+        return TransferInteractionProfile(**values) if values else None
 
     @staticmethod
     def _require_completed(result: dict[str, object], stage: str) -> str:

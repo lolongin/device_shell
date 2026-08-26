@@ -13,6 +13,7 @@ from device_tui.application.device_control import (
     TransferRequest,
 )
 from device_tui.application.errors import UnsupportedOperationError
+from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
 
 from .models import WorkflowStep
 
@@ -89,7 +90,12 @@ class DeviceExecutionTool:
                 target,
                 TransferRequest(
                     direction="upload", source_path=package, destination_path=destination,
-                    overwrite=bool(params.get("overwrite", False)), command_mode=str(params.get("command_mode") or "vrp"),
+                    overwrite=bool(params.get("overwrite", False)),
+                    command_mode=str(params.get("command_mode") or "vrp"),
+                    interaction_profile={
+                        str(key): str(value)
+                        for key, value in dict(params.get("interaction_profile") or {}).items()
+                    },
                 ),
                 context=context,
             )
@@ -169,7 +175,12 @@ class DeviceExecutionTool:
             )
             return {"session_id": result.session_id, "device_id": result.device_id, "sent": result.sent}
         if action == "reboot":
-            result = await self._control.reboot(target, context=context)
+            result = await self._control.reboot(
+                target,
+                timeout_seconds=int(params.get("timeout_seconds") or 190),
+                steps=tuple(item for item in params.get("steps", []) if isinstance(item, dict)),
+                context=context,
+            )
             self._raise_for_failed_result(result.status, result.error_code, result.output or "Reboot failed.")
             return dict(result.data)
         if action == "power_off":
@@ -189,6 +200,10 @@ class DeviceExecutionTool:
                     destination_path=destination_path,
                     overwrite=bool(params.get("overwrite", False)),
                     command_mode=str(params.get("command_mode") or "vrp"),
+                    interaction_profile={
+                        str(key): str(value)
+                        for key, value in dict(params.get("interaction_profile") or {}).items()
+                    },
                 ),
                 context=context,
             )
@@ -248,20 +263,21 @@ class DeviceExecutionTool:
 
     @staticmethod
     def _default_command(action: str, params: dict[str, Any]) -> str:
+        commands = HuaweiVrpCommandSet()
         defaults = {
-            "precheck": "display version",
-            "backup": "display startup",
-            "verify": "dir flash:/",
+            "precheck": commands.version_query(),
+            "backup": commands.startup_query(),
+            "verify": commands.storage_query("flash:/"),
             "activate": str(
                 params.get("activate_command")
                 or (
-                    f"startup system-software {params.get('destination_path')}"
+                    commands.activation(str(params.get("destination_path") or ""), "", False)[0][0]
                     if str(params.get("destination_path") or "").strip()
-                    else "startup system-software"
+                    else commands.activation("", "", False)[0][0]
                 )
             ),
-            "verify_version": "display version",
-            "validation": str(params.get("validation_command") or "display version") ,
+            "verify_version": commands.version_query(),
+            "validation": str(params.get("validation_command") or commands.version_query()),
         }
         return defaults[action]
 

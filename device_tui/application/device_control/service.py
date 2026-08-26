@@ -17,6 +17,7 @@ from device_tui.application.terminal.orchestration import (
     parse_terminal_plan,
 )
 from device_tui.application.transfers import ManagedTransferService, TerminalPlanExecutor
+from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
 
 from .models import (
     CommandRequest,
@@ -261,6 +262,7 @@ class DeviceControlService:
                 overwrite=request.overwrite,
                 terminal_environment=request.terminal_environment,
                 command_mode=request.command_mode,
+                interaction_profile=request.interaction_profile,
             )
         elif direction == "download":
             record = self._transfers.start_download(
@@ -270,6 +272,7 @@ class DeviceControlService:
                 overwrite=request.overwrite,
                 terminal_environment=request.terminal_environment,
                 command_mode=request.command_mode,
+                interaction_profile=request.interaction_profile,
             )
         else:
             raise UnsupportedOperationError(f"Unsupported transfer direction: {request.direction}")
@@ -280,39 +283,23 @@ class DeviceControlService:
         target: DeviceTarget,
         *,
         timeout_seconds: int = 190,
+        steps: tuple[dict[str, object], ...] = (),
         context: ControlContext | None = None,
     ) -> CommandResult:
         self._validate_task_lease(target, context)
+        plan_steps = steps or HuaweiVrpCommandSet().reboot_plan().steps
+        commands = tuple(
+            str(step.get("text") or "")
+            for step in plan_steps
+            if str(step.get("type") or "") == "send" and str(step.get("text") or "").strip()
+        )
         result = await self.execute(
             target,
             CommandRequest(
-                commands=("reboot",),
+                commands=commands,
                 mode="interactive",
                 total_timeout_seconds=timeout_seconds,
-                steps=(
-                    {"type": "send", "text": "reboot", "label": "发送 reboot"},
-                    {
-                        "type": "expect",
-                        "success": ["device_prompt", "login_prompt", "username_prompt"],
-                        "failures": [],
-                        # Huawei VRP may ask one or more destructive-action
-                        # confirmations after ``reboot``. These are device
-                        # prompts, not task approvals; answer them inside the
-                        # interactive command plan so the workflow can reach
-                        # the post-reboot wait/verification steps.
-                        "responses": [
-                            {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
-                        ],
-                        # A management SSH/Telnet link normally drops as soon
-                        # as reboot is accepted. That disconnect is evidence
-                        # of activation, not an execution failure; the next
-                        # workflow step is responsible for reconnecting.
-                        "disconnect_is_success": True,
-                        "timeout_seconds": timeout_seconds - 10,
-                        "label": "等待设备重启完成",
-                        "max_output_chars": 32_768,
-                    },
-                ),
+                steps=plan_steps,
             ),
             context=context,
         )

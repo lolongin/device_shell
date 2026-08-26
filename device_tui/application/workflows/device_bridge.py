@@ -9,6 +9,7 @@ watchdogs, reconciliation, and decisions.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -19,6 +20,7 @@ from device_tui.application.tasking.execution import (
     DeviceWorkflowExecutionError,
 )
 from device_tui.application.tasking.models import WorkflowStep
+from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
 from device_tui.application.upgrades.drivers import UpgradeDriverRegistry, UpgradeTargetFacts
 from device_tui.application.upgrades.package import (
     DEFAULT_MASTER_STORAGE,
@@ -361,26 +363,27 @@ class DeviceExecutionActionHandler:
         params.setdefault("timeout_seconds", max(1, int(action.timeout_seconds)))
         operation = action.operation
         if operation == "device.probe":
-            params["commands"] = _probe_commands(
-                params.get("probes", ()),
+            driver = self._driver(action, run)
+            params["commands"] = driver.commands.probe_plan(
+                tuple(params.get("probes", ())),
                 master_storage=str(params.get("master_storage") or DEFAULT_MASTER_STORAGE),
                 slave_storage=str(params.get("slave_storage") or DEFAULT_SLAVE_STORAGE),
-            )
+            ).commands
             return WorkflowStep(action.id, kind="device", action="precheck", params=params)
         if operation == "device.verify":
             fact = str(params.get("fact") or "")
             action_name = "verify_version" if fact == "running_version" else "validation" if fact == "validation" else "verify"
             if "commands" not in params:
-                params["commands"] = ("display version",) if fact == "running_version" else ("dir flash:/",)
+                params["commands"] = self._driver(action, run).commands.verification_plan(fact).commands
             return WorkflowStep(action.id, kind="device", action=action_name, params=params)
         if operation == "huawei.startup.configure":
+            driver = self._driver(action, run)
             package = str(params.get("package") or "").strip()
             if package:
                 # Workflow inputs may be local relative paths. The Huawei
                 # startup command needs the device-side artifact path.
                 package_name = PurePosixPath(package.replace("\\", "/")).name
-                params.setdefault("destination_path", f"flash:/{package_name}")
-            driver = self._driver(action, run)
+                params.setdefault("destination_path", driver.package_path(DEFAULT_MASTER_STORAGE, package_name))
             package_name = PurePosixPath(str(params.get("destination_path") or "").replace("\\", "/")).name
             master_package = driver.package_path(
                 str(params.get("master_storage") or DEFAULT_MASTER_STORAGE), package_name,
@@ -413,15 +416,23 @@ class DeviceExecutionActionHandler:
                         "The pre-upgrade startup package could not be confirmed; rollback needs an explicit operator decision.",
                         error_class="ambiguous",
                     )
-                rollback_command = f"startup system-software {current_system}"
+                rollback_command = self._driver(action, run).rollback_command(current_system)
             params["commands"] = (rollback_command,)
             return WorkflowStep(action.id, kind="device", action="command", params=params)
         if operation == "file.transfer":
             source = str(params.get("source") or params.get("source_path") or "").strip()
             destination = str(params.get("destination") or params.get("device_path") or "").strip()
             if not destination and source:
-                destination = f"flash:/{PurePosixPath(source.replace(chr(92), "/")).name}"
-            params.update(source_path=source, destination_path=destination)
+                destination = self._driver(action, run).package_path(
+                    DEFAULT_MASTER_STORAGE,
+                    PurePosixPath(source.replace(chr(92), "/")).name,
+                )
+            protocol = str(params.get("protocol") or "ftp")
+            params.update(
+                source_path=source,
+                destination_path=destination,
+                interaction_profile=asdict(self._driver(action, run).transfer_profile(protocol)),
+            )
             return WorkflowStep(action.id, kind="device", action="upload", params=params)
         if operation == "file.session.login":
             if self._transfers is None:
@@ -432,9 +443,14 @@ class DeviceExecutionActionHandler:
             )
             params.update(server_host=host, server_port=port)
             params["mode"] = "interactive"
-            params["steps"] = list(params.get("steps") or _ftp_login_steps(params))
+            try:
+                login_plan = self._driver(action, run).commands.ftp_login_plan(host, port)
+            except ValueError as exc:
+                raise DeviceWorkflowExecutionError("ftp_host_required", str(exc)) from exc
+            params["steps"] = list(params.get("steps") or login_plan.steps)
             return WorkflowStep(action.id, kind="device", action="batch", params=params)
         if operation == "device.reboot":
+            params.setdefault("steps", list(self._driver(action, run).reboot_plan_steps()))
             return WorkflowStep(action.id, kind="device", action="reboot", params=params)
         if operation == "device.wait_online":
             return WorkflowStep(action.id, kind="device", action="wait_online", params=params)
@@ -520,6 +536,7 @@ class DeviceReconcileProvider:
         self.id = provider_id
         self._execution = execution
         self._control = control
+        self._commands = HuaweiVrpCommandSet()
 
     async def reconcile(self, action: ActionSpec, run: WorkflowRun, reason: str, emit: Any) -> ReconcileResult:
         target = _target_for_run(run)
@@ -545,20 +562,26 @@ class DeviceReconcileProvider:
                         return ReconcileResult(ReconcileClassification.FAILED, snapshot, tuple(evidence))
             if self.id.endswith("startup"):
                 package = str(action.params.get("package") or "").casefold()
-                step = WorkflowStep("reconcile", kind="device", action="verify", params={"commands": ("display startup",)})
+                step = WorkflowStep(
+                    "reconcile", kind="device", action="verify",
+                    params={"commands": (self._commands.startup_query(),)},
+                )
                 data = await self._execution.execute(target, step, context=_control_context(run, action))
                 output = str(data.get("output") or "")
-                evidence.append({"probe": "display startup", "matched": bool(package and package in output.casefold())})
+                evidence.append({"probe": self._commands.startup_query(), "matched": bool(package and package in output.casefold())})
                 if package and package in output.casefold():
                     return ReconcileResult(ReconcileClassification.SUCCESS, {"output": output}, tuple(evidence))
                 return ReconcileResult(ReconcileClassification.INDETERMINATE, {"output": output}, tuple(evidence))
             if self.id.endswith("rollback"):
                 expected = package_basename(str(_previous_startup(run).get("current_system") or ""))
-                step = WorkflowStep("reconcile", kind="device", action="verify", params={"commands": ("display startup",)})
+                step = WorkflowStep(
+                    "reconcile", kind="device", action="verify",
+                    params={"commands": (self._commands.startup_query(),)},
+                )
                 data = await self._execution.execute(target, step, context=_control_context(run, action))
                 output = str(data.get("output") or "")
                 matched = bool(expected and expected in output.casefold())
-                evidence.append({"probe": "display startup", "expected_current_system": expected, "matched": matched})
+                evidence.append({"probe": self._commands.startup_query(), "expected_current_system": expected, "matched": matched})
                 if matched:
                     return ReconcileResult(ReconcileClassification.SUCCESS, {"output": output}, tuple(evidence))
                 return ReconcileResult(ReconcileClassification.INDETERMINATE, {"output": output}, tuple(evidence))
@@ -608,26 +631,6 @@ def _control_context(run: WorkflowRun, action: ActionSpec) -> ControlContext:
     )
 
 
-def _probe_commands(
-    probes: Any,
-    *,
-    master_storage: str = DEFAULT_MASTER_STORAGE,
-    slave_storage: str = DEFAULT_SLAVE_STORAGE,
-) -> tuple[str, ...]:
-    commands: list[str] = []
-    for probe in probes if isinstance(probes, (tuple, list)) else ():
-        normalized = str(probe).casefold()
-        probe_commands = {
-            "version": ("display version",),
-            "startup": ("display startup",),
-            "storage": (f"dir {master_storage}", f"dir {slave_storage}"),
-        }.get(normalized, ())
-        for command in probe_commands:
-            if command and command not in commands:
-                commands.append(command)
-    return tuple(commands or ("display version",))
-
-
 def _extract_storage_output(output: str, storage: str) -> str:
     """Keep standby classification scoped to its own directory response."""
     marker = f"directory of {storage.rstrip('/')}".casefold()
@@ -637,40 +640,6 @@ def _extract_storage_output(output: str, storage: str) -> str:
         return ""
     next_directory = lowered.find("directory of ", start + len(marker))
     return output[start:next_directory if next_directory >= 0 else None]
-
-
-def _ftp_login_steps(params: dict[str, Any]) -> list[dict[str, Any]]:
-    host = str(params.get("server_host") or params.get("ftp_host") or "").strip()
-    if not host:
-        raise DeviceWorkflowExecutionError("ftp_host_required", "FTP login requires server_host or ftp_host.")
-    port = int(params.get("server_port") or params.get("ftp_port") or 21)
-    return [
-        {"type": "send", "text": f"ftp {host} {port}", "label": "open ftp session"},
-        {
-            "type": "expect",
-            "success": ["ftp_prompt"],
-            "failures": [
-                "530 ",
-                "421 ",
-                "Login incorrect",
-                "Authentication failed",
-                "Permission denied",
-            ],
-            "responses": [
-                {"match": "username_prompt", "secret_ref": "file_transfer.username"},
-                {"match": "password_prompt", "secret_ref": "file_transfer.password"},
-            ],
-            "timeout_seconds": 30,
-            "label": "authenticate ftp session",
-        },
-        {"type": "send", "text": "quit", "label": "close ftp probe session"},
-        {
-            "type": "expect",
-            "success": ["device_prompt"],
-            "timeout_seconds": 15,
-            "label": "return to device prompt",
-        },
-    ]
 
 
 def _interactive_command_steps(

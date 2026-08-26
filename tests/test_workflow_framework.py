@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -27,8 +28,8 @@ from device_tui.application.workflows import (
 from device_tui.application.workflows.plugins import ActionRegistry, ReconcileRegistry
 from device_tui.application.workflows.watchdog import Watchdog
 from device_tui.application.workflows.models import ActionAttempt, DeviceStateSnapshot
-from device_tui.application.workflows.device_bridge import _ftp_login_steps
 from device_tui.application.workflows.device_bridge import DeviceExecutionActionHandler
+from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
 
 
 class Handler:
@@ -275,12 +276,30 @@ def test_framework_runtime_uses_device_lease_without_persisting_token() -> None:
 
 
 def test_framework_ftp_probe_uses_managed_secret_refs_and_returns_to_device_prompt() -> None:
-    steps = _ftp_login_steps({"server_host": "192.0.2.10", "server_port": 2121})
+    steps = HuaweiVrpCommandSet().ftp_login_plan("192.0.2.10", 2121).steps
     assert steps[1]["success"] == ["ftp_prompt"]
     responses = steps[1]["responses"]
     assert {item["secret_ref"] for item in responses} == {"file_transfer.username", "file_transfer.password"}
     assert steps[-2]["text"] == "quit"
     assert steps[-1]["success"] == ["device_prompt"]
+
+
+def test_framework_bridge_uses_command_set_for_reboot_and_transfer_profile() -> None:
+    async def scenario() -> None:
+        handler = DeviceExecutionActionHandler(object(), ActionRegistry())
+        run = WorkflowRun("run-1", "test", "1", "device-1", context={"target": {}})
+
+        reboot = await handler._legacy_step(ActionSpec("reboot", "device.reboot"), run)
+        transfer = await handler._legacy_step(
+            ActionSpec("transfer", "file.transfer", params={"source": "images/target.cc"}),
+            run,
+        )
+
+        command_set = HuaweiVrpCommandSet()
+        assert reboot.params["steps"] == list(command_set.reboot_plan().steps)
+        assert transfer.params["interaction_profile"] == asdict(command_set.transfer_profile("ftp"))
+
+    asyncio.run(scenario())
 
 
 def test_framework_bridge_does_not_emit_verification_success_on_mismatch() -> None:

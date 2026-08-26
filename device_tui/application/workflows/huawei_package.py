@@ -59,6 +59,10 @@ class HuaweiVrpPackageUpgradeProvider:
             Option("abort_storage", "abort", "终止流程", risk="high", requires_reason=True),
         )
         local_transfer = package_source == "local"
+        validation_params: dict[str, Any] = {"fact": "validation"}
+        validation_commands = inputs.get("validation_commands")
+        if isinstance(validation_commands, (tuple, list)) and validation_commands:
+            validation_params["commands"] = tuple(str(item) for item in validation_commands)
         states = [
             StateNode(
                 id="precheck",
@@ -299,7 +303,7 @@ class HuaweiVrpPackageUpgradeProvider:
                     action=ActionSpec(
                         id="validation",
                         operation="device.verify",
-                        params={"fact": "validation", "commands": tuple(inputs.get("validation_commands") or ("display version",))},
+                        params=validation_params,
                         expectations=(Expectation("huawei.validation.passed", timeout_seconds=90),),
                         timeout_seconds=120,
                     ),

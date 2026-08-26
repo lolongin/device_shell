@@ -4,6 +4,8 @@ from typing import Any
 
 __all__ = [
     "HuaweiVrpUpgradeDriver",
+    "HuaweiVrpCommandSet",
+    "CommandPlan",
     "SimulatedVrpUpgradeDriver",
     "PackageUpgradeService",
     "UpgradeDriver",
@@ -17,6 +19,10 @@ def __getattr__(name: str) -> Any:
         from .service import PackageUpgradeService
 
         return PackageUpgradeService
+    if name in {"HuaweiVrpCommandSet", "CommandPlan"}:
+        from .commands import CommandPlan, HuaweiVrpCommandSet
+
+        return {"HuaweiVrpCommandSet": HuaweiVrpCommandSet, "CommandPlan": CommandPlan}[name]
     if name in {"HuaweiVrpUpgradeDriver", "SimulatedVrpUpgradeDriver", "UpgradeDriver", "UpgradeDriverRegistry", "UpgradeTargetFacts"}:
         from .drivers import HuaweiVrpUpgradeDriver, SimulatedVrpUpgradeDriver, UpgradeDriver, UpgradeDriverRegistry, UpgradeTargetFacts
 

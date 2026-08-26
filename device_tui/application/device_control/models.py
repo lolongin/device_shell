@@ -86,6 +86,7 @@ class TransferRequest:
     overwrite: bool = False
     terminal_environment: str = "auto"
     command_mode: str = "vrp"
+    interaction_profile: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

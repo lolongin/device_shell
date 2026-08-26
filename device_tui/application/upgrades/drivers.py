@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .commands import HuaweiVrpCommandSet
 from .package import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
@@ -21,8 +22,6 @@ from .package import (
     classify_standby_storage,
     dir_contains_package,
     find_upgrade_failure,
-    generate_huawei_upgrade_plan,
-    join_storage_path,
     parse_dir_entries,
     parse_display_startup,
     parse_free_space_bytes,
@@ -75,6 +74,7 @@ class UpgradeDriver(Protocol):
     def package_is_present(self, output: str, *, storage: str, package_name: str, package_size: int) -> bool: ...
     def sync_commands(self, primary_package: str, standby_package: str) -> tuple[str, ...]: ...
     def activation_commands(self, primary_package: str, standby_package: str, include_standby: bool) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+    def rollback_command(self, previous_package: str) -> str: ...
     def startup_uses_artifact(self, output: str, package_name: str) -> bool: ...
     def failure_marker(self, output: str) -> str: ...
     def reboot_plan_steps(self) -> tuple[dict[str, object], ...]: ...
@@ -88,6 +88,7 @@ class HuaweiVrpUpgradeDriver:
     artifact_suffixes = (".cc",)
     default_primary_storage = DEFAULT_MASTER_STORAGE
     default_standby_storage = DEFAULT_SLAVE_STORAGE
+    commands = HuaweiVrpCommandSet()
 
     def matches(self, target: UpgradeTargetFacts) -> bool:
         identity = " ".join((target.vendor, target.model, target.platform)).casefold()
@@ -97,25 +98,20 @@ class HuaweiVrpUpgradeDriver:
         if path.suffix.casefold() not in self.artifact_suffixes:
             raise ValueError("Huawei VRP upgrades require a .cc system package.")
 
-    @staticmethod
-    def disable_paging_command() -> str:
-        return "screen-length 0 temporary"
+    def disable_paging_command(self) -> str:
+        return self.commands.disable_paging()
 
-    @staticmethod
-    def version_query_command() -> str:
-        return "display version"
+    def version_query_command(self) -> str:
+        return self.commands.version_query()
 
-    @staticmethod
-    def startup_query_command() -> str:
-        return "display startup"
+    def startup_query_command(self) -> str:
+        return self.commands.startup_query()
 
-    @staticmethod
-    def storage_query_command(storage: str) -> str:
-        return f"dir {storage}"
+    def storage_query_command(self, storage: str) -> str:
+        return self.commands.storage_query(storage)
 
-    @staticmethod
-    def package_path(storage: str, package_name: str) -> str:
-        return join_storage_path(storage, package_name)
+    def package_path(self, storage: str, package_name: str) -> str:
+        return self.commands.package_path(storage, package_name)
 
     @staticmethod
     def classify_standby(output: str, storage: str) -> str:
@@ -146,9 +142,8 @@ class HuaweiVrpUpgradeDriver:
             reclaim_bytes=plan.reclaim_bytes,
         )
 
-    @staticmethod
-    def cleanup_command(path: str) -> str:
-        return f"delete /unreserved /quiet {path}"
+    def cleanup_command(self, path: str) -> str:
+        return self.commands.cleanup(path)
 
     @staticmethod
     def package_is_present(
@@ -165,25 +160,19 @@ class HuaweiVrpUpgradeDriver:
             expected_size=package_size,
         )
 
-    @staticmethod
-    def sync_commands(primary_package: str, standby_package: str) -> tuple[str, ...]:
-        return (f"copy {primary_package} {standby_package}",)
+    def sync_commands(self, primary_package: str, standby_package: str) -> tuple[str, ...]:
+        return self.commands.sync(primary_package, standby_package)
 
-    @staticmethod
     def activation_commands(
+        self,
         primary_package: str,
         standby_package: str,
         include_standby: bool,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        if not include_standby:
-            return ((f"startup system-software {primary_package}",), ())
-        return (
-            (f"startup system-software {primary_package} all",),
-            (
-                f"startup system-software {primary_package}",
-                f"startup system-software {standby_package} slave-board",
-            ),
-        )
+        return self.commands.activation(primary_package, standby_package, include_standby)
+
+    def rollback_command(self, previous_package: str) -> str:
+        return self.commands.rollback(previous_package)
 
     @staticmethod
     def startup_uses_artifact(output: str, package_name: str) -> bool:
@@ -193,36 +182,20 @@ class HuaweiVrpUpgradeDriver:
     def failure_marker(output: str) -> str:
         return find_upgrade_failure(output)
 
-    @staticmethod
-    def reboot_plan_steps() -> tuple[dict[str, object], ...]:
-        return (
-            {"type": "send", "text": "reboot", "label": "发送 reboot"},
-            {
-                "type": "expect",
-                "success": ["device_prompt", "login_prompt", "username_prompt"],
-                "failures": [],
-                # VRP can emit more than one confirmation while rebooting;
-                # handle those terminal prompts automatically.
-                "responses": [
-                    {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
-                ],
-                "disconnect_is_success": True,
-                "timeout_seconds": 180,
-                "label": "等待设备重启完成",
-                "max_output_chars": 32_768,
-            },
+    def reboot_plan_steps(self) -> tuple[dict[str, object], ...]:
+        return self.commands.reboot_plan().steps
+
+    def manual_plan(self, config: PackageUpgradeConfig) -> UpgradeManualPlan:
+        plan = self.commands.manual_upgrade_plan(config)
+        cleanup_paths = tuple(
+            entry.path for entry in config.cleanup_entries
+            if config.auto_delete_old_packages and entry.name.casefold().endswith(".cc")
         )
+        return UpgradeManualPlan(plan.commands, cleanup_paths, plan.notes)
 
-    @staticmethod
-    def manual_plan(config: PackageUpgradeConfig) -> UpgradeManualPlan:
-        plan = generate_huawei_upgrade_plan(config)
-        return UpgradeManualPlan(tuple(plan.commands), tuple(plan.cleanup_paths), tuple(plan.notes))
-
-    @staticmethod
-    def transfer_profile(protocol: str, terminal_environment: str = "vrp") -> TransferInteractionProfile:
-        # Keep terminal vocabulary in the selected driver so vendor/client
-        # differences do not leak into the generic transfer builder.
-        return TransferInteractionProfile(id=f"huawei-vrp-{protocol.casefold()}")
+    def transfer_profile(self, protocol: str, terminal_environment: str = "vrp") -> TransferInteractionProfile:
+        del terminal_environment
+        return self.commands.transfer_profile(protocol)
 
 
 class SimulatedVrpUpgradeDriver(HuaweiVrpUpgradeDriver):

@@ -285,8 +285,7 @@ class DeviceUpgradeWorkflowProvider:
             WorkflowParameter("prepare_timeout_seconds", type="integer", label="准备超时", default=900, advanced=True),
             WorkflowParameter("reboot_timeout_seconds", type="integer", label="重启超时", default=190, advanced=True),
             WorkflowParameter("online_timeout_seconds", type="integer", label="上线超时", default=180, advanced=True),
-            WorkflowParameter("version_commands", type="array", label="版本检查命令", default=("display version",), advanced=True),
-            WorkflowParameter("validation_commands", type="array", label="最终验证命令", default=("display version",), advanced=True),
+            WorkflowParameter("validation_commands", type="array", label="最终验证命令", default=(), advanced=True),
         ),
         metadata={"category": "upgrade", "risk": "high"},
     )

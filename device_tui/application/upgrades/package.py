@@ -393,89 +393,18 @@ def _can_delete_package(
 
 
 def generate_huawei_upgrade_plan(config: PackageUpgradeConfig) -> PackageUpgradePlan:
-    package_name = config.package_path.name
-    master_storage = normalize_storage(config.master_storage)
-    slave_storage = normalize_storage(config.slave_storage)
-    master_package = join_storage_path(master_storage, package_name)
-    slave_package = join_storage_path(slave_storage, package_name)
-    protocol = config.protocol.lower()
-    cleanup_entries = [
-        entry for entry in config.cleanup_entries
+    # Kept as the legacy public renderer. CLI syntax belongs to CommandSet,
+    # so manual scripts cannot drift from the automatic workflow.
+    from .commands import HuaweiVrpCommandSet
+
+    command_plan = HuaweiVrpCommandSet().manual_upgrade_plan(config)
+    cleanup_paths = [
+        entry.path for entry in config.cleanup_entries
         if config.auto_delete_old_packages and entry.name.casefold().endswith(CC_SUFFIX)
     ]
-    cleanup_paths = [entry.path for entry in cleanup_entries]
-    commands: list[str] = [
-        "screen-length 0 temporary",
-        "display version",
-        "display startup",
-    ]
-    for entry in cleanup_entries:
-        commands.append(f"delete /unreserved /quiet {entry.path}")
-    commands.extend(_download_commands(config, package_name, master_package, protocol))
-    if config.include_slave:
-        commands.append(f"copy {master_package} {slave_package}")
-    commands.extend(_verification_commands(config, master_package, slave_package))
-    if config.include_slave:
-        commands.append(f"startup system-software {master_package} all")
-        commands.append(
-            f"# If this device does not support 'all', run: startup system-software {slave_package} slave-board"
-        )
-    else:
-        commands.append(f"startup system-software {master_package}")
-    commands.extend([
-        "display startup",
-        "save",
-    ])
-    if config.reboot_after_setting:
-        commands.append("reboot")
-    else:
-        commands.append("# Reboot manually after confirming display startup.")
-    notes = [
-        "旧 .cc 包会在进入下载前删除，保护当前启动包、下次启动包和目标包。",
-        "双主控默认使用 startup system-software <package> all；不支持时改用注释里的 slave-board 命令。",
-    ]
     return PackageUpgradePlan(
-        commands=commands,
+        commands=list(command_plan.commands),
         cleanup_paths=cleanup_paths,
         protected_paths=[],
-        notes=notes,
+        notes=list(command_plan.notes),
     )
-
-
-def _download_commands(
-    config: PackageUpgradeConfig,
-    package_name: str,
-    master_package: str,
-    protocol: str,
-) -> list[str]:
-    if protocol == "sftp":
-        return [
-            f"sftp {config.server_host} {config.port}",
-            config.username,
-            config.password,
-            f"get {package_name} {master_package}",
-            "quit",
-        ]
-    return [
-        f"ftp {config.server_host} {config.port}",
-        config.username,
-        config.password,
-        "binary",
-        f"get {package_name} {master_package}",
-        "quit",
-    ]
-
-
-def _verification_commands(
-    config: PackageUpgradeConfig,
-    master_package: str,
-    slave_package: str,
-) -> list[str]:
-    commands = [f"dir {master_package}"]
-    if config.include_slave:
-        commands.append(f"dir {slave_package}")
-    if config.verify_md5:
-        commands.append(f"verify /md5 {master_package}")
-        if config.include_slave:
-            commands.append(f"verify /md5 {slave_package}")
-    return commands

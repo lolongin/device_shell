@@ -8,6 +8,8 @@ from device_tui.application.upgrades.drivers import (
     UpgradeDriverRegistry,
     UpgradeTargetFacts,
 )
+from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
+from device_tui.application.upgrades.package import PackageUpgradeConfig
 
 
 def test_registry_matches_huawei_and_rejects_known_unknown_vendor() -> None:
@@ -30,6 +32,21 @@ def test_huawei_driver_owns_commands_and_artifact_policy() -> None:
     assert reboot_expect["responses"] == [
         {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
     ]
+
+
+def test_driver_and_manual_renderer_share_the_huawei_command_set() -> None:
+    config = PackageUpgradeConfig(
+        package_path=Path("target.cc"),
+        server_host="192.0.2.10",
+        include_slave=True,
+    )
+    command_set = HuaweiVrpCommandSet()
+    driver = HuaweiVrpUpgradeDriver()
+
+    assert driver.manual_plan(config).commands == command_set.manual_upgrade_plan(config).commands
+    assert driver.activation_commands("flash:/target.cc", "slave#flash:/target.cc", True) == command_set.activation(
+        "flash:/target.cc", "slave#flash:/target.cc", True,
+    )
 
 
 def test_simulated_driver_reuses_vrp_command_contract() -> None:
