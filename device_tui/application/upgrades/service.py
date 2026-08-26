@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import suppress
 from dataclasses import dataclass
-import posixpath
 import re
 
 from device_tui.application.errors import (
@@ -14,11 +11,6 @@ from device_tui.application.errors import (
     UnsupportedOperationError,
 )
 from device_tui.application.devices import DeviceService
-from device_tui.application.operations import (
-    OperationManager,
-    OperationRecord,
-    TERMINAL_OPERATION_STATUSES,
-)
 from device_tui.application.sessions import SessionRecord, SessionService
 from device_tui.application.transfers import (
     ManagedTransferService,
@@ -40,11 +32,6 @@ from device_tui.application.upgrades.drivers import (
     UpgradeDriverRegistry,
     UpgradeTargetFacts,
 )
-from device_tui.application.workflows.decisions import DecisionSubmission
-from device_tui.application.workflows.models import RunStatus
-from device_tui.application.workflows.runtime import WorkflowRuntime
-from device_tui.application.workflows.plugins import WorkflowRegistry
-from device_tui.application.workflows.models import WorkflowRun as FrameworkWorkflowRun
 
 
 MANUAL_PASSWORD_PLACEHOLDER = "{{file_transfer.password}}"
@@ -64,325 +51,24 @@ class ManualUpgradePlan:
 
 
 class PackageUpgradeService:
-    """Run one verified package replacement at a time on a terminal session."""
+    """Manual package-upgrade fallback support.
+
+    Automatic package upgrades are executed exclusively by ``WorkflowRuntime``
+    through ``TaskManager``. This service intentionally has no scheduler,
+    workflow runner, or operation projection.
+    """
 
     def __init__(
         self,
         sessions: SessionService,
-        operations: OperationManager,
         transfers: ManagedTransferService,
         devices: DeviceService | None = None,
         drivers: UpgradeDriverRegistry | None = None,
     ) -> None:
         self._sessions = sessions
-        self._operations = operations
         self._transfers = transfers
         self._devices = devices
         self._drivers = drivers or UpgradeDriverRegistry()
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._framework_runtime: WorkflowRuntime | None = None
-        self._framework_workflows: WorkflowRegistry | None = None
-
-    def bind_framework(
-        self,
-        runtime: WorkflowRuntime,
-        workflows: WorkflowRegistry,
-    ) -> None:
-        """Attach the canonical workflow engine used by compatibility APIs."""
-
-        self._framework_runtime = runtime
-        self._framework_workflows = workflows
-
-    def start(
-        self,
-        *,
-        session_id: str,
-        package_path: str,
-        package_source: str = "local",
-        include_slave: bool = True,
-        standby_required: bool = False,
-        auto_delete_old_packages: bool = True,
-        reboot_after_setting: bool = False,
-        master_storage: str = DEFAULT_MASTER_STORAGE,
-        slave_storage: str = DEFAULT_SLAVE_STORAGE,
-        driver_id: str = "auto",
-    ) -> OperationRecord:
-        session = self._connected_session(session_id)
-        package_source = str(package_source or "local").casefold()
-        if package_source not in {"local", "device"}:
-            raise UnsupportedOperationError("package_source must be local or device.")
-        source = self._transfers.resolve_source(package_path) if package_source == "local" else None
-        package_name = source.name if source is not None else posixpath.basename(package_path.replace("\\", "/").rstrip("/"))
-        if not package_name or package_name in {".", ".."}:
-            raise UnsupportedOperationError("设备上的系统包路径无效。")
-        driver = self._resolve_driver(session, driver_id)
-        try:
-            if source is not None:
-                driver.validate_artifact(source.path)
-        except ValueError as exc:
-            raise UnsupportedOperationError(str(exc)) from exc
-        primary_storage = master_storage or driver.default_primary_storage
-        standby_storage = slave_storage or driver.default_standby_storage
-        record = self._operations.create(
-            kind="package_upgrade",
-            direction="upgrade",
-            device_id=session.device_id,
-            session_id=session.id,
-            stage="queued",
-            message="系统包升级已排队。",
-            data={
-                "package_path": source.relative_path if source is not None else package_path,
-                "package_source": package_source,
-                "package_name": package_name,
-                "package_size": source.size_bytes if source is not None else 0,
-                "include_slave": bool(include_slave),
-                "standby_required": bool(standby_required),
-                "topology_policy": (
-                    "required" if standby_required else "single" if not include_slave else "auto"
-                ),
-                "auto_delete_old_packages": bool(auto_delete_old_packages),
-                "reboot_after_setting": bool(reboot_after_setting),
-                "master_storage": primary_storage,
-                "slave_storage": standby_storage,
-                "driver_id": driver.id,
-                "driver_name": driver.display_name,
-            },
-        )
-        if self._framework_runtime is None or self._framework_workflows is None:
-            raise UnsupportedOperationError("The workflow framework is not configured.")
-        workflow_inputs = {
-                "package_ref": source.relative_path if source is not None else package_path,
-                "package_source": package_source,
-                "activation_policy": "reboot" if reboot_after_setting else "stage_only",
-                "topology_policy": (
-                    "required" if standby_required else "single" if not include_slave else "auto"
-                ),
-                "cleanup_policy": "auto" if auto_delete_old_packages else "never",
-                "recovery_protocol": "same",
-                "master_storage": primary_storage,
-                "slave_storage": standby_storage,
-                "driver_id": driver.id,
-            }
-        definition = self._framework_workflows.build("network.package_upgrade", workflow_inputs)
-        run = self._framework_runtime.start(
-            definition,
-            device_id=session.device_id,
-            run_id=record.id,
-            context={
-                "target": {
-                    "device_id": session.device_id,
-                    "session_id": session.id,
-                    "protocol": "auto",
-                },
-                "session_id": session.id,
-                "package_source": package_source,
-                "workflow_inputs": workflow_inputs,
-            },
-        )
-        self._project_framework_run(record.id, run)
-        task = asyncio.create_task(
-            self._run_framework(record.id),
-            name=f"package-upgrade-framework-{record.id}",
-        )
-        self._tasks[record.id] = task
-        self._operations.register_canceller(
-            record.id,
-            lambda: self._cancel_framework_task(record.id, session.id),
-        )
-        return self._operations.get(record.id)
-
-    def approve_reboot(self, operation_id: str) -> OperationRecord:
-        record = self._operations.get(operation_id)
-        if record.kind != "package_upgrade":
-            raise UnsupportedOperationError("The operation is not a package upgrade.")
-        if self._framework_runtime is None:
-            raise UnsupportedOperationError("The workflow framework is not configured.")
-        run = self._framework_runtime.runs.get(operation_id)
-        point = run.decision_point
-        option = next((item for item in point.options if item.id == "approve_reboot"), None) if point else None
-        if record.status != "waiting_approval" or point is None or option is None:
-            raise ApplicationConflictError("The package upgrade is not waiting for reboot approval.")
-        updated_run = self._framework_runtime.apply_decision(
-            operation_id,
-            DecisionSubmission(
-                decision_point_id=point.id,
-                expected_revision=run.revision,
-                option_id=option.id,
-                actor_type="human",
-                actor_id="compatibility-api",
-            ),
-        )
-        self._project_framework_run(operation_id, updated_run)
-        if str(updated_run.status) in {RunStatus.RUNNING.value, RunStatus.RECOVERING.value} and operation_id not in self._tasks:
-            self._tasks[operation_id] = asyncio.create_task(
-                self._run_framework(operation_id),
-                name=f"package-upgrade-framework-{operation_id}-approval",
-            )
-        return self._operations.get(operation_id)
-
-    async def _run_framework(self, operation_id: str) -> None:
-        """Drive the canonical runtime and keep the legacy operation view current."""
-
-        if self._framework_runtime is None:
-            return
-        try:
-            await self._framework_runtime.run_until_blocked(
-                operation_id,
-                on_update=lambda run: self._project_framework_run(operation_id, run),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            record = self._operations.get(operation_id)
-            if record.status not in TERMINAL_OPERATION_STATUSES:
-                self._operations.update(
-                    operation_id,
-                    status="failed",
-                    message=str(exc),
-                    error_code=getattr(exc, "code", "package_upgrade_framework_failed"),
-                )
-        finally:
-            self._tasks.pop(operation_id, None)
-
-    def _cancel_framework_task(self, operation_id: str, session_id: str) -> None:
-        del session_id
-        if self._framework_runtime is not None:
-            self._framework_runtime.cancel(operation_id)
-            self._project_framework_run(operation_id, self._framework_runtime.runs.get(operation_id))
-        task = self._tasks.get(operation_id)
-        if task is not None and not task.done():
-            task.cancel()
-
-    def _project_framework_run(self, operation_id: str, run: FrameworkWorkflowRun) -> None:
-        record = self._operations.get(operation_id)
-        if record.status in TERMINAL_OPERATION_STATUSES and str(run.status) not in {RunStatus.SUCCEEDED.value}:
-            return
-        state = str(run.current_state or "")
-        activation = str(run.context.get("workflow_inputs", {}).get("activation_policy") or "stage_only")
-        stage = {
-            "precheck": "prechecking",
-            "ftp_login": "prechecking",
-            "cleanup": "cleanup",
-            "transfer": "downloading",
-            "verify_package": "verifying",
-            "sync_standby": "synchronizing",
-            "configure_startup": "setting_startup",
-            "reboot_approval": "reboot_approval",
-            "reboot": "rebooting",
-            "wait_online": "waiting_online",
-            "verify_version": "verifying_version",
-            "validation": "validating",
-            "rollback": "rollback",
-            "complete": "completed" if activation == "reboot" else "staged",
-        }.get(state, state or record.stage)
-        status = {
-            RunStatus.RUNNING.value: "running",
-            RunStatus.RECOVERING.value: "running",
-            RunStatus.WAITING_RECONCILE.value: "running",
-            RunStatus.WAITING_DECISION.value: "waiting_approval" if state == "reboot_approval" else "waiting_decision",
-            RunStatus.SUCCEEDED.value: "completed" if activation == "reboot" else "staged",
-            RunStatus.FAILED.value: "failed",
-            RunStatus.CANCELLED.value: "cancelled",
-        }.get(str(run.status), "running")
-        facts = self._framework_facts(run)
-        data = {
-            "workflow_id": run.workflow_id,
-            "workflow_version": run.workflow_version,
-            "framework_run_id": run.id,
-            "package_source": run.context.get("workflow_inputs", {}).get("package_source", "local"),
-            "include_slave": facts.get("include_slave", run.context.get("workflow_inputs", {}).get("topology_policy") != "single"),
-            "topology_detection": facts.get("topology_detection", {}),
-            "reboot_required": activation == "stage_only" or state in {"reboot_approval", "reboot", "wait_online", "verify_version", "validation"},
-            "framework_state": state,
-            "framework_revision": run.revision,
-        }
-        if str(run.status) == RunStatus.SUCCEEDED.value:
-            data["reboot_required"] = False if activation == "reboot" else True
-        error = run.error or {}
-        message = (
-            "系统包已核对并设为下次启动项，尚未重启激活。" if status == "staged" else
-            "系统包升级完成，设备已重新进入可交互状态。" if status == "completed" else
-            "系统包和启动项已确认，等待人工批准重启。" if status == "waiting_approval" else
-            str(error.get("message") or "系统包升级正在执行。")
-        )
-        actions = self._framework_stage_actions(stage, run)
-        self._operations.update(
-            operation_id,
-            status=status,
-            stage=stage,
-            message=message,
-            progress_percent=self._framework_progress(state, status),
-            error_code=str(error.get("code") or "") if status == "failed" else "",
-            stage_actions=actions,
-            data=data,
-        )
-
-    @staticmethod
-    def _framework_stage_actions(stage: str, run: FrameworkWorkflowRun) -> list[str]:
-        inputs = run.context.get("workflow_inputs")
-        values = inputs if isinstance(inputs, dict) else {}
-        package = str(values.get("package_ref") or "<package>")
-        master = str(values.get("master_storage") or "flash:/")
-        slave = str(values.get("slave_storage") or "slave#flash:/")
-        return {
-            "prechecking": [
-                "screen-length 0 temporary",
-                "display startup",
-                f"dir {master}",
-                f"dir {slave}（检查备控存储）",
-            ],
-            "cleanup": ["根据预检结果清理未使用旧系统包"],
-            "downloading": [f"下载 {package}"],
-            "verifying": [f"dir {master}{package_basename(package)}（核对系统包）"],
-            "synchronizing": [f"copy {master}{package_basename(package)} {slave}{package_basename(package)}"],
-            "setting_startup": [f"startup system-software {master}{package_basename(package)}"],
-            "rebooting": ["发送 reboot", "等待设备重新进入可交互状态"],
-            "waiting_online": ["确认设备重新上线"],
-            "verifying_version": ["display version"],
-            "validating": ["执行升级后校验"],
-            "rollback": ["恢复升级前启动项"],
-        }.get(stage, [])
-
-    @staticmethod
-    def _framework_facts(run: FrameworkWorkflowRun) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for attempt in run.attempts:
-            if str(attempt.status) != "succeeded":
-                continue
-            facts = dict(attempt.result or {})
-            nested = facts.get("data")
-            if isinstance(nested, dict):
-                result.update(nested)
-            result.update({key: value for key, value in facts.items() if key in {"include_slave", "topology_detection"}})
-        precheck = run.context.get("action.precheck.facts")
-        if isinstance(precheck, dict):
-            result.update({key: value for key, value in precheck.items() if key in {"include_slave", "topology_detection"}})
-        return result
-
-    @staticmethod
-    def _framework_progress(state: str, status: str) -> int:
-        if status in {"completed", "staged"}:
-            return 100 if status == "completed" else 90
-        return {
-            "precheck": 5, "ftp_login": 8, "cleanup": 20, "transfer": 55,
-            "verify_package": 65, "sync_standby": 75, "configure_startup": 90,
-            "reboot_approval": 95, "reboot": 96, "wait_online": 98,
-            "verify_version": 99, "validation": 99, "rollback": 95,
-        }.get(state, 0)
-
-    def cancel(self, operation_id: str) -> OperationRecord:
-        return self._operations.cancel(operation_id)
-
-    def cancel_session(self, session_id: str) -> int:
-        cancelled = 0
-        for operation_id in tuple(self._tasks):
-            record = self._operations.get(operation_id)
-            if record.session_id != session_id or record.status in TERMINAL_OPERATION_STATUSES:
-                continue
-            self.cancel(operation_id)
-            cancelled += 1
-        return cancelled
-
     def manual_terminal_snapshot(
         self,
         session_id: str,
@@ -513,11 +199,8 @@ class PackageUpgradeService:
         return len(commands)
 
     async def close(self) -> None:
-        for operation_id in tuple(self._tasks):
-            with suppress(ResourceNotFoundError, UnsupportedOperationError):
-                self.cancel(operation_id)
-        if self._tasks:
-            await asyncio.gather(*tuple(self._tasks.values()), return_exceptions=True)
+        """Keep a uniform application lifecycle hook for manual support."""
+        return None
 
     def _manual_cleanup_entries(
         self,

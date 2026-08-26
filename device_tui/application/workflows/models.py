@@ -149,6 +149,10 @@ class StateNode(FrameworkModel):
     transitions: dict[str, str] = field(default_factory=dict)
     decision_options: tuple[Option, ...] = ()
     terminal: bool = False
+    # Provider-owned presentation metadata. The runtime only uses the stable
+    # identifier; clients can render this without maintaining workflow maps.
+    label: str = ""
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)

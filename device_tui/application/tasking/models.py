@@ -123,6 +123,9 @@ class TaskRecord(ProtocolModel):
     plan_hash: str = ""
     parent_task_id: str = ""
     plan_revision: int = 0
+    # Sanitized, provider-owned workflow metadata for generic clients. It
+    # never contains executable action parameters or credentials.
+    workflow_view: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> TaskRecord:
@@ -147,6 +150,7 @@ class TaskRecord(ProtocolModel):
             plan_hash=str(payload.get("plan_hash") or ""),
             parent_task_id=str(payload.get("parent_task_id") or ""),
             plan_revision=max(0, int(payload.get("plan_revision") or 0)),
+            workflow_view=dict(payload.get("workflow_view") or {}),
         )
 
 

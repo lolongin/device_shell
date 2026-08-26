@@ -53,12 +53,12 @@ class FakeBackend:
                 message="读取完成。",
                 data={"output": "ready", "truncated": False},
             )
-        if action.kind == "get_package_upgrade_status":
+        if action.kind == "run_package_upgrade":
             return AiDeviceToolResult(
                 action,
                 ok=True,
-                message="换包已完成。",
-                data={"status": "completed", "stage": "confirm"},
+                message="换包 Task 已创建。",
+                data={"task_id": "task-upgrade-1", "task": {"id": "task-upgrade-1", "status": "running"}},
             )
         if action.kind == "list_managed_transfer_files":
             return AiDeviceToolResult(
@@ -402,22 +402,16 @@ def test_terminal_read_validates_output_limit() -> None:
     assert backend.actions == []
 
 
-def test_package_upgrade_creates_queryable_operation() -> None:
+def test_package_upgrade_creates_a_task() -> None:
     service, _backend = make_service()
 
     status, started = service.invoke(
         "package_upgrade_start",
         {"device_id": "SIM-TERMINAL"},
     )
-    operation_id = started["data"]["operation_id"]
-    query_status, queried = service.invoke(
-        "operation_get",
-        {"operation_id": operation_id},
-    )
-
     assert status == 200
-    assert query_status == 200
-    assert queried["data"]["operation"]["status"] == "completed"
+    assert started["data"]["task_id"] == "task-upgrade-1"
+    assert started["data"]["task"]["status"] == "running"
 
 
 def test_managed_file_transfer_creates_queryable_operation() -> None:
@@ -675,28 +669,15 @@ def test_terminal_run_uses_event_driven_plan_for_one_or_many_commands() -> None:
     ]
 
 
-def test_operation_wait_returns_completed_package_workflow_without_client_polling() -> None:
+def test_package_upgrade_does_not_create_an_operation_wait_handle() -> None:
     service, _backend = make_service()
     start_status, started = service.invoke(
         "package_upgrade_start",
         {"device_id": "SIM-TERMINAL"},
     )
-    operation = started["data"]["operation"]
-
-    wait_status, waited = service.invoke(
-        "operation_wait",
-        {
-            "operation_id": operation["id"],
-            "since_revision": operation["revision"],
-            "timeout_seconds": 2,
-        },
-    )
-
     assert start_status == 200
-    assert wait_status == 200
-    assert waited["data"]["operation"]["status"] == "completed"
-    assert waited["data"]["operation"]["revision"] > operation["revision"]
-    assert waited["data"]["wait_timed_out"] is False
+    assert started["data"]["task_id"] == "task-upgrade-1"
+    assert "operation_id" not in started["data"]
 
 
 def test_terminal_execute_batch_waits_on_local_completion_event() -> None:

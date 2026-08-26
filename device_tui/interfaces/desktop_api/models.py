@@ -682,21 +682,6 @@ class ManagedTransferStartRequest(BaseModel):
     command_mode: Literal["vrp", "ftpget"] = "vrp"
 
 
-class PackageUpgradeStartRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    session_id: str = Field(min_length=1, max_length=160)
-    package_path: str = Field(min_length=1, max_length=4_096)
-    package_source: Literal["local", "device"] = "local"
-    include_slave: bool = True
-    standby_required: bool = False
-    auto_delete_old_packages: bool = True
-    reboot_after_setting: bool = False
-    master_storage: str = Field(default="", max_length=255)
-    slave_storage: str = Field(default="", max_length=255)
-    driver_id: str = Field(default="auto", min_length=1, max_length=160)
-
-
 class PackageUpgradeManualPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -882,6 +867,7 @@ class TaskModel(BaseModel):
     message: str
     result: dict[str, object] | None = None
     checkpoint: dict[str, object] | None = None
+    workflow_view: dict[str, object] = Field(default_factory=dict)
 
 
 class TaskResponse(BaseModel):

@@ -7,11 +7,17 @@ from device_tui.interfaces.desktop_api.app import create_app
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
 
 
-def test_framework_run_api_starts_and_replays_persisted_events() -> None:
+def test_framework_api_exposes_definitions_but_not_direct_execution() -> None:
     app = create_app(token="framework-token", repository=SampleDeviceRepository(), session_hub=SessionHub())
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer framework-token"}
-        created = client.post(
+        catalog = client.get("/api/v1/framework/workflows", headers=headers)
+        preview = client.post(
+            "/api/v1/framework/workflows/network.package_upgrade/preview",
+            headers=headers,
+            json={"package_ref": "flash:/image.cc", "expected_version": "V8"},
+        )
+        direct_run = client.post(
             "/api/v1/framework/runs",
             headers=headers,
             json={
@@ -20,12 +26,9 @@ def test_framework_run_api_starts_and_replays_persisted_events() -> None:
                 "inputs": {"package_ref": "flash:/image.cc", "expected_version": "V8"},
             },
         )
-        assert created.status_code == 200, created.text
-        run = created.json()["run"]
-        run_id = run["id"]
-        fetched = client.get(f"/api/v1/framework/runs/{run_id}", headers=headers)
-        events = client.get(f"/api/v1/framework/runs/{run_id}/events", headers=headers)
-    assert fetched.status_code == 200
-    assert fetched.json()["run"]["workflow_id"] == "network.package_upgrade"
-    assert events.status_code == 200
-    assert events.json()["events"][0]["type"] == "workflow.started"
+
+    assert catalog.status_code == 200
+    assert catalog.json()["workflows"][0]["id"] == "network.package_upgrade"
+    assert preview.status_code == 200
+    assert preview.json()["workflow"]["id"] == "network.package_upgrade"
+    assert direct_run.status_code == 404

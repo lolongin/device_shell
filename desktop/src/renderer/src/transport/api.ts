@@ -431,23 +431,6 @@ export const desktopApi = {
     request(`/api/v1/file-transfers/queues/${encodeURIComponent(sessionId)}/resume`, { method: 'POST' }),
   clearTransferHistory: (): Promise<{ api_version: number; deleted_count: number }> =>
     request('/api/v1/file-transfers/history', { method: 'DELETE' }),
-  startPackageUpgrade: (payload: {
-    session_id: string
-    package_path: string
-    include_slave: boolean
-    auto_delete_old_packages: boolean
-    reboot_after_setting: boolean
-    master_storage: string
-    slave_storage: string
-  }): Promise<OperationResponse> =>
-    request('/api/v1/package-upgrades', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }),
-  approvePackageUpgradeReboot: (operationId: string): Promise<OperationResponse> =>
-    request(`/api/v1/package-upgrades/${encodeURIComponent(operationId)}/approve-reboot`, {
-      method: 'POST'
-    }),
   packageUpgradeManualTerminal: (sessionId: string): Promise<SessionLogResponse> =>
     request(`/api/v1/package-upgrades/manual/${encodeURIComponent(sessionId)}/terminal`),
   generatePackageUpgradeManualPlan: (payload: {

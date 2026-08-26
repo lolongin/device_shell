@@ -55,6 +55,13 @@ class HttpFakeBackend:
                 message="读取成功。",
                 data={"devices": [{"id": "SIM-TERMINAL", "name": "模拟终端"}]},
             )
+        if action.kind == "run_package_upgrade":
+            return AiDeviceToolResult(
+                action,
+                ok=True,
+                message="换包 Task 已创建。",
+                data={"task_id": "task-upgrade-1", "task": {"id": "task-upgrade-1", "status": "running"}},
+            )
         return AiDeviceToolResult(action, ok=True, message="执行成功。")
 
 
@@ -115,7 +122,7 @@ def test_http_client_reuses_loopback_keep_alive_connection(
     client.close()
 
 
-def test_http_operation_wait_returns_timeout_snapshot_without_polling_client(
+def test_http_package_upgrade_returns_a_task_without_operation_wait_handle(
     running_control_server: tuple[
         AppControlHttpServer,
         AppControlService,
@@ -127,14 +134,9 @@ def test_http_operation_wait_returns_timeout_snapshot_without_polling_client(
     client = AppControlClient.from_state_file(state_path)
     started = client.package_upgrade_start("SIM-TERMINAL")
 
-    waited = client.operation_wait(
-        started["data"]["operation_id"],
-        timeout_seconds=1,
-        since_revision=started["data"]["operation"]["revision"],
-    )
-
-    assert waited["data"]["wait_timed_out"] is True
-    assert waited["data"]["operation"]["status"] == "running"
+    assert started["data"]["task_id"] == "task-upgrade-1"
+    assert started["data"]["task"]["status"] == "running"
+    assert "operation_id" not in started["data"]
     client.close()
 
 

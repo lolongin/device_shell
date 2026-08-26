@@ -253,6 +253,13 @@ class WorkflowPlanCompiler:
             command = self._command(step)
             risk = self._step_risk(step)
             spec = self._capabilities.get(step.capability) if self._capabilities.contains(step.capability) else None
+            if spec is not None and spec.workflow_id == "device_upgrade":
+                errors.append({
+                    "code": "workflow_task_only",
+                    "path": f"steps.{step.id}.capability",
+                    "message": "device.upgrade must be started as a named Workflow Task, not embedded in an Agent plan.",
+                })
+                continue
             confirmation = bool(spec and spec.confirmation_required) or risk >= _risk_medium()
             if confirmation:
                 required.append(Action(name=spec.action if spec else step.capability, risk=risk.name.lower(), confirmation_required=True, target_step=step.id))

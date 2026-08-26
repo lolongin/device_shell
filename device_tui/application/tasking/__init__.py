@@ -28,7 +28,6 @@ from .models import (
     WorkflowStepState,
 )
 from .service import TaskManager, WorkflowEngine
-from .workflows import device_upgrade_workflow
 from .catalog import (
     DeviceUpgradeWorkflowProvider,
     WorkflowCatalog,
@@ -73,7 +72,6 @@ __all__ = [
     "WorkflowStep",
     "WorkflowStepResult",
     "WorkflowStepState",
-    "device_upgrade_workflow",
     "DeviceUpgradeWorkflowProvider",
     "WorkflowCatalog",
     "WorkflowCatalogError",

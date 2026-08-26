@@ -6,7 +6,6 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Protocol
 
 from .protocol import WorkflowDefinition
-from .workflows import device_upgrade_workflow
 
 
 class WorkflowCatalogError(ValueError):
@@ -238,12 +237,7 @@ class WorkflowCatalog:
 
 
 class DeviceUpgradeWorkflowProvider:
-    """Legacy catalog facade over the canonical framework provider.
-
-    The descriptor is retained for the existing tasking UI/API.  The actual
-    workflow semantics are built by ``tasking.workflows`` through
-    ``HuaweiVrpPackageUpgradeProvider``.
-    """
+    """Task catalog entry for the canonical package-upgrade framework workflow."""
     descriptor = WorkflowDescriptor(
         id="device_upgrade",
         version="2",
@@ -300,7 +294,18 @@ class DeviceUpgradeWorkflowProvider:
     def build(self, target: WorkflowTarget, parameters: Mapping[str, Any]) -> WorkflowDefinition:
         values = dict(parameters)
         package = str(values.pop("package_path"))
-        return device_upgrade_workflow(device_id=target.device_id, package=package, options=values)
+        # This is a Task envelope, not a second executable workflow. The
+        # framework definition is built exactly once by TaskManager.
+        return WorkflowDefinition(
+            id="device_upgrade",
+            name="设备系统包升级",
+            description="华为数通系统包升级。",
+            steps=(),
+            metadata={
+                "canonical_workflow_id": "network.package_upgrade",
+                "framework_inputs": {"package_ref": package, **values},
+            },
+        )
 
     def migrate_legacy(
         self,

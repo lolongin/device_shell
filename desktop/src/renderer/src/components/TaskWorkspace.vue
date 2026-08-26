@@ -11,6 +11,7 @@ const workflowParameters = ref<Record<string, unknown>>({})
 const planObjective = ref('')
 const planCommand = ref('')
 const localError = ref('')
+const decisionInputReason = ref('')
 let initializedWorkflowId = ''
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -41,6 +42,10 @@ const taskSteps = computed<TaskStepState[]>(() => {
   }))
 })
 const decisionActions = computed(() => workspace.taskDecision?.available_actions || [])
+const workflowStateById = computed(() => new Map(
+  (selectedTask.value?.workflow_view?.states || []).map((state) => [state.id, state])
+))
+const isFrameworkTask = computed(() => Boolean(selectedTask.value?.workflow_view?.states?.length))
 const isTerminal = computed(() => Boolean(selectedTask.value && ['completed', 'failed', 'cancelled'].includes(selectedTask.value.status)))
 const failedStepId = computed(() => {
   const task = selectedTask.value
@@ -52,91 +57,17 @@ const previousStepId = computed(() => {
   return index > 0 ? taskSteps.value[index - 1]?.step_id || '' : ''
 })
 
-const labels: Record<string, string> = {
-  precheck: '预检', backup: '备份', upload: '上传', verify: '校验', activate: '激活',
-  reboot: '重启', wait_online: '等待上线', verify_version: '版本确认', validation: '最终验证',
-  prepare_upgrade: '准备系统包并设置启动项', package_upgrade: '换包流程',
-}
-
-const upgradeStageLabels: Record<string, string> = {
-  queued: '排队',
-  prechecking: '预检启动项与存储',
-  cleanup: '清理未使用旧包',
-  downloading: '上传目标系统包',
-  verifying: '校验主控系统包',
-  synchronizing: '同步并校验备控系统包',
-  setting_startup: '设置下次启动项',
-  staged: '已暂存，等待重启激活',
-  reboot_approval: '等待重启确认',
-  rebooting: '重启设备并等待上线',
-  completed: '换包完成',
-  failed: '换包失败',
-  cancelled: '已取消',
-}
-
 function stepLabel(stepId: string): string {
-  const leaf = stepId.split('.').pop() || stepId
-  return labels[leaf] || stepId
+  return workflowStateById.value.get(stepId)?.label || stepId
+}
+function stepDescription(stepId: string): string {
+  return workflowStateById.value.get(stepId)?.description || ''
 }
 function stepIcon(state: TaskStepState): string {
   if (state.status === 'completed' || state.status === 'success') return '✓'
   if (state.status === 'failed') return '✕'
   if (state.status === 'running') return '…'
   return '·'
-}
-function stageHistory(state: TaskStepState): Array<Record<string, unknown>> {
-  const data = state.result?.data
-  if (!data || typeof data !== 'object') return []
-  const operation = data.operation
-  const operationData = operation && typeof operation === 'object'
-    ? (operation as Record<string, unknown>).data
-    : null
-  const history = operationData && typeof operationData === 'object'
-    ? (operationData as Record<string, unknown>).stage_history
-    : data.stage_history
-  if (!Array.isArray(history)) return []
-  return history.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-}
-function stageLabel(stage: unknown): string {
-  const value = String(stage || '')
-  return upgradeStageLabels[value] || value
-}
-function stageStatus(item: Record<string, unknown>, index: number, history: Array<Record<string, unknown>>): string {
-  const status = String(item.status || '')
-  if (status === 'waiting_approval') return 'waiting_for_decision'
-  if (status === 'staged') return 'completed'
-  if (status === 'failed' || status === 'cancelled') return status
-  if (index < history.length - 1) return 'completed'
-  return status === 'completed' ? 'completed' : 'running'
-}
-function stageMessage(item: Record<string, unknown>): string {
-  return String(item.message || '')
-}
-function stageActions(item: Record<string, unknown>): string[] {
-  const actions = item.actions
-  if (!Array.isArray(actions)) return []
-  return actions.map((action) => String(action || '').trim()).filter(Boolean)
-}
-function topologyDetection(state: TaskStepState): Record<string, unknown> | null {
-  const data = state.result?.data
-  if (!data || typeof data !== 'object') return null
-  const operation = data.operation
-  const operationData = operation && typeof operation === 'object'
-    ? (operation as Record<string, unknown>).data
-    : null
-  const detection = operationData && typeof operationData === 'object'
-    ? (operationData as Record<string, unknown>).topology_detection
-    : data.topology_detection
-  return detection && typeof detection === 'object' ? detection as Record<string, unknown> : null
-}
-function topologyDecisionLabel(value: unknown): string {
-  return ({
-    dual_controller: '已识别主备双控，将同步主控和备控',
-    auto_downgrade_to_single_controller: '未检测到备控，已自动降级为单主控',
-    single_controller_policy: '按策略仅升级主控',
-    required_but_absent: '策略要求备控，但未检测到备控',
-    indeterminate_stop: '备控状态无法确认，流程已停止',
-  } as Record<string, string>)[String(value || '')] || String(value || '拓扑未决')
 }
 function stepOutput(state: TaskStepState): string {
   const direct = state.result?.output
@@ -218,10 +149,14 @@ function taskStatusMessage(task: TaskRecord | null): string {
   if (task.status === 'failed') return errorMessage(task) || '工作流失败'
   return ''
 }
-function actionLabel(action: string, targetStep = ''): string {
-  if (action === 'retry' && targetStep === 'verify') return '重新校验'
-  if (action === 'resume_from' && targetStep === 'upload') return '重新上传'
-  return ({ retry: '重新执行', retry_step: '重新执行', continue: '确认继续', accept: '确认继续', accept_failure: '确认继续', resume_from: '从此步骤恢复', approve: '确认执行', cancel: '终止任务', pause: '暂停任务', resume: '继续任务' } as Record<string, string>)[action] || action
+function actionLabel(action: TaskDecisionActionPayload & { metadata?: Record<string, unknown> }): string {
+  return String(action.metadata?.label || action.name)
+}
+function actionDescription(action: TaskDecisionActionPayload & { metadata?: Record<string, unknown> }): string {
+  return String(action.metadata?.description || '')
+}
+function actionRequiresReason(action: TaskDecisionActionPayload & { metadata?: Record<string, unknown> }): boolean {
+  return Boolean(action.metadata?.requires_reason)
 }
 function actionTarget(action: TaskDecisionActionPayload): string {
   return action.target_step || String(action.parameters?.step_id || '')
@@ -353,7 +288,13 @@ async function createTask(): Promise<void> {
   await workspace.createNamedWorkflowTask(selectedWorkflow.value.id, workflowParameters.value)
 }
 async function applyAction(action: TaskDecisionActionPayload): Promise<void> {
-  await workspace.applyTaskDecision({ name: action.name, target_step: actionTarget(action), parameters: action.parameters }, actionLabel(action.name, actionTarget(action)))
+  const option = action as TaskDecisionActionPayload & { metadata?: Record<string, unknown> }
+  if (actionRequiresReason(option) && !decisionInputReason.value.trim()) {
+    localError.value = '此决策需要填写原因。'
+    return
+  }
+  await workspace.applyTaskDecision({ name: option.name, target_step: actionTarget(option), parameters: option.parameters }, decisionInputReason.value.trim())
+  decisionInputReason.value = ''
 }
 async function retryFailedStep(): Promise<void> {
   if (failedStepId.value) await workspace.resumeTask(workspace.activeTaskId, failedStepId.value)
@@ -452,19 +393,20 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
       <header><div><strong>Task {{ selectedTask.id.slice(0, 8) }}</strong><small>{{ selectedTask.progress_percent }}% · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
         <button v-if="selectedTask.status === 'running'" class="secondary-button" type="button" @click="workspace.pauseTask()"><CirclePause :size="13" />暂停</button>
         <button v-if="selectedTask.status === 'paused'" class="secondary-button" type="button" @click="workspace.resumeTask()"><CirclePlay :size="13" />恢复</button>
-        <button v-if="selectedTask.status === 'failed' && failedStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="retryFailedStep"><RotateCcw :size="13" />重试断点</button>
-        <button v-if="selectedTask.status === 'failed' && previousStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="resumeFromPreviousStep"><CirclePlay :size="13" />从上一步恢复</button>
+        <button v-if="!isFrameworkTask && selectedTask.status === 'failed' && failedStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="retryFailedStep"><RotateCcw :size="13" />重试断点</button>
+        <button v-if="!isFrameworkTask && selectedTask.status === 'failed' && previousStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="resumeFromPreviousStep"><CirclePlay :size="13" />从上一步恢复</button>
         <button v-if="!isTerminal" class="danger-button task-cancel-button" type="button" @click="workspace.cancelTask()"><CircleStop :size="14" />取消任务</button>
       </div></header>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
       <ol class="task-timeline">
-        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result?.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><div v-if="topologyDetection(state)" class="task-topology-evidence"><strong>设备拓扑识别</strong><p>{{ topologyDecisionLabel(topologyDetection(state)?.decision) }}</p><small>主控：{{ String(topologyDetection(state)?.master_storage || '-') }} · 备控：{{ String(topologyDetection(state)?.standby_storage || '-') }} · 探测：{{ String(topologyDetection(state)?.standby_status || '-') }}</small></div><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details><ol v-if="stageHistory(state).length" class="task-substeps" aria-label="换包内部步骤"><li v-for="(item, index) in stageHistory(state)" :key="`${state.step_id}-${String(item.stage)}-${index}`" :data-status="stageStatus(item, index, stageHistory(state))"><span>{{ stageStatus(item, index, stageHistory(state)) === 'completed' ? '✓' : stageStatus(item, index, stageHistory(state)) === 'failed' ? '✕' : '…' }}</span><div><strong>{{ stageLabel(item.stage) }}</strong><small>{{ stageStatus(item, index, stageHistory(state)) }} · {{ String(item.progress_percent || 0) }}%</small><p v-if="stageMessage(item)">{{ stageMessage(item) }}</p><ul v-if="stageActions(item).length" class="task-stage-actions"><li v-for="action in stageActions(item)" :key="action">{{ action }}</li></ul></div></li></ol></div></li>
+        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result?.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><p v-else-if="stepDescription(state.step_id)">{{ stepDescription(state.step_id) }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
       <div v-if="workspace.taskDecision" class="task-decision" role="dialog" aria-labelledby="task-decision-title">
-        <div class="task-decision-heading"><ShieldAlert :size="16" /><div><strong id="task-decision-title">需要人工 Action</strong><small>{{ workspace.taskDecision.current_step }} · revision {{ workspace.taskDecision.checkpoint_revision }}</small></div></div>
+        <div class="task-decision-heading"><ShieldAlert :size="16" /><div><strong id="task-decision-title">需要人工决策</strong><small>{{ stepLabel(workspace.taskDecision.current_step) }} · revision {{ workspace.taskDecision.checkpoint_revision }}</small></div></div>
         <p v-if="workspace.taskDecision.error?.message">{{ workspace.taskDecision.error.message }}</p>
-        <div class="task-decision-actions"><button v-for="action in decisionActions" :key="`${action.name}-${action.target_step}`" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="applyAction(action)">{{ actionLabel(action.name, action.target_step || String(action.parameters?.step_id || '')) }}</button></div>
+        <input v-if="decisionActions.some(action => actionRequiresReason(action))" v-model="decisionInputReason" type="text" placeholder="填写决策原因" />
+        <div class="task-decision-actions"><div v-for="action in decisionActions" :key="`${action.name}-${action.target_step}`"><button class="secondary-button" type="button" :disabled="workspace.taskBusy" :title="actionDescription(action)" @click="applyAction(action)">{{ actionLabel(action) }}</button><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></div></div>
       </div>
       <div v-if="selectedTask.checkpoint?.decisions?.length" class="task-activity">
         <strong>Agent / Decision 记录</strong>
@@ -473,8 +415,8 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
           <p v-if="decisionReason(decision)">{{ decisionReason(decision) }}</p>
         </div>
       </div>
-      <div v-if="selectedTask.status === 'completed'" class="task-success"><Check :size="15" />换包 Task 已完成</div>
-      <div v-else-if="selectedTask.status === 'failed'" class="task-failure"><CircleAlert :size="15" />换包 Task 失败</div>
+      <div v-if="selectedTask.status === 'completed'" class="task-success"><Check :size="15" />Workflow Task 已完成</div>
+      <div v-else-if="selectedTask.status === 'failed'" class="task-failure"><CircleAlert :size="15" />Workflow Task 失败</div>
     </article>
   </section>
 </template>

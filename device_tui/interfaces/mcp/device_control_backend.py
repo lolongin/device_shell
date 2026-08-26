@@ -17,8 +17,9 @@ from device_tui.application import (
     ControlContext,
     DeviceTarget,
     DesktopApplication,
-    PackageUpgradeRequest,
+    TaskCreate,
     TransferRequest,
+    WorkflowTarget,
 )
 from device_tui.application.ai.gateway.service import GatewayService
 from device_tui.application.ai.operations import AiDeviceAction, AiDeviceToolResult
@@ -169,13 +170,18 @@ class DeviceControlAppBackend(AppControlBackend):
                 ]
                 if packages:
                     package_path = packages[0].relative_path
-            operation = self.desktop.control.start_package_upgrade(
-                DeviceTarget(device_id=session.device_id, session_id=session.id),
-                PackageUpgradeRequest(package_path=package_path),
-                context=ControlContext(source="stdio-mcp"),
+            workflow = self.desktop.workflows.build(
+                "device_upgrade",
+                WorkflowTarget(device_id=session.device_id, session_id=session.id),
+                {"package_path": package_path},
             )
-            return asdict(operation)
-        if kind in {"get_package_upgrade_status", "get_managed_file_transfer"}:
+            task = self.desktop.tasks.create(TaskCreate(
+                workflow=workflow,
+                target=DeviceTarget(device_id=session.device_id, session_id=session.id),
+                source="stdio-mcp",
+            ))
+            return {"task_id": task.id, "task": asdict(task)}
+        if kind == "get_managed_file_transfer":
             operation_id = str(params.get("operation_id") or "")
             return asdict(self.desktop.control.get_operation(operation_id))
         if kind == "cancel_managed_file_transfer":

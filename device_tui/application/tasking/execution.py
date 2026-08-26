@@ -10,10 +10,9 @@ from device_tui.application.device_control import (
     ControlContext,
     DeviceControlService,
     DeviceTarget,
-    PackageUpgradeRequest,
     TransferRequest,
 )
-from device_tui.application.errors import PackageUpgradeError, UnsupportedOperationError
+from device_tui.application.errors import UnsupportedOperationError
 
 from .models import WorkflowStep
 
@@ -200,74 +199,19 @@ class DeviceExecutionTool:
                 "data": operation.data,
                 "evidence": (self._operation_evidence(operation),),
             }
-        if action in {"prepare_upgrade", "package_upgrade", "upgrade"}:
-            package_path = str(params.get("package_path") or "")
-            if not package_path.strip():
-                raise UnsupportedOperationError("Package upgrade requires package_path.")
-            operation = self._control.start_package_upgrade(
-                target,
-                PackageUpgradeRequest(
-                    package_path=package_path,
-                    package_source=str(params.get("package_source") or "local"),
-                    include_slave=bool(params.get("include_slave", True)),
-                    standby_required=bool(params.get("standby_required", False)),
-                    auto_delete_old_packages=bool(params.get("auto_delete_old_packages", True)),
-                    reboot_after_setting=bool(params.get("reboot_after_setting", False)),
-                    master_storage=str(params.get("master_storage") or ""),
-                    slave_storage=str(params.get("slave_storage") or ""),
-                    driver_id=str(params.get("driver_id") or "auto"),
-                ),
-                context=context,
-            )
-            self._notify(context, "operation", operation.operation_id)
-            payload = {"operation_id": operation.operation_id, "status": operation.status, "data": operation.data}
-            if bool(params.get("wait", True)):
-                payload["operation"] = await self._wait_upgrade(
-                    operation.operation_id,
-                    approve_reboot=bool(params.get("approve_reboot", False)),
-                    timeout_seconds=int(params.get("timeout_seconds") or 900),
-                    context=context,
-                )
-                final_status = str(payload["operation"].get("status") or "")
-                if final_status not in {"staged", "completed"}:
-                    raise PackageUpgradeError(
-                        str(payload["operation"].get("message") or "Package upgrade failed."),
-                        details={
-                            "operation_id": operation.operation_id,
-                            "status": final_status,
-                            "error_code": payload["operation"].get("error_code", ""),
-                        },
-                    )
-            evidence_operation = payload.get("operation") if isinstance(payload.get("operation"), dict) else {
-                "operation_id": operation.operation_id,
-                "status": operation.status,
-                "stage": operation.stage,
-                "progress_percent": operation.progress_percent,
-                "data": operation.data,
-            }
-            payload["evidence"] = ({"kind": "operation", **dict(evidence_operation)},)
-            return payload
-        if action in {"operation_wait", "wait_operation", "upgrade_wait"}:
+        if action in {"operation_wait", "wait_operation"}:
             operation_id = str(params.get("operation_id") or "")
             if not operation_id:
                 raise UnsupportedOperationError("operation_wait requires operation_id.")
-            operation = await self._wait_upgrade(
+            operation = await self._wait_operation(
                 operation_id,
-                approve_reboot=bool(params.get("approve_reboot", False)),
                 timeout_seconds=int(params.get("timeout_seconds") or 900),
-                context=context,
             )
             return {
                 "operation_id": operation_id,
                 "operation": operation,
                 "evidence": ({"kind": "operation", **operation},),
             }
-        if action in {"approve_reboot", "upgrade_approve_reboot"}:
-            operation_id = str(params.get("operation_id") or "")
-            if not operation_id:
-                raise UnsupportedOperationError("approve_reboot requires operation_id.")
-            operation = self._control.approve_package_upgrade_reboot(operation_id, context=context)
-            return {"operation_id": operation.operation_id, "status": operation.status, "data": operation.data}
         raise ValueError(f"Unsupported workflow action: {step.action or step.kind}")
 
     @staticmethod
@@ -351,35 +295,6 @@ class DeviceExecutionTool:
             if asyncio.get_running_loop().time() >= deadline:
                 raise DeviceWorkflowExecutionError("upload_timeout", "Upload operation timed out.", error_class="deterministic", retryable=True)
             await asyncio.sleep(0.1)
-
-    async def _wait_upgrade(
-        self,
-        operation_id: str,
-        *,
-        approve_reboot: bool,
-        timeout_seconds: int,
-        context: ControlContext,
-    ) -> dict[str, Any]:
-        deadline = asyncio.get_running_loop().time() + max(1, min(timeout_seconds, 3_600))
-        approved = False
-        while True:
-            operation = self._control.get_operation(operation_id)
-            if operation.status == "waiting_approval" and approve_reboot and not approved:
-                operation = self._control.approve_package_upgrade_reboot(operation_id, context=context)
-                approved = True
-            if operation.status in {"staged", "completed", "failed", "cancelled", "interrupted"}:
-                return {
-                    "operation_id": operation.operation_id,
-                    "status": operation.status,
-                    "stage": operation.stage,
-                    "message": operation.message,
-                    "error_code": operation.error_code,
-                    "progress_percent": operation.progress_percent,
-                    "data": operation.data,
-                }
-            if asyncio.get_running_loop().time() >= deadline:
-                raise UnsupportedOperationError("Package upgrade operation timed out while waiting.")
-            await asyncio.sleep(0.2)
 
     @staticmethod
     def _operation_evidence(operation: Any) -> dict[str, Any]:

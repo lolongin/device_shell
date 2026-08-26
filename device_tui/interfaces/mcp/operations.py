@@ -56,22 +56,7 @@ class OperationMixin:
             operation.message,
             json.dumps(operation.data, ensure_ascii=False, sort_keys=True, default=str),
         )
-        if operation.kind == "package_upgrade":
-            action = AiDeviceAction(
-                "get_package_upgrade_status",
-                "读取自动换包状态",
-                RiskLevel.OBSERVE,
-                device_id=operation.device_id,
-            )
-            result = self.dispatcher(
-                lambda: self.backend.execute_ai_device_action(action),
-                self.call_timeout_seconds,
-            )
-            if isinstance(result, AiDeviceToolResult) and result.ok:
-                operation.status = str(result.data.get("status") or operation.status)
-                operation.message = result.message
-                operation.data.update(result.data)
-        elif operation.kind == "managed_file_transfer":
+        if operation.kind == "managed_file_transfer":
             action = AiDeviceAction(
                 "get_managed_file_transfer",
                 "读取托管文件传输状态",

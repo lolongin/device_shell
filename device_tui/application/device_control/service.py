@@ -17,7 +17,6 @@ from device_tui.application.terminal.orchestration import (
     parse_terminal_plan,
 )
 from device_tui.application.transfers import ManagedTransferService, TerminalPlanExecutor
-from device_tui.application.upgrades import PackageUpgradeService
 
 from .models import (
     CommandRequest,
@@ -25,7 +24,6 @@ from .models import (
     ControlContext,
     DeviceTarget,
     OperationView,
-    PackageUpgradeRequest,
     SendResult,
     BroadcastResult,
     SessionView,
@@ -49,7 +47,6 @@ class DeviceControlService:
         transfers: ManagedTransferService,
         operations: OperationManager,
         terminal_executor: TerminalPlanExecutor,
-        upgrades: PackageUpgradeService,
         leases: DeviceLeaseService | None = None,
     ) -> None:
         self._devices = devices
@@ -57,7 +54,6 @@ class DeviceControlService:
         self._transfers = transfers
         self._operations = operations
         self._executor = terminal_executor
-        self._upgrades = upgrades
         self._leases = leases
 
     async def open_session(
@@ -353,41 +349,6 @@ class DeviceControlService:
     ) -> DeviceActionResult:
         self._validate_task_lease(DeviceTarget(device_id=device_id), context)
         return self._devices.power_off(device_id)
-
-    def start_package_upgrade(
-        self,
-        target: DeviceTarget,
-        request: PackageUpgradeRequest,
-        *,
-        context: ControlContext | None = None,
-    ) -> OperationView:
-        self._validate_task_lease(target, context)
-        session = self._session_for_target(target)
-        record = self._upgrades.start(
-            session_id=session.id,
-            package_path=request.package_path,
-            package_source=request.package_source,
-            include_slave=request.include_slave,
-            standby_required=request.standby_required,
-            auto_delete_old_packages=request.auto_delete_old_packages,
-            reboot_after_setting=request.reboot_after_setting,
-            master_storage=request.master_storage,
-            slave_storage=request.slave_storage,
-            driver_id=request.driver_id,
-        )
-        return self._operation_view(record)
-
-    def approve_package_upgrade_reboot(
-        self,
-        operation_id: str,
-        *,
-        context: ControlContext | None = None,
-    ) -> OperationView:
-        record = self._operations.get(operation_id)
-        # Approval changes workflow intent only. The framework runner owns the
-        # device lease and validates it when the approved action executes.
-        del context
-        return self._operation_view(self._upgrades.approve_reboot(operation_id))
 
     def _validate_task_lease(self, target: DeviceTarget, context: ControlContext | None) -> None:
         if self._leases is None:

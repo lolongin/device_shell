@@ -90,11 +90,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   )
   const transferBusy = ref(false)
   const transferError = ref('')
-  const upgradeOperations = ref<OperationRecord[]>([])
   const upgradePanelOpen = ref(
     localStorage.getItem('device-tui.desktop-v2.upgrade-open') === '1'
   )
-  const upgradeBusy = ref(false)
   const tasks = ref<TaskRecord[]>([])
   const workflows = ref<WorkflowDescriptor[]>([])
   const activeTaskId = ref('')
@@ -315,7 +313,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         transferSettingsResponse,
         transferLogResponse,
         operationResponse,
-        upgradeOperationResponse,
         taskResponse,
         workflowResponse
       ] = await Promise.all([
@@ -327,7 +324,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         desktopApi.transferSettings(),
         desktopApi.transferServiceLog(),
         desktopApi.operations('managed_file_transfer'),
-        desktopApi.operations('package_upgrade'),
         desktopApi.listTasks().catch((cause) => {
           taskError.value = cause instanceof Error ? cause.message : String(cause)
           return { api_version: 1, tasks: [] }
@@ -345,7 +341,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferServiceLog.value = transferLogResponse.entries
       transferClientCommand.value = transferLogResponse.client_command
       operations.value = operationResponse.operations
-      upgradeOperations.value = upgradeOperationResponse.operations
       tasks.value = taskResponse.tasks
       workflows.value = workflowResponse.workflows
       const restoredDevice = devices.value.find(
@@ -519,11 +514,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (event.type.startsWith('operation.') && typeof data.id === 'string') {
       const operation = data as unknown as OperationRecord
-      const target = operation.kind === 'package_upgrade' ? upgradeOperations : operations
-      const index = target.value.findIndex((item) => item.id === operation.id)
-      if (index >= 0 && target.value[index].revision >= operation.revision) return
-      if (index >= 0) target.value[index] = operation
-      else target.value.unshift(operation)
+      const index = operations.value.findIndex((item) => item.id === operation.id)
+      if (index >= 0 && operations.value[index].revision >= operation.revision) return
+      if (index >= 0) operations.value[index] = operation
+      else operations.value.unshift(operation)
       if (['completed', 'failed', 'cancelled', 'interrupted'].includes(operation.status)) {
         notice.value = operation.message
       }
@@ -1272,20 +1266,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function cancelOperation(operationId: string): Promise<void> {
-    const operationIsUpgrade = upgradeOperations.value.some((record) => record.id === operationId)
     transferBusy.value = true
-    if (operationIsUpgrade) error.value = ''
-    else transferError.value = ''
+    transferError.value = ''
     try {
       const response = await desktopApi.cancelOperation(operationId)
       const index = operations.value.findIndex((record) => record.id === operationId)
       if (index >= 0) operations.value[index] = response.operation
-      const upgradeIndex = upgradeOperations.value.findIndex((record) => record.id === operationId)
-      if (upgradeIndex >= 0) upgradeOperations.value[upgradeIndex] = response.operation
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
-      if (operationIsUpgrade) error.value = message
-      else transferError.value = message
+      transferError.value = message
     } finally {
       transferBusy.value = false
     }
@@ -1332,52 +1321,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferError.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
       transferBusy.value = false
-    }
-  }
-
-  async function refreshUpgradeOperations(): Promise<void> {
-    try {
-      const [operationResponse, settingsResponse, filesResponse] = await Promise.all([
-        desktopApi.operations('package_upgrade'),
-        desktopApi.transferSettings(),
-        desktopApi.sharedTransferFiles()
-      ])
-      upgradeOperations.value = operationResponse.operations
-      transferSettings.value = settingsResponse
-      transferFiles.value = filesResponse.files
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    }
-  }
-
-  async function startPackageUpgrade(payload: {
-    package_path: string
-    include_slave: boolean
-    auto_delete_old_packages: boolean
-    reboot_after_setting: boolean
-  }): Promise<boolean> {
-    if (!activeSessionId.value) return false
-    upgradeBusy.value = true
-    error.value = ''
-    notice.value = ''
-    try {
-      const response = await desktopApi.startPackageUpgrade({
-        ...payload,
-        session_id: activeSessionId.value,
-        master_storage: 'flash:/',
-        slave_storage: 'slave#flash:/'
-      })
-      upgradeOperations.value = [
-        response.operation,
-        ...upgradeOperations.value.filter((record) => record.id !== response.operation.id)
-      ]
-      notice.value = '系统包升级已启动'
-      return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      upgradeBusy.value = false
     }
   }
 
@@ -1572,21 +1515,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function startTaskPolling(): void {
     if (taskRefreshTimer) clearInterval(taskRefreshTimer)
     taskRefreshTimer = setInterval(() => { void refreshTasks() }, 900)
-  }
-
-  async function approvePackageUpgrade(operationId: string): Promise<void> {
-    upgradeBusy.value = true
-    error.value = ''
-    try {
-      const response = await desktopApi.approvePackageUpgradeReboot(operationId)
-      const index = upgradeOperations.value.findIndex((record) => record.id === operationId)
-      if (index >= 0) upgradeOperations.value[index] = response.operation
-      notice.value = '设备重启已批准'
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      upgradeBusy.value = false
-    }
   }
 
   async function deleteProfile(profileId: string): Promise<boolean> {
@@ -1835,9 +1763,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     retryManagedTransfer,
     resumeTransferQueue,
     clearTransferHistory,
-    upgradeOperations,
     upgradePanelOpen,
-    upgradeBusy,
     tasks,
     workflows,
     activeTaskId,
@@ -1935,9 +1861,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     toggleTransferService,
     startManagedTransfer,
     cancelOperation,
-    refreshUpgradeOperations,
-    startPackageUpgrade,
-    approvePackageUpgrade,
     deleteProfile,
     closeSession,
     reconnectSession,

@@ -474,10 +474,8 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert ".transfer-sort-order" in styles
     assert 'role="region"' in upgrade
     assert 'aria-modal="true"' not in upgrade
-    assert "upgradeActionHint" in upgrade
-    assert "terminal session is not connected" in upgrade
-    assert ".operation-readiness" in styles
-    assert "grid-template-rows: auto auto minmax(0, 1fr)" in styles
+    assert "TaskWorkspace" in upgrade
+    assert "workflow_view" in Path("desktop/src/renderer/src/components/TaskWorkspace.vue").read_text(encoding="utf-8")
     assert "transferFileToolsRect.bottom <= firstTransferFileRect.top + 1" in main
     assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
     assert ".workspace-stage { grid-column: 3;" in styles
@@ -490,9 +488,6 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert "position: fixed" not in upgrade_backdrop
     assert "managedTransferKeepsTerminalVisibleAndInteractive" in main
     assert "managedTransferCardsRemainVisibleAndOrdered" in main
-    assert "packageUpgradeKeepsTerminalVisibleAndInteractive" in main
-    assert "packageUpgradeCardsRemainVisibleAndOrdered" in main
-    assert "overflow-x: auto" in styles[styles.index(".upgrade-stage-list {"):styles.index(".upgrade-stage-list > div {")]
     terminal_pane = Path("desktop/src/renderer/src/components/TerminalPane.vue").read_text(encoding="utf-8")
     assert ':data-session-id="session.id"' in terminal_pane
 
@@ -550,48 +545,18 @@ def test_transfer_workspace_uses_realtime_events_without_polling() -> None:
     assert "void workspace.loadTransferServiceLog()" in transfer
     assert "void loadNetworkAddresses()" in transfer
     assert "eventConnectedOnce" in store
-    assert "target.value[index].revision >= operation.revision" in store
+    assert "operations.value[index].revision >= operation.revision" in store
 
 
-def test_electron_package_upgrade_has_python_owned_manual_fallback() -> None:
+def test_electron_package_upgrade_uses_task_workspace_and_keeps_manual_api() -> None:
     upgrade = UPGRADE_WORKSPACE.read_text(encoding="utf-8")
     transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
         encoding="utf-8"
     )
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-    main = MAIN_TS.read_text(encoding="utf-8")
-
-    for label in (
-        "手动脚本兜底",
-        "读取当前终端",
-        "生成脚本",
-        "复制脚本",
-        "发送脚本",
-        "已检查脚本与目标终端",
-        "密码不会进入界面",
-    ):
-        assert label in upgrade
-    for test_id in (
-        "upgrade-manual-fallback",
-        "upgrade-manual-terminal",
-        "upgrade-manual-script",
-        "upgrade-manual-read",
-        "upgrade-manual-generate",
-        "upgrade-manual-copy",
-        "upgrade-manual-confirm",
-        "upgrade-manual-send",
-    ):
-        assert f'data-testid="{test_id}"' in upgrade
-    assert "{{file_transfer.password}}" in upgrade
-    assert "navigator.clipboard.writeText(manualScript.value)" in upgrade
-    assert "desktopApi.packageUpgradeManualTerminal" in upgrade
-    assert "desktopApi.generatePackageUpgradeManualPlan" in upgrade
-    assert "desktopApi.sendPackageUpgradeManualScript" in upgrade
+    assert "TaskWorkspace" in upgrade
+    assert "packageUpgradeManual" not in upgrade
     assert "/api/v1/package-upgrades/manual/plan" in transport
     assert "/api/v1/package-upgrades/manual/send" in transport
-    assert ".upgrade-manual-field textarea:focus" in styles
-    assert "packageUpgradeManualFallbackReadsGeneratesEditsCopiesAndSends" in main
-    assert "DEVICE_TUI_CAPTURE_MANUAL_UPGRADE_PATH" in main
 
 
 def test_electron_device_list_keeps_legacy_table_columns() -> None:

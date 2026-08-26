@@ -62,6 +62,8 @@ class HuaweiVrpPackageUpgradeProvider:
         states = [
             StateNode(
                 id="precheck",
+                label="设备预检",
+                description="确认管理通道、CLI、版本、启动项和存储状态。",
                 action=ActionSpec(
                     id="precheck",
                     operation="device.probe",
@@ -81,6 +83,8 @@ class HuaweiVrpPackageUpgradeProvider:
         if local_transfer:
             states.append(StateNode(
                 id="ftp_login",
+                label="建立 FTP 会话",
+                description="处理设备 FTP 交互并确认 ftp> 提示符已就绪。",
                 action=ActionSpec(
                     id="ftp_login",
                     operation="file.session.login",
@@ -108,6 +112,8 @@ class HuaweiVrpPackageUpgradeProvider:
         states.extend((
             StateNode(
                 id="cleanup",
+                label="检查并清理存储",
+                description="按策略确认空间并清理未使用的软件包。",
                 action=ActionSpec(
                     id="cleanup",
                     operation="huawei.storage.cleanup",
@@ -132,6 +138,8 @@ class HuaweiVrpPackageUpgradeProvider:
         if local_transfer:
             states.append(StateNode(
                 id="transfer",
+                label="传输系统包",
+                description="发送 GET 并持续确认传输已开始且存在进度。",
                 action=ActionSpec(
                     id="transfer",
                     operation="file.transfer",
@@ -164,6 +172,8 @@ class HuaweiVrpPackageUpgradeProvider:
         states.extend((
             StateNode(
                 id="verify_package",
+                label="校验系统包",
+                description="确认主控上的目标系统包完整可用。",
                 action=ActionSpec(
                     id="verify_package",
                     operation="device.verify",
@@ -175,6 +185,8 @@ class HuaweiVrpPackageUpgradeProvider:
             ),
             StateNode(
                 id="sync_standby",
+                label="同步备控系统包",
+                description="根据拓扑策略同步并校验备控上的系统包。",
                 action=ActionSpec(
                     id="sync_standby",
                     operation="huawei.storage.sync",
@@ -193,6 +205,8 @@ class HuaweiVrpPackageUpgradeProvider:
             ),
             StateNode(
                 id="configure_startup",
+                label="设置启动项",
+                description="写入下一次启动所使用的系统包。",
                 action=ActionSpec(
                     id="configure_startup",
                     operation="huawei.startup.configure",
@@ -214,6 +228,8 @@ class HuaweiVrpPackageUpgradeProvider:
             states.extend((
                 StateNode(
                     id="reboot_approval",
+                    label="等待重启决策",
+                    description="启动项已设置，等待受约束的重启或终止决策。",
                     decision_options=(
                         Option("approve_reboot", "continue", "批准重启", risk="critical", allowed_actors=("human", "rule"), next_state="reboot"),
                         Option("abort_reboot", "abort", "终止流程", risk="critical", requires_reason=True),
@@ -221,6 +237,8 @@ class HuaweiVrpPackageUpgradeProvider:
                 ),
                 StateNode(
                     id="reboot",
+                    label="重启设备",
+                    description="处理设备侧确认交互并确认重启已发起。",
                     action=ActionSpec(
                         id="reboot",
                         operation="device.reboot",
@@ -243,6 +261,8 @@ class HuaweiVrpPackageUpgradeProvider:
                 ),
                 StateNode(
                     id="wait_online",
+                    label="等待管理面恢复",
+                    description="依次确认 Ping、SSH 和 CLI 就绪。",
                     action=ActionSpec(
                         id="wait_online",
                         operation="device.wait_online",
@@ -260,6 +280,8 @@ class HuaweiVrpPackageUpgradeProvider:
                 ),
                 StateNode(
                     id="verify_version",
+                    label="校验运行版本",
+                    description="确认设备已运行目标版本。",
                     action=ActionSpec(
                         id="verify_version",
                         operation="device.verify",
@@ -272,6 +294,8 @@ class HuaweiVrpPackageUpgradeProvider:
                 ),
                 StateNode(
                     id="validation",
+                    label="最终验证",
+                    description="执行升级后的验证命令。",
                     action=ActionSpec(
                         id="validation",
                         operation="device.verify",
@@ -283,6 +307,8 @@ class HuaweiVrpPackageUpgradeProvider:
                 ),
                 StateNode(
                     id="rollback",
+                    label="回滚",
+                    description="恢复升级前启动项并确认设备状态。",
                     action=ActionSpec(
                         id="rollback",
                         operation="huawei.startup.rollback",
@@ -301,7 +327,7 @@ class HuaweiVrpPackageUpgradeProvider:
                     decision_options=rollback_options,
                 ),
             ))
-        states.append(StateNode(id="complete", terminal=True))
+        states.append(StateNode(id="complete", terminal=True, label="完成", description="Workflow 已完成。"))
         return WorkflowDefinition(
             id=self.id,
             version=self.version,

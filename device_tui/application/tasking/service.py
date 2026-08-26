@@ -720,9 +720,7 @@ class TaskManager:
         device_id = str(request.target.device_id or "").strip()
         framework_definition = self._framework_definition(request.workflow)
         if request.workflow.id == "device_upgrade" and framework_definition is None:
-            raise ApplicationError(
-                "The device_upgrade workflow requires the Workflow Framework."
-            )
+            raise ApplicationError("The device_upgrade workflow requires the Workflow Framework.")
         if framework_definition is None and self._leases is not None and device_id:
             lease = self._leases.acquire(device_id, task_id)
             self._lease_tokens[task_id] = (device_id, lease.token)
@@ -817,12 +815,90 @@ class TaskManager:
         canonical_id = str(metadata.get("canonical_workflow_id") or "").strip()
         if not canonical_id:
             return None
-        package = str(metadata.get("package") or "").strip()
-        if not package:
+        raw_inputs = metadata.get("framework_inputs")
+        if not isinstance(raw_inputs, dict):
             return None
-        inputs = dict(metadata.get("options") or {})
-        inputs.update({"package_ref": package, "activation_policy": metadata.get("activation_policy", "stage_only")})
-        return self._framework_workflows.build(canonical_id, inputs)
+        return self._framework_workflows.build(canonical_id, dict(raw_inputs))
+
+    @staticmethod
+    def _framework_workflow_view(definition: FrameworkWorkflowDefinition) -> dict[str, Any]:
+        """Build the non-executable workflow metadata consumed by generic UIs."""
+        return {
+            "id": definition.id,
+            "version": definition.version,
+            "states": [
+                {
+                    "id": state.id,
+                    "label": state.label or state.id,
+                    "description": state.description,
+                    "terminal": state.terminal,
+                    "action_id": state.action.id if state.action is not None else "",
+                    "operation": state.action.operation if state.action is not None else "",
+                    "expectations": [
+                        {
+                            "event_type": expectation.event_type,
+                            "timeout_seconds": expectation.timeout_seconds,
+                            "idle_timeout_seconds": expectation.idle_timeout_seconds,
+                            "progress": expectation.progress,
+                        }
+                        for expectation in (state.action.expectations if state.action is not None else ())
+                    ],
+                }
+                for state in definition.states
+            ],
+        }
+
+    @staticmethod
+    def _framework_step_states(
+        definition: FrameworkWorkflowDefinition,
+        run: FrameworkWorkflowRun,
+    ) -> tuple[WorkflowStepState, ...]:
+        """Project attempts onto every declared state, including unstarted states."""
+        latest_attempts = {attempt.action_id: attempt for attempt in run.attempts}
+        states: list[WorkflowStepState] = []
+        for state in definition.states:
+            attempt = latest_attempts.get(state.action.id) if state.action is not None else None
+            if state.id == run.current_state:
+                if state.terminal and str(run.status) == FrameworkRunStatus.SUCCEEDED.value:
+                    status = StepStatus.COMPLETED.value
+                elif str(run.status) == FrameworkRunStatus.WAITING_DECISION.value:
+                    status = StepStatus.WAITING_FOR_DECISION.value
+                elif str(run.status) == FrameworkRunStatus.CANCELLED.value:
+                    status = StepStatus.CANCELLED.value
+                else:
+                    status = StepStatus.RUNNING.value
+            elif attempt is not None:
+                status = StepStatus.COMPLETED.value if str(attempt.status) == FrameworkActionStatus.SUCCEEDED.value else str(attempt.status)
+            else:
+                status = StepStatus.PENDING.value
+            facts = dict(attempt.result) if attempt is not None else {}
+            error = dict(attempt.error) if attempt is not None and attempt.error else {}
+            result = None
+            if attempt is not None:
+                result = ToolResult(
+                    tool=state.action.operation if state.action is not None else state.id,
+                    status=status,
+                    facts=facts,
+                    output=str(facts.get("output") or ""),
+                    error=ToolError(
+                        code=str(error.get("code") or ""),
+                        message=str(error.get("message") or ""),
+                        error_class=str(error.get("class") or error.get("error_class") or "unknown"),
+                    ) if error else None,
+                    operation_id=str(facts.get("operation_id") or ""),
+                    execution_id=str(facts.get("execution_id") or ""),
+                    evidence=tuple(dict(item) for item in facts.get("evidence", ()) if isinstance(item, dict)),
+                    attempt=attempt.attempt,
+                )
+            states.append(WorkflowStepState(
+                step_id=state.id,
+                status=status,
+                attempt=attempt.attempt if attempt is not None else 0,
+                result=result,
+                error=result.error if result is not None else None,
+                started_at=attempt.started_at if attempt is not None else "",
+            ))
+        return tuple(states)
 
     def _update_framework_record(self, task_id: str, request: TaskCreate, run: FrameworkWorkflowRun) -> None:
         definition = self._framework_definitions.get(task_id)
@@ -867,8 +943,6 @@ class TaskManager:
                 operation_id=str(facts.get("operation_id") or ""),
                 evidence=tuple(dict(item) for item in facts.get("evidence", ()) if isinstance(item, dict)),
             ))
-        if request.workflow.id == "device_upgrade":
-            attempts = [self._legacy_upgrade_projection(request, run, attempts)]
         result_status = "completed" if status == TaskStatus.COMPLETED.value else status
         result = WorkflowResult(
             status=result_status,
@@ -888,6 +962,7 @@ class TaskManager:
             attempts={attempt.action_id: sum(1 for item in run.attempts if item.action_id == attempt.action_id) for attempt in run.attempts},
             error_code=str((run.error or {}).get("code") or ""),
             error_message=str((run.error or {}).get("message") or ""),
+            step_states=self._framework_step_states(definition, run),
         )
         self._update(
             task_id,
@@ -898,56 +973,7 @@ class TaskManager:
             checkpoint=checkpoint,
             message=result.message,
             error_code=result.error_code,
-        )
-
-    @staticmethod
-    def _legacy_upgrade_projection(
-        request: TaskCreate,
-        run: FrameworkWorkflowRun,
-        attempts: list[WorkflowStepResult],
-    ) -> WorkflowStepResult:
-        """Project one canonical run into the old package-upgrade result shape."""
-        facts_by_step = {
-            item.step_id: dict(item.data)
-            for item in attempts
-            if isinstance(item.data, dict)
-        }
-        precheck = facts_by_step.get("precheck", {})
-        topology = dict(precheck.get("topology_detection") or {})
-        operation_id = next((item.operation_id for item in attempts if item.operation_id), "")
-        activation_policy = str(dict(request.workflow.metadata).get("activation_policy") or "stage_only")
-        terminal_stage = "completed" if activation_policy == "reboot" else "staged"
-        stage_history = [
-            {"stage": item.step_id, "status": item.status}
-            for item in attempts
-            if item.step_id
-        ]
-        stage_history.append({"stage": terminal_stage, "status": str(run.status)})
-        operation_data = {
-            "stage_history": stage_history,
-            "topology_detection": topology,
-            "workflow_id": run.workflow_id,
-            "workflow_version": run.workflow_version,
-            "framework_run_id": run.id,
-        }
-        output = "\n".join(item.output for item in attempts if item.output)
-        evidence = tuple(evidence for item in attempts for evidence in item.evidence)
-        operation = {
-            "operation_id": operation_id,
-            "status": terminal_stage if str(run.status) == FrameworkRunStatus.SUCCEEDED.value else str(run.status),
-            "stage": terminal_stage if str(run.status) == FrameworkRunStatus.SUCCEEDED.value else str(run.current_state),
-            "data": operation_data,
-        }
-        return WorkflowStepResult(
-            step_id="prepare_upgrade",
-            status="completed" if str(run.status) == FrameworkRunStatus.SUCCEEDED.value else str(run.status),
-            action="prepare_upgrade",
-            output=output,
-            error_code=str((run.error or {}).get("code") or ""),
-            message=str((run.error or {}).get("message") or ""),
-            data={"operation": operation, "framework": {"run_id": run.id, "attempts": [item.data for item in attempts]}},
-            operation_id=operation_id,
-            evidence=evidence,
+            workflow_view=self._framework_workflow_view(definition),
         )
 
     async def _run_stateful(self, task_id: str, request: TaskCreate) -> None:
@@ -1182,7 +1208,13 @@ class TaskManager:
                     item.id,
                     target_step=run.current_state,
                     risk=item.risk,
-                    metadata={"kind": item.kind, "description": item.description},
+                    metadata={
+                        "kind": item.kind,
+                        "label": item.label,
+                        "description": item.description,
+                        "requires_reason": item.requires_reason,
+                        "input_schema": dict(item.input_schema),
+                    },
                 )
                 for item in point.options
             )
@@ -1240,6 +1272,22 @@ class TaskManager:
         self._update(task_id, status="cancelled", message="Task cancelled.", error_code="task_cancelled")
         self._release_task_resources(task_id)
         return self.get(task_id)
+
+    def cancel_session(self, session_id: str) -> int:
+        """Cancel active tasks bound to a session before it is disconnected."""
+        cancelled = 0
+        for task_id, request in tuple(self._requests.items()):
+            if request.target.session_id != session_id:
+                continue
+            if self.get(task_id).status in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }:
+                continue
+            self.cancel(task_id)
+            cancelled += 1
+        return cancelled
 
     async def close(self) -> None:
         for task_id in tuple(self._jobs):

@@ -321,15 +321,6 @@ class AppControlService(
                 int(response["data"].get("active_operations", 0)),
                 active,
             )
-        if tool == "package_upgrade_start" and result.ok:
-            operation = self._create_operation(
-                action,
-                result,
-                kind="package_upgrade",
-                operation_id=str(result.data.get("operation_id") or ""),
-            )
-            response["data"]["operation_id"] = operation.id
-            response["data"]["operation"] = asdict(operation)
         if tool == "file_transfer_start" and result.ok:
             operation = self._create_operation(
                 action,

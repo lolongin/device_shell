@@ -116,7 +116,7 @@ def build_desktop_application(
     operations = OperationManager(
         events,
         operation_store or MemoryOperationStore(),
-        persistent_kinds={"managed_file_transfer", "package_upgrade"},
+        persistent_kinds={"managed_file_transfer"},
         history_limit=200,
     )
     executor = terminal_executor or UnavailableTerminalPlanExecutor()
@@ -129,12 +129,12 @@ def build_desktop_application(
         terminal_executor=executor,
         default_root=transfer_root,
     )
-    upgrades = PackageUpgradeService(sessions, operations, transfers, devices=devices)
+    upgrades = PackageUpgradeService(sessions, transfers, devices=devices)
     # Device upgrades and long terminal plans may legitimately run beyond the
     # short operation timeout. Process restart clears these in-memory leases;
     # normal completion, pause, and cancellation release them explicitly.
     leases = DeviceLeaseService(ttl_seconds=21_600)
-    control = DeviceControlService(devices, sessions, transfers, operations, executor, upgrades, leases=leases)
+    control = DeviceControlService(devices, sessions, transfers, operations, executor, leases=leases)
     execution = DeviceExecutionTool(control)
     workflows = workflow_catalog or build_default_workflow_catalog()
     framework_workflows = framework_workflow_registry or build_default_workflow_registry()
@@ -146,7 +146,6 @@ def build_desktop_application(
         events=framework_event_store,
         leases=leases,
     )
-    upgrades.bind_framework(runtime, framework_workflows)
     tasks = TaskManager(
         execution,
         events,

@@ -17,7 +17,6 @@ from device_tui.application import (
     DeviceTarget,
     Decision,
     DecisionActor,
-    PackageUpgradeRequest,
     TransferRequest,
     TaskCreate,
     WorkflowCatalogError,
@@ -742,7 +741,7 @@ class DesktopMcpService:
             )
             return {"session": self._session_view_payload(updated)}
         if action == "disconnect":
-            self.desktop.upgrades.cancel_session(session.id)
+            self.desktop.tasks.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
             updated = await self.desktop.control.disconnect_session(
                 DeviceTarget(device_id=session.device_id, session_id=session.id),
@@ -751,7 +750,7 @@ class DesktopMcpService:
             return {"session": self._session_view_payload(updated)}
         if action == "close":
             self.desktop.automation.cancel_session(session.id, reason="mcp_close")
-            self.desktop.upgrades.cancel_session(session.id)
+            self.desktop.tasks.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
             await self.desktop.control.close_session(
                 DeviceTarget(device_id=session.device_id, session_id=session.id),
@@ -876,12 +875,17 @@ class DesktopMcpService:
         packages = [item for item in self.desktop.transfers.list_files(limit=1_000).files if item.name.casefold().endswith(".cc")]
         if not packages:
             raise UnsupportedOperationError("No .cc package is available in the managed transfer root.")
-        operation = self.desktop.control.start_package_upgrade(
-            DeviceTarget(device_id=session.device_id, session_id=session.id),
-            PackageUpgradeRequest(package_path=packages[0].relative_path),
-            context=ControlContext(source="mcp"),
+        workflow = self.desktop.workflows.build(
+            "device_upgrade",
+            WorkflowTarget(device_id=session.device_id, session_id=session.id),
+            {"package_path": packages[0].relative_path},
         )
-        return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
+        task = self.desktop.tasks.create(TaskCreate(
+            workflow=workflow,
+            target=DeviceTarget(device_id=session.device_id, session_id=session.id),
+            source="mcp",
+        ))
+        return {"task_id": task.id, "task": task.to_dict()}
 
     async def _tool_operation_get(self, params: dict[str, Any]) -> dict[str, Any]:
         operation = self.desktop.control.get_operation(self._text(params, "operation_id"))

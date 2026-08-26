@@ -48,7 +48,6 @@ from device_tui.application import (
     MemoryAutomationStore,
     MemoryTransferStore,
     MemorySecretStore,
-    PackageUpgradeRequest,
     SecretStore,
     SessionCredential,
     TransferRequest,
@@ -57,7 +56,6 @@ from device_tui.application import (
     WorkflowCatalog,
     WorkflowTarget,
     WorkflowRuntime,
-    DecisionSubmission,
     ProfileEndpoint,
     redact_command_secrets,
     build_desktop_application,
@@ -145,7 +143,6 @@ from .models import (
     SharedFileModel,
     SharedFileListResponse,
     ManagedTransferStartRequest,
-    PackageUpgradeStartRequest,
     PackageUpgradeManualPlanRequest,
     PackageUpgradeManualPlanResponse,
     PackageUpgradeManualScriptSendRequest,
@@ -1174,77 +1171,6 @@ def create_app(
         except (KeyError, ValueError) as exc:
             raise UnsupportedOperationError(str(exc)) from exc
         return {"workflow": definition.to_dict()}
-
-    @app.post("/api/v1/framework/runs", dependencies=[Depends(authorize)])
-    async def framework_run_create(request: dict[str, object]) -> dict[str, object]:
-        workflow_id = str(request.get("workflow_id") or "").strip()
-        device_id = str(request.get("device_id") or "").strip()
-        if not workflow_id or not device_id:
-            raise UnsupportedOperationError("workflow_id and device_id are required")
-        try:
-            definition = desktop.framework_workflows.build(workflow_id, dict(request.get("inputs") or {}))
-            run = desktop.workflow_runtime.start(
-                definition,
-                device_id=device_id,
-                context={
-                    **dict(request.get("context") or {}),
-                    "target": {
-                        "device_id": device_id,
-                        "session_id": str(request.get("session_id") or ""),
-                        "protocol": str(request.get("protocol") or "auto"),
-                    },
-                },
-                run_id=str(request.get("run_id") or "") or None,
-            )
-        except (KeyError, ValueError) as exc:
-            raise UnsupportedOperationError(str(exc)) from exc
-        return {"run": run.to_dict()}
-
-    @app.get("/api/v1/framework/runs/{run_id}", dependencies=[Depends(authorize)])
-    async def framework_run_get(run_id: str) -> dict[str, object]:
-        try:
-            return {"run": desktop.workflow_runtime.runs.get(run_id).to_dict()}
-        except KeyError as exc:
-            raise ResourceNotFoundError(str(exc)) from exc
-
-    @app.get("/api/v1/framework/runs/{run_id}/events", dependencies=[Depends(authorize)])
-    async def framework_run_events(run_id: str, after_sequence: int = Query(default=0, ge=0)) -> dict[str, object]:
-        try:
-            desktop.workflow_runtime.runs.get(run_id)
-        except KeyError as exc:
-            raise ResourceNotFoundError(str(exc)) from exc
-        return {"events": [event.to_dict() for event in desktop.workflow_runtime.events.list(run_id, after_sequence=after_sequence)]}
-
-    @app.post("/api/v1/framework/runs/{run_id}/tick", dependencies=[Depends(authorize)])
-    async def framework_run_tick(run_id: str) -> dict[str, object]:
-        try:
-            return {"run": (await desktop.workflow_runtime.tick(run_id)).to_dict()}
-        except KeyError as exc:
-            raise ResourceNotFoundError(str(exc)) from exc
-
-    @app.post("/api/v1/framework/runs/{run_id}/reconcile", dependencies=[Depends(authorize)])
-    async def framework_run_reconcile(run_id: str, request: dict[str, object] | None = None) -> dict[str, object]:
-        try:
-            return {"run": (await desktop.workflow_runtime.reconcile(run_id, str((request or {}).get("reason") or "api_request"))).to_dict()}
-        except KeyError as exc:
-            raise ResourceNotFoundError(str(exc)) from exc
-
-    @app.post("/api/v1/framework/runs/{run_id}/decision", dependencies=[Depends(authorize)])
-    async def framework_run_decision(run_id: str, request: dict[str, object]) -> dict[str, object]:
-        try:
-            submission = DecisionSubmission(
-                decision_point_id=str(request.get("decision_point_id") or ""),
-                expected_revision=int(request.get("expected_revision") or 0),
-                option_id=str(request.get("option_id") or ""),
-                actor_type=str(request.get("actor_type") or "human"),
-                actor_id=str(request.get("actor_id") or ""),
-                inputs=dict(request.get("inputs") or {}),
-                reason=str(request.get("reason") or ""),
-                idempotency_key=str(request.get("idempotency_key") or ""),
-            )
-            return {"run": desktop.workflow_runtime.apply_decision(run_id, submission).to_dict()}
-        except (KeyError, ValueError) as exc:
-            raise UnsupportedOperationError(str(exc)) from exc
 
     @app.get("/api/v1/tasks", response_model=TaskListResponse, dependencies=[Depends(authorize)])
     async def task_list(limit: int = Query(default=200, ge=1, le=500)) -> TaskListResponse:
@@ -2484,42 +2410,6 @@ def create_app(
     async def clear_managed_file_transfer_history() -> DeleteHistoryResponse:
         return DeleteHistoryResponse(deleted_count=desktop.transfers.clear_history())
 
-    @app.post(
-        "/api/v1/package-upgrades",
-        response_model=OperationResponse,
-        dependencies=[Depends(authorize)],
-    )
-    async def start_package_upgrade(
-        request: PackageUpgradeStartRequest,
-    ) -> OperationResponse:
-        session = next(
-            (item for item in desktop.sessions.list_sessions() if item.id == request.session_id),
-            None,
-        )
-        if session is None:
-            raise ResourceNotFoundError(
-                f"Unknown session: {request.session_id}",
-                details={"session_id": request.session_id},
-            )
-        operation = desktop.control.start_package_upgrade(
-            DeviceTarget(device_id=session.device_id, session_id=session.id),
-            PackageUpgradeRequest(
-                package_path=request.package_path,
-                package_source=request.package_source,
-                include_slave=request.include_slave,
-                standby_required=request.standby_required,
-                auto_delete_old_packages=request.auto_delete_old_packages,
-                reboot_after_setting=request.reboot_after_setting,
-                master_storage=request.master_storage,
-                slave_storage=request.slave_storage,
-                driver_id=request.driver_id,
-            ),
-            context=ControlContext(source="electron"),
-        )
-        return OperationResponse(
-            operation=_operation_model(desktop.control.get_operation(operation.operation_id))
-        )
-
     @app.get(
         "/api/v1/package-upgrades/manual/{session_id}/terminal",
         response_model=SessionLogResponse,
@@ -2579,22 +2469,6 @@ def create_app(
             command_count=command_count,
         )
 
-    @app.post(
-        "/api/v1/package-upgrades/{operation_id}/approve-reboot",
-        response_model=OperationResponse,
-        dependencies=[Depends(authorize)],
-    )
-    async def approve_package_upgrade_reboot(
-        operation_id: str,
-    ) -> OperationResponse:
-        operation = desktop.control.approve_package_upgrade_reboot(
-            operation_id,
-            context=ControlContext(source="electron"),
-        )
-        return OperationResponse(
-            operation=_operation_model(desktop.control.get_operation(operation.operation_id))
-        )
-
     @app.get(
         "/api/v1/operations",
         response_model=OperationListResponse,
@@ -2635,7 +2509,7 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     async def reconnect_session(session_id: str) -> SessionSummary:
-        desktop.upgrades.cancel_session(session_id)
+        desktop.tasks.cancel_session(session_id)
         desktop.transfers.cancel_session(session_id)
         record = next(
             (item for item in desktop.sessions.list_sessions() if item.id == session_id),
@@ -2657,7 +2531,7 @@ def create_app(
         dependencies=[Depends(authorize)],
     )
     async def disconnect_session(session_id: str) -> SessionSummary:
-        desktop.upgrades.cancel_session(session_id)
+        desktop.tasks.cancel_session(session_id)
         desktop.transfers.cancel_session(session_id)
         record = next(
             (item for item in desktop.sessions.list_sessions() if item.id == session_id),
@@ -2767,7 +2641,7 @@ def create_app(
     )
     async def close_session(session_id: str) -> None:
         desktop.automation.cancel_session(session_id, reason="session_closed")
-        desktop.upgrades.cancel_session(session_id)
+        desktop.tasks.cancel_session(session_id)
         desktop.transfers.cancel_session(session_id)
         record = next(
             (item for item in desktop.sessions.list_sessions() if item.id == session_id),

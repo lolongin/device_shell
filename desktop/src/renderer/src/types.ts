@@ -431,6 +431,28 @@ export interface TaskRecord {
   plan_hash?: string
   parent_task_id?: string
   plan_revision?: number
+  workflow_view?: TaskWorkflowView
+}
+
+export interface TaskWorkflowState {
+  id: string
+  label: string
+  description?: string
+  terminal?: boolean
+  action_id?: string
+  operation?: string
+  expectations?: Array<{
+    event_type: string
+    timeout_seconds: number
+    idle_timeout_seconds?: number
+    progress?: boolean
+  }>
+}
+
+export interface TaskWorkflowView {
+  id: string
+  version: string
+  states: TaskWorkflowState[]
 }
 
 export interface McpResponse<T> {
@@ -496,6 +518,7 @@ export interface TaskDecisionAction {
   target_step?: string
   risk?: string
   confirmation_required?: boolean
+  metadata?: Record<string, unknown>
 }
 
 export interface TaskDecisionActionPayload {

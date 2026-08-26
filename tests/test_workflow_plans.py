@@ -32,7 +32,7 @@ def test_plan_compiler_marks_high_risk_steps_for_confirmation() -> None:
     assert result.workflow.steps[0].action.confirmation_required is True
 
 
-def test_plan_compiler_keeps_package_replacement_on_named_device_upgrade_workflow() -> None:
+def test_plan_compiler_rejects_package_replacement_capability() -> None:
     plan = WorkflowPlan(
         "p-package",
         "replace system package",
@@ -73,7 +73,7 @@ def test_plan_compiler_publishes_capability_contracts_and_validates_params() -> 
     assert result.errors[0]["code"] == "parameter_required"
 
 
-def test_device_upgrade_plan_expands_to_canonical_activation_steps() -> None:
+def test_device_upgrade_plan_is_rejected_outside_named_workflow_task() -> None:
     plan = WorkflowPlan(
         "p-upgrade",
         "stage and activate package",
@@ -87,13 +87,6 @@ def test_device_upgrade_plan_expands_to_canonical_activation_steps() -> None:
         ),
     )
     result = WorkflowPlanCompiler().validate(plan)
-    assert result.status == "requires_confirmation"
-    assert result.workflow is not None
-    assert [step.id for step in result.workflow.steps] == [
-        "upgrade.prepare_upgrade",
-        "upgrade.reboot",
-        "upgrade.wait_online",
-        "upgrade.verify_version",
-        "upgrade.validation",
-    ]
-    assert result.workflow.steps[0].action.name == "prepare_upgrade"
+    assert result.status == "rejected"
+    assert result.workflow is None
+    assert result.errors[0]["code"] == "workflow_task_only"
