@@ -47,6 +47,7 @@ def run_all(engine: WorkflowEngine) -> Task:
 def test_device_upgrade_workflow_is_parameterized_and_ordered() -> None:
     workflow = device_upgrade_workflow(device_id="device-1", package="images/router.cc", options={"expected_version": "V2"})
     assert workflow.id == "device_upgrade"
+    assert workflow.metadata["canonical_workflow_id"] == "network.package_upgrade"
     assert [step.id for step in workflow.steps] == ["prepare_upgrade"]
     assert workflow.steps[0].params["device_id"] == "device-1"
     assert workflow.steps[0].params["package_path"] == "images/router.cc"

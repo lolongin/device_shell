@@ -384,7 +384,9 @@ class DeviceControlService:
         context: ControlContext | None = None,
     ) -> OperationView:
         record = self._operations.get(operation_id)
-        self._validate_task_lease(DeviceTarget(device_id=record.device_id, session_id=record.session_id), context)
+        # Approval changes workflow intent only. The framework runner owns the
+        # device lease and validates it when the approved action executes.
+        del context
         return self._operation_view(self._upgrades.approve_reboot(operation_id))
 
     def _validate_task_lease(self, target: DeviceTarget, context: ControlContext | None) -> None:

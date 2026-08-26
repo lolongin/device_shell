@@ -238,6 +238,12 @@ class WorkflowCatalog:
 
 
 class DeviceUpgradeWorkflowProvider:
+    """Legacy catalog facade over the canonical framework provider.
+
+    The descriptor is retained for the existing tasking UI/API.  The actual
+    workflow semantics are built by ``tasking.workflows`` through
+    ``HuaweiVrpPackageUpgradeProvider``.
+    """
     descriptor = WorkflowDescriptor(
         id="device_upgrade",
         version="2",

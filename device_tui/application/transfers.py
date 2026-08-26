@@ -390,6 +390,34 @@ class ManagedTransferService:
             self._schedule_idle_stop()
         return self.settings()
 
+    async def service_endpoint_for_session(self, session_id: str) -> tuple[str, int]:
+        """Return the service address reachable from a device session.
+
+        The bind address is a local-server concern. Device-facing workflows
+        must use the advertised address or the address selected from the route
+        to the target device.
+        """
+        session = self._connected_session(session_id)
+        config = await self._ensure_service()
+        # Keep the built-in simulator's device-side FTP client aligned with
+        # the credentials exposed by the managed service. Real transports do
+        # not use this hook; they authenticate against the actual service.
+        if session.kind == "simulated":
+            self._executor.configure_managed_transfer(
+                session.id,
+                username=config.username,
+                password=config.password,
+                source_path="",
+                source_size=0,
+                destination_path="",
+            )
+        host = self._device_host(session, config).strip()
+        settings = self.settings()
+        port = int(settings.bound_port or config.port)
+        if not host or not 0 < port <= 65535:
+            raise TransferOperationError("The file-transfer service has no usable device endpoint.")
+        return host, port
+
     async def stop_service(self) -> TransferSettings:
         if self._tasks:
             raise ApplicationConflictError("活动传输期间不能停止文件服务。")

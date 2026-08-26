@@ -11,6 +11,15 @@ from uuid import uuid4
 from device_tui.application.device_control import ControlContext, DeviceLeaseService, DeviceTarget
 from device_tui.application.errors import ApplicationError, ResourceNotFoundError
 from device_tui.application.events import EventBus
+from device_tui.application.workflows.decisions import DecisionSubmission as FrameworkDecisionSubmission
+from device_tui.application.workflows.models import (
+    ActionStatus as FrameworkActionStatus,
+    RunStatus as FrameworkRunStatus,
+    WorkflowDefinition as FrameworkWorkflowDefinition,
+    WorkflowRun as FrameworkWorkflowRun,
+)
+from device_tui.application.workflows.plugins import WorkflowRegistry
+from device_tui.application.workflows.runtime import WorkflowRuntime
 
 from .decision import DecisionEngine, RuleDecisionEngine
 from .execution import DeviceExecutionTool, ExecutionTool
@@ -667,6 +676,8 @@ class TaskManager:
         decision_engine: DecisionEngine | None = None,
         store: TaskStore | None = None,
         leases: DeviceLeaseService | None = None,
+        framework_runtime: WorkflowRuntime | None = None,
+        framework_workflows: WorkflowRegistry | None = None,
     ) -> None:
         self._execution = execution
         self._events = events
@@ -682,6 +693,9 @@ class TaskManager:
         self._lease_tokens: dict[str, tuple[str, str]] = {}
         self._resources: dict[str, set[tuple[str, str]]] = {}
         self._store = store
+        self._framework_runtime = framework_runtime
+        self._framework_workflows = framework_workflows
+        self._framework_definitions: dict[str, FrameworkWorkflowDefinition] = {}
         if store is not None:
             for record, request in store.list_tasks():
                 interrupted = self._interrupted_operation(record)
@@ -704,7 +718,12 @@ class TaskManager:
     def create(self, request: TaskCreate) -> TaskRecord:
         task_id = str(uuid4())
         device_id = str(request.target.device_id or "").strip()
-        if self._leases is not None and device_id:
+        framework_definition = self._framework_definition(request.workflow)
+        if request.workflow.id == "device_upgrade" and framework_definition is None:
+            raise ApplicationError(
+                "The device_upgrade workflow requires the Workflow Framework."
+            )
+        if framework_definition is None and self._leases is not None and device_id:
             lease = self._leases.acquire(device_id, task_id)
             self._lease_tokens[task_id] = (device_id, lease.token)
         now = self._now()
@@ -730,15 +749,206 @@ class TaskManager:
         self._cancel[task_id] = cancel_event
         self._resources[task_id] = set()
         self._completed_steps[task_id] = 0
-        # Agent-authored plans need the resumable engine for every workflow,
-        # not only the legacy device-upgrade state machine.  Keep the old
-        # runner for desktop-created compatibility tasks while the migration
-        # is in progress.
-        runner = self._run_stateful if request.workflow.id == "device_upgrade" or request.source in {"agent", "mcp-agent"} else self._run
+        if framework_definition is not None:
+            run = self._framework_runtime.start(
+                framework_definition,
+                device_id=device_id,
+                run_id=task_id,
+                context={
+                    **dict(request.context),
+                    "source": request.source,
+                    "target": {
+                        "device_id": device_id,
+                        "session_id": request.target.session_id,
+                        "protocol": request.target.protocol,
+                    },
+                },
+            )
+            self._framework_definitions[task_id] = framework_definition
+            self._update_framework_record(task_id, request, run)
+            self._jobs[task_id] = asyncio.create_task(
+                self._run_framework(task_id, request),
+                name=f"framework-task-{task_id}",
+            )
+            self._publish("task.created", self.get(task_id))
+            self._persist(self.get(task_id), request)
+            return self.get(task_id)
+        # Agent-authored plans still use the resumable legacy engine until the
+        # generic plan compiler is migrated to Framework definitions.
+        runner = self._run_stateful if request.source in {"agent", "mcp-agent"} else self._run
         self._jobs[task_id] = asyncio.create_task(runner(task_id, request), name=f"device-task-{task_id}")
         self._publish("task.created", record)
         self._persist(record, request)
         return record
+
+    async def _run_framework(self, task_id: str, request: TaskCreate) -> None:
+        try:
+            await self._framework_runtime.run_until_blocked(
+                task_id,
+                on_update=lambda run: self._update_framework_record(task_id, request, run),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._update(task_id, status=TaskStatus.FAILED.value, message=str(exc), error_code="framework_task_failed")
+        finally:
+            self._jobs.pop(task_id, None)
+            run = self._framework_runtime.runs.get(task_id)
+            if str(run.status) not in {FrameworkRunStatus.WAITING_DECISION.value, FrameworkRunStatus.PAUSED.value}:
+                self._release_task_resources(task_id)
+
+    def _framework_definition_for_task(self, task_id: str) -> FrameworkWorkflowDefinition | None:
+        definition = self._framework_definitions.get(task_id)
+        if definition is not None:
+            return definition
+        request = self._requests.get(task_id)
+        if request is None:
+            return None
+        definition = self._framework_definition(request.workflow)
+        if definition is not None:
+            self._framework_definitions[task_id] = definition
+            self._framework_runtime.register_definition(definition)
+        return definition
+
+    def _framework_definition(self, workflow: WorkflowDefinition) -> FrameworkWorkflowDefinition | None:
+        if self._framework_runtime is None or self._framework_workflows is None:
+            return None
+        metadata = dict(workflow.metadata)
+        canonical_id = str(metadata.get("canonical_workflow_id") or "").strip()
+        if not canonical_id:
+            return None
+        package = str(metadata.get("package") or "").strip()
+        if not package:
+            return None
+        inputs = dict(metadata.get("options") or {})
+        inputs.update({"package_ref": package, "activation_policy": metadata.get("activation_policy", "stage_only")})
+        return self._framework_workflows.build(canonical_id, inputs)
+
+    def _update_framework_record(self, task_id: str, request: TaskCreate, run: FrameworkWorkflowRun) -> None:
+        definition = self._framework_definitions.get(task_id)
+        if definition is None:
+            return
+        state_by_id = {item.id: item for item in definition.states}
+        completed = {attempt.action_id for attempt in run.attempts if str(attempt.status) == FrameworkActionStatus.SUCCEEDED.value}
+        total = max(1, len(definition.states) - 1)
+        completed_count = len(completed & set(state_by_id))
+        status_map = {
+            FrameworkRunStatus.PENDING.value: TaskStatus.PENDING.value,
+            FrameworkRunStatus.RUNNING.value: TaskStatus.RUNNING.value,
+            FrameworkRunStatus.RECOVERING.value: TaskStatus.RUNNING.value,
+            FrameworkRunStatus.WAITING_RECONCILE.value: TaskStatus.RUNNING.value,
+            FrameworkRunStatus.WAITING_DECISION.value: TaskStatus.WAITING_FOR_DECISION.value,
+            FrameworkRunStatus.SUCCEEDED.value: TaskStatus.COMPLETED.value,
+            FrameworkRunStatus.FAILED.value: TaskStatus.FAILED.value,
+            FrameworkRunStatus.CANCELLED.value: TaskStatus.CANCELLED.value,
+        }
+        status = status_map.get(str(run.status), str(run.status))
+        attempts = []
+        for attempt in run.attempts:
+            facts = dict(attempt.result or {})
+            error = dict(attempt.error or {})
+            # Preserve the legacy TaskResult shape for callers that still
+            # read package-upgrade evidence from data.operation. The Framework
+            # facts remain the source of truth; this is only a projection.
+            if facts.get("operation_id") and isinstance(facts.get("data"), dict) and "operation" not in facts:
+                facts["operation"] = {
+                    "operation_id": facts["operation_id"],
+                    "status": facts.get("status", "completed"),
+                    "data": dict(facts["data"]),
+                }
+            attempts.append(WorkflowStepResult(
+                attempt.action_id,
+                "completed" if str(attempt.status) == FrameworkActionStatus.SUCCEEDED.value else str(attempt.status),
+                state_by_id.get(attempt.action_id).action.operation if state_by_id.get(attempt.action_id) and state_by_id.get(attempt.action_id).action else attempt.action_id,
+                output=str(facts.get("output") or ""),
+                error_code=str(error.get("code") or ""),
+                message=str(error.get("message") or ""),
+                data=facts,
+                operation_id=str(facts.get("operation_id") or ""),
+                evidence=tuple(dict(item) for item in facts.get("evidence", ()) if isinstance(item, dict)),
+            ))
+        if request.workflow.id == "device_upgrade":
+            attempts = [self._legacy_upgrade_projection(request, run, attempts)]
+        result_status = "completed" if status == TaskStatus.COMPLETED.value else status
+        result = WorkflowResult(
+            status=result_status,
+            steps=tuple(attempts),
+            outputs=dict(run.context),
+            error_code=str((run.error or {}).get("code") or ""),
+            message=("Workflow completed." if status == TaskStatus.COMPLETED.value else "Workflow waiting." if status == TaskStatus.WAITING_FOR_DECISION.value else "Workflow running." if status == TaskStatus.RUNNING.value else "Workflow failed."),
+        )
+        checkpoint = Checkpoint(
+            task_id=task_id,
+            workflow_instance_id=f"framework-{task_id}",
+            revision=run.revision,
+            current_step=run.current_state,
+            completed_steps=tuple(sorted(completed & set(state_by_id))),
+            outputs=dict(run.context),
+            context={key: value for key, value in run.context.items() if key != "lease_token"},
+            attempts={attempt.action_id: sum(1 for item in run.attempts if item.action_id == attempt.action_id) for attempt in run.attempts},
+            error_code=str((run.error or {}).get("code") or ""),
+            error_message=str((run.error or {}).get("message") or ""),
+        )
+        self._update(
+            task_id,
+            status=status,
+            current_step_id=run.current_state,
+            progress_percent=100 if status == TaskStatus.COMPLETED.value else min(99, int(completed_count * 100 / total)),
+            result=result,
+            checkpoint=checkpoint,
+            message=result.message,
+            error_code=result.error_code,
+        )
+
+    @staticmethod
+    def _legacy_upgrade_projection(
+        request: TaskCreate,
+        run: FrameworkWorkflowRun,
+        attempts: list[WorkflowStepResult],
+    ) -> WorkflowStepResult:
+        """Project one canonical run into the old package-upgrade result shape."""
+        facts_by_step = {
+            item.step_id: dict(item.data)
+            for item in attempts
+            if isinstance(item.data, dict)
+        }
+        precheck = facts_by_step.get("precheck", {})
+        topology = dict(precheck.get("topology_detection") or {})
+        operation_id = next((item.operation_id for item in attempts if item.operation_id), "")
+        activation_policy = str(dict(request.workflow.metadata).get("activation_policy") or "stage_only")
+        terminal_stage = "completed" if activation_policy == "reboot" else "staged"
+        stage_history = [
+            {"stage": item.step_id, "status": item.status}
+            for item in attempts
+            if item.step_id
+        ]
+        stage_history.append({"stage": terminal_stage, "status": str(run.status)})
+        operation_data = {
+            "stage_history": stage_history,
+            "topology_detection": topology,
+            "workflow_id": run.workflow_id,
+            "workflow_version": run.workflow_version,
+            "framework_run_id": run.id,
+        }
+        output = "\n".join(item.output for item in attempts if item.output)
+        evidence = tuple(evidence for item in attempts for evidence in item.evidence)
+        operation = {
+            "operation_id": operation_id,
+            "status": terminal_stage if str(run.status) == FrameworkRunStatus.SUCCEEDED.value else str(run.status),
+            "stage": terminal_stage if str(run.status) == FrameworkRunStatus.SUCCEEDED.value else str(run.current_state),
+            "data": operation_data,
+        }
+        return WorkflowStepResult(
+            step_id="prepare_upgrade",
+            status="completed" if str(run.status) == FrameworkRunStatus.SUCCEEDED.value else str(run.status),
+            action="prepare_upgrade",
+            output=output,
+            error_code=str((run.error or {}).get("code") or ""),
+            message=str((run.error or {}).get("message") or ""),
+            data={"operation": operation, "framework": {"run_id": run.id, "attempts": [item.data for item in attempts]}},
+            operation_id=operation_id,
+            evidence=evidence,
+        )
 
     async def _run_stateful(self, task_id: str, request: TaskCreate) -> None:
         record = self.get(task_id)
@@ -769,6 +979,42 @@ class TaskManager:
         request = self._requests.get(task_id)
         if request is None:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
+        if self._framework_definition_for_task(task_id) is not None:
+            run = self._framework_runtime.runs.get(task_id)
+            action = decision.action if isinstance(decision, Decision) else decision
+            if isinstance(action, Action):
+                action_name = action.name.casefold()
+                point = run.decision_point
+                if point is None:
+                    raise ValueError("Workflow is not waiting for a decision")
+                option = next(
+                    (
+                        item for item in point.options
+                        if item.id.casefold() == action_name
+                        or item.kind.casefold() == action_name
+                        or (action_name == "cancel" and item.kind.casefold() == "abort")
+                    ),
+                    None,
+                )
+                if option is None:
+                    raise ValueError(f"Workflow decision action is not available: {action.name}")
+                actor = decision.actor if isinstance(decision, Decision) else DecisionActor(type="user")
+                actor_type = "human" if actor.type == "user" else "agent"
+                submission = FrameworkDecisionSubmission(
+                    decision_point_id=point.id,
+                    expected_revision=(decision.expected_revision if isinstance(decision, Decision) and decision.expected_revision is not None else run.revision),
+                    option_id=option.id,
+                    actor_type=actor_type,
+                    actor_id=actor.id,
+                    inputs=dict(action.parameters),
+                    reason=str(decision.reason if isinstance(decision, Decision) else ""),
+                    idempotency_key=str(decision.decision_id if isinstance(decision, Decision) else ""),
+                )
+                updated = self._framework_runtime.apply_decision(task_id, submission)
+                self._update_framework_record(task_id, request, updated)
+                if str(updated.status) == FrameworkRunStatus.RUNNING.value and task_id not in self._jobs:
+                    self._jobs[task_id] = asyncio.create_task(self._run_framework(task_id, request), name=f"framework-task-{task_id}-decision")
+                return self.get(task_id)
         self._ensure_lease(task_id, request.target.device_id)
         engine = self._stateful_engines.get(task_id)
         if engine is None:
@@ -857,8 +1103,14 @@ class TaskManager:
         request = self._requests.get(task_id)
         if request is None:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
+        if self._framework_definition_for_task(task_id) is not None:
+            run = self._framework_runtime.resume(task_id, context=dict(context or {}))
+            self._update_framework_record(task_id, request, run)
+            if str(run.status) == FrameworkRunStatus.RUNNING.value and task_id not in self._jobs:
+                self._jobs[task_id] = asyncio.create_task(self._run_framework(task_id, request), name=f"framework-task-{task_id}-resume")
+            return self.get(task_id)
         self._ensure_lease(task_id, request.target.device_id)
-        if request.workflow.id == "device_upgrade" or request.source in {"agent", "mcp-agent"}:
+        if request.source in {"agent", "mcp-agent"}:
             engine = self._stateful_engines.get(task_id)
             if engine is None:
                 record = self.get(task_id)
@@ -893,7 +1145,14 @@ class TaskManager:
         if record.status in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
             return record
         request = self._requests.get(task_id)
-        if request is not None and (request.workflow.id == "device_upgrade" or request.source in {"agent", "mcp-agent"}):
+        if request is not None and self._framework_definition_for_task(task_id) is not None:
+            run = self._framework_runtime.pause(task_id)
+            job = self._jobs.get(task_id)
+            if job is not None:
+                job.cancel()
+            self._update_framework_record(task_id, request, run)
+            return self.get(task_id)
+        if request is not None and request.source in {"agent", "mcp-agent"}:
             engine = self._stateful_engines.get(task_id)
             if engine is not None:
                 engine.pause()
@@ -913,7 +1172,31 @@ class TaskManager:
     def get_decision(self, task_id: str) -> DecisionContext | None:
         record = self.get(task_id)
         request = self._requests.get(task_id)
-        if request is None or (request.workflow.id != "device_upgrade" and request.source not in {"agent", "mcp-agent"}):
+        if request is not None and self._framework_definition_for_task(task_id) is not None:
+            run = self._framework_runtime.runs.get(task_id)
+            point = run.decision_point
+            if point is None:
+                return None
+            actions = tuple(
+                Action(
+                    item.id,
+                    target_step=run.current_state,
+                    risk=item.risk,
+                    metadata={"kind": item.kind, "description": item.description},
+                )
+                for item in point.options
+            )
+            return DecisionContext(
+                task_id=task_id,
+                workflow_id=record.workflow_id,
+                current_step=run.current_state,
+                error=run.error,
+                context=dict(run.context),
+                available_actions=actions,
+                workflow_instance_id=f"framework-{task_id}",
+                checkpoint_revision=run.revision,
+            )
+        if request is None or request.source not in {"agent", "mcp-agent"}:
             return None
         engine = self._stateful_engines.get(task_id)
         if engine is None:
@@ -940,6 +1223,15 @@ class TaskManager:
         record = self.get(task_id)
         if record.status in {"completed", "failed", "cancelled"}:
             return record
+        request = self._requests.get(task_id)
+        if request is not None and self._framework_definition_for_task(task_id) is not None:
+            self._framework_runtime.cancel(task_id)
+            job = self._jobs.get(task_id)
+            if job is not None:
+                job.cancel()
+            self._update_framework_record(task_id, request, self._framework_runtime.runs.get(task_id))
+            self._release_task_resources(task_id)
+            return self.get(task_id)
         self._cancel.setdefault(task_id, asyncio.Event()).set()
         self._cancel_underlying(task_id)
         job = self._jobs.get(task_id)

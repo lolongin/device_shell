@@ -1,0 +1,728 @@
+"""Bridge framework actions to the existing device-control execution stack.
+
+This module is intentionally an adapter, not a second device executor.  The
+legacy ``DeviceExecutionTool`` remains the compatibility-facing translation to
+``DeviceControlService`` while the framework owns action identity, events,
+watchdogs, reconciliation, and decisions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import PurePosixPath
+from typing import Any
+
+from device_tui.application.device_control import ControlContext, DeviceControlService, DeviceTarget
+from device_tui.application.errors import ApplicationError
+from device_tui.application.tasking.execution import (
+    DeviceExecutionTool,
+    DeviceWorkflowExecutionError,
+)
+from device_tui.application.tasking.models import WorkflowStep
+from device_tui.application.upgrades.drivers import UpgradeDriverRegistry, UpgradeTargetFacts
+from device_tui.application.upgrades.package import (
+    DEFAULT_MASTER_STORAGE,
+    DEFAULT_SLAVE_STORAGE,
+    build_cleanup_plan,
+    classify_standby_storage,
+    parse_dir_entries,
+    parse_free_space_bytes,
+    package_basename,
+    parse_display_startup,
+)
+
+from .events import Event
+from .models import (
+    ActionResult,
+    ActionSpec,
+    ActionStatus,
+    ReconcileClassification,
+    ReconcileResult,
+    WorkflowRun,
+)
+from .plugins import ActionRegistry, AdapterRegistry, ReconcileRegistry
+
+
+class DeviceExecutionActionHandler:
+    """Execute one framework operation through the existing device facade."""
+
+    def __init__(
+        self,
+        execution: DeviceExecutionTool,
+        adapters: AdapterRegistry,
+        transfers: Any = None,
+        drivers: UpgradeDriverRegistry | None = None,
+    ) -> None:
+        self._execution = execution
+        self._adapters = adapters
+        self._transfers = transfers
+        self._drivers = drivers or UpgradeDriverRegistry()
+
+    async def execute(self, action: ActionSpec, run: WorkflowRun, emit: Any) -> ActionResult:
+        step = await self._legacy_step(action, run)
+        target = _target_for_run(run)
+        context = ControlContext(
+            source="framework",
+            task_id=run.id,
+            step_id=action.id,
+            lease_token=str(run.context.get("lease_token") or ""),
+        )
+        emitted: set[str] = set()
+
+        def publish(event: Event) -> None:
+            key = f"{event.type}:{event.payload.get('status', '')}"
+            if key in emitted:
+                return
+            emitted.add(key)
+            emit(event)
+
+        publish(Event(
+            type="framework.action.sent",
+            run_id=run.id,
+            action_id=action.id,
+            source="device.bridge",
+        ))
+        if action.operation in {"file.session.login", "file.transfer"} and self._package_already_present(run, action):
+            data = {
+                "status": "completed",
+                "output": (
+                    "目标系统包已存在，跳过 FTP 登录。"
+                    if action.operation == "file.session.login"
+                    else "目标系统包已存在，跳过重复传输。"
+                ),
+                "data": {"skipped": True, "reason": "package_already_present"},
+            }
+        elif action.operation in {"huawei.storage.cleanup", "huawei.storage.sync"} and not step.params.get("commands"):
+            data = {"status": "completed", "output": "", "data": {"skipped": True}}
+        else:
+            data = await self._execution.execute(target, step, context=context)
+        if action.operation == "file.transfer":
+            operation_id = str(data.get("operation_id") or "").strip()
+            if operation_id:
+                publish(Event(
+                    type="huawei.transfer.started",
+                    run_id=run.id,
+                    action_id=action.id,
+                    source="device.bridge",
+                    progress=True,
+                    payload={"operation_id": operation_id},
+                ))
+                data = {
+                    **data,
+                    **await self._wait_for_operation(operation_id, action.timeout_seconds, run, action, publish),
+                }
+        output = str(data.get("output") or "")
+        facts = self._facts(action, data, output, run)
+        if action.operation == "device.verify" and not self._verification_confirmed(action, output):
+            expected = str(action.params.get("expected") or "").strip()
+            return ActionResult(
+                status=ActionStatus.FAILED,
+                events=(),
+                facts=facts,
+                error={
+                    "code": "verification_failed",
+                    "message": f"Verification did not confirm {expected or action.params.get('fact', 'the expected state') }.",
+                    "class": "deterministic",
+                },
+            )
+        # Success events are facts consumed by the runtime. Do not publish
+        # them for an action whose deterministic verification has failed.
+        for event in self._parse_output(output, run, action):
+            publish(event)
+        for event in self._semantic_events(action, run, data, output):
+            publish(event)
+        return ActionResult(
+            status=ActionStatus.SUCCEEDED,
+            events=(),
+            facts=facts,
+        )
+
+    def _facts(
+        self,
+        action: ActionSpec,
+        data: dict[str, Any],
+        output: str,
+        run: WorkflowRun,
+    ) -> dict[str, Any]:
+        facts: dict[str, Any] = {
+            "status": data.get("status", "completed"),
+            "output": output,
+            "session_id": data.get("session_id") or "",
+            "device_id": data.get("device_id") or "",
+            "operation_id": data.get("operation_id") or "",
+            "data": dict(data.get("data") or {}),
+            "evidence": list(data.get("evidence") or ()),
+        }
+        if action.operation == "device.probe":
+            startup = parse_display_startup(output)
+            if startup.current_system or startup.next_system:
+                facts["startup"] = {
+                    "current_system": startup.current_system,
+                    "next_system": startup.next_system,
+                }
+            slave_storage = str(action.params.get("slave_storage") or DEFAULT_SLAVE_STORAGE)
+            slave_output = _extract_storage_output(output, slave_storage)
+            standby_status = classify_standby_storage(slave_output, slave_storage)
+            facts["topology_detection"] = {
+                "policy": str(action.params.get("topology_policy") or "auto"),
+                "master_storage": str(action.params.get("master_storage") or DEFAULT_MASTER_STORAGE),
+                "standby_storage": slave_storage,
+                "standby_status": standby_status,
+                "include_slave": standby_status == "available",
+                "decision": (
+                    "dual_controller"
+                    if standby_status == "available"
+                    else "single_controller"
+                    if standby_status == "absent"
+                    else "indeterminate"
+                ),
+            }
+            package = str(action.params.get("package") or "").strip()
+            if package and str(action.params.get("package_source") or "local").casefold() == "local":
+                package_name = PurePosixPath(package.replace("\\", "/")).name
+                package_size = 0
+                if self._transfers is not None:
+                    try:
+                        package_size = int(self._transfers.resolve_source(package).size_bytes)
+                    except (ApplicationError, OSError, ValueError):
+                        package_size = 0
+                driver = self._driver(action, run)
+                master_storage = str(action.params.get("master_storage") or DEFAULT_MASTER_STORAGE)
+                facts["package"] = {
+                    "name": package_name,
+                    "storage": master_storage,
+                    "size_bytes": package_size,
+                    "present": driver.package_is_present(
+                        output,
+                        storage=master_storage,
+                        package_name=package_name,
+                        package_size=package_size,
+                    ),
+                }
+        return facts
+
+    async def _wait_for_operation(
+        self,
+        operation_id: str,
+        timeout_seconds: float,
+        run: WorkflowRun,
+        action: ActionSpec,
+        publish: Any,
+    ) -> dict[str, Any]:
+        deadline = asyncio.get_running_loop().time() + max(1.0, timeout_seconds)
+        last_status = ""
+        while True:
+            snapshot = self._execution.get_resource("operation", operation_id)
+            status = str(snapshot.get("status") or "").casefold()
+            if status and status != last_status:
+                last_status = status
+                publish(Event(
+                    type="huawei.transfer.progress",
+                    run_id=run.id,
+                    action_id=action.id,
+                    source="device.bridge",
+                    progress=True,
+                    payload={"operation_id": operation_id, "status": status, "stage": snapshot.get("stage", "")},
+                ))
+            if status in {"completed", "success", "succeeded"}:
+                publish(Event(
+                    type="huawei.transfer.completed",
+                    run_id=run.id,
+                    action_id=action.id,
+                    source="device.bridge",
+                    progress=True,
+                    payload={"operation_id": operation_id, "status": status},
+                ))
+                return snapshot
+            if status in {"failed", "cancelled", "canceled", "interrupted", "timeout", "timed_out"}:
+                raise DeviceWorkflowExecutionError(
+                    str(snapshot.get("error_code") or status),
+                    str(snapshot.get("message") or "File transfer failed."),
+                    error_class="timeout" if "timeout" in status else "unknown",
+                )
+            if asyncio.get_running_loop().time() >= deadline:
+                raise DeviceWorkflowExecutionError(
+                    "transfer_timeout",
+                    "File transfer did not complete before the action timeout.",
+                    error_class="timeout",
+                )
+            await asyncio.sleep(0.1)
+
+    @staticmethod
+    def _verification_confirmed(action: ActionSpec, output: str) -> bool:
+        expected = str(action.params.get("expected") or "").strip()
+        fact = str(action.params.get("fact") or "").casefold()
+        if fact == "package" and expected:
+            normalized_expected = expected.replace("\\", "/").rstrip("/").casefold()
+            expected_name = PurePosixPath(normalized_expected).name
+            haystack = output.replace("\\", "/").casefold()
+            return bool(expected_name and expected_name in haystack)
+        if expected:
+            return expected.casefold() in output.casefold()
+        if fact == "package":
+            package = str(action.params.get("expected") or action.params.get("package") or "").strip()
+            package_name = PurePosixPath(package.replace("\\", "/").rstrip("/")).name
+            return bool(package_name and package_name.casefold() in output.replace("\\", "/").casefold())
+        return bool(output.strip())
+
+    def _package_already_present(self, run: WorkflowRun, action: ActionSpec) -> bool:
+        if str(action.params.get("package_source") or "local").casefold() != "local":
+            return False
+        precheck = run.context.get("action.precheck.facts")
+        if not isinstance(precheck, dict):
+            return False
+        output = str(precheck.get("output") or "")
+        package_fact = precheck.get("package")
+        if isinstance(package_fact, dict) and "present" in package_fact:
+            return bool(package_fact["present"])
+        package = PurePosixPath(
+            str(action.params.get("source") or action.params.get("package") or "")
+            .replace("\\", "/")
+        ).name.casefold()
+        if not package:
+            return False
+        package_size = 0
+        if self._transfers is not None:
+            try:
+                package_size = int(self._transfers.resolve_source(str(action.params.get("package") or package)).size_bytes)
+            except (ApplicationError, OSError, ValueError):
+                package_size = 0
+        driver = self._driver(action, run)
+        storage = str(action.params.get("master_storage") or DEFAULT_MASTER_STORAGE)
+        return driver.package_is_present(
+            output,
+            storage=storage,
+            package_name=package,
+            package_size=package_size,
+        )
+
+    def _parse_output(self, output: str, run: WorkflowRun, action: ActionSpec) -> tuple[Event, ...]:
+        if not output:
+            return ()
+        facts = dict(run.context.get("device_facts") or {})
+        try:
+            adapter = self._adapters.resolve(facts)
+        except LookupError:
+            adapters = self._adapters.list()
+            adapter = adapters[0] if len(adapters) == 1 else None
+        if adapter is None:
+            return ()
+        return adapter.parse_output(output, run_id=run.id, action_id=action.id)
+
+    @staticmethod
+    def _semantic_events(action: ActionSpec, run: WorkflowRun, data: dict[str, Any], output: str) -> tuple[Event, ...]:
+        operation = action.operation
+        event_types: list[tuple[str, bool]] = []
+        if operation == "device.probe":
+            event_types.extend((("huawei.cli.ready", False), ("huawei.device.facts.collected", True)))
+        elif operation == "file.session.login":
+            event_types.append(("huawei.ftp.ready", False))
+        elif operation == "file.transfer":
+            event_types.extend((("huawei.transfer.started", True), ("huawei.transfer.completed", True)))
+        elif operation == "device.verify":
+            fact = str(action.params.get("fact") or "")
+            event_types.append((
+                {
+                    "package": "huawei.package.verified",
+                    "running_version": "huawei.version.match",
+                    "validation": "huawei.validation.passed",
+                }.get(fact, "huawei.verification.passed"),
+                False,
+            ))
+        elif operation == "huawei.startup.configure":
+            event_types.append(("huawei.startup.configured", False))
+        elif operation == "huawei.storage.cleanup":
+            event_types.append(("huawei.storage.cleaned", False))
+        elif operation == "huawei.storage.sync":
+            event_types.append(("huawei.storage.synced", False))
+        elif operation == "device.reboot":
+            event_types.append(("huawei.reboot.started", False))
+        elif operation == "device.wait_online":
+            event_types.append(("huawei.cli.ready", True))
+        elif operation == "huawei.startup.rollback":
+            event_types.append(("huawei.rollback.verified", False))
+        return tuple(
+            Event(
+                type=event_type,
+                run_id=run.id,
+                action_id=action.id,
+                source="device.bridge",
+                progress=progress,
+                payload={"output_present": bool(output), "operation_id": data.get("operation_id", "")},
+            )
+            for event_type, progress in event_types
+        )
+
+    async def _legacy_step(self, action: ActionSpec, run: WorkflowRun) -> WorkflowStep:
+        params = dict(action.params)
+        for name in ("server_host", "server_port", "ftp_host", "ftp_port", "device_path"):
+            if name not in params and name in run.context:
+                params[name] = run.context[name]
+        params.setdefault("timeout_seconds", max(1, int(action.timeout_seconds)))
+        operation = action.operation
+        if operation == "device.probe":
+            params["commands"] = _probe_commands(
+                params.get("probes", ()),
+                master_storage=str(params.get("master_storage") or DEFAULT_MASTER_STORAGE),
+                slave_storage=str(params.get("slave_storage") or DEFAULT_SLAVE_STORAGE),
+            )
+            return WorkflowStep(action.id, kind="device", action="precheck", params=params)
+        if operation == "device.verify":
+            fact = str(params.get("fact") or "")
+            action_name = "verify_version" if fact == "running_version" else "validation" if fact == "validation" else "verify"
+            if "commands" not in params:
+                params["commands"] = ("display version",) if fact == "running_version" else ("dir flash:/",)
+            return WorkflowStep(action.id, kind="device", action=action_name, params=params)
+        if operation == "huawei.startup.configure":
+            package = str(params.get("package") or "").strip()
+            if package:
+                # Workflow inputs may be local relative paths. The Huawei
+                # startup command needs the device-side artifact path.
+                package_name = PurePosixPath(package.replace("\\", "/")).name
+                params.setdefault("destination_path", f"flash:/{package_name}")
+            driver = self._driver(action, run)
+            package_name = PurePosixPath(str(params.get("destination_path") or "").replace("\\", "/")).name
+            master_package = driver.package_path(
+                str(params.get("master_storage") or DEFAULT_MASTER_STORAGE), package_name,
+            )
+            slave_package = driver.package_path(
+                str(params.get("slave_storage") or DEFAULT_SLAVE_STORAGE), package_name,
+            )
+            primary_commands, _fallback_commands = driver.activation_commands(
+                master_package,
+                slave_package,
+                bool(self._precheck_topology(run).get("include_slave", False)),
+            )
+            params["mode"] = "interactive"
+            params["steps"] = _interactive_command_steps(primary_commands, allow_confirmation=True)
+            return WorkflowStep(action.id, kind="device", action="activate", params=params)
+        if operation == "huawei.storage.cleanup":
+            params["commands"] = self._cleanup_commands(action, run)
+            return WorkflowStep(action.id, kind="device", action="command", params=params)
+        if operation == "huawei.storage.sync":
+            params["commands"] = self._sync_commands(action, run)
+            return WorkflowStep(action.id, kind="device", action="command", params=params)
+        if operation == "huawei.startup.rollback":
+            rollback_command = str(params.get("rollback_command") or "").strip()
+            if not rollback_command:
+                startup = _previous_startup(run)
+                current_system = str(startup.get("current_system") or "").strip()
+                if not current_system:
+                    raise DeviceWorkflowExecutionError(
+                        "rollback_state_unknown",
+                        "The pre-upgrade startup package could not be confirmed; rollback needs an explicit operator decision.",
+                        error_class="ambiguous",
+                    )
+                rollback_command = f"startup system-software {current_system}"
+            params["commands"] = (rollback_command,)
+            return WorkflowStep(action.id, kind="device", action="command", params=params)
+        if operation == "file.transfer":
+            source = str(params.get("source") or params.get("source_path") or "").strip()
+            destination = str(params.get("destination") or params.get("device_path") or "").strip()
+            if not destination and source:
+                destination = f"flash:/{PurePosixPath(source.replace(chr(92), "/")).name}"
+            params.update(source_path=source, destination_path=destination)
+            return WorkflowStep(action.id, kind="device", action="upload", params=params)
+        if operation == "file.session.login":
+            if self._transfers is None:
+                raise DeviceWorkflowExecutionError("transfer_service_required", "FTP session actions require the managed transfer service.")
+            target = _target_for_run(run)
+            host, port = await self._transfers.service_endpoint_for_session(
+                str(run.context.get("session_id") or target.session_id)
+            )
+            params.update(server_host=host, server_port=port)
+            params["mode"] = "interactive"
+            params["steps"] = list(params.get("steps") or _ftp_login_steps(params))
+            return WorkflowStep(action.id, kind="device", action="batch", params=params)
+        if operation == "device.reboot":
+            return WorkflowStep(action.id, kind="device", action="reboot", params=params)
+        if operation == "device.wait_online":
+            return WorkflowStep(action.id, kind="device", action="wait_online", params=params)
+        raise DeviceWorkflowExecutionError(
+            "unsupported_framework_operation",
+            f"No device execution bridge is registered for {operation}.",
+        )
+
+    def _driver(self, action: ActionSpec, run: WorkflowRun) -> Any:
+        facts = dict(run.context.get("device_facts") or {})
+        target = _target_for_run(run)
+        return self._drivers.resolve(
+            UpgradeTargetFacts(
+                device_id=target.device_id,
+                vendor=str(facts.get("vendor") or ""),
+                model=str(facts.get("model") or ""),
+                platform=str(facts.get("platform") or ""),
+            ),
+            str(action.params.get("driver_id") or "auto"),
+        )
+
+    @staticmethod
+    def _precheck_facts(run: WorkflowRun) -> dict[str, Any]:
+        facts = run.context.get("action.precheck.facts")
+        return dict(facts) if isinstance(facts, dict) else {}
+
+    def _precheck_topology(self, run: WorkflowRun) -> dict[str, Any]:
+        topology = self._precheck_facts(run).get("topology_detection")
+        return dict(topology) if isinstance(topology, dict) else {}
+
+    def _cleanup_commands(self, action: ActionSpec, run: WorkflowRun) -> tuple[str, ...]:
+        params = action.params
+        package = str(params.get("package") or "").strip()
+        package_name = PurePosixPath(package.replace("\\", "/")).name
+        package_size = 0
+        if str(params.get("package_source") or "local") == "local" and self._transfers is not None:
+            package_size = int(self._transfers.resolve_source(package).size_bytes)
+        output = str(self._precheck_facts(run).get("output") or "")
+        startup = str(self._precheck_facts(run).get("startup_output") or output)
+        driver = self._driver(action, run)
+        topology = self._precheck_topology(run)
+        include_slave = bool(topology.get("include_slave", params.get("include_slave", True)))
+        commands: list[str] = []
+        for label, storage in (
+            ("master", params.get("master_storage") or DEFAULT_MASTER_STORAGE),
+            ("slave", params.get("slave_storage") or DEFAULT_SLAVE_STORAGE),
+        ):
+            if label == "slave" and not include_slave:
+                continue
+            scoped = output if label == "master" else _extract_storage_output(output, str(storage))
+            plan = build_cleanup_plan(
+                storage=str(storage),
+                free_bytes=parse_free_space_bytes(scoped),
+                target_bytes=package_size,
+                entries=parse_dir_entries(scoped, str(storage)),
+                startup=parse_display_startup(startup),
+                target_package_name=package_name,
+            )
+            if plan.free_bytes <= 0:
+                raise DeviceWorkflowExecutionError("storage_space_indeterminate", f"Unable to confirm {label} storage capacity.")
+            if not plan.has_enough_space:
+                raise DeviceWorkflowExecutionError("insufficient_space", f"{label} storage is insufficient for the package.")
+            if plan.delete_entries and not bool(params.get("auto_delete_old_packages", False)):
+                raise DeviceWorkflowExecutionError("cleanup_required", f"{label} storage requires cleanup before transfer.")
+            commands.extend(driver.cleanup_command(item.path) for item in plan.delete_entries)
+        return tuple(commands)
+
+    def _sync_commands(self, action: ActionSpec, run: WorkflowRun) -> tuple[str, ...]:
+        if not bool(self._precheck_topology(run).get("include_slave", False)):
+            return ()
+        params = action.params
+        package_name = PurePosixPath(str(params.get("package") or "").replace("\\", "/")).name
+        driver = self._driver(action, run)
+        primary = driver.package_path(str(params.get("master_storage") or DEFAULT_MASTER_STORAGE), package_name)
+        standby = driver.package_path(str(params.get("slave_storage") or DEFAULT_SLAVE_STORAGE), package_name)
+        return driver.sync_commands(primary, standby)
+
+
+class DeviceReconcileProvider:
+    """Read-only reconciliation against the same device-control services."""
+
+    def __init__(self, provider_id: str, execution: DeviceExecutionTool, control: DeviceControlService) -> None:
+        self.id = provider_id
+        self._execution = execution
+        self._control = control
+
+    async def reconcile(self, action: ActionSpec, run: WorkflowRun, reason: str, emit: Any) -> ReconcileResult:
+        target = _target_for_run(run)
+        evidence: list[dict[str, Any]] = [{"reason": reason, "provider": self.id}]
+        try:
+            if self.id.endswith("online") or action.operation in {"device.wait_online", "device.reboot"}:
+                view = await self._control.open_session(target, reuse=True, context=_control_context(run, action))
+                connected = str(view.status).casefold() in {"connected", "ready", "open"}
+                evidence.append({"probe": "session", "status": view.status, "session_id": view.session_id})
+                classification = ReconcileClassification.SUCCESS if connected else ReconcileClassification.IN_PROGRESS
+                return ReconcileResult(classification, {"session_id": view.session_id, "status": view.status}, tuple(evidence))
+            if self.id.endswith("transfer"):
+                operation_id = _last_operation_id(run, action.id)
+                if operation_id:
+                    snapshot = self._execution.get_resource("operation", operation_id)
+                    status = str(snapshot.get("status") or "").casefold()
+                    evidence.append({"probe": "operation", "operation_id": operation_id, "status": status})
+                    if status in {"completed", "success", "succeeded"}:
+                        return ReconcileResult(ReconcileClassification.SUCCESS, snapshot, tuple(evidence))
+                    if status in {"running", "pending", "queued", "downloading", "verifying"}:
+                        return ReconcileResult(ReconcileClassification.IN_PROGRESS, snapshot, tuple(evidence))
+                    if status in {"failed", "cancelled", "canceled", "interrupted"}:
+                        return ReconcileResult(ReconcileClassification.FAILED, snapshot, tuple(evidence))
+            if self.id.endswith("startup"):
+                package = str(action.params.get("package") or "").casefold()
+                step = WorkflowStep("reconcile", kind="device", action="verify", params={"commands": ("display startup",)})
+                data = await self._execution.execute(target, step, context=_control_context(run, action))
+                output = str(data.get("output") or "")
+                evidence.append({"probe": "display startup", "matched": bool(package and package in output.casefold())})
+                if package and package in output.casefold():
+                    return ReconcileResult(ReconcileClassification.SUCCESS, {"output": output}, tuple(evidence))
+                return ReconcileResult(ReconcileClassification.INDETERMINATE, {"output": output}, tuple(evidence))
+            if self.id.endswith("rollback"):
+                expected = package_basename(str(_previous_startup(run).get("current_system") or ""))
+                step = WorkflowStep("reconcile", kind="device", action="verify", params={"commands": ("display startup",)})
+                data = await self._execution.execute(target, step, context=_control_context(run, action))
+                output = str(data.get("output") or "")
+                matched = bool(expected and expected in output.casefold())
+                evidence.append({"probe": "display startup", "expected_current_system": expected, "matched": matched})
+                if matched:
+                    return ReconcileResult(ReconcileClassification.SUCCESS, {"output": output}, tuple(evidence))
+                return ReconcileResult(ReconcileClassification.INDETERMINATE, {"output": output}, tuple(evidence))
+        except (ApplicationError, OSError, DeviceWorkflowExecutionError, KeyError) as exc:
+            evidence.append({"error": str(exc), "error_code": getattr(exc, "code", "reconcile_failed")})
+        return ReconcileResult(ReconcileClassification.INDETERMINATE, {}, tuple(evidence))
+
+
+def build_device_action_registry(execution: DeviceExecutionTool, adapters: AdapterRegistry, transfers: Any = None) -> ActionRegistry:
+    registry = ActionRegistry()
+    handler = DeviceExecutionActionHandler(execution, adapters, transfers)
+    for operation in (
+        "device.probe", "file.session.login", "file.transfer", "device.verify",
+        "huawei.storage.cleanup", "huawei.storage.sync",
+        "huawei.startup.configure", "device.reboot", "device.wait_online", "huawei.startup.rollback",
+    ):
+        registry.register(handler, item_id=operation)
+    return registry
+
+
+def build_device_reconcile_registry(execution: DeviceExecutionTool, control: DeviceControlService) -> ReconcileRegistry:
+    registry = ReconcileRegistry()
+    for provider_id in (
+        "huawei.reconcile.ftp_login", "huawei.reconcile.transfer", "huawei.reconcile.startup",
+        "huawei.reconcile.reboot", "huawei.reconcile.online", "huawei.reconcile.rollback",
+    ):
+        registry.register(DeviceReconcileProvider(provider_id, execution, control), item_id=provider_id)
+    return registry
+
+
+def _target_for_run(run: WorkflowRun) -> DeviceTarget:
+    target = run.context.get("target")
+    target_dict = target if isinstance(target, dict) else {}
+    return DeviceTarget(
+        device_id=str(target_dict.get("device_id") or run.device_id),
+        session_id=str(target_dict.get("session_id") or run.context.get("session_id") or ""),
+        protocol=str(target_dict.get("protocol") or run.context.get("protocol") or "auto"),
+    )
+
+
+def _control_context(run: WorkflowRun, action: ActionSpec) -> ControlContext:
+    return ControlContext(
+        source="framework.reconcile",
+        task_id=run.id,
+        step_id=action.id,
+        lease_token=str(run.context.get("lease_token") or ""),
+    )
+
+
+def _probe_commands(
+    probes: Any,
+    *,
+    master_storage: str = DEFAULT_MASTER_STORAGE,
+    slave_storage: str = DEFAULT_SLAVE_STORAGE,
+) -> tuple[str, ...]:
+    commands: list[str] = []
+    for probe in probes if isinstance(probes, (tuple, list)) else ():
+        normalized = str(probe).casefold()
+        probe_commands = {
+            "version": ("display version",),
+            "startup": ("display startup",),
+            "storage": (f"dir {master_storage}", f"dir {slave_storage}"),
+        }.get(normalized, ())
+        for command in probe_commands:
+            if command and command not in commands:
+                commands.append(command)
+    return tuple(commands or ("display version",))
+
+
+def _extract_storage_output(output: str, storage: str) -> str:
+    """Keep standby classification scoped to its own directory response."""
+    marker = f"directory of {storage.rstrip('/')}".casefold()
+    lowered = output.casefold()
+    start = lowered.find(marker)
+    if start < 0:
+        return ""
+    next_directory = lowered.find("directory of ", start + len(marker))
+    return output[start:next_directory if next_directory >= 0 else None]
+
+
+def _ftp_login_steps(params: dict[str, Any]) -> list[dict[str, Any]]:
+    host = str(params.get("server_host") or params.get("ftp_host") or "").strip()
+    if not host:
+        raise DeviceWorkflowExecutionError("ftp_host_required", "FTP login requires server_host or ftp_host.")
+    port = int(params.get("server_port") or params.get("ftp_port") or 21)
+    return [
+        {"type": "send", "text": f"ftp {host} {port}", "label": "open ftp session"},
+        {
+            "type": "expect",
+            "success": ["ftp_prompt"],
+            "failures": [
+                "530 ",
+                "421 ",
+                "Login incorrect",
+                "Authentication failed",
+                "Permission denied",
+            ],
+            "responses": [
+                {"match": "username_prompt", "secret_ref": "file_transfer.username"},
+                {"match": "password_prompt", "secret_ref": "file_transfer.password"},
+            ],
+            "timeout_seconds": 30,
+            "label": "authenticate ftp session",
+        },
+        {"type": "send", "text": "quit", "label": "close ftp probe session"},
+        {
+            "type": "expect",
+            "success": ["device_prompt"],
+            "timeout_seconds": 15,
+            "label": "return to device prompt",
+        },
+    ]
+
+
+def _interactive_command_steps(
+    commands: tuple[str, ...],
+    *,
+    allow_confirmation: bool = False,
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for command in commands:
+        if not str(command).strip():
+            continue
+        steps.append({"type": "send", "text": str(command), "label": str(command)})
+        steps.append({
+            "type": "expect",
+            "success": ["device_prompt"],
+            "failures": [],
+            "responses": (
+                [{"match": "confirmation_prompt", "text": "y", "max_matches": 3}]
+                if allow_confirmation
+                else []
+            ),
+            "timeout_seconds": 90,
+            "label": f"等待 {command}",
+        })
+    return steps
+
+
+def _last_operation_id(run: WorkflowRun, action_id: str) -> str:
+    for attempt in reversed(run.attempts):
+        if attempt.action_id != action_id:
+            continue
+        result = attempt.result
+        direct = str(result.get("operation_id") or "").strip()
+        if direct:
+            return direct
+        nested = result.get("data")
+        if isinstance(nested, dict):
+            return str(nested.get("operation_id") or "").strip()
+    return ""
+
+
+def _previous_startup(run: WorkflowRun) -> dict[str, Any]:
+    facts = run.context.get("action.precheck.facts")
+    if not isinstance(facts, dict):
+        return {}
+    startup = facts.get("startup")
+    return dict(startup) if isinstance(startup, dict) else {}
+
+
+__all__ = [
+    "DeviceExecutionActionHandler",
+    "DeviceReconcileProvider",
+    "build_device_action_registry",
+    "build_device_reconcile_registry",
+]

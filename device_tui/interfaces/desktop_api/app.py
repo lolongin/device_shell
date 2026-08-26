@@ -56,6 +56,8 @@ from device_tui.application import (
     WorkflowCatalogError,
     WorkflowCatalog,
     WorkflowTarget,
+    WorkflowRuntime,
+    DecisionSubmission,
     ProfileEndpoint,
     redact_command_secrets,
     build_desktop_application,
@@ -80,6 +82,7 @@ from device_tui.domain.devices.repository import (
 )
 from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
 from device_tui.infrastructure.persistence.sqlite_settings import SQLiteSettingsStore
+from device_tui.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowEventStore, SQLiteWorkflowRunStore
 from device_tui.interfaces.mcp.core import AppControlError
 from .models import (
     DeviceListResponse,
@@ -772,6 +775,7 @@ def create_app(
     product_mode: str | None = None,
     product_source: str | None = None,
     workflow_catalog: WorkflowCatalog | None = None,
+    framework_runtime: WorkflowRuntime | None = None,
 ) -> FastAPI:
     access_token = token if token is not None else os.getenv("DEVICE_TUI_DESKTOP_TOKEN", "")
     data_root = Path(
@@ -917,6 +921,17 @@ def create_app(
         transfer_root=transfer_root,
         task_store=desktop_store,
         workflow_catalog=workflow_catalog,
+        workflow_runtime=framework_runtime,
+        framework_run_store=(
+            SQLiteWorkflowRunStore(data_root / "device-tui.sqlite3")
+            if production_defaults and framework_runtime is None
+            else None
+        ),
+        framework_event_store=(
+            SQLiteWorkflowEventStore(data_root / "device-tui.sqlite3")
+            if production_defaults and framework_runtime is None
+            else None
+        ),
     )
     _attempt_internal_auto_login(
         repo,
@@ -1131,6 +1146,105 @@ def create_app(
     @app.get("/api/v1/workflows", dependencies=[Depends(authorize)])
     async def workflow_catalog() -> dict[str, object]:
         return {"workflows": [item.public_dict() for item in desktop.workflows.list()]}
+
+    @app.get("/api/v1/framework/workflows", dependencies=[Depends(authorize)])
+    async def framework_workflow_catalog() -> dict[str, object]:
+        return {
+            "workflows": [
+                {
+                    "id": provider.id,
+                    "version": provider.version,
+                    "capabilities": sorted(
+                        desktop.framework_workflows.build(
+                            provider.id,
+                            {"package_ref": "<artifact>", "expected_version": "<version>"},
+                        ).required_capabilities
+                    )
+                    if provider.id == "network.package_upgrade"
+                    else [],
+                }
+                for provider in desktop.framework_workflows.list()
+            ]
+        }
+
+    @app.post("/api/v1/framework/workflows/{workflow_id}/preview", dependencies=[Depends(authorize)])
+    async def framework_workflow_preview(workflow_id: str, request: dict[str, object]) -> dict[str, object]:
+        try:
+            definition = desktop.framework_workflows.build(workflow_id, dict(request))
+        except (KeyError, ValueError) as exc:
+            raise UnsupportedOperationError(str(exc)) from exc
+        return {"workflow": definition.to_dict()}
+
+    @app.post("/api/v1/framework/runs", dependencies=[Depends(authorize)])
+    async def framework_run_create(request: dict[str, object]) -> dict[str, object]:
+        workflow_id = str(request.get("workflow_id") or "").strip()
+        device_id = str(request.get("device_id") or "").strip()
+        if not workflow_id or not device_id:
+            raise UnsupportedOperationError("workflow_id and device_id are required")
+        try:
+            definition = desktop.framework_workflows.build(workflow_id, dict(request.get("inputs") or {}))
+            run = desktop.workflow_runtime.start(
+                definition,
+                device_id=device_id,
+                context={
+                    **dict(request.get("context") or {}),
+                    "target": {
+                        "device_id": device_id,
+                        "session_id": str(request.get("session_id") or ""),
+                        "protocol": str(request.get("protocol") or "auto"),
+                    },
+                },
+                run_id=str(request.get("run_id") or "") or None,
+            )
+        except (KeyError, ValueError) as exc:
+            raise UnsupportedOperationError(str(exc)) from exc
+        return {"run": run.to_dict()}
+
+    @app.get("/api/v1/framework/runs/{run_id}", dependencies=[Depends(authorize)])
+    async def framework_run_get(run_id: str) -> dict[str, object]:
+        try:
+            return {"run": desktop.workflow_runtime.runs.get(run_id).to_dict()}
+        except KeyError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+
+    @app.get("/api/v1/framework/runs/{run_id}/events", dependencies=[Depends(authorize)])
+    async def framework_run_events(run_id: str, after_sequence: int = Query(default=0, ge=0)) -> dict[str, object]:
+        try:
+            desktop.workflow_runtime.runs.get(run_id)
+        except KeyError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+        return {"events": [event.to_dict() for event in desktop.workflow_runtime.events.list(run_id, after_sequence=after_sequence)]}
+
+    @app.post("/api/v1/framework/runs/{run_id}/tick", dependencies=[Depends(authorize)])
+    async def framework_run_tick(run_id: str) -> dict[str, object]:
+        try:
+            return {"run": (await desktop.workflow_runtime.tick(run_id)).to_dict()}
+        except KeyError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+
+    @app.post("/api/v1/framework/runs/{run_id}/reconcile", dependencies=[Depends(authorize)])
+    async def framework_run_reconcile(run_id: str, request: dict[str, object] | None = None) -> dict[str, object]:
+        try:
+            return {"run": (await desktop.workflow_runtime.reconcile(run_id, str((request or {}).get("reason") or "api_request"))).to_dict()}
+        except KeyError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+
+    @app.post("/api/v1/framework/runs/{run_id}/decision", dependencies=[Depends(authorize)])
+    async def framework_run_decision(run_id: str, request: dict[str, object]) -> dict[str, object]:
+        try:
+            submission = DecisionSubmission(
+                decision_point_id=str(request.get("decision_point_id") or ""),
+                expected_revision=int(request.get("expected_revision") or 0),
+                option_id=str(request.get("option_id") or ""),
+                actor_type=str(request.get("actor_type") or "human"),
+                actor_id=str(request.get("actor_id") or ""),
+                inputs=dict(request.get("inputs") or {}),
+                reason=str(request.get("reason") or ""),
+                idempotency_key=str(request.get("idempotency_key") or ""),
+            )
+            return {"run": desktop.workflow_runtime.apply_decision(run_id, submission).to_dict()}
+        except (KeyError, ValueError) as exc:
+            raise UnsupportedOperationError(str(exc)) from exc
 
     @app.get("/api/v1/tasks", response_model=TaskListResponse, dependencies=[Depends(authorize)])
     async def task_list(limit: int = Query(default=200, ge=1, le=500)) -> TaskListResponse:

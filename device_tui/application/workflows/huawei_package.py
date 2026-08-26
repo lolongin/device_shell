@@ -1,0 +1,349 @@
+"""Huawei VRP package replacement as a framework Workflow Provider.
+
+The provider declares business states and recovery options.  Huawei command
+syntax stays in the device adapter/legacy upgrade driver and is not used by
+the generic runtime.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from .events import Event
+from .models import ActionSpec, Expectation, InteractionPolicy, Option, ReconcilePolicy, RetryPolicy, StateNode, WorkflowDefinition
+
+
+class HuaweiVrpPackageUpgradeProvider:
+    id = "network.package_upgrade"
+    version = "1"
+
+    def build(self, inputs: dict[str, Any]) -> WorkflowDefinition:
+        package = str(inputs.get("package_ref") or "").strip()
+        expected_version = str(inputs.get("expected_version") or "").strip()
+        activation_policy = str(inputs.get("activation_policy") or "reboot").casefold()
+        package_source = str(inputs.get("package_source") or "local").casefold()
+        topology_policy = str(inputs.get("topology_policy") or "auto").casefold()
+        cleanup_policy = str(inputs.get("cleanup_policy") or "never").casefold()
+        recovery_protocol = str(inputs.get("recovery_protocol") or "same").casefold()
+        if not package:
+            raise ValueError("package_ref is required")
+        if activation_policy not in {"stage_only", "reboot"}:
+            raise ValueError("activation_policy must be stage_only or reboot")
+        if package_source not in {"local", "device"}:
+            raise ValueError("package_source must be local or device")
+        if topology_policy not in {"auto", "single", "required"}:
+            raise ValueError("topology_policy must be auto, single, or required")
+        if cleanup_policy not in {"never", "auto"}:
+            raise ValueError("cleanup_policy must be never or auto")
+        if recovery_protocol not in {"", "same", "auto", "ssh", "telnet", "serial"}:
+            raise ValueError("recovery_protocol must be same, auto, ssh, telnet, or serial")
+        retry = RetryPolicy(max_attempts=2, retryable_classes=("transient", "timeout", "connection"))
+        retry_three = RetryPolicy(max_attempts=3, retryable_classes=("transient", "timeout", "connection"))
+        transfer_options = (
+            Option("retry_transfer", "retry", "重试传输", "先按 Reconcile 结果确认没有完整文件。"),
+            Option("reconnect_transfer", "reconnect", "重连后重试", "重建 FTP 子会话后重新确认文件状态。"),
+            Option("abort_transfer", "abort", "终止流程", risk="high", requires_reason=True),
+        )
+        verification_options = (
+            Option("retry_verify", "retry", "重新校验"),
+            Option("rollback", "rollback", "回滚到升级前版本", risk="critical", allowed_actors=("human", "rule"), requires_reason=True, next_state="rollback"),
+            Option("abort_verify", "abort", "终止流程", risk="high", requires_reason=True),
+        )
+        rollback_options = (
+            Option("retry_rollback", "retry", "重新尝试回滚", risk="critical", allowed_actors=("human", "rule"), requires_reason=True),
+            Option("abort_rollback", "abort", "终止流程", risk="critical", requires_reason=True),
+        )
+        storage_options = (
+            Option("retry_storage", "retry", "重试存储操作"),
+            Option("abort_storage", "abort", "终止流程", risk="high", requires_reason=True),
+        )
+        local_transfer = package_source == "local"
+        states = [
+            StateNode(
+                id="precheck",
+                action=ActionSpec(
+                    id="precheck",
+                    operation="device.probe",
+                    params={
+                        "probes": ("ping", "ssh", "cli", "version", "startup", "storage"),
+                        "package": package,
+                        "package_source": package_source,
+                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
+                        "slave_storage": str(inputs.get("slave_storage") or "slave#flash:/"),
+                    },
+                    expectations=(Expectation("huawei.cli.ready"), Expectation("huawei.device.facts.collected")),
+                    timeout_seconds=120,
+                ),
+                next_state="ftp_login" if local_transfer else "cleanup",
+            ),
+        ]
+        if local_transfer:
+            states.append(StateNode(
+                id="ftp_login",
+                action=ActionSpec(
+                    id="ftp_login",
+                    operation="file.session.login",
+                    params={
+                        "protocol": "ftp",
+                        "package": package,
+                        "package_source": package_source,
+                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
+                    },
+                    expectations=(Expectation("huawei.ftp.ready", timeout_seconds=30),),
+                    timeout_seconds=45,
+                    retry_policy=retry,
+                    reconcile=ReconcilePolicy(
+                        provider="huawei.reconcile.ftp_login",
+                        probes=("session", "cli"),
+                        on_classification={"confirmed_success": "continue", "confirmed_not_started": "retry"},
+                    ),
+                    interaction=InteractionPolicy(
+                        secret_refs=("file_transfer.username", "file_transfer.password"),
+                    ),
+                ),
+                next_state="cleanup",
+                decision_options=transfer_options,
+            ))
+        states.extend((
+            StateNode(
+                id="cleanup",
+                action=ActionSpec(
+                    id="cleanup",
+                    operation="huawei.storage.cleanup",
+                    params={
+                        "package": package,
+                        "package_source": package_source,
+                        "include_slave": topology_policy != "single",
+                        "standby_required": topology_policy == "required",
+                        "auto_delete_old_packages": cleanup_policy == "auto",
+                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
+                        "slave_storage": str(inputs.get("slave_storage") or "slave#flash:/"),
+                        "driver_id": str(inputs.get("driver_id") or "auto"),
+                    },
+                    expectations=(Expectation("huawei.storage.cleaned", timeout_seconds=120),),
+                    timeout_seconds=150,
+                    retry_policy=retry,
+                ),
+                next_state="transfer" if local_transfer else "verify_package",
+                decision_options=storage_options,
+            ),
+        ))
+        if local_transfer:
+            states.append(StateNode(
+                id="transfer",
+                action=ActionSpec(
+                    id="transfer",
+                    operation="file.transfer",
+                    params={
+                        "source": package,
+                        "package": package,
+                        "temporary_suffix": ".part",
+                        "package_source": package_source,
+                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
+                        "include_slave": topology_policy != "single",
+                        "standby_required": topology_policy == "required",
+                        "auto_delete_old_packages": cleanup_policy == "auto",
+                    },
+                    expectations=(
+                        Expectation("framework.action.sent", timeout_seconds=5),
+                        Expectation("huawei.transfer.started", timeout_seconds=60),
+                        Expectation("huawei.transfer.completed", timeout_seconds=3600, idle_timeout_seconds=90, progress=True),
+                    ),
+                    timeout_seconds=3600,
+                    retry_policy=retry,
+                    reconcile=ReconcilePolicy(
+                        provider="huawei.reconcile.transfer",
+                        probes=("dir", "size", "hash"),
+                        on_classification={"confirmed_success": "continue", "confirmed_not_started": "retry"},
+                    ),
+                ),
+                next_state="verify_package",
+                decision_options=transfer_options,
+            ))
+        states.extend((
+            StateNode(
+                id="verify_package",
+                action=ActionSpec(
+                    id="verify_package",
+                    operation="device.verify",
+                    params={"fact": "package", "expected": package},
+                    expectations=(Expectation("huawei.package.verified", timeout_seconds=60),),
+                    timeout_seconds=90,
+                ),
+                next_state="sync_standby",
+            ),
+            StateNode(
+                id="sync_standby",
+                action=ActionSpec(
+                    id="sync_standby",
+                    operation="huawei.storage.sync",
+                    params={
+                        "package": package,
+                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
+                        "slave_storage": str(inputs.get("slave_storage") or "slave#flash:/"),
+                        "driver_id": str(inputs.get("driver_id") or "auto"),
+                    },
+                    expectations=(Expectation("huawei.storage.synced", timeout_seconds=180),),
+                    timeout_seconds=210,
+                    retry_policy=retry,
+                ),
+                next_state="configure_startup",
+                decision_options=storage_options,
+            ),
+            StateNode(
+                id="configure_startup",
+                action=ActionSpec(
+                    id="configure_startup",
+                    operation="huawei.startup.configure",
+                    params={"package": package},
+                    expectations=(Expectation("huawei.startup.configured", timeout_seconds=90),),
+                    timeout_seconds=120,
+                    risk="high",
+                    reconcile=ReconcilePolicy(
+                        provider="huawei.reconcile.startup",
+                        probes=("startup",),
+                        on_classification={"confirmed_success": "continue"},
+                    ),
+                ),
+                next_state="reboot_approval" if activation_policy == "reboot" else "complete",
+                decision_options=verification_options,
+            ),
+        ))
+        if activation_policy == "reboot":
+            states.extend((
+                StateNode(
+                    id="reboot_approval",
+                    decision_options=(
+                        Option("approve_reboot", "continue", "批准重启", risk="critical", allowed_actors=("human", "rule"), next_state="reboot"),
+                        Option("abort_reboot", "abort", "终止流程", risk="critical", requires_reason=True),
+                    ),
+                ),
+                StateNode(
+                    id="reboot",
+                    action=ActionSpec(
+                        id="reboot",
+                        operation="device.reboot",
+                        expectations=(Expectation("huawei.reboot.started", timeout_seconds=30),),
+                        timeout_seconds=60,
+                        retry_policy=RetryPolicy(max_attempts=1),
+                        risk="critical",
+                        interaction=InteractionPolicy(confirmations={"confirmation_prompt": "y"}),
+                        reconcile=ReconcilePolicy(
+                            provider="huawei.reconcile.reboot",
+                            probes=("ping", "ssh", "cli"),
+                            on_classification={"confirmed_success": "continue", "confirmed_not_started": "retry"},
+                        ),
+                    ),
+                    next_state="wait_online",
+                    decision_options=(
+                        Option("retry_reboot", "retry", "重新执行重启", risk="critical", allowed_actors=("human", "rule"), requires_reason=True),
+                        Option("abort_reboot", "abort", "终止流程", risk="critical", requires_reason=True),
+                    ),
+                ),
+                StateNode(
+                    id="wait_online",
+                    action=ActionSpec(
+                        id="wait_online",
+                        operation="device.wait_online",
+                        params={"phases": ("ping", "ssh", "cli")},
+                        expectations=(Expectation("huawei.cli.ready", timeout_seconds=600),),
+                        timeout_seconds=600,
+                        retry_policy=retry_three,
+                        reconcile=ReconcilePolicy(provider="huawei.reconcile.online", probes=("ping", "ssh", "cli")),
+                    ),
+                    next_state="verify_version",
+                    decision_options=(
+                        Option("reconnect", "reconnect", "重连管理通道"),
+                        Option("abort_online", "abort", "终止流程", risk="high", requires_reason=True),
+                    ),
+                ),
+                StateNode(
+                    id="verify_version",
+                    action=ActionSpec(
+                        id="verify_version",
+                        operation="device.verify",
+                        params={"fact": "running_version", "expected": expected_version},
+                        expectations=(Expectation("huawei.version.match", timeout_seconds=90),),
+                        timeout_seconds=120,
+                    ),
+                    next_state="validation",
+                    decision_options=verification_options,
+                ),
+                StateNode(
+                    id="validation",
+                    action=ActionSpec(
+                        id="validation",
+                        operation="device.verify",
+                        params={"fact": "validation", "commands": tuple(inputs.get("validation_commands") or ("display version",))},
+                        expectations=(Expectation("huawei.validation.passed", timeout_seconds=90),),
+                        timeout_seconds=120,
+                    ),
+                    next_state="complete",
+                ),
+                StateNode(
+                    id="rollback",
+                    action=ActionSpec(
+                        id="rollback",
+                        operation="huawei.startup.rollback",
+                        params={"package": package, "rollback_source": "precheck.startup.current_system"},
+                        expectations=(Expectation("huawei.rollback.verified", timeout_seconds=600),),
+                        timeout_seconds=600,
+                        retry_policy=RetryPolicy(max_attempts=1),
+                        risk="critical",
+                        reconcile=ReconcilePolicy(
+                            provider="huawei.reconcile.rollback",
+                            probes=("startup", "version", "ping", "ssh", "cli"),
+                            on_classification={"confirmed_success": "continue"},
+                        ),
+                    ),
+                    next_state="complete",
+                    decision_options=rollback_options,
+                ),
+            ))
+        states.append(StateNode(id="complete", terminal=True))
+        return WorkflowDefinition(
+            id=self.id,
+            version=self.version,
+            start_state="precheck",
+            required_capabilities=("huawei.vrp", "file.transfer") + (("device.reboot",) if activation_policy == "reboot" else ()),
+            input_schema={
+                "type": "object",
+                "required": ["package_ref"],
+                "properties": {
+                    "package_ref": {"type": "string"},
+                    "expected_version": {"type": "string"},
+                    "activation_policy": {"type": "string", "enum": ["stage_only", "reboot"]},
+                },
+            },
+            metadata={"vendor": "Huawei", "platform": "VRP", "workflow_family": "package_upgrade"},
+            states=tuple(states),
+        )
+
+
+class HuaweiVrpWorkflowAdapter:
+    """Framework adapter facade over the existing Huawei VRP upgrade driver."""
+
+    id = "huawei-vrp"
+
+    def matches(self, facts: dict[str, Any]) -> bool:
+        identity = " ".join(str(facts.get(key, "")) for key in ("vendor", "model", "platform")).casefold()
+        return "huawei" in identity or "vrp" in identity
+
+    def capabilities(self) -> set[str]:
+        return {"huawei.vrp", "file.transfer", "device.reboot", "huawei.startup"}
+
+    def parse_output(self, output: str, *, run_id: str, action_id: str) -> tuple[Event, ...]:
+        events: list[Event] = []
+        patterns = (
+            (r"(?im)^\s*(?:ftp>|\[ftp\])\s*$", "huawei.ftp.ready", False),
+            (r"(?i)(?:transfer|download).{0,80}(?:start|begin)", "huawei.transfer.started", True),
+            (r"(?i)(?:transfer|download).{0,80}(?:complete|success|finished)", "huawei.transfer.completed", True),
+            (r"(?i)startup.{0,80}(?:success|configured|saved)", "huawei.startup.configured", False),
+            (r"(?i)(?:reboot|restart).{0,80}(?:start|system is rebooting)", "huawei.reboot.started", False),
+            (r"(?i)(?:version|software).{0,100}(?:match|expected)", "huawei.version.match", False),
+        )
+        for pattern, event_type, progress in patterns:
+            if re.search(pattern, output):
+                events.append(Event(type=event_type, run_id=run_id, action_id=action_id, source="huawei.parser", progress=progress))
+        return tuple(events)

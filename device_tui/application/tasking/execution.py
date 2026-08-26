@@ -132,16 +132,17 @@ class DeviceExecutionTool:
                 "recovery_protocol": recovery_protocol if recovery_protocol and recovery_protocol != "same" else view.protocol,
             }
         if action in {"command", "execute", "batch"}:
+            mode = str(params.get("mode") or "batch").casefold()
             commands = params.get("commands")
             if not isinstance(commands, (list, tuple)):
                 commands = (str(params.get("command") or ""),)
-            if not commands or not any(str(item).strip() for item in commands):
+            if mode != "interactive" and (not commands or not any(str(item).strip() for item in commands)):
                 raise UnsupportedOperationError("Command execution requires a non-empty command.")
             result = await self._control.execute(
                 target,
                 CommandRequest(
                     commands=tuple(str(item) for item in commands),
-                    mode=str(params.get("mode") or "batch"),
+                    mode=mode,
                     timeout_seconds=int(params.get("timeout_seconds") or 30),
                     total_timeout_seconds=params.get("total_timeout_seconds"),
                     max_output_chars=int(params.get("max_output_chars") or 16_384),

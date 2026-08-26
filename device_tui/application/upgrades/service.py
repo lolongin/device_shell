@@ -1,18 +1,15 @@
-"""Backend-owned package-upgrade workflow built on terminal plans."""
+"""Compatibility facade for the framework-backed package-upgrade workflow."""
 
 from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
 import posixpath
 import re
 
 from device_tui.application.errors import (
-    ApplicationError,
     ApplicationConflictError,
-    PackageUpgradeError,
     ResourceNotFoundError,
     UnsupportedOperationError,
 )
@@ -23,39 +20,31 @@ from device_tui.application.operations import (
     TERMINAL_OPERATION_STATUSES,
 )
 from device_tui.application.sessions import SessionRecord, SessionService
-from device_tui.application.terminal.orchestration import TerminalPlanError, parse_terminal_plan
 from device_tui.application.transfers import (
     ManagedTransferService,
     PreparedTransferSource,
-    TerminalPlanExecutor,
 )
 from device_tui.application.upgrades.package import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
     PackageFileEntry,
     PackageUpgradeConfig,
-    STANDBY_STORAGE_ABSENT,
-    STANDBY_STORAGE_AVAILABLE,
     build_cleanup_plan,
-    classify_standby_storage,
-    dir_contains_package,
-    find_upgrade_failure,
-    generate_huawei_upgrade_plan,
-    join_storage_path,
+    package_basename,
     parse_dir_entries,
     parse_display_startup,
     parse_free_space_bytes,
-    startup_uses_package,
 )
 from device_tui.application.upgrades.drivers import (
     UpgradeDriver,
     UpgradeDriverRegistry,
     UpgradeTargetFacts,
 )
-from device_tui.infrastructure.transfers.managed_file_transfer import (
-    build_managed_transfer_steps,
-    source_fingerprint,
-)
+from device_tui.application.workflows.decisions import DecisionSubmission
+from device_tui.application.workflows.models import RunStatus
+from device_tui.application.workflows.runtime import WorkflowRuntime
+from device_tui.application.workflows.plugins import WorkflowRegistry
+from device_tui.application.workflows.models import WorkflowRun as FrameworkWorkflowRun
 
 
 MANUAL_PASSWORD_PLACEHOLDER = "{{file_transfer.password}}"
@@ -82,18 +71,27 @@ class PackageUpgradeService:
         sessions: SessionService,
         operations: OperationManager,
         transfers: ManagedTransferService,
-        terminal_executor: TerminalPlanExecutor,
         devices: DeviceService | None = None,
         drivers: UpgradeDriverRegistry | None = None,
     ) -> None:
         self._sessions = sessions
         self._operations = operations
         self._transfers = transfers
-        self._executor = terminal_executor
         self._devices = devices
         self._drivers = drivers or UpgradeDriverRegistry()
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._reboot_approvals: dict[str, asyncio.Event] = {}
+        self._framework_runtime: WorkflowRuntime | None = None
+        self._framework_workflows: WorkflowRegistry | None = None
+
+    def bind_framework(
+        self,
+        runtime: WorkflowRuntime,
+        workflows: WorkflowRegistry,
+    ) -> None:
+        """Attach the canonical workflow engine used by compatibility APIs."""
+
+        self._framework_runtime = runtime
+        self._framework_workflows = workflows
 
     def start(
         self,
@@ -150,14 +148,46 @@ class PackageUpgradeService:
                 "driver_name": driver.display_name,
             },
         )
+        if self._framework_runtime is None or self._framework_workflows is None:
+            raise UnsupportedOperationError("The workflow framework is not configured.")
+        workflow_inputs = {
+                "package_ref": source.relative_path if source is not None else package_path,
+                "package_source": package_source,
+                "activation_policy": "reboot" if reboot_after_setting else "stage_only",
+                "topology_policy": (
+                    "required" if standby_required else "single" if not include_slave else "auto"
+                ),
+                "cleanup_policy": "auto" if auto_delete_old_packages else "never",
+                "recovery_protocol": "same",
+                "master_storage": primary_storage,
+                "slave_storage": standby_storage,
+                "driver_id": driver.id,
+            }
+        definition = self._framework_workflows.build("network.package_upgrade", workflow_inputs)
+        run = self._framework_runtime.start(
+            definition,
+            device_id=session.device_id,
+            run_id=record.id,
+            context={
+                "target": {
+                    "device_id": session.device_id,
+                    "session_id": session.id,
+                    "protocol": "auto",
+                },
+                "session_id": session.id,
+                "package_source": package_source,
+                "workflow_inputs": workflow_inputs,
+            },
+        )
+        self._project_framework_run(record.id, run)
         task = asyncio.create_task(
-            self._run(record.id, session, source),
-            name=f"package-upgrade-{record.id}",
+            self._run_framework(record.id),
+            name=f"package-upgrade-framework-{record.id}",
         )
         self._tasks[record.id] = task
         self._operations.register_canceller(
             record.id,
-            lambda: self._cancel_task(record.id, session.id),
+            lambda: self._cancel_framework_task(record.id, session.id),
         )
         return self._operations.get(record.id)
 
@@ -165,19 +195,180 @@ class PackageUpgradeService:
         record = self._operations.get(operation_id)
         if record.kind != "package_upgrade":
             raise UnsupportedOperationError("The operation is not a package upgrade.")
-        approval = self._reboot_approvals.get(operation_id)
-        if record.status != "waiting_approval" or approval is None:
+        if self._framework_runtime is None:
+            raise UnsupportedOperationError("The workflow framework is not configured.")
+        run = self._framework_runtime.runs.get(operation_id)
+        point = run.decision_point
+        option = next((item for item in point.options if item.id == "approve_reboot"), None) if point else None
+        if record.status != "waiting_approval" or point is None or option is None:
             raise ApplicationConflictError("The package upgrade is not waiting for reboot approval.")
-        updated = self._operations.update(
+        updated_run = self._framework_runtime.apply_decision(
             operation_id,
-            status="running",
-            stage="rebooting",
-            message="重启已批准，正在等待设备重新进入可交互状态。",
-            progress_percent=96,
-            stage_actions=["发送 reboot", "等待设备重新进入可交互状态"],
+            DecisionSubmission(
+                decision_point_id=point.id,
+                expected_revision=run.revision,
+                option_id=option.id,
+                actor_type="human",
+                actor_id="compatibility-api",
+            ),
         )
-        approval.set()
-        return updated
+        self._project_framework_run(operation_id, updated_run)
+        if str(updated_run.status) in {RunStatus.RUNNING.value, RunStatus.RECOVERING.value} and operation_id not in self._tasks:
+            self._tasks[operation_id] = asyncio.create_task(
+                self._run_framework(operation_id),
+                name=f"package-upgrade-framework-{operation_id}-approval",
+            )
+        return self._operations.get(operation_id)
+
+    async def _run_framework(self, operation_id: str) -> None:
+        """Drive the canonical runtime and keep the legacy operation view current."""
+
+        if self._framework_runtime is None:
+            return
+        try:
+            await self._framework_runtime.run_until_blocked(
+                operation_id,
+                on_update=lambda run: self._project_framework_run(operation_id, run),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            record = self._operations.get(operation_id)
+            if record.status not in TERMINAL_OPERATION_STATUSES:
+                self._operations.update(
+                    operation_id,
+                    status="failed",
+                    message=str(exc),
+                    error_code=getattr(exc, "code", "package_upgrade_framework_failed"),
+                )
+        finally:
+            self._tasks.pop(operation_id, None)
+
+    def _cancel_framework_task(self, operation_id: str, session_id: str) -> None:
+        del session_id
+        if self._framework_runtime is not None:
+            self._framework_runtime.cancel(operation_id)
+            self._project_framework_run(operation_id, self._framework_runtime.runs.get(operation_id))
+        task = self._tasks.get(operation_id)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _project_framework_run(self, operation_id: str, run: FrameworkWorkflowRun) -> None:
+        record = self._operations.get(operation_id)
+        if record.status in TERMINAL_OPERATION_STATUSES and str(run.status) not in {RunStatus.SUCCEEDED.value}:
+            return
+        state = str(run.current_state or "")
+        activation = str(run.context.get("workflow_inputs", {}).get("activation_policy") or "stage_only")
+        stage = {
+            "precheck": "prechecking",
+            "ftp_login": "prechecking",
+            "cleanup": "cleanup",
+            "transfer": "downloading",
+            "verify_package": "verifying",
+            "sync_standby": "synchronizing",
+            "configure_startup": "setting_startup",
+            "reboot_approval": "reboot_approval",
+            "reboot": "rebooting",
+            "wait_online": "waiting_online",
+            "verify_version": "verifying_version",
+            "validation": "validating",
+            "rollback": "rollback",
+            "complete": "completed" if activation == "reboot" else "staged",
+        }.get(state, state or record.stage)
+        status = {
+            RunStatus.RUNNING.value: "running",
+            RunStatus.RECOVERING.value: "running",
+            RunStatus.WAITING_RECONCILE.value: "running",
+            RunStatus.WAITING_DECISION.value: "waiting_approval" if state == "reboot_approval" else "waiting_decision",
+            RunStatus.SUCCEEDED.value: "completed" if activation == "reboot" else "staged",
+            RunStatus.FAILED.value: "failed",
+            RunStatus.CANCELLED.value: "cancelled",
+        }.get(str(run.status), "running")
+        facts = self._framework_facts(run)
+        data = {
+            "workflow_id": run.workflow_id,
+            "workflow_version": run.workflow_version,
+            "framework_run_id": run.id,
+            "package_source": run.context.get("workflow_inputs", {}).get("package_source", "local"),
+            "include_slave": facts.get("include_slave", run.context.get("workflow_inputs", {}).get("topology_policy") != "single"),
+            "topology_detection": facts.get("topology_detection", {}),
+            "reboot_required": activation == "stage_only" or state in {"reboot_approval", "reboot", "wait_online", "verify_version", "validation"},
+            "framework_state": state,
+            "framework_revision": run.revision,
+        }
+        if str(run.status) == RunStatus.SUCCEEDED.value:
+            data["reboot_required"] = False if activation == "reboot" else True
+        error = run.error or {}
+        message = (
+            "系统包已核对并设为下次启动项，尚未重启激活。" if status == "staged" else
+            "系统包升级完成，设备已重新进入可交互状态。" if status == "completed" else
+            "系统包和启动项已确认，等待人工批准重启。" if status == "waiting_approval" else
+            str(error.get("message") or "系统包升级正在执行。")
+        )
+        actions = self._framework_stage_actions(stage, run)
+        self._operations.update(
+            operation_id,
+            status=status,
+            stage=stage,
+            message=message,
+            progress_percent=self._framework_progress(state, status),
+            error_code=str(error.get("code") or "") if status == "failed" else "",
+            stage_actions=actions,
+            data=data,
+        )
+
+    @staticmethod
+    def _framework_stage_actions(stage: str, run: FrameworkWorkflowRun) -> list[str]:
+        inputs = run.context.get("workflow_inputs")
+        values = inputs if isinstance(inputs, dict) else {}
+        package = str(values.get("package_ref") or "<package>")
+        master = str(values.get("master_storage") or "flash:/")
+        slave = str(values.get("slave_storage") or "slave#flash:/")
+        return {
+            "prechecking": [
+                "screen-length 0 temporary",
+                "display startup",
+                f"dir {master}",
+                f"dir {slave}（检查备控存储）",
+            ],
+            "cleanup": ["根据预检结果清理未使用旧系统包"],
+            "downloading": [f"下载 {package}"],
+            "verifying": [f"dir {master}{package_basename(package)}（核对系统包）"],
+            "synchronizing": [f"copy {master}{package_basename(package)} {slave}{package_basename(package)}"],
+            "setting_startup": [f"startup system-software {master}{package_basename(package)}"],
+            "rebooting": ["发送 reboot", "等待设备重新进入可交互状态"],
+            "waiting_online": ["确认设备重新上线"],
+            "verifying_version": ["display version"],
+            "validating": ["执行升级后校验"],
+            "rollback": ["恢复升级前启动项"],
+        }.get(stage, [])
+
+    @staticmethod
+    def _framework_facts(run: FrameworkWorkflowRun) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for attempt in run.attempts:
+            if str(attempt.status) != "succeeded":
+                continue
+            facts = dict(attempt.result or {})
+            nested = facts.get("data")
+            if isinstance(nested, dict):
+                result.update(nested)
+            result.update({key: value for key, value in facts.items() if key in {"include_slave", "topology_detection"}})
+        precheck = run.context.get("action.precheck.facts")
+        if isinstance(precheck, dict):
+            result.update({key: value for key, value in precheck.items() if key in {"include_slave", "topology_detection"}})
+        return result
+
+    @staticmethod
+    def _framework_progress(state: str, status: str) -> int:
+        if status in {"completed", "staged"}:
+            return 100 if status == "completed" else 90
+        return {
+            "precheck": 5, "ftp_login": 8, "cleanup": 20, "transfer": 55,
+            "verify_package": 65, "sync_standby": 75, "configure_startup": 90,
+            "reboot_approval": 95, "reboot": 96, "wait_online": 98,
+            "verify_version": 99, "validation": 99, "rollback": 95,
+        }.get(state, 0)
 
     def cancel(self, operation_id: str) -> OperationRecord:
         return self._operations.cancel(operation_id)
@@ -381,622 +572,6 @@ class PackageUpgradeService:
             )
         return session
 
-    async def _run(
-        self,
-        operation_id: str,
-        session: SessionRecord,
-        initial_source: PreparedTransferSource | None,
-    ) -> None:
-        owner_id = f"package-upgrade:{operation_id}"
-        acquired = False
-        try:
-            driver = self._drivers.get(str(self._operations.get(operation_id).data["driver_id"]))
-            self._executor.acquire(
-                session.id,
-                owner_id,
-                on_cancel=lambda: self._cancel_task(operation_id, session.id),
-            )
-            acquired = True
-            record = self._operations.update(
-                operation_id,
-                stage="prechecking",
-                message="正在读取启动项、主控和备控存储。",
-                progress_percent=5,
-                stage_actions=[
-                    driver.disable_paging_command(),
-                    driver.startup_query_command(),
-                    driver.storage_query_command(str(self._operations.get(operation_id).data["master_storage"])),
-                    f'{driver.storage_query_command(str(self._operations.get(operation_id).data["slave_storage"]))}（检查备控存储）',
-                ],
-            )
-            await self._command(session, owner_id, driver.disable_paging_command(), driver=driver)
-            startup_output = await self._command(session, owner_id, driver.startup_query_command(), driver=driver)
-            master_storage = str(record.data["master_storage"])
-            slave_storage = str(record.data["slave_storage"])
-            master_output = await self._command(
-                session,
-                owner_id,
-                driver.storage_query_command(master_storage),
-                driver=driver,
-            )
-            include_slave = bool(record.data["include_slave"])
-            slave_output = ""
-            topology_policy = str(record.data.get("topology_policy") or ("auto" if include_slave else "single"))
-            topology_detection: dict[str, object] = {
-                "policy": topology_policy,
-                "master_storage": master_storage,
-                "standby_storage": slave_storage,
-                "standby_status": "not_requested" if not include_slave else "indeterminate",
-                "include_slave": include_slave,
-                "decision": "single_controller_policy" if not include_slave else "pending",
-            }
-            if include_slave:
-                slave_output = await self._command(
-                    session,
-                    owner_id,
-                    driver.storage_query_command(slave_storage),
-                    allow_failure_output=True,
-                    driver=driver,
-                )
-                standby = driver.classify_standby(slave_output, slave_storage)
-                topology_detection["standby_status"] = standby
-                if standby == STANDBY_STORAGE_ABSENT:
-                    if bool(record.data.get("standby_required", False)):
-                        topology_detection["decision"] = "required_but_absent"
-                        self._operations.update(operation_id, data={"topology_detection": topology_detection})
-                        raise _UpgradeRunError(
-                            "standby_storage_required",
-                            "升级策略要求备控，但设备未检测到备控存储。",
-                        )
-                    include_slave = False
-                    topology_detection["include_slave"] = False
-                    topology_detection["decision"] = "auto_downgrade_to_single_controller"
-                elif standby != STANDBY_STORAGE_AVAILABLE:
-                    topology_detection["decision"] = "indeterminate_stop"
-                    self._operations.update(operation_id, data={"topology_detection": topology_detection})
-                    raise _UpgradeRunError(
-                        "standby_storage_indeterminate",
-                        "无法确认备控存储是否存在，升级已停止。",
-                    )
-                else:
-                    topology_detection["decision"] = "dual_controller"
-            self._operations.update(
-                operation_id,
-                message=(
-                    "已识别主备双控，执行主控与备控同步。"
-                    if topology_detection["decision"] == "dual_controller"
-                    else "未检测到备控，自动按单主控执行。"
-                    if topology_detection["decision"] == "auto_downgrade_to_single_controller"
-                    else "按策略仅检查并升级主控。"
-                    if topology_detection["decision"] == "single_controller_policy"
-                    else None
-                ),
-                data={
-                    "topology_detection": topology_detection,
-                    "include_slave": include_slave,
-                },
-            )
-            cleanup_paths = self._cleanup_paths(
-                package_name=str(record.data["package_name"]),
-                package_size=int(record.data.get("package_size") or 0),
-                startup_output=startup_output,
-                master_storage=master_storage,
-                master_output=master_output,
-                include_slave=include_slave,
-                slave_storage=slave_storage,
-                slave_output=slave_output,
-                auto_delete=bool(record.data["auto_delete_old_packages"]),
-                driver=driver,
-            )
-            if initial_source is not None and source_fingerprint(initial_source.path) != initial_source.fingerprint:
-                raise _UpgradeRunError("upgrade_source_changed", "预检期间本地系统包发生变化。")
-            self._operations.update(
-                operation_id,
-                stage="cleanup",
-                message=(
-                    f"正在安全删除 {len(cleanup_paths)} 个未使用旧包。"
-                    if cleanup_paths
-                    else "存储空间满足要求，无需删除旧包。"
-                ),
-                progress_percent=20,
-                stage_actions=(
-                    [driver.cleanup_command(path) for path in cleanup_paths]
-                    if cleanup_paths
-                    else ["无需删除旧包：可用空间满足要求"]
-                ),
-                data={
-                    "include_slave": include_slave,
-                    "cleanup_paths": cleanup_paths,
-                },
-            )
-            for cleanup_path in cleanup_paths:
-                await self._command(
-                    session,
-                    owner_id,
-                    driver.cleanup_command(cleanup_path),
-                    driver=driver,
-                )
-            package_name = str(record.data["package_name"])
-            package_size = int(record.data.get("package_size") or 0)
-            master_package = (
-                str(record.data["package_path"])
-                if str(record.data.get("package_source")) == "device"
-                else driver.package_path(master_storage, package_name)
-            )
-            if not driver.package_is_present(
-                master_output,
-                storage=master_storage,
-                package_name=package_name,
-                package_size=package_size,
-            ):
-                if initial_source is None:
-                    raise _UpgradeRunError("device_package_missing", f"设备主控未找到系统包 {master_package}，已跳过传包。")
-                await self._download(operation_id, session, owner_id, initial_source, master_package, driver)
-            else:
-                self._operations.update(
-                    operation_id,
-                    stage="verifying",
-                    message="主控已存在大小匹配的目标包，跳过下载。",
-                    progress_percent=62,
-                    stage_actions=[f"跳过下载：{driver.storage_query_command(master_package)} 已确认文件大小匹配"],
-                )
-            if initial_source is not None and source_fingerprint(initial_source.path) != initial_source.fingerprint:
-                raise _UpgradeRunError("upgrade_source_changed", "升级期间本地系统包发生变化。")
-            verified_master = await self._command(
-                session,
-                owner_id,
-                driver.storage_query_command(master_package),
-                driver=driver,
-            )
-            self._require_package(
-                verified_master,
-                master_storage,
-                package_name,
-                package_size,
-                "主控",
-                driver,
-            )
-            slave_package = driver.package_path(slave_storage, package_name)
-            if include_slave:
-                self._operations.update(
-                    operation_id,
-                    stage="synchronizing",
-                    message="正在同步并核对备控系统包。",
-                    progress_percent=72,
-                    stage_actions=[
-                        *driver.sync_commands(master_package, slave_package),
-                        f"{driver.storage_query_command(slave_package)}（核对备控文件大小）",
-                    ],
-                )
-                for command in driver.sync_commands(master_package, slave_package):
-                    await self._command(session, owner_id, command, timeout_seconds=90, driver=driver)
-                verified_slave = await self._command(
-                    session,
-                    owner_id,
-                    driver.storage_query_command(slave_package),
-                    driver=driver,
-                )
-                self._require_package(
-                    verified_slave,
-                    slave_storage,
-                    package_name,
-                    package_size,
-                    "备控",
-                    driver,
-                )
-            await self._set_startup(
-                operation_id,
-                session,
-                owner_id,
-                package_name,
-                master_package,
-                slave_package,
-                include_slave,
-                driver,
-            )
-            confirmed = await self._command(session, owner_id, driver.startup_query_command(), driver=driver)
-            if not driver.startup_uses_artifact(confirmed, package_name):
-                raise _UpgradeRunError(
-                    "startup_verification_failed",
-                    "最终 display startup 未确认目标包为下次启动系统包。",
-                )
-            record = self._operations.get(operation_id)
-            if not bool(record.data["reboot_after_setting"]):
-                self._operations.update(
-                    operation_id,
-                    status="staged",
-                    stage="staged",
-                    message="系统包已核对并设为下次启动项，尚未重启激活。",
-                    progress_percent=90,
-                    stage_actions=[
-                        "确认 display startup 已指向目标系统包",
-                        "不自动重启：等待业务窗口人工重启",
-                    ],
-                    data={"reboot_required": True},
-                )
-                return
-            approval = asyncio.Event()
-            self._reboot_approvals[operation_id] = approval
-            self._operations.update(
-                operation_id,
-                status="waiting_approval",
-                stage="reboot_approval",
-                message="系统包和启动项已确认，等待人工批准重启。",
-                progress_percent=95,
-                stage_actions=["等待人工批准 reboot"],
-                data={"reboot_required": True},
-            )
-            await approval.wait()
-            await self._reboot(session, owner_id, driver)
-            self._operations.update(
-                operation_id,
-                status="completed",
-                stage="completed",
-                message="系统包升级完成，设备已重新进入可交互状态。",
-                progress_percent=100,
-                stage_actions=["reboot", "确认设备重新进入可交互状态"],
-                data={"reboot_required": False},
-            )
-        except asyncio.CancelledError:
-            self._mark_cancelled(operation_id)
-        except (ApplicationError, TerminalPlanError, OSError, _UpgradeRunError) as exc:
-            self._mark_failed(
-                operation_id,
-                getattr(exc, "code", "package_upgrade_failed"),
-                str(exc),
-                details=getattr(exc, "details", None),
-            )
-        finally:
-            self._reboot_approvals.pop(operation_id, None)
-            if acquired:
-                self._executor.release(session.id, owner_id)
-            self._tasks.pop(operation_id, None)
-
-    async def _download(
-        self,
-        operation_id: str,
-        session: SessionRecord,
-        owner_id: str,
-        source: PreparedTransferSource,
-        master_package: str,
-        driver: UpgradeDriver,
-    ) -> None:
-        prepared = await self._transfers.prepare_upload_source(
-            session,
-            source_path=source.relative_path,
-            destination_path=master_package,
-        )
-        steps, timeout = build_managed_transfer_steps(
-            protocol=prepared.protocol,
-            host=prepared.host,
-            port=prepared.port,
-            source_path=prepared.relative_path,
-            destination_path=master_package,
-            source_size=prepared.size_bytes,
-            profile=driver.transfer_profile(prepared.protocol),
-        )
-        self._operations.update(
-            operation_id,
-            stage="downloading",
-            message=f"正在通过 {prepared.protocol.upper()} 下载系统包到主控。",
-            progress_percent=38,
-            stage_actions=self._transfer_actions(steps),
-        )
-        result = await self._executor.run(
-            session_id=session.id,
-            device_id=session.device_id,
-            plan=parse_terminal_plan(steps, total_timeout_seconds=timeout),
-            owner_id=owner_id,
-        )
-        self._require_completed(result, "系统包下载")
-        self._operations.update(
-            operation_id,
-            stage="verifying",
-            message="系统包下载完成，正在核对主控文件大小。",
-            progress_percent=62,
-            stage_actions=[f"{driver.storage_query_command(master_package)}（核对主控文件大小）"],
-        )
-
-    @staticmethod
-    def _transfer_actions(steps: list[dict[str, object]]) -> list[str]:
-        """Expose safe transfer-plan labels without leaking credentials."""
-
-        actions: list[str] = []
-        for item in steps:
-            label = str(item.get("label") or "").strip()
-            if label and label not in actions:
-                actions.append(label)
-        return actions or ["执行文件传输计划"]
-
-    async def _set_startup(
-        self,
-        operation_id: str,
-        session: SessionRecord,
-        owner_id: str,
-        package_name: str,
-        master_package: str,
-        slave_package: str,
-        include_slave: bool,
-        driver: UpgradeDriver,
-    ) -> None:
-        primary_commands, fallback_commands = driver.activation_commands(
-            master_package,
-            slave_package,
-            include_slave,
-        )
-        self._operations.update(
-            operation_id,
-            stage="setting_startup",
-            message="正在设置并最终确认下次启动系统包。",
-            progress_percent=86,
-            stage_actions=[
-                *primary_commands,
-                f"{driver.startup_query_command()}（最终确认下次启动项）",
-            ],
-        )
-        output = ""
-        for command in primary_commands:
-            output = await self._command(
-                session,
-                owner_id,
-                command,
-                allow_failure_output=bool(fallback_commands),
-                allow_confirmation=True,
-                driver=driver,
-            )
-        failure = driver.failure_marker(output)
-        if not failure:
-            return
-        if not include_slave:
-            raise _UpgradeRunError(
-                "startup_command_failed",
-                f"设置启动项失败，设备输出包含: {failure}",
-            )
-        for command in fallback_commands:
-            await self._command(
-                session,
-                owner_id,
-                command,
-                allow_confirmation=True,
-                driver=driver,
-            )
-
-    async def _reboot(
-        self,
-        session: SessionRecord,
-        owner_id: str,
-        driver: UpgradeDriver,
-    ) -> None:
-        plan = parse_terminal_plan(
-            list(driver.reboot_plan_steps()),
-            total_timeout_seconds=190,
-        )
-        result = await self._executor.run(
-            session_id=session.id,
-            device_id=session.device_id,
-            plan=plan,
-            owner_id=owner_id,
-        )
-        self._require_completed(result, "设备重启")
-
-    async def _command(
-        self,
-        session: SessionRecord,
-        owner_id: str,
-        command: str,
-        *,
-        timeout_seconds: int = 30,
-        allow_failure_output: bool = False,
-        allow_confirmation: bool = False,
-        driver: UpgradeDriver | None = None,
-    ) -> str:
-        last_result: dict[str, object] = {}
-        for attempt in range(2):
-            plan = parse_terminal_plan(
-                [
-                    {"type": "send", "text": command, "label": command},
-                    {
-                        "type": "expect",
-                        "success": ["device_prompt"],
-                        "failures": [] if allow_failure_output else [
-                            "Error:",
-                            "failed",
-                            "Unrecognized command",
-                            "Unknown command",
-                        ],
-                        "timeout_seconds": timeout_seconds,
-                        "label": f"等待 {command}",
-                        "max_output_chars": 32_768,
-                        "responses": (
-                            [{"match": "confirmation_prompt", "text": "y", "max_matches": 1}]
-                            if allow_confirmation
-                            else []
-                        ),
-                        "timeout_code": (
-                            "startup_confirmation_timeout"
-                            if allow_confirmation
-                            else "step_timeout"
-                        ),
-                    },
-                ],
-                total_timeout_seconds=timeout_seconds + 5,
-            )
-            last_result = await self._executor.run(
-                session_id=session.id,
-                device_id=session.device_id,
-                plan=plan,
-                owner_id=owner_id,
-            )
-            if str(last_result.get("status") or "") == "completed":
-                output = self._result_output(last_result)
-                if not allow_failure_output:
-                    failure = driver.failure_marker(output) if driver is not None else find_upgrade_failure(output)
-                    if failure:
-                        raise _UpgradeRunError(
-                            "upgrade_command_failed",
-                            f"{command} 失败，设备输出包含: {failure}",
-                        )
-                return output
-            if attempt == 0 and str(last_result.get("status") or "") == "timed_out":
-                continue
-            break
-        self._require_completed(last_result, command)
-        return ""
-
-    def _cleanup_paths(
-        self,
-        *,
-        package_name: str,
-        package_size: int,
-        startup_output: str,
-        master_storage: str,
-        master_output: str,
-        include_slave: bool,
-        slave_storage: str,
-        slave_output: str,
-        auto_delete: bool,
-        driver: UpgradeDriver,
-    ) -> list[str]:
-        paths: list[str] = []
-        for label, storage, output in (
-            ("主控", master_storage, master_output),
-            ("备控", slave_storage, slave_output),
-        ):
-            if label == "备控" and not include_slave:
-                continue
-            plan = driver.cleanup_plan(
-                storage=storage,
-                output=output,
-                startup_output=startup_output,
-                package_name=package_name,
-                package_size=package_size,
-            )
-            if plan.free_bytes <= 0:
-                raise _UpgradeRunError(
-                    "storage_space_indeterminate",
-                    f"无法确认{label}剩余空间。",
-                )
-            if not plan.has_enough_space:
-                raise _UpgradeRunError(
-                    "insufficient_space",
-                    f"{label}清理后空间仍不足。",
-                )
-            if auto_delete:
-                paths.extend(plan.delete_paths)
-            elif plan.delete_paths:
-                raise _UpgradeRunError(
-                    "cleanup_required",
-                    f"{label}需要清理旧包，但自动删除已关闭。",
-                )
-        return paths
-
-    @staticmethod
-    def _require_package(
-        output: str,
-        storage: str,
-        package_name: str,
-        package_size: int,
-        label: str,
-        driver: UpgradeDriver,
-    ) -> None:
-        if not driver.package_is_present(
-            output,
-            storage=storage,
-            package_name=package_name,
-            package_size=package_size,
-        ):
-            raise _UpgradeRunError(
-                "package_verification_failed",
-                f"{label}未确认到目标系统包，或文件大小校验失败。",
-            )
-
-    @classmethod
-    def _require_completed(cls, result: dict[str, object], label: str) -> None:
-        status = str(result.get("status") or "")
-        if status == "completed":
-            return
-        if status in {"cancelled", "cancelled_by_user"}:
-            raise _UpgradeRunError("package_upgrade_cancelled", "系统包升级已取消。")
-        if status == "timed_out":
-            failed = result.get("failed_step")
-            details: dict[str, object] = {
-                "upgrade_code": "package_upgrade_timeout",
-                "terminal_status": status,
-                "terminal_error_code": result.get("error_code"),
-            }
-            if isinstance(failed, dict):
-                details["transfer_diagnostics"] = {
-                    "failed_step": failed.get("label"),
-                    "error_code": failed.get("error_code"),
-                    "last_output": failed.get("output"),
-                    "responses_sent": failed.get("responses_sent", []),
-                    "matched": failed.get("matched", ""),
-                }
-            raise _UpgradeRunError(
-                str(result.get("error_code") or "package_upgrade_timeout"),
-                str(result.get("message") or f"{label}超时。"),
-                details=details,
-            )
-        raise _UpgradeRunError(
-            "package_upgrade_command_failed",
-            str(result.get("message") or f"{label}失败。"),
-            details={"terminal_result": result},
-        )
-
-    @staticmethod
-    def _result_output(result: dict[str, object]) -> str:
-        return "".join(
-            str(step.get("output") or "")
-            for step in result.get("steps", [])
-            if isinstance(step, dict)
-        )
-
-    def _cancel_task(self, operation_id: str, session_id: str) -> None:
-        self._executor.cancel_active(session_id)
-        self._executor.release(session_id, f"package-upgrade:{operation_id}")
-        approval = self._reboot_approvals.get(operation_id)
-        if approval is not None:
-            approval.set()
-        task = self._tasks.get(operation_id)
-        if task is not None and not task.done():
-            task.cancel()
-        self._mark_cancelled(operation_id)
-
-    def _mark_cancelled(self, operation_id: str) -> None:
-        record = self._operations.get(operation_id)
-        if record.status in TERMINAL_OPERATION_STATUSES:
-            return
-        self._operations.update(
-            operation_id,
-            status="cancelled",
-            stage="cancelled",
-            message="系统包升级已取消。",
-            error_code="package_upgrade_cancelled",
-        )
-
-    def _mark_failed(
-        self,
-        operation_id: str,
-        code: str,
-        message: str,
-        *,
-        details: dict[str, object] | None = None,
-    ) -> None:
-        record = self._operations.get(operation_id)
-        if record.status in TERMINAL_OPERATION_STATUSES:
-            return
-        if code == "package_upgrade_cancelled":
-            self._mark_cancelled(operation_id)
-            return
-        self._operations.update(
-            operation_id,
-            status="failed",
-            stage=record.stage,
-            message=message,
-            error_code=code,
-            data=details or {},
-        )
-
     def _connected_session(self, session_id: str) -> SessionRecord:
         session = next(
             (item for item in self._sessions.list_sessions() if item.id == session_id),
@@ -1028,9 +603,3 @@ class PackageUpgradeService:
             raise UnsupportedOperationError(
                 f"设备 {facts.device_id} 没有可用的系统包升级驱动，请先配置对应厂商驱动。"
             ) from exc
-
-
-class _UpgradeRunError(PackageUpgradeError):
-    def __init__(self, code: str, message: str, *, details: dict[str, object] | None = None) -> None:
-        super().__init__(message, details={"upgrade_code": code, **(details or {})})
-        self.code = code

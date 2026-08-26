@@ -122,6 +122,13 @@ from .tasking import (
     PlanStore,
     MemoryPlanStore,
 )
+from .workflows import (
+    AdapterRegistry,
+    DecisionSubmission,
+    WorkflowRuntime,
+    build_default_adapter_registry,
+    build_default_workflow_registry,
+)
 
 __all__ = [
     "ApplicationError",
@@ -243,4 +250,9 @@ __all__ = [
     "WorkflowPlanCompiler",
     "PlanStore",
     "MemoryPlanStore",
+    "AdapterRegistry",
+    "DecisionSubmission",
+    "WorkflowRuntime",
+    "build_default_adapter_registry",
+    "build_default_workflow_registry",
 ]
