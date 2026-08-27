@@ -175,20 +175,40 @@ def _value_after_colon(line: str) -> str:
     return parts[-1] if parts else ""
 
 
-def parse_free_space_bytes(output: str) -> int:
-    """Parse free flash bytes from common Huawei ``dir`` output variants."""
+def find_free_space_bytes(output: str) -> int | None:
+    """Return confirmed free flash bytes, or ``None`` when output is unclear.
 
+    VRP releases do not use one stable footer format. Keep this parser scoped
+    to an already-selected directory response because a precheck may contain
+    both master and standby directory listings.
+    """
+
+    value = r"(?P<value>[\d,]+(?:\.\d+)?)"
+    unit = r"(?P<unit>字节|bytes?|[kmgt]i?b)"
     patterns = (
-        r"\((?P<value>[\d,]+)\s*(?P<unit>[kmgt]?b)\s+free\)",
-        r"(?P<value>[\d,]+)\s*(?P<unit>[kmgt]?b)\s+free",
-        r"free\s*[:=]\s*(?P<value>[\d,]+)\s*(?P<unit>[kmgt]?b)",
+        rf"\({value}\s*{unit}\s+(?:free|available)\b\)",
+        rf"{value}\s*{unit}\s+(?:free|available)\b",
+        rf"(?:free|available)(?:\s+space)?\s*[:=]\s*{value}\s*{unit}",
+        rf"(?:free|available)(?:\s+space)?\s*[:=]?\s*\(?\s*{value}\s*{unit}\b",
+        rf"{value}\s*{unit}\s*(?:free|available)(?:\s+space)?\b",
+        rf"(?:剩余|可用)\s*(?:空间)?\s*[:：=]?\s*{value}\s*{unit}",
     )
     for pattern in patterns:
         matches = list(re.finditer(pattern, output, flags=re.IGNORECASE))
         if matches:
             match = matches[-1]
             return _to_bytes(match.group("value"), match.group("unit"))
-    return 0
+    return None
+
+
+def parse_free_space_bytes(output: str) -> int:
+    """Parse free bytes, preserving the legacy ``0`` value for no match.
+
+    New control paths should use :func:`find_free_space_bytes` so an
+    unrecognised device response cannot be reported as a real zero-byte disk.
+    """
+
+    return find_free_space_bytes(output) or 0
 
 
 def classify_standby_storage(output: str, storage: str = DEFAULT_SLAVE_STORAGE) -> str:
@@ -340,16 +360,23 @@ def _parse_simple_size_line(line: str, storage: str) -> PackageFileEntry | None:
 
 
 def _to_bytes(value: str, unit: str) -> int:
-    number = int(value.replace(",", ""))
+    number = float(value.replace(",", ""))
     normalized_unit = unit.lower()
     multipliers = {
         "b": 1,
+        "byte": 1,
+        "bytes": 1,
+        "字节": 1,
         "kb": 1024,
+        "kib": 1024,
         "mb": 1024 * 1024,
+        "mib": 1024 * 1024,
         "gb": 1024 * 1024 * 1024,
+        "gib": 1024 * 1024 * 1024,
         "tb": 1024 * 1024 * 1024 * 1024,
+        "tib": 1024 * 1024 * 1024 * 1024,
     }
-    return number * multipliers.get(normalized_unit, 1)
+    return int(number * multipliers.get(normalized_unit, 1))
 
 
 def build_cleanup_plan(

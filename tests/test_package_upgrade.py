@@ -15,6 +15,7 @@ from device_tui.application.upgrades.package import (
     classify_controller_topology,
     dir_contains_package,
     find_upgrade_failure,
+    find_free_space_bytes,
     generate_huawei_upgrade_plan,
     parse_dir_entries,
     parse_display_startup,
@@ -90,6 +91,13 @@ def test_parse_dir_entries_and_free_space_from_vrp_output() -> None:
     assert [entry.name for entry in entries] == ["old.cc", "current.cc"]
     assert entries[0].path == "flash:/old.cc"
     assert entries[0].size_bytes == 512_000_000
+
+
+def test_free_space_parser_accepts_vrp_footer_variants_without_faking_zero() -> None:
+    assert find_free_space_bytes("Free space: 1.5 GB") == int(1.5 * 1024 * 1024 * 1024)
+    assert find_free_space_bytes("Available: 2,048,000 bytes") == 2_048_000
+    assert find_free_space_bytes("可用空间：512 MiB") == 512 * 1024 * 1024
+    assert find_free_space_bytes("Directory of flash:/\nno capacity footer") is None
 
 
 def test_upgrade_output_helpers_confirm_package_and_startup() -> None:

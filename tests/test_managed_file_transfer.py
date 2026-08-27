@@ -24,6 +24,7 @@ from device_tui.infrastructure.transfers.managed_file_transfer import (
     validate_destination_path,
     validate_transfer_device_path,
 )
+from device_tui.application.transfers import ManagedTransferService
 from device_tui.application.terminal.orchestration import parse_terminal_plan
 
 
@@ -138,6 +139,12 @@ Directory of flash:/
 
     assert destination_matches(output, "flash:/target.cc", 1_024)
     assert not destination_matches(output, "flash:/target.cc", 1_023)
+
+
+def test_vrp_inspection_reads_destination_directory_for_capacity_footer() -> None:
+    plan = ManagedTransferService._inspection_plan("flash:/target.cc", "vrp", "ftp")
+
+    assert plan.steps[0].text == "dir flash:/"
 
 
 def test_managed_plan_uses_local_secrets_and_device_side_get() -> None:

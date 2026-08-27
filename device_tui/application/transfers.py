@@ -22,7 +22,7 @@ from device_tui.application.terminal.orchestration import (
     TerminalPlanError,
     parse_terminal_plan,
 )
-from device_tui.application.upgrades.package import parse_free_space_bytes
+from device_tui.application.upgrades.package import find_free_space_bytes
 from device_tui.infrastructure.transfers.file_transfer_service import (
     TransferServiceConfig,
     TransferServiceController,
@@ -39,6 +39,7 @@ from device_tui.infrastructure.transfers.managed_file_transfer import (
     build_managed_transfer_steps,
     destination_entry,
     destination_matches,
+    destination_storage,
     infer_terminal_environment,
     list_shared_files,
     linux_client_available,
@@ -854,7 +855,7 @@ class ManagedTransferService:
             else:
                 existing = destination_entry(output, destination)
                 existing_size = existing.size_bytes if existing is not None else None
-                free_bytes = parse_free_space_bytes(output)
+                free_bytes = find_free_space_bytes(output)
             if existing_size is not None and not bool(operation.data["overwrite"]):
                 raise _TransferRunError(
                     "destination_exists",
@@ -862,6 +863,11 @@ class ManagedTransferService:
                 )
             source_size = int(operation.data["source_size"])
             required = max(0, source_size - (existing_size or 0))
+            if free_bytes is None:
+                raise _TransferRunError(
+                    "storage_space_indeterminate",
+                    "设备目录输出未包含可识别的可用空间，未开始传输。",
+                )
             if free_bytes < required:
                 raise _TransferRunError(
                     "insufficient_space",
@@ -1287,7 +1293,7 @@ class ManagedTransferService:
             )
         return parse_terminal_plan(
             [
-                {"type": "send", "text": f"dir {path}", "label": "读取目录"},
+                {"type": "send", "text": f"dir {destination_storage(path)}", "label": "读取目录"},
                 {
                     "type": "expect",
                     "success": ["device_prompt"],

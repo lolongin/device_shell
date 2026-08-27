@@ -614,6 +614,77 @@ def test_framework_bridge_uses_command_set_for_reboot_and_transfer_profile() -> 
     asyncio.run(scenario())
 
 
+def test_framework_cleanup_scopes_master_capacity_before_standby_output() -> None:
+    class Transfers:
+        @staticmethod
+        def resolve_source(path: str) -> SimpleNamespace:
+            assert path == "packages/target.cc"
+            return SimpleNamespace(size_bytes=100)
+
+    handler = DeviceExecutionActionHandler(object(), ActionRegistry(), transfers=Transfers())
+    output = """
+    Directory of flash:/
+    1,464,844 KB total (256,000 KB free)
+    Directory of slave#flash:/
+    1,464,844 KB total (1 KB free)
+    """
+    run = WorkflowRun(
+        "run-1",
+        "test",
+        "1",
+        "device-1",
+        context={
+            "target": {},
+            "action.precheck.facts": {
+                "output": output,
+                "topology_detection": {"include_slave": False},
+            },
+        },
+    )
+    action = ActionSpec(
+        "cleanup",
+        "huawei.storage.cleanup",
+        params={
+            "package": "packages/target.cc",
+            "package_source": "local",
+            "master_storage": "flash:/",
+            "slave_storage": "slave#flash:/",
+        },
+    )
+
+    assert handler._cleanup_commands(action, run) == ()
+
+
+def test_framework_never_skips_ftp_when_the_local_package_size_is_unknown() -> None:
+    class Transfers:
+        @staticmethod
+        def resolve_source(path: str) -> SimpleNamespace:
+            assert path == "packages/target.cc"
+            return SimpleNamespace(size_bytes=0)
+
+    handler = DeviceExecutionActionHandler(object(), ActionRegistry(), transfers=Transfers())
+    run = WorkflowRun(
+        "run-1",
+        "test",
+        "1",
+        "device-1",
+        context={
+            "target": {},
+            "action.precheck.facts": {
+                "output": "Directory of flash:/\n  0  -rw-  100  Jan 01 2026  target.cc",
+                "package": {"present": True},
+            },
+        },
+    )
+    action = ActionSpec(
+        "transfer",
+        "file.transfer",
+        params={"source": "packages/target.cc", "package": "packages/target.cc"},
+    )
+
+    assert not handler._package_already_present(run, action)
+
+
 def test_framework_bridge_does_not_emit_verification_success_on_mismatch() -> None:
     class Execution:
         async def execute(self, target, step, *, context):

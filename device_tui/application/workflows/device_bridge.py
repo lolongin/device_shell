@@ -31,8 +31,8 @@ from device_tui.application.upgrades.package import (
     classify_controller_topology,
     build_cleanup_plan,
     classify_standby_storage,
+    find_free_space_bytes,
     parse_dir_entries,
-    parse_free_space_bytes,
     package_basename,
     parse_display_startup,
 )
@@ -222,12 +222,13 @@ class DeviceExecutionActionHandler:
                         package_size = 0
                 driver = self._driver(action, run)
                 master_storage = str(action.params.get("master_storage") or DEFAULT_MASTER_STORAGE)
+                master_output = _extract_storage_output(output, master_storage)
                 facts["package"] = {
                     "name": package_name,
                     "storage": master_storage,
                     "size_bytes": package_size,
                     "present": driver.package_is_present(
-                        output,
+                        master_output,
                         storage=master_storage,
                         package_name=package_name,
                         package_size=package_size,
@@ -360,9 +361,6 @@ class DeviceExecutionActionHandler:
         if not isinstance(precheck, dict):
             return False
         output = str(precheck.get("output") or "")
-        package_fact = precheck.get("package")
-        if isinstance(package_fact, dict) and "present" in package_fact:
-            return bool(package_fact["present"])
         package = PurePosixPath(
             str(action.params.get("source") or action.params.get("package") or "")
             .replace("\\", "/")
@@ -377,8 +375,9 @@ class DeviceExecutionActionHandler:
                 package_size = 0
         driver = self._driver(action, run)
         storage = str(action.params.get("master_storage") or DEFAULT_MASTER_STORAGE)
+        scoped_output = _extract_storage_output(output, storage)
         return driver.package_is_present(
-            output,
+            scoped_output,
             storage=storage,
             package_name=package,
             package_size=package_size,
@@ -577,19 +576,29 @@ class DeviceExecutionActionHandler:
         ):
             if label == "slave" and not include_slave:
                 continue
-            scoped = output if label == "master" else _extract_storage_output(output, str(storage))
+            scoped = _extract_storage_output(output, str(storage))
+            free_bytes = find_free_space_bytes(scoped)
+            if free_bytes is None:
+                raise DeviceWorkflowExecutionError(
+                    "storage_space_indeterminate",
+                    f"Unable to parse {label} storage capacity from its directory response.",
+                    error_class="ambiguous",
+                )
             plan = build_cleanup_plan(
                 storage=str(storage),
-                free_bytes=parse_free_space_bytes(scoped),
+                free_bytes=free_bytes,
                 target_bytes=package_size,
                 entries=parse_dir_entries(scoped, str(storage)),
                 startup=parse_display_startup(startup),
                 target_package_name=package_name,
             )
-            if plan.free_bytes <= 0:
-                raise DeviceWorkflowExecutionError("storage_space_indeterminate", f"Unable to confirm {label} storage capacity.")
             if not plan.has_enough_space:
-                raise DeviceWorkflowExecutionError("insufficient_space", f"{label} storage is insufficient for the package.")
+                raise DeviceWorkflowExecutionError(
+                    "insufficient_space",
+                    f"{label} storage is insufficient for the package: "
+                    f"{plan.free_bytes} bytes free, {plan.required_bytes} bytes required.",
+                    error_class="deterministic",
+                )
             if plan.delete_entries and not bool(params.get("auto_delete_old_packages", False)):
                 raise DeviceWorkflowExecutionError("cleanup_required", f"{label} storage requires cleanup before transfer.")
             commands.extend(driver.cleanup_command(item.path) for item in plan.delete_entries)
@@ -762,7 +771,7 @@ def _control_context(run: WorkflowRun, action: ActionSpec) -> ControlContext:
 
 
 def _extract_storage_output(output: str, storage: str) -> str:
-    """Keep standby classification scoped to its own directory response."""
+    """Keep every storage decision scoped to its own directory response."""
     marker = f"directory of {storage.rstrip('/')}".casefold()
     lowered = output.casefold()
     start = lowered.find(marker)

@@ -153,6 +153,11 @@ class HuaweiVrpUpgradeDriver:
         package_name: str,
         package_size: int,
     ) -> bool:
+        # A local source with unknown size is not sufficient evidence to skip
+        # FTP. Matching by name alone can mistake a stale or partial image
+        # for the requested artifact.
+        if package_size <= 0:
+            return False
         return dir_contains_package(
             output,
             storage=storage,
