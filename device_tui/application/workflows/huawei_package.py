@@ -22,6 +22,7 @@ class HuaweiVrpPackageUpgradeProvider:
         package = str(inputs.get("package_ref") or "").strip()
         expected_version = str(inputs.get("expected_version") or "").strip()
         activation_policy = str(inputs.get("activation_policy") or "reboot").casefold()
+        auto_reboot = bool(inputs.get("auto_reboot", False))
         package_source = str(inputs.get("package_source") or "local").casefold()
         topology_policy = str(inputs.get("topology_policy") or "auto").casefold()
         cleanup_policy = str(inputs.get("cleanup_policy") or "never").casefold()
@@ -260,7 +261,7 @@ class HuaweiVrpPackageUpgradeProvider:
                         on_classification={"confirmed_success": "continue"},
                     ),
                 ),
-                next_state="reboot_approval" if activation_policy == "reboot" else "complete",
+                next_state=("reboot" if auto_reboot else "reboot_approval") if activation_policy == "reboot" else "complete",
                 decision_options=startup_options,
             ),
         ))
@@ -360,6 +361,7 @@ class HuaweiVrpPackageUpgradeProvider:
                     "package_ref": {"type": "string"},
                     "expected_version": {"type": "string"},
                     "activation_policy": {"type": "string", "enum": ["stage_only", "reboot"]},
+                    "auto_reboot": {"type": "boolean", "default": False},
                 },
             },
             metadata={"vendor": "Huawei", "platform": "VRP", "workflow_family": "package_upgrade"},

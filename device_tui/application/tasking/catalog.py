@@ -273,6 +273,10 @@ class DeviceUpgradeWorkflowProvider:
                 enum_labels={"stage_only": "只设置下次启动项", "reboot": "确认后重启并验证"},
             ),
             WorkflowParameter(
+                "auto_reboot", type="boolean", label="自动重启", default=False, control="checkbox",
+                description="设置启动项后自动执行重启，不等待人工批准。",
+            ),
+            WorkflowParameter(
                 "recovery_protocol", label="重启后恢复通道", default="same", control="select",
                 enum=("same", "serial"),
                 enum_labels={"same": "原管理口自动重连", "serial": "串口监控并确认上线"},

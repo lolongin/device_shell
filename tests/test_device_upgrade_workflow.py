@@ -41,3 +41,15 @@ def test_huawei_package_provider_omits_transfer_for_device_resident_package() ->
     assert "ftp_login" not in {state.id for state in workflow.states}
     assert "transfer" not in {state.id for state in workflow.states}
     assert workflow.states[-1].id == "complete"
+
+
+def test_huawei_package_provider_can_auto_reboot_without_approval_state() -> None:
+    workflow = HuaweiVrpPackageUpgradeProvider().build({
+        "package_ref": "flash:/router-v2.cc",
+        "package_source": "device",
+        "activation_policy": "reboot",
+        "auto_reboot": True,
+    })
+
+    configure = next(state for state in workflow.states if state.id == "configure_startup")
+    assert configure.next_state == "reboot"
