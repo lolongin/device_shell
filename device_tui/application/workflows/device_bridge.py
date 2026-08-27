@@ -31,6 +31,7 @@ from device_tui.application.upgrades.package import (
     classify_controller_topology,
     build_cleanup_plan,
     classify_standby_storage,
+    dir_contains_package,
     find_free_space_bytes,
     parse_dir_entries,
     package_basename,
@@ -306,11 +307,10 @@ class DeviceExecutionActionHandler:
                         "name": package_name,
                         "storage": standby_storage,
                         "size_bytes": package_size,
-                        "present": driver.package_is_present(
+                        "present": dir_contains_package(
                             standby_output,
                             storage=standby_storage,
                             package_name=package_name,
-                            package_size=package_size,
                         ),
                     }
         if action.operation == "device.reboot":

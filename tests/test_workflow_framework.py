@@ -856,6 +856,25 @@ def test_framework_skips_standby_copy_when_target_package_is_present() -> None:
     assert handler._sync_commands(action, run) == ()
 
 
+def test_framework_skips_standby_copy_by_name_without_size_match() -> None:
+    handler = DeviceExecutionActionHandler(object(), ActionRegistry())
+    run = WorkflowRun(
+        "run-1",
+        "test",
+        "1",
+        "device-1",
+        context={
+            "target": {},
+            "action.precheck.facts": {
+                "topology_detection": {"include_slave": True},
+                "standby_package": {"present": True},
+            },
+        },
+    )
+    action = ActionSpec("sync", "huawei.storage.sync", params={"package": "target.cc"})
+    assert handler._sync_commands(action, run) == ()
+
+
 def test_framework_bridge_does_not_emit_verification_success_on_mismatch() -> None:
     class Execution:
         async def execute(self, target, step, *, context):
