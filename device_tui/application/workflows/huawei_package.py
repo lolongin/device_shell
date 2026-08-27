@@ -45,6 +45,14 @@ class HuaweiVrpPackageUpgradeProvider:
             Option("reconnect_transfer", "reconnect", "重连后重试", "重建 FTP 子会话后重新确认文件状态。"),
             Option("abort_transfer", "abort", "终止流程", risk="high", requires_reason=True),
         )
+        startup_options = (
+            Option("retry_startup", "retry", "重试设置启动项"),
+            Option("rollback_startup", "rollback", "恢复原启动项", risk="critical", allowed_actors=("human", "rule"), requires_reason=True, next_state="rollback"),
+            Option("abort_startup", "abort", "终止流程", risk="high", requires_reason=True),
+        ) if activation_policy == "reboot" else (
+            Option("retry_startup", "retry", "重试设置启动项"),
+            Option("abort_startup", "abort", "终止流程", risk="high", requires_reason=True),
+        )
         verification_options = (
             Option("retry_verify", "retry", "重新校验"),
             Option("rollback", "rollback", "回滚到升级前版本", risk="critical", allowed_actors=("human", "rule"), requires_reason=True, next_state="rollback"),
@@ -58,61 +66,80 @@ class HuaweiVrpPackageUpgradeProvider:
             Option("retry_storage", "retry", "重试存储操作"),
             Option("abort_storage", "abort", "终止流程", risk="high", requires_reason=True),
         )
+        topology_options = (
+            Option("retry_topology", "retry", "重新探测设备拓扑"),
+            Option("continue_single", "continue", "按单主控继续", risk="high", allowed_actors=("human", "rule"), requires_reason=True, next_state="cleanup"),
+            Option("abort_topology", "abort", "终止流程", risk="high", requires_reason=True),
+        ) if topology_policy == "auto" else (
+            Option("retry_topology", "retry", "重新探测设备拓扑"),
+            Option("abort_topology", "abort", "终止流程", risk="high", requires_reason=True),
+        )
         local_transfer = package_source == "local"
         validation_params: dict[str, Any] = {"fact": "validation"}
         validation_commands = inputs.get("validation_commands")
         if isinstance(validation_commands, (tuple, list)) and validation_commands:
             validation_params["commands"] = tuple(str(item) for item in validation_commands)
+        has_validation = bool(validation_params.get("commands"))
+        version_state: tuple[StateNode, ...] = ()
+        if expected_version:
+            version_state = (
+                StateNode(
+                    id="verify_version",
+                    label="校验运行版本",
+                    description="确认设备已运行目标版本。",
+                    action=ActionSpec(
+                        id="verify_version",
+                        operation="device.verify",
+                        params={"fact": "running_version", "expected": expected_version},
+                        expectations=(Expectation("huawei.version.match", timeout_seconds=90),),
+                        timeout_seconds=120,
+                    ),
+                    next_state="validation" if has_validation else "complete",
+                    decision_options=verification_options,
+                ),
+            )
+        validation_state: tuple[StateNode, ...] = ()
+        if has_validation:
+            validation_state = (
+                StateNode(
+                    id="validation",
+                    label="最终验证",
+                    description="执行调用方明确提供的升级后验证命令。",
+                    action=ActionSpec(
+                        id="validation",
+                        operation="device.verify",
+                        params=validation_params,
+                        expectations=(Expectation("huawei.validation.passed", timeout_seconds=90),),
+                        timeout_seconds=120,
+                    ),
+                    next_state="complete",
+                ),
+            )
         states = [
             StateNode(
                 id="precheck",
                 label="设备预检",
-                description="确认管理通道、CLI、版本、启动项和存储状态。",
+                description="在当前管理 CLI 上采集版本、启动项和存储事实。",
                 action=ActionSpec(
                     id="precheck",
                     operation="device.probe",
                     params={
-                        "probes": ("ping", "ssh", "cli", "version", "startup", "storage"),
+                        # Reachability is checked by the session layer. This
+                        # action only runs the device-side read-only probes.
+                        "probes": ("version", "startup", "storage", "topology"),
                         "package": package,
                         "package_source": package_source,
+                        "topology_policy": topology_policy,
                         "master_storage": str(inputs.get("master_storage") or "flash:/"),
                         "slave_storage": str(inputs.get("slave_storage") or "slave#flash:/"),
                     },
                     expectations=(Expectation("huawei.cli.ready"), Expectation("huawei.device.facts.collected")),
                     timeout_seconds=120,
                 ),
-                next_state="ftp_login" if local_transfer else "cleanup",
+                decision_options=topology_options,
+                next_state="cleanup",
             ),
         ]
-        if local_transfer:
-            states.append(StateNode(
-                id="ftp_login",
-                label="建立 FTP 会话",
-                description="处理设备 FTP 交互并确认 ftp> 提示符已就绪。",
-                action=ActionSpec(
-                    id="ftp_login",
-                    operation="file.session.login",
-                    params={
-                        "protocol": "ftp",
-                        "package": package,
-                        "package_source": package_source,
-                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
-                    },
-                    expectations=(Expectation("huawei.ftp.ready", timeout_seconds=30),),
-                    timeout_seconds=45,
-                    retry_policy=retry,
-                    reconcile=ReconcilePolicy(
-                        provider="huawei.reconcile.ftp_login",
-                        probes=("session", "cli"),
-                        on_classification={"confirmed_success": "continue", "confirmed_not_started": "retry"},
-                    ),
-                    interaction=InteractionPolicy(
-                        secret_refs=("file_transfer.username", "file_transfer.password"),
-                    ),
-                ),
-                next_state="cleanup",
-                decision_options=transfer_options,
-            ))
         states.extend((
             StateNode(
                 id="cleanup",
@@ -225,7 +252,7 @@ class HuaweiVrpPackageUpgradeProvider:
                     ),
                 ),
                 next_state="reboot_approval" if activation_policy == "reboot" else "complete",
-                decision_options=verification_options,
+                decision_options=startup_options,
             ),
         ))
         if activation_policy == "reboot":
@@ -246,8 +273,10 @@ class HuaweiVrpPackageUpgradeProvider:
                     action=ActionSpec(
                         id="reboot",
                         operation="device.reboot",
-                        expectations=(Expectation("huawei.reboot.started", timeout_seconds=30),),
-                        timeout_seconds=60,
+                        # The terminal plan reports this only after it observes
+                        # the confirmation/disconnect boundary, not at send().
+                        expectations=(Expectation("huawei.reboot.started", timeout_seconds=210),),
+                        timeout_seconds=210,
                         retry_policy=RetryPolicy(max_attempts=1),
                         risk="critical",
                         interaction=InteractionPolicy(confirmations={"confirmation_prompt": "y"}),
@@ -266,49 +295,27 @@ class HuaweiVrpPackageUpgradeProvider:
                 StateNode(
                     id="wait_online",
                     label="等待管理面恢复",
-                    description="依次确认 Ping、SSH 和 CLI 就绪。",
+                    description="重建管理会话并确认 CLI 已可执行。",
                     action=ActionSpec(
                         id="wait_online",
                         operation="device.wait_online",
-                        params={"phases": ("ping", "ssh", "cli")},
+                        params={
+                            "phases": ("session", "cli"),
+                            "recovery_protocol": recovery_protocol,
+                        },
                         expectations=(Expectation("huawei.cli.ready", timeout_seconds=600),),
                         timeout_seconds=600,
                         retry_policy=retry_three,
                         reconcile=ReconcilePolicy(provider="huawei.reconcile.online", probes=("ping", "ssh", "cli")),
                     ),
-                    next_state="verify_version",
+                    next_state="verify_version" if expected_version else "validation" if has_validation else "complete",
                     decision_options=(
                         Option("reconnect", "reconnect", "重连管理通道"),
                         Option("abort_online", "abort", "终止流程", risk="high", requires_reason=True),
                     ),
                 ),
-                StateNode(
-                    id="verify_version",
-                    label="校验运行版本",
-                    description="确认设备已运行目标版本。",
-                    action=ActionSpec(
-                        id="verify_version",
-                        operation="device.verify",
-                        params={"fact": "running_version", "expected": expected_version},
-                        expectations=(Expectation("huawei.version.match", timeout_seconds=90),),
-                        timeout_seconds=120,
-                    ),
-                    next_state="validation",
-                    decision_options=verification_options,
-                ),
-                StateNode(
-                    id="validation",
-                    label="最终验证",
-                    description="执行升级后的验证命令。",
-                    action=ActionSpec(
-                        id="validation",
-                        operation="device.verify",
-                        params=validation_params,
-                        expectations=(Expectation("huawei.validation.passed", timeout_seconds=90),),
-                        timeout_seconds=120,
-                    ),
-                    next_state="complete",
-                ),
+                *version_state,
+                *validation_state,
                 StateNode(
                     id="rollback",
                     label="回滚",
@@ -336,7 +343,7 @@ class HuaweiVrpPackageUpgradeProvider:
             id=self.id,
             version=self.version,
             start_state="precheck",
-            required_capabilities=("huawei.vrp", "file.transfer") + (("device.reboot",) if activation_policy == "reboot" else ()),
+            required_capabilities=("huawei.vrp",) + (("file.transfer",) if local_transfer else ()) + (("device.reboot",) if activation_policy == "reboot" else ()),
             input_schema={
                 "type": "object",
                 "required": ["package_ref"],

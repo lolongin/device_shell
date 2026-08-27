@@ -8,8 +8,10 @@ from device_tui.application.device_control import DeviceTarget
 from device_tui.application.errors import ApplicationError
 from device_tui.application.events import EventBus
 from device_tui.application.tasking import (
+    MemoryTaskStore,
     TaskCreate,
     TaskManager,
+    TaskRecord,
     WorkflowTarget,
     build_default_workflow_catalog,
 )
@@ -59,3 +61,42 @@ def test_device_upgrade_task_requires_framework_configuration() -> None:
     manager = TaskManager(NoopExecution(), EventBus())
     with pytest.raises(ApplicationError, match="requires the Workflow Framework"):
         manager.create(_upgrade_task())
+
+
+def test_framework_task_restore_requires_reconcile_before_resume() -> None:
+    async def scenario() -> None:
+        store = MemoryTaskStore()
+        runtime = WorkflowRuntime()
+        request = _upgrade_task()
+        framework = build_default_workflow_registry().build(
+            "network.package_upgrade",
+            dict(request.workflow.metadata["framework_inputs"]),
+        )
+        runtime.start(framework, device_id="d1", run_id="task-restarted", context={"target": {"device_id": "d1"}})
+        store.upsert_task(
+            TaskRecord(
+                id="task-restarted",
+                status="running",
+                workflow_id="device_upgrade",
+                device_id="d1",
+            ),
+            request,
+        )
+
+        manager = TaskManager(
+            NoopExecution(),
+            EventBus(),
+            store=store,
+            framework_runtime=runtime,
+            framework_workflows=build_default_workflow_registry(),
+        )
+
+        assert manager.get("task-restarted").status == "paused"
+        assert runtime.runs.get("task-restarted").status == "paused"
+        resumed = manager.resume("task-restarted")
+        assert resumed.status == "running"
+        assert runtime.runs.get("task-restarted").status == "recovering"
+
+        await manager.close()
+
+    asyncio.run(scenario())

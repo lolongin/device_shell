@@ -42,6 +42,7 @@ from .plugins import (
     WorkflowRegistry,
 )
 from .runtime import MemoryWorkflowRunStore, WorkflowRuntime
+from .supervisor import ActionSupervisor, SupervisedActionResult
 from .watchdog import Watchdog, WatchdogIncident
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "ActionRegistry",
     "ActionResult",
     "ActionSpec",
+    "ActionSupervisor",
     "ActionStatus",
     "AdapterRegistry",
     "DecisionEngine",
@@ -73,6 +75,7 @@ __all__ = [
     "RetryPolicy",
     "RunStatus",
     "StateNode",
+    "SupervisedActionResult",
     "Watchdog",
     "WatchdogIncident",
     "WorkflowDefinition",

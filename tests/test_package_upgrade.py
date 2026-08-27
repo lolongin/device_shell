@@ -4,11 +4,15 @@ from device_tui.application.upgrades.package import (
     STANDBY_STORAGE_ABSENT,
     STANDBY_STORAGE_AVAILABLE,
     STANDBY_STORAGE_INDETERMINATE,
+    CONTROLLER_TOPOLOGY_DUAL,
+    CONTROLLER_TOPOLOGY_INDETERMINATE,
+    CONTROLLER_TOPOLOGY_SINGLE,
     PackageFileEntry,
     PackageUpgradeConfig,
     StartupInfo,
     build_cleanup_plan,
     classify_standby_storage,
+    classify_controller_topology,
     dir_contains_package,
     find_upgrade_failure,
     generate_huawei_upgrade_plan,
@@ -40,6 +44,21 @@ def test_classify_standby_storage_does_not_hide_permission_errors() -> None:
         classify_standby_storage("Error: Permission denied.")
         == STANDBY_STORAGE_INDETERMINATE
     )
+
+
+def test_classify_standby_storage_does_not_use_master_free_space() -> None:
+    output = """
+    Directory of flash:/
+    1,048,576 KB total (256,000 KB free)
+    """
+
+    assert classify_standby_storage(output, "slave#flash:/") == STANDBY_STORAGE_INDETERMINATE
+
+
+def test_classify_controller_topology_requires_explicit_device_roles() -> None:
+    assert classify_controller_topology("Slot  Role\n1 Master\n2 Standby") == CONTROLLER_TOPOLOGY_DUAL
+    assert classify_controller_topology("Slot  Role\n1 Master") == CONTROLLER_TOPOLOGY_SINGLE
+    assert classify_controller_topology("Directory of flash:/\n1,000 KB free") == CONTROLLER_TOPOLOGY_INDETERMINATE
 
 
 def test_parse_display_startup_extracts_current_and_next_system() -> None:

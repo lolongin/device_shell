@@ -13,6 +13,10 @@ DEFAULT_SLAVE_STORAGE = "slave#flash:/"
 STANDBY_STORAGE_AVAILABLE = "available"
 STANDBY_STORAGE_ABSENT = "absent"
 STANDBY_STORAGE_INDETERMINATE = "indeterminate"
+STANDBY_STORAGE_NOT_PROBED = "not_probed"
+CONTROLLER_TOPOLOGY_DUAL = "dual_controller"
+CONTROLLER_TOPOLOGY_SINGLE = "single_controller"
+CONTROLLER_TOPOLOGY_INDETERMINATE = "indeterminate"
 UPGRADE_FAILURE_PATTERNS = (
     "error",
     "failed",
@@ -196,11 +200,45 @@ def classify_standby_storage(output: str, storage: str = DEFAULT_SLAVE_STORAGE) 
         f"directory of {normalized_storage}",
         f"directory of {normalized_storage.rstrip('/')}",
     )
-    if any(marker in lowered for marker in directory_markers) or parse_free_space_bytes(output) > 0:
+    # Free space is only meaningful inside the requested directory section.
+    # Looking at the whole precheck output makes master ``flash:/`` space look
+    # like a healthy ``slave#flash:/`` device.
+    section = _storage_section(output, normalized_storage)
+    if any(marker in lowered for marker in directory_markers) and section is not None:
         return STANDBY_STORAGE_AVAILABLE
-    if any(pattern.casefold() in lowered for pattern in STANDBY_STORAGE_ABSENT_PATTERNS):
+    scoped_output = section if section is not None else output
+    if any(pattern.casefold() in scoped_output.casefold() for pattern in STANDBY_STORAGE_ABSENT_PATTERNS):
         return STANDBY_STORAGE_ABSENT
     return STANDBY_STORAGE_INDETERMINATE
+
+
+def classify_controller_topology(output: str) -> str:
+    """Classify controller topology from a Huawei ``display device`` result.
+
+    Storage aliases are intentionally not used as topology evidence. A
+    ``slave#flash:/`` path can be configured or echoed even when no standby
+    controller is present.
+    """
+
+    lowered = output.casefold()
+    has_standby = bool(re.search(r"\b(?:standby|slave)\b", lowered))
+    has_master = bool(re.search(r"\b(?:master|active)\b", lowered))
+    has_device_table = any(marker in lowered for marker in ("slot", "role", "board", "device state"))
+    if has_standby and has_master:
+        return CONTROLLER_TOPOLOGY_DUAL
+    if has_master and has_device_table:
+        return CONTROLLER_TOPOLOGY_SINGLE
+    return CONTROLLER_TOPOLOGY_INDETERMINATE
+
+
+def _storage_section(output: str, normalized_storage: str) -> str | None:
+    marker = f"directory of {normalized_storage.rstrip('/')}"
+    lowered = output.casefold()
+    start = lowered.find(marker)
+    if start < 0:
+        return None
+    next_directory = lowered.find("directory of ", start + len(marker))
+    return output[start:next_directory if next_directory >= 0 else None]
 
 
 def parse_dir_entries(output: str, storage: str = DEFAULT_MASTER_STORAGE) -> list[PackageFileEntry]:

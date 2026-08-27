@@ -25,6 +25,10 @@ from device_tui.application.upgrades.drivers import UpgradeDriverRegistry, Upgra
 from device_tui.application.upgrades.package import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
+    CONTROLLER_TOPOLOGY_DUAL,
+    CONTROLLER_TOPOLOGY_SINGLE,
+    STANDBY_STORAGE_NOT_PROBED,
+    classify_controller_topology,
     build_cleanup_plan,
     classify_standby_storage,
     parse_dir_entries,
@@ -84,20 +88,18 @@ class DeviceExecutionActionHandler:
             action_id=action.id,
             source="device.bridge",
         ))
-        if action.operation in {"file.session.login", "file.transfer"} and self._package_already_present(run, action):
+        if action.operation == "file.transfer" and self._package_already_present(run, action):
             data = {
                 "status": "completed",
-                "output": (
-                    "目标系统包已存在，跳过 FTP 登录。"
-                    if action.operation == "file.session.login"
-                    else "目标系统包已存在，跳过重复传输。"
-                ),
+                "output": "目标系统包已存在，跳过重复传输。",
                 "data": {"skipped": True, "reason": "package_already_present"},
             }
         elif action.operation in {"huawei.storage.cleanup", "huawei.storage.sync"} and not step.params.get("commands"):
             data = {"status": "completed", "output": "", "data": {"skipped": True}}
         else:
             data = await self._execution.execute(target, step, context=context)
+        if action.operation == "device.probe":
+            data = await self._probe_confirmed_standby_storage(action, run, target, context, data, publish)
         if action.operation == "file.transfer":
             operation_id = str(data.get("operation_id") or "").strip()
             if operation_id:
@@ -115,6 +117,22 @@ class DeviceExecutionActionHandler:
                 }
         output = str(data.get("output") or "")
         facts = self._facts(action, data, output, run)
+        topology = facts.get("topology_detection")
+        if (
+            action.operation == "device.probe"
+            and isinstance(topology, dict)
+            and topology.get("effective_mode") == "indeterminate"
+        ):
+            return ActionResult(
+                status=ActionStatus.FAILED,
+                events=(),
+                facts=facts,
+                error={
+                    "code": "topology_indeterminate",
+                    "message": "无法根据设备角色和备控存储证据确认双主控拓扑。",
+                    "class": "ambiguous",
+                },
+            )
         if action.operation == "device.verify" and not self._verification_confirmed(action, output):
             expected = str(action.params.get("expected") or "").strip()
             return ActionResult(
@@ -138,6 +156,11 @@ class DeviceExecutionActionHandler:
             events=(),
             facts=facts,
         )
+
+    async def cancel(self, action: ActionSpec, run: WorkflowRun) -> None:
+        """Request cancellation through the existing control-plane facade."""
+        del action
+        self._execution.cancel_target(_target_for_run(run))
 
     def _facts(
         self,
@@ -163,21 +186,30 @@ class DeviceExecutionActionHandler:
                     "next_system": startup.next_system,
                 }
             slave_storage = str(action.params.get("slave_storage") or DEFAULT_SLAVE_STORAGE)
-            slave_output = _extract_storage_output(output, slave_storage)
-            standby_status = classify_standby_storage(slave_output, slave_storage)
+            controller_status = classify_controller_topology(output)
+            slave_output = str(data.get("standby_storage_output") or "")
+            standby_status = (
+                classify_standby_storage(slave_output, slave_storage)
+                if controller_status == CONTROLLER_TOPOLOGY_DUAL
+                else STANDBY_STORAGE_NOT_PROBED
+            )
+            policy = str(action.params.get("topology_policy") or "auto").casefold()
+            effective_mode = (
+                "single_controller"
+                if policy == "single" or controller_status == CONTROLLER_TOPOLOGY_SINGLE
+                else "dual_controller"
+                if controller_status == CONTROLLER_TOPOLOGY_DUAL and standby_status == "available"
+                else "indeterminate"
+            )
             facts["topology_detection"] = {
-                "policy": str(action.params.get("topology_policy") or "auto"),
+                "policy": policy,
+                "controller_status": controller_status,
                 "master_storage": str(action.params.get("master_storage") or DEFAULT_MASTER_STORAGE),
                 "standby_storage": slave_storage,
                 "standby_status": standby_status,
-                "include_slave": standby_status == "available",
-                "decision": (
-                    "dual_controller"
-                    if standby_status == "available"
-                    else "single_controller"
-                    if standby_status == "absent"
-                    else "indeterminate"
-                ),
+                "effective_mode": effective_mode,
+                "include_slave": effective_mode == "dual_controller",
+                "decision": effective_mode,
             }
             package = str(action.params.get("package") or "").strip()
             if package and str(action.params.get("package_source") or "local").casefold() == "local":
@@ -201,7 +233,61 @@ class DeviceExecutionActionHandler:
                         package_size=package_size,
                     ),
                 }
+        if action.operation == "device.reboot":
+            facts["reboot"] = {
+                "command_sent": bool(data.get("reboot_command_sent", False)),
+                "disconnect_observed": bool(data.get("reboot_disconnect_observed", False)),
+            }
+        if action.operation == "device.wait_online":
+            facts["readiness"] = {
+                "transport_status": str(data.get("transport_status") or "unknown"),
+                "cli_status": str(data.get("cli_status") or "unknown"),
+                "probe_command": str(data.get("probe_command") or ""),
+                "probe_execution_id": str(data.get("probe_execution_id") or ""),
+            }
         return facts
+
+    async def _probe_confirmed_standby_storage(
+        self,
+        action: ActionSpec,
+        run: WorkflowRun,
+        target: DeviceTarget,
+        context: ControlContext,
+        data: dict[str, Any],
+        publish: Any,
+    ) -> dict[str, Any]:
+        """Probe standby storage only after the device table confirms a standby."""
+        output = str(data.get("output") or "")
+        topology = classify_controller_topology(output)
+        policy = str(action.params.get("topology_policy") or "auto").casefold()
+        if policy == "single" or topology != CONTROLLER_TOPOLOGY_DUAL:
+            return data
+        storage = str(action.params.get("slave_storage") or DEFAULT_SLAVE_STORAGE)
+        probe = WorkflowStep(
+            f"{action.id}.standby_storage",
+            kind="device",
+            action="command",
+            params={
+                "commands": (self._driver(action, run).storage_query_command(storage),),
+                "timeout_seconds": min(60, int(action.timeout_seconds)),
+            },
+        )
+        standby_data = await self._execution.execute(target, probe, context=context)
+        standby_output = str(standby_data.get("output") or "")
+        publish(Event(
+            type="huawei.topology.standby_storage.probed",
+            run_id=run.id,
+            action_id=action.id,
+            source="device.bridge",
+            progress=True,
+            payload={"storage": storage, "output_present": bool(standby_output)},
+        ))
+        return {
+            **data,
+            "output": f"{output}\n{standby_output}",
+            "standby_storage_output": standby_output,
+            "evidence": list(data.get("evidence") or ()) + list(standby_data.get("evidence") or ()),
+        }
 
     async def _wait_for_operation(
         self,
@@ -317,8 +403,6 @@ class DeviceExecutionActionHandler:
         event_types: list[tuple[str, bool]] = []
         if operation == "device.probe":
             event_types.extend((("huawei.cli.ready", False), ("huawei.device.facts.collected", True)))
-        elif operation == "file.session.login":
-            event_types.append(("huawei.ftp.ready", False))
         elif operation == "file.transfer":
             event_types.extend((("huawei.transfer.started", True), ("huawei.transfer.completed", True)))
         elif operation == "device.verify":
@@ -340,7 +424,8 @@ class DeviceExecutionActionHandler:
         elif operation == "device.reboot":
             event_types.append(("huawei.reboot.started", False))
         elif operation == "device.wait_online":
-            event_types.append(("huawei.cli.ready", True))
+            if str(data.get("cli_status") or "").casefold() == "ready":
+                event_types.append(("huawei.cli.ready", True))
         elif operation == "huawei.startup.rollback":
             event_types.append(("huawei.rollback.verified", False))
         return tuple(
@@ -434,25 +519,17 @@ class DeviceExecutionActionHandler:
                 interaction_profile=asdict(self._driver(action, run).transfer_profile(protocol)),
             )
             return WorkflowStep(action.id, kind="device", action="upload", params=params)
-        if operation == "file.session.login":
-            if self._transfers is None:
-                raise DeviceWorkflowExecutionError("transfer_service_required", "FTP session actions require the managed transfer service.")
-            target = _target_for_run(run)
-            host, port = await self._transfers.service_endpoint_for_session(
-                str(run.context.get("session_id") or target.session_id)
-            )
-            params.update(server_host=host, server_port=port)
-            params["mode"] = "interactive"
-            try:
-                login_plan = self._driver(action, run).commands.ftp_login_plan(host, port)
-            except ValueError as exc:
-                raise DeviceWorkflowExecutionError("ftp_host_required", str(exc)) from exc
-            params["steps"] = list(params.get("steps") or login_plan.steps)
-            return WorkflowStep(action.id, kind="device", action="batch", params=params)
         if operation == "device.reboot":
             params.setdefault("steps", list(self._driver(action, run).reboot_plan_steps()))
             return WorkflowStep(action.id, kind="device", action="reboot", params=params)
         if operation == "device.wait_online":
+            params.setdefault(
+                "readiness_command",
+                self._driver(action, run).commands.version_query(),
+            )
+            reconnect = run.context.get("framework.reconnect")
+            if isinstance(reconnect, dict) and reconnect.get("state") == run.current_state:
+                params["force_reconnect"] = True
             return WorkflowStep(action.id, kind="device", action="wait_online", params=params)
         raise DeviceWorkflowExecutionError(
             "unsupported_framework_operation",
@@ -542,12 +619,65 @@ class DeviceReconcileProvider:
         target = _target_for_run(run)
         evidence: list[dict[str, Any]] = [{"reason": reason, "provider": self.id}]
         try:
-            if self.id.endswith("online") or action.operation in {"device.wait_online", "device.reboot"}:
+            if self.id.endswith("online") or action.operation == "device.wait_online":
                 view = await self._control.open_session(target, reuse=True, context=_control_context(run, action))
-                connected = str(view.status).casefold() in {"connected", "ready", "open"}
                 evidence.append({"probe": "session", "status": view.status, "session_id": view.session_id})
-                classification = ReconcileClassification.SUCCESS if connected else ReconcileClassification.IN_PROGRESS
-                return ReconcileResult(classification, {"session_id": view.session_id, "status": view.status}, tuple(evidence))
+                transport_status = str(view.status).casefold()
+                if transport_status not in {"connected", "ready", "open"}:
+                    classification = (
+                        ReconcileClassification.IN_PROGRESS
+                        if transport_status in {"creating", "connecting", "authenticating"}
+                        else ReconcileClassification.INDETERMINATE
+                    )
+                    return ReconcileResult(
+                        classification,
+                        {
+                            "session_id": view.session_id,
+                            "transport_status": transport_status,
+                            "cli_status": "unknown",
+                        },
+                        tuple(evidence),
+                    )
+                probe = await self._execution.probe_cli(
+                    DeviceTarget(session_id=view.session_id),
+                    command=str(
+                        action.params.get("readiness_command")
+                        or self._commands.version_query()
+                    ),
+                    timeout_seconds=min(30, max(1, int(action.reconcile.budget_seconds))),
+                    context=_control_context(run, action),
+                )
+                evidence.append({
+                    "probe": "cli",
+                    "transport_status": transport_status,
+                    "cli_status": probe.get("cli_status", "unknown"),
+                    "probe_command": probe.get("probe_command", ""),
+                    "execution_id": probe.get("execution_id", ""),
+                    "error_code": probe.get("error_code", ""),
+                })
+                facts = {
+                    "session_id": view.session_id,
+                    "transport_status": transport_status,
+                    **probe,
+                }
+                if probe.get("cli_status") == "ready":
+                    return ReconcileResult(ReconcileClassification.SUCCESS, facts, tuple(evidence))
+                return ReconcileResult(ReconcileClassification.INDETERMINATE, facts, tuple(evidence))
+            if self.id.endswith("reboot"):
+                reboot = _action_facts(run, action.id).get("reboot")
+                signals = dict(reboot) if isinstance(reboot, dict) else {}
+                command_sent = bool(signals.get("command_sent", False))
+                disconnect_observed = bool(signals.get("disconnect_observed", False))
+                evidence.append({
+                    "probe": "reboot_execution",
+                    "command_sent": command_sent,
+                    "disconnect_observed": disconnect_observed,
+                })
+                if command_sent and disconnect_observed:
+                    return ReconcileResult(ReconcileClassification.SUCCESS, signals, tuple(evidence))
+                if not command_sent:
+                    return ReconcileResult(ReconcileClassification.NOT_STARTED, signals, tuple(evidence))
+                return ReconcileResult(ReconcileClassification.INDETERMINATE, signals, tuple(evidence))
             if self.id.endswith("transfer"):
                 operation_id = _last_operation_id(run, action.id)
                 if operation_id:
@@ -594,7 +724,7 @@ def build_device_action_registry(execution: DeviceExecutionTool, adapters: Adapt
     registry = ActionRegistry()
     handler = DeviceExecutionActionHandler(execution, adapters, transfers)
     for operation in (
-        "device.probe", "file.session.login", "file.transfer", "device.verify",
+        "device.probe", "file.transfer", "device.verify",
         "huawei.storage.cleanup", "huawei.storage.sync",
         "huawei.startup.configure", "device.reboot", "device.wait_online", "huawei.startup.rollback",
     ):
@@ -605,7 +735,7 @@ def build_device_action_registry(execution: DeviceExecutionTool, adapters: Adapt
 def build_device_reconcile_registry(execution: DeviceExecutionTool, control: DeviceControlService) -> ReconcileRegistry:
     registry = ReconcileRegistry()
     for provider_id in (
-        "huawei.reconcile.ftp_login", "huawei.reconcile.transfer", "huawei.reconcile.startup",
+        "huawei.reconcile.transfer", "huawei.reconcile.startup",
         "huawei.reconcile.reboot", "huawei.reconcile.online", "huawei.reconcile.rollback",
     ):
         registry.register(DeviceReconcileProvider(provider_id, execution, control), item_id=provider_id)
@@ -679,6 +809,11 @@ def _last_operation_id(run: WorkflowRun, action_id: str) -> str:
         if isinstance(nested, dict):
             return str(nested.get("operation_id") or "").strip()
     return ""
+
+
+def _action_facts(run: WorkflowRun, action_id: str) -> dict[str, Any]:
+    facts = run.context.get(f"action.{action_id}.facts")
+    return dict(facts) if isinstance(facts, dict) else {}
 
 
 def _previous_startup(run: WorkflowRun) -> dict[str, Any]:

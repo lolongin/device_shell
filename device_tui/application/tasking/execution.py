@@ -12,7 +12,7 @@ from device_tui.application.device_control import (
     DeviceTarget,
     TransferRequest,
 )
-from device_tui.application.errors import UnsupportedOperationError
+from device_tui.application.errors import ApplicationError, UnsupportedOperationError
 from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
 
 from .models import WorkflowStep
@@ -31,11 +31,20 @@ class ExecutionTool(Protocol):
 class DeviceWorkflowExecutionError(RuntimeError):
     """Structured failure returned by a DeviceControlService workflow step."""
 
-    def __init__(self, code: str, message: str, *, error_class: str = "unknown", retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        error_class: str = "unknown",
+        retryable: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.error_class = error_class
         self.retryable = retryable
+        self.details = dict(details or {})
 
 
 class DeviceExecutionTool:
@@ -112,17 +121,83 @@ class DeviceExecutionTool:
             timeout = max(1, min(int(params.get("timeout_seconds") or 180), 3_600))
             deadline = asyncio.get_running_loop().time() + timeout
             view = await self._control.open_session(recovery_target, reuse=True, context=context)
+            if (
+                bool(params.get("force_reconnect", False))
+                and view.reused
+                and str(view.status).casefold() in {"connected", "ready", "open"}
+            ):
+                view = await self._control.reconnect_session(
+                    DeviceTarget(session_id=view.session_id),
+                    context=context,
+                )
             # A newly created or reconnected session is returned before its
             # transport handshake finishes. Keep polling that same session;
             # otherwise every retry creates another connection and the task
             # eventually reports a misleading signal/online timeout.
-            while str(view.status).casefold() not in {"connected", "ready", "open"}:
+            last_probe: dict[str, Any] = {}
+            while True:
+                transport_status = str(view.status).casefold()
+                if transport_status in {"connected", "ready", "open"}:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    probe_timeout = max(
+                        1,
+                        min(
+                            int(params.get("probe_timeout_seconds") or 15),
+                            120,
+                            int(remaining),
+                        ),
+                    )
+                    probe = await self.probe_cli(
+                        DeviceTarget(session_id=view.session_id),
+                        command=str(
+                            params.get("readiness_command")
+                            or HuaweiVrpCommandSet.version_query()
+                        ),
+                        timeout_seconds=probe_timeout,
+                        context=context,
+                    )
+                    last_probe = probe
+                    if probe.get("cli_status") == "ready":
+                        probe_data = {
+                            "transport_status": transport_status,
+                            "cli_status": "ready",
+                            "probe_command": probe.get("probe_command", ""),
+                            "probe_execution_id": probe.get("execution_id", ""),
+                            "probe_output": probe.get("output", ""),
+                        }
+                        return {
+                            "session_id": view.session_id,
+                            "device_id": view.device_id,
+                            "status": "completed",
+                            "transport_status": transport_status,
+                            "cli_status": "ready",
+                            "probe_command": probe_data["probe_command"],
+                            "probe_execution_id": probe_data["probe_execution_id"],
+                            "probe_output": probe_data["probe_output"],
+                            "recovery_protocol": recovery_protocol if recovery_protocol and recovery_protocol != "same" else view.protocol,
+                            "data": probe_data,
+                            "evidence": ({"kind": "cli_readiness", **probe_data},),
+                        }
                 if asyncio.get_running_loop().time() >= deadline:
+                    if last_probe:
+                        raise DeviceWorkflowExecutionError(
+                            "cli_not_ready",
+                            "Management transport returned, but the CLI readiness probe did not complete.",
+                            error_class="transient",
+                            retryable=True,
+                            details={
+                                "transport_status": transport_status,
+                                "last_probe": last_probe,
+                            },
+                        )
                     raise DeviceWorkflowExecutionError(
                         "device_offline",
                         "Device did not return online before the recovery timeout.",
                         error_class="transient",
                         retryable=True,
+                        details={"transport_status": transport_status},
                     )
                 await asyncio.sleep(0.2)
                 view = await self._control.open_session(
@@ -130,12 +205,20 @@ class DeviceExecutionTool:
                     reuse=True,
                     context=context,
                 )
-            return {
-                "session_id": view.session_id,
-                "device_id": view.device_id,
-                "status": view.status,
-                "recovery_protocol": recovery_protocol if recovery_protocol and recovery_protocol != "same" else view.protocol,
-            }
+            raise DeviceWorkflowExecutionError(
+                "cli_not_ready" if last_probe else "device_offline",
+                (
+                    "Management transport returned, but the CLI readiness probe did not complete."
+                    if last_probe
+                    else "Device did not return online before the recovery timeout."
+                ),
+                error_class="transient",
+                retryable=True,
+                details={
+                    "transport_status": str(view.status).casefold(),
+                    "last_probe": last_probe,
+                },
+            )
         if action in {"command", "execute", "batch"}:
             mode = str(params.get("mode") or "batch").casefold()
             commands = params.get("commands")
@@ -228,6 +311,53 @@ class DeviceExecutionTool:
                 "evidence": ({"kind": "operation", **operation},),
             }
         raise ValueError(f"Unsupported workflow action: {step.action or step.kind}")
+
+    async def probe_cli(
+        self,
+        target: DeviceTarget,
+        *,
+        command: str,
+        timeout_seconds: int = 15,
+        context: ControlContext,
+    ) -> dict[str, Any]:
+        """Run a vendor-supplied read-only command and classify CLI readiness."""
+        probe_command = str(command).strip()
+        if not probe_command:
+            raise UnsupportedOperationError("CLI readiness command cannot be empty.")
+        try:
+            result = await self._control.execute(
+                target,
+                CommandRequest(
+                    commands=(probe_command,),
+                    mode="batch",
+                    timeout_seconds=max(1, min(int(timeout_seconds), 120)),
+                    total_timeout_seconds=max(1, min(int(timeout_seconds), 120)),
+                    max_output_chars=8_192,
+                ),
+                context=context,
+            )
+            self._notify(context, "execution", result.execution_id)
+            self._raise_for_failed_result(
+                result.status,
+                result.error_code,
+                result.output or "CLI readiness probe failed.",
+            )
+            return {
+                "cli_status": "ready",
+                "probe_command": probe_command,
+                "execution_id": result.execution_id,
+                "output": result.output,
+                "status": result.status,
+            }
+        except (ApplicationError, DeviceWorkflowExecutionError, OSError) as exc:
+            return {
+                "cli_status": "not_ready",
+                "probe_command": probe_command,
+                "status": "failed",
+                "error_code": getattr(exc, "code", "cli_probe_failed"),
+                "error_class": getattr(exc, "error_class", "unknown"),
+                "error": str(exc),
+            }
 
     @staticmethod
     def _notify(context: ControlContext, kind: str, resource_id: str) -> None:

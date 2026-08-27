@@ -272,6 +272,14 @@ class SimulatedTerminalSession:
         if lowered == "screen-length 0 temporary":
             self.callbacks.on_output("Info: Screen length disabled temporarily.\n<sim> ")
             return
+        if lowered == "display device":
+            self.callbacks.on_output(
+                "Slot  Role\n"
+                "1     Master\n"
+                "2     Standby\n"
+                "<sim> "
+            )
+            return
         if lowered == "display startup":
             self.callbacks.on_output(
                 "MainBoard:\n"

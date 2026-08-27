@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
@@ -23,6 +23,7 @@ from .models import (
     WorkflowRun,
 )
 from .plugins import ActionHandler, ActionRegistry, ReconcileRegistry
+from .supervisor import ActionSupervisor
 from .watchdog import Watchdog
 
 
@@ -60,6 +61,8 @@ class WorkflowRuntime:
         runs: WorkflowRunStore | None = None,
         events: WorkflowEventStore | None = None,
         watchdog: Watchdog | None = None,
+        supervisor: ActionSupervisor | None = None,
+        recovery_poll_seconds: float = 5.0,
         decisions: DecisionEngine | None = None,
         leases: WorkflowLeaseService | None = None,
     ) -> None:
@@ -68,6 +71,8 @@ class WorkflowRuntime:
         self.runs = runs or MemoryWorkflowRunStore()
         self.events = events or MemoryWorkflowEventStore()
         self.watchdog = watchdog or Watchdog()
+        self.supervisor = supervisor or ActionSupervisor(self.watchdog)
+        self.recovery_poll_seconds = max(0.01, recovery_poll_seconds)
         self.decisions = decisions or DecisionEngine()
         self.leases = leases
         self._lease_tokens: dict[str, tuple[str, str]] = {}
@@ -108,6 +113,8 @@ class WorkflowRuntime:
         if definition is None:
             raise KeyError(f"workflow definition not registered: {run.workflow_id}:{run.workflow_version}")
         state = next(item for item in definition.states if item.id == run.current_state)
+        if run.status == RunStatus.RECOVERING:
+            return await self._recover(run, state)
         if state.terminal:
             return self._save(replace(run, status=RunStatus.SUCCEEDED, revision=run.revision + 1))
         if state.action is None and state.decision_options:
@@ -117,7 +124,9 @@ class WorkflowRuntime:
         attempt_no = sum(1 for item in run.attempts if item.action_id == state.action.id) + 1
         attempt = ActionAttempt(
             id=str(uuid4()), action_id=state.action.id, attempt=attempt_no,
-            status=ActionStatus.RUNNING, started_at=_now(), last_progress_at=_now(),
+            status=ActionStatus.RUNNING, started_at=_now(),
+            deadline_at=(_utcnow() + timedelta(seconds=state.action.timeout_seconds)).isoformat(),
+            last_progress_at=_now(),
         )
         run = self._save(replace(run, attempts=run.attempts + (attempt,), revision=run.revision + 1))
         handler: ActionHandler = self.actions.resolve(state.action.operation)
@@ -127,35 +136,29 @@ class WorkflowRuntime:
         def emit(event: Event) -> Event:
             return self._append_action_event(event, run.id, state.action.id, emitted)
 
-        try:
-            result = await asyncio.wait_for(
-                handler.execute(state.action, self._execution_run(run), emit),
-                timeout=state.action.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            result = ActionResult(
-                status=ActionStatus.TIMED_OUT,
-                error={
-                    "code": "action_timeout",
-                    "message": f"Action {state.action.id} exceeded its timeout.",
-                    "class": "timeout",
-                },
-            )
-        except Exception as exc:
-            result = ActionResult(
-                status=ActionStatus.FAILED,
-                error={"code": getattr(exc, "code", "action_failed"), "message": str(exc), "class": getattr(exc, "error_class", "unknown")},
-            )
+        supervised = await self.supervisor.execute(
+            handler,
+            state.action,
+            self._execution_run(run),
+            attempt,
+            emit,
+        )
+        result = supervised.result
+        attempt = supervised.attempt
         for event in result.events:
             emit(event if isinstance(event, Event) else Event(type=str(event), run_id=run.id, action_id=state.action.id))
         observed = {event.type for event in emitted}
         expected = {item.event_type for item in state.action.expectations if item.terminal}
-        run = self._with_action_facts(run, state.action.id, result.facts)
         last_event = emitted[-1] if emitted else None
+        # Event emission can checkpoint progress while a handler is running.
+        # Reload that checkpoint before applying its final outcome.
+        run = self.runs.get(run.id)
+        run = self._save(self._with_action_facts(run, state.action.id, result.facts))
+        persisted_attempt = next((item for item in run.attempts if item.id == attempt.id), attempt)
         updated_attempt = replace(
-            attempt,
+            persisted_attempt,
             last_event_type=last_event.type if last_event is not None else attempt.last_event_type,
-            last_progress_at=(last_event.observed_at if last_event is not None and last_event.progress else attempt.last_progress_at),
+            last_progress_at=(last_event.observed_at if last_event is not None and last_event.progress else persisted_attempt.last_progress_at),
         )
         if result.status == ActionStatus.SUCCEEDED and expected <= observed:
             last = replace(updated_attempt, status=ActionStatus.SUCCEEDED, result=dict(result.facts))
@@ -198,6 +201,14 @@ class WorkflowRuntime:
                 on_update(run)
             if run.status not in {RunStatus.RUNNING, RunStatus.RECOVERING}:
                 return run
+            if run.status == RunStatus.RECOVERING:
+                recovery = run.context.get("framework.recovery")
+                retry_at = recovery.get("retry_at") if isinstance(recovery, dict) else ""
+                if retry_at:
+                    delay = max(0.0, (_parse_time(str(retry_at)) - _utcnow()).total_seconds())
+                    if delay:
+                        await asyncio.sleep(min(delay, self.recovery_poll_seconds))
+                        continue
             await asyncio.sleep(0)
 
     async def reconcile(self, run_id: str, reason: str = "watchdog") -> WorkflowRun:
@@ -215,19 +226,41 @@ class WorkflowRuntime:
         outcome = await provider.reconcile(state.action, self._execution_run(run), reason, emit)
         return self._apply_reconcile(run, state.id, outcome.classification, state.action.reconcile.on_classification, outcome.facts, outcome.evidence)
 
+    def mark_interrupted(self, run_id: str, *, reason: str = "process_restart") -> WorkflowRun:
+        """Durably fence an in-flight run until its current Action is reconciled."""
+        run = self.runs.get(run_id)
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.WAITING_DECISION}:
+            return run
+        self._emit(run, "workflow.interrupted", payload={"reason": reason, "state": run.current_state})
+        return self._save(replace(
+            run,
+            status=RunStatus.PAUSED,
+            context={**run.context, "framework.recovery": {"required": True, "reason": reason, "observed_at": _now()}},
+            revision=run.revision + 1,
+        ))
+
     def pause(self, run_id: str) -> WorkflowRun:
         run = self.runs.get(run_id)
         if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
             return run
-        return self._save(replace(run, status=RunStatus.PAUSED, revision=run.revision + 1))
+        return self._save(replace(
+            run,
+            status=RunStatus.PAUSED,
+            # Cancellation is cooperative at the transport boundary.  A
+            # later resume therefore treats the last Action as uncertain.
+            context={**run.context, "framework.recovery": {"required": True, "reason": "paused", "observed_at": _now()}},
+            revision=run.revision + 1,
+        ))
 
     def resume(self, run_id: str, *, context: dict[str, Any] | None = None) -> WorkflowRun:
         run = self.runs.get(run_id)
-        if run.status not in {RunStatus.PAUSED, RunStatus.WAITING_DECISION}:
+        if run.status not in {RunStatus.PAUSED, RunStatus.WAITING_DECISION, RunStatus.RECOVERING}:
             return run
+        recovery = run.context.get("framework.recovery")
+        requires_reconcile = isinstance(recovery, dict) and bool(recovery.get("required"))
         return self._save(replace(
             run,
-            status=RunStatus.RUNNING,
+            status=RunStatus.RECOVERING if requires_reconcile else RunStatus.RUNNING,
             context={**run.context, **dict(context or {})},
             decision_point=None,
             revision=run.revision + 1,
@@ -246,6 +279,22 @@ class WorkflowRuntime:
         self._emit(run, "decision.applied", payload={"option_id": option.id, "actor_type": submission.actor_type})
         if option.kind in {"abort", "cancel"}:
             return self._save(replace(run, status=RunStatus.CANCELLED, decision_point=None, revision=run.revision + 1))
+        if option.kind == "reconnect":
+            # Reconnect is a constrained framework directive, not a bare
+            # retry. A compatible Action consumes it at the device boundary.
+            return self._save(replace(
+                run,
+                status=RunStatus.RUNNING,
+                decision_point=None,
+                context={
+                    **run.context,
+                    "framework.reconnect": {
+                        "state": run.current_state,
+                        "requested_at": _now(),
+                    },
+                },
+                revision=run.revision + 1,
+            ))
         if option.kind == "retry":
             return self._save(replace(run, status=RunStatus.RUNNING, decision_point=None, revision=run.revision + 1))
         if target and any(state.id == target for state in self._definitions[f"{run.workflow_id}:{run.workflow_version}"].states):
@@ -270,6 +319,59 @@ class WorkflowRuntime:
         definition = self._definitions[f"{run.workflow_id}:{run.workflow_version}"]
         state = next(item for item in definition.states if item.id == state_id)
         return self._create_decision(run, state, f"reconcile.{outcome}", {"evidence": list(evidence)})
+
+    async def _recover(self, run: WorkflowRun, state: Any) -> WorkflowRun:
+        """Resume only after observing the real device state for the last Action."""
+        recovery = run.context.get("framework.recovery")
+        if not isinstance(recovery, dict) or not recovery.get("required"):
+            return self._save(replace(run, status=RunStatus.RUNNING, revision=run.revision + 1))
+        retry_at = str(recovery.get("retry_at") or "")
+        if retry_at and _parse_time(retry_at) > _utcnow():
+            return run
+        if state.action is None or not state.action.reconcile.provider:
+            return self._create_decision(run, state, "recovery.reconcile_unavailable", None)
+        emitted: list[Event] = []
+
+        def emit(event: Event) -> Event:
+            return self._append_action_event(event, run.id, state.action.id, emitted)
+
+        self._emit(run, "workflow.recovery.reconcile_started", payload={"state": state.id, "reason": recovery.get("reason", "restart")})
+        outcome = await self.reconciliations.resolve(state.action.reconcile.provider).reconcile(
+            state.action,
+            self._execution_run(run),
+            str(recovery.get("reason") or "restart"),
+            emit,
+        )
+        classification = str(outcome.classification)
+        evidence = tuple(outcome.evidence)
+        context = {
+            **run.context,
+            f"reconcile.{state.id}": {"classification": classification, "facts": outcome.facts, "evidence": list(evidence)},
+        }
+        if classification == ReconcileClassification.SUCCESS.value:
+            recovered = self._save(replace(run, context={**context, "framework.recovery": {"required": False}}, revision=run.revision + 1))
+            self._emit(recovered, "workflow.recovery.confirmed_success", payload={"state": state.id})
+            return self._advance(recovered, self._next_state(state, set()), trigger="recovery.confirmed_success")
+        if classification == ReconcileClassification.NOT_STARTED.value:
+            recovered = self._save(replace(run, context={**context, "framework.recovery": {"required": False}}, status=RunStatus.RUNNING, revision=run.revision + 1))
+            self._emit(recovered, "workflow.recovery.confirmed_not_started", payload={"state": state.id})
+            return recovered
+        if classification == ReconcileClassification.IN_PROGRESS.value:
+            next_probe = (_utcnow() + timedelta(seconds=self.recovery_poll_seconds)).isoformat()
+            recovered = self._save(replace(
+                run,
+                context={**context, "framework.recovery": {"required": True, "reason": recovery.get("reason", "restart"), "retry_at": next_probe}},
+                status=RunStatus.RECOVERING,
+                revision=run.revision + 1,
+            ))
+            self._emit(recovered, "workflow.recovery.in_progress", payload={"state": state.id, "retry_at": next_probe})
+            return recovered
+        return self._create_decision(
+            self._save(replace(run, context=context, revision=run.revision + 1)),
+            state,
+            f"recovery.{classification}",
+            {"evidence": list(evidence)},
+        )
 
     def _create_decision(self, run: WorkflowRun, state: Any, reason: str, error: dict[str, Any] | None) -> WorkflowRun:
         if not state.decision_options:
@@ -312,6 +414,18 @@ class WorkflowRuntime:
             event = replace(event, run_id=run_id, action_id=action_id)
         stored = self.events.append(event)
         emitted.append(stored)
+        if stored.progress:
+            run = self.runs.get(run_id)
+            active_attempt = next((item for item in reversed(run.attempts) if item.action_id == action_id and str(item.status) == ActionStatus.RUNNING.value), None)
+            if active_attempt is not None:
+                progressed = replace(active_attempt, last_progress_at=stored.observed_at, last_event_type=stored.type)
+                self._replace_attempt(run, progressed)
+                run = self.runs.get(run_id)
+                self._save(replace(
+                    run,
+                    progress=replace(run.progress, last_event_type=stored.type, last_progress_at=stored.observed_at),
+                    revision=run.revision + 1,
+                ))
         return stored
 
     @staticmethod
@@ -348,4 +462,16 @@ class WorkflowRuntime:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _utcnow().isoformat()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return _utcnow()

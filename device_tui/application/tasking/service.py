@@ -698,6 +698,9 @@ class TaskManager:
         self._framework_definitions: dict[str, FrameworkWorkflowDefinition] = {}
         if store is not None:
             for record, request in store.list_tasks():
+                framework_definition = self._framework_definition(request.workflow)
+                if framework_definition is not None:
+                    self._framework_definitions[record.id] = framework_definition
                 interrupted = self._interrupted_operation(record)
                 if record.status in {"running", "pending"}:
                     record = replace(
@@ -711,6 +714,13 @@ class TaskManager:
                     )
                 self._records[record.id] = record
                 self._requests[record.id] = request
+                if framework_definition is not None:
+                    try:
+                        self._framework_runtime.mark_interrupted(record.id, reason="process_restart")
+                    except KeyError:
+                        # The Task record can outlive an old non-framework run.
+                        # It remains paused rather than creating a new run.
+                        pass
                 if record.checkpoint is not None:
                     self._resources[record.id] = {("operation", item) for item in record.checkpoint.operation_ids}
                 store.upsert_task(record, request)
@@ -1132,7 +1142,7 @@ class TaskManager:
         if self._framework_definition_for_task(task_id) is not None:
             run = self._framework_runtime.resume(task_id, context=dict(context or {}))
             self._update_framework_record(task_id, request, run)
-            if str(run.status) == FrameworkRunStatus.RUNNING.value and task_id not in self._jobs:
+            if str(run.status) in {FrameworkRunStatus.RUNNING.value, FrameworkRunStatus.RECOVERING.value} and task_id not in self._jobs:
                 self._jobs[task_id] = asyncio.create_task(self._run_framework(task_id, request), name=f"framework-task-{task_id}-resume")
             return self.get(task_id)
         self._ensure_lease(task_id, request.target.device_id)

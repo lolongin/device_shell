@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from device_tui.application import (
+    CommandResult,
+    ControlContext,
     CommandRequest,
     DeviceTarget,
     SIMULATED_DEVICE_ID,
+    SessionView,
     build_desktop_application,
 )
+from device_tui.application.errors import ApplicationError
+from device_tui.application.tasking import DeviceExecutionTool, DeviceWorkflowExecutionError
+from device_tui.application.tasking.models import WorkflowStep
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
 
@@ -43,6 +51,102 @@ class RebootExecutor:
             ],
             "duration_ms": 1,
         }
+
+
+class ReadinessControl:
+    def __init__(self, *, cli_ready: bool, reused: bool = False) -> None:
+        self.cli_ready = cli_ready
+        self.reused = reused
+        self.probes = 0
+        self.reconnects = 0
+
+    async def open_session(self, target, **kwargs):
+        del target, kwargs
+        return SessionView("recovery-1", "d1", "ssh", "connected", reused=self.reused)
+
+    async def reconnect_session(self, target, **kwargs):
+        del target, kwargs
+        self.reconnects += 1
+        return SessionView("recovery-1", "d1", "ssh", "connected", reused=True)
+
+    async def execute(self, target, request, *, context):
+        del target, request, context
+        self.probes += 1
+        if not self.cli_ready:
+            raise ApplicationError("CLI is still presenting a login prompt.")
+        return CommandResult(
+            operation_id="probe-1",
+            execution_id="probe-1",
+            session_id="recovery-1",
+            device_id="d1",
+            status="completed",
+            output="VRP V8\n<Huawei> ",
+        )
+
+
+def test_wait_online_requires_a_successful_cli_probe_after_transport_connects() -> None:
+    async def scenario() -> None:
+        control = ReadinessControl(cli_ready=True)
+        result = await DeviceExecutionTool(control).execute(
+            DeviceTarget(device_id="d1"),
+            WorkflowStep(
+                "wait_online",
+                kind="device",
+                action="wait_online",
+                params={"timeout_seconds": 2, "readiness_command": "display version"},
+            ),
+            context=ControlContext(source="test"),
+        )
+
+        assert control.probes == 1
+        assert result["transport_status"] == "connected"
+        assert result["cli_status"] == "ready"
+        assert result["probe_execution_id"] == "probe-1"
+
+    asyncio.run(scenario())
+
+
+def test_wait_online_does_not_treat_connected_transport_as_cli_ready() -> None:
+    async def scenario() -> None:
+        control = ReadinessControl(cli_ready=False)
+        with pytest.raises(DeviceWorkflowExecutionError) as error:
+            await DeviceExecutionTool(control).execute(
+                DeviceTarget(device_id="d1"),
+                WorkflowStep(
+                    "wait_online",
+                    kind="device",
+                    action="wait_online",
+                    params={"timeout_seconds": 1, "readiness_command": "display version"},
+                ),
+                context=ControlContext(source="test"),
+            )
+
+        assert control.probes > 0
+        assert error.value.code == "cli_not_ready"
+        assert error.value.details["transport_status"] == "connected"
+        assert error.value.details["last_probe"]["cli_status"] == "not_ready"
+
+    asyncio.run(scenario())
+
+
+def test_wait_online_honors_a_framework_requested_reconnect() -> None:
+    async def scenario() -> None:
+        control = ReadinessControl(cli_ready=True, reused=True)
+        result = await DeviceExecutionTool(control).execute(
+            DeviceTarget(device_id="d1"),
+            WorkflowStep(
+                "wait_online",
+                kind="device",
+                action="wait_online",
+                params={"timeout_seconds": 2, "force_reconnect": True},
+            ),
+            context=ControlContext(source="test"),
+        )
+
+        assert control.reconnects == 1
+        assert result["cli_status"] == "ready"
+
+    asyncio.run(scenario())
 
 
 def test_control_opens_and_sends_through_existing_session_service() -> None:

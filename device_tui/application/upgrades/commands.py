@@ -45,6 +45,10 @@ class HuaweiVrpCommandSet:
         return "display startup"
 
     @staticmethod
+    def device_query() -> str:
+        return "display device"
+
+    @staticmethod
     def storage_query(storage: str) -> str:
         return f"dir {storage}"
 
@@ -93,7 +97,8 @@ class HuaweiVrpCommandSet:
             probe_commands = {
                 "version": (self.version_query(),),
                 "startup": (self.startup_query(),),
-                "storage": (self.storage_query(master_storage), self.storage_query(slave_storage)),
+                "storage": (self.storage_query(master_storage),),
+                "topology": (self.device_query(),),
             }.get(normalized, ())
             for command in probe_commands:
                 if command not in commands:
@@ -104,38 +109,6 @@ class HuaweiVrpCommandSet:
         if fact == "running_version":
             return CommandPlan(commands=(self.version_query(),))
         return CommandPlan(commands=(self.storage_query(DEFAULT_MASTER_STORAGE),))
-
-    def ftp_login_plan(
-        self,
-        host: str,
-        port: int,
-        *,
-        username_secret_ref: str = "file_transfer.username",
-        password_secret_ref: str = "file_transfer.password",
-    ) -> CommandPlan:
-        if not host.strip():
-            raise ValueError("FTP login requires a server host.")
-        return CommandPlan(steps=(
-            {"type": "send", "text": self.ftp_connect(host, port), "label": "open ftp session"},
-            {
-                "type": "expect",
-                "success": ["ftp_prompt"],
-                "failures": ["530 ", "421 ", "Login incorrect", "Authentication failed", "Permission denied"],
-                "responses": [
-                    {"match": "username_prompt", "secret_ref": username_secret_ref},
-                    {"match": "password_prompt", "secret_ref": password_secret_ref},
-                ],
-                "timeout_seconds": 30,
-                "label": "authenticate ftp session",
-            },
-            {"type": "send", "text": self.quit_command(), "label": "close ftp probe session"},
-            {
-                "type": "expect",
-                "success": ["device_prompt"],
-                "timeout_seconds": 15,
-                "label": "return to device prompt",
-            },
-        ))
 
     @staticmethod
     def ftp_connect(host: str, port: int) -> str:

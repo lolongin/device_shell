@@ -38,6 +38,22 @@ class Watchdog:
             return WatchdogIncident(
                 "action_timeout", action.id, "action deadline exceeded", tuple(sorted(expected)), elapsed_seconds=elapsed,
             )
+        # An Action can have a generous overall budget while still requiring
+        # early protocol milestones (for example, GET must be sent before a
+        # transfer is allowed to consume its multi-hour completion budget).
+        overdue = sorted(
+            item.event_type
+            for item in action.expectations
+            if item.terminal and item.event_type not in satisfied_events and elapsed >= item.timeout_seconds
+        )
+        if overdue:
+            return WatchdogIncident(
+                "expectation_timeout",
+                action.id,
+                "expected event was not observed before its deadline",
+                tuple(overdue),
+                elapsed_seconds=elapsed,
+            )
         progress_at = _parse(attempt.last_progress_at or attempt.started_at, now)
         idle = max(0.0, (now - progress_at).total_seconds())
         idle_limits = [item.idle_timeout_seconds for item in action.expectations if item.idle_timeout_seconds > 0]

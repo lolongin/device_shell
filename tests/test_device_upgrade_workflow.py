@@ -6,13 +6,15 @@ from device_tui.application.workflows import HuaweiVrpPackageUpgradeProvider
 def test_huawei_package_provider_declares_the_single_executable_path() -> None:
     workflow = HuaweiVrpPackageUpgradeProvider().build({
         "package_ref": "images/router-v2.cc",
+        "expected_version": "VRP V8",
+        "validation_commands": ["display version"],
         "activation_policy": "reboot",
         "topology_policy": "auto",
     })
 
     assert workflow.id == "network.package_upgrade"
     assert [state.id for state in workflow.states] == [
-        "precheck", "ftp_login", "cleanup", "transfer", "verify_package",
+        "precheck", "cleanup", "transfer", "verify_package",
         "sync_standby", "configure_startup", "reboot_approval", "reboot",
         "wait_online", "verify_version", "validation", "rollback", "complete",
     ]
