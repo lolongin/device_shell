@@ -791,6 +791,7 @@ class TaskManager:
 
     async def _run_framework(self, task_id: str, request: TaskCreate) -> None:
         try:
+            await self._reset_session_if_requested(task_id, request)
             await self._framework_runtime.run_until_blocked(
                 task_id,
                 on_update=lambda run: self._update_framework_record(task_id, request, run),
@@ -996,6 +997,7 @@ class TaskManager:
         engine = WorkflowEngine(request.workflow, self._execution, target=request.target, context=self._execution_context(task_id, request))
         self._stateful_engines[task_id] = engine
         try:
+            await self._reset_session_if_requested(task_id, request)
             engine.start(task, execution=self._execution, target=request.target)
             self._update_from_engine(task_id, request.workflow, engine.task)
             while engine.task.status in {TaskStatus.RUNNING.value, TaskStatus.RESUMED.value}:
@@ -1107,6 +1109,7 @@ class TaskManager:
     async def _run(self, task_id: str, request: TaskCreate) -> None:
         self._update(task_id, status="running", message="Task running.")
         try:
+            await self._reset_session_if_requested(task_id, request)
             result = await self._engine.run(
                 request.workflow,
                 task_id=task_id,
@@ -1131,6 +1134,22 @@ class TaskManager:
             self._completed_steps.pop(task_id, None)
             self._release_task_resources(task_id)
 
+    async def _reset_session_if_requested(self, task_id: str, request: TaskCreate) -> None:
+        if not bool(request.context.get("reset_session", False)):
+            return
+        reset = getattr(self._execution, "reset_session", None)
+        if not callable(reset):
+            return
+        execution_context = self._execution_context(task_id, request)
+        await reset(
+            request.target,
+            context=ControlContext(
+                source="task.restart",
+                task_id=task_id,
+                lease_token=str(execution_context.get("lease_token") or ""),
+            ),
+        )
+
     def resume(self, task_id: str, *, context: dict[str, Any] | None = None, step_id: str = "") -> TaskRecord:
         """Resume a paused task after an operator or agent has repaired the device."""
         record = self.get(task_id)
@@ -1139,6 +1158,8 @@ class TaskManager:
         request = self._requests.get(task_id)
         if request is None:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
+        request = replace(request, context={**request.context, **dict(context or {}), "reset_session": True})
+        self._requests[task_id] = request
         if self._framework_definition_for_task(task_id) is not None:
             run = self._framework_runtime.resume(task_id, context=dict(context or {}))
             self._update_framework_record(task_id, request, run)

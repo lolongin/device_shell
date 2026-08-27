@@ -349,7 +349,9 @@ class TerminalExecutionRunner:
                 step.success_markers,
                 case_sensitive=step.case_sensitive,
             )
-            if success_marker is not None:
+            # Reboot expect steps complete only on a real transport disconnect;
+            # a prompt echoed before shutdown is not proof that reboot started.
+            if success_marker is not None and not step.disconnect_is_success:
                 self._finish_active_step_locked(
                     "completed",
                     matched=success_marker[0],
@@ -395,7 +397,7 @@ class TerminalExecutionRunner:
                 step.success,
                 case_sensitive=step.case_sensitive,
             )
-            if success is not None:
+            if success is not None and not step.disconnect_is_success:
                 self._finish_active_step_locked("completed", matched=success[0])
                 if not self._take_branch_locked(step, step.on_match, reason="match"):
                     self.current_step += 1

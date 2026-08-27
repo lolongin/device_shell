@@ -304,7 +304,33 @@ class WorkflowRuntime:
     def _apply_reconcile(self, run: WorkflowRun, state_id: str, classification: str, mapping: dict[str, str], facts: dict[str, Any], evidence: tuple[dict[str, Any], ...]) -> WorkflowRun:
         outcome = str(classification)
         directive = mapping.get(outcome, "decision")
-        run = self._save(replace(run, context={**run.context, f"reconcile.{state_id}": {"classification": outcome, "facts": facts, "evidence": list(evidence)}}, status=RunStatus.RECOVERING, revision=run.revision + 1))
+        reconcile_context = {
+            "classification": outcome,
+            "facts": facts,
+            "evidence": list(evidence),
+        }
+        # A timeout only means the control-side observation ended. If the
+        # device/operation is still progressing, keep monitoring it instead
+        # of converting a recoverable in-flight action into a human decision.
+        if outcome == ReconcileClassification.IN_PROGRESS.value:
+            retry_at = (_utcnow() + timedelta(seconds=self.recovery_poll_seconds)).isoformat()
+            run = self._save(replace(
+                run,
+                context={
+                    **run.context,
+                    f"reconcile.{state_id}": reconcile_context,
+                    "framework.recovery": {
+                        "required": True,
+                        "reason": "reconcile.in_progress",
+                        "retry_at": retry_at,
+                    },
+                },
+                status=RunStatus.RECOVERING,
+                revision=run.revision + 1,
+            ))
+            self._emit(run, "workflow.recovery.in_progress", payload={"state": state_id, "retry_at": retry_at})
+            return run
+        run = self._save(replace(run, context={**run.context, f"reconcile.{state_id}": reconcile_context}, status=RunStatus.RECOVERING, revision=run.revision + 1))
         if directive == "continue":
             definition = self._definitions[f"{run.workflow_id}:{run.workflow_version}"]
             state = next(item for item in definition.states if item.id == state_id)

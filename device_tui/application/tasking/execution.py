@@ -264,8 +264,25 @@ class DeviceExecutionTool:
                 steps=tuple(item for item in params.get("steps", []) if isinstance(item, dict)),
                 context=context,
             )
+            data = dict(result.data)
+            disconnected = any(
+                str(item.get("matched") or "").casefold() == "disconnected"
+                for item in result.steps
+                if isinstance(item, dict)
+            )
+            # The transport may report its watchdog timeout just after the
+            # disconnect event was observed. The device is already rebooting
+            # in that case, so preserve the successful fact instead of asking
+            # the workflow to repeat reboot.
+            if disconnected and str(result.status).casefold() not in {"success", "succeeded", "completed", "ok"}:
+                data["reboot_command_sent"] = True
+                data["reboot_disconnect_observed"] = True
+                data["status"] = "completed"
+                data["execution_id"] = result.execution_id
+                data["evidence"] = ({"kind": "terminal_execution", "execution_id": result.execution_id, "steps": list(result.steps)},)
+                return data
             self._raise_for_failed_result(result.status, result.error_code, result.output or "Reboot failed.")
-            return dict(result.data)
+            return data
         if action == "power_off":
             result = self._control.power_off(target.device_id, context=context)
             return {"device_id": target.device_id, "status": result.status, "message": result.message}
@@ -374,6 +391,15 @@ class DeviceExecutionTool:
     def cancel_target(self, target: DeviceTarget) -> str:
         """Fallback cancellation for a terminal run still being registered."""
         return self._control.cancel_active_execution(target)
+
+    async def reset_session(self, target: DeviceTarget, *, context: ControlContext) -> None:
+        """Drop any stale CLI sub-mode before restarting a task."""
+        try:
+            self._control.cancel_active_execution(target)
+        except Exception:
+            pass
+        resolved = await self._control.resolve_or_open_session(target, context=context)
+        await self._control.reconnect_session(resolved, context=context)
 
     def get_resource(self, kind: str, resource_id: str) -> dict[str, Any]:
         """Return a redacted resource snapshot used during restart reconcile."""

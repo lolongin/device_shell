@@ -631,6 +631,28 @@ def test_reboot_disconnect_is_activation_signal() -> None:
     assert result["steps"][1]["matched"] == "disconnected"
 
 
+def test_reboot_prompt_before_disconnect_does_not_complete() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "reboot"},
+            {
+                "type": "expect",
+                "success": ["device_prompt", "login_prompt", "username_prompt"],
+                "disconnect_is_success": True,
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "<sim> ")
+    assert runner.public_dict()["status"] == "running"
+
+    coordinator.on_session_state("tab-1", "disconnected")
+    assert runner.public_dict()["status"] == "completed"
+
+
 def test_success_marker_wins_over_failure_word() -> None:
     """A step with explicit success markers completes when a success marker is
     present, even if a failure-looking word also appears in the output. This

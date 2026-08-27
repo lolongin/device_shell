@@ -299,6 +299,20 @@ class DeviceExecutionActionHandler:
                         package_size=package_size,
                     ),
                 }
+                if bool(facts.get("topology_detection", {}).get("include_slave")):
+                    standby_storage = str(action.params.get("slave_storage") or DEFAULT_SLAVE_STORAGE)
+                    standby_output = str(data.get("standby_storage_output") or "")
+                    facts["standby_package"] = {
+                        "name": package_name,
+                        "storage": standby_storage,
+                        "size_bytes": package_size,
+                        "present": driver.package_is_present(
+                            standby_output,
+                            storage=standby_storage,
+                            package_name=package_name,
+                            package_size=package_size,
+                        ),
+                    }
         if action.operation == "device.reboot":
             facts["reboot"] = {
                 "command_sent": bool(data.get("reboot_command_sent", False)),
@@ -571,6 +585,12 @@ class DeviceExecutionActionHandler:
                 bool(self._precheck_topology(run).get("include_slave", False)),
             )
             params["mode"] = "interactive"
+            # Interactive terminal execution has its own plan-level deadline.
+            # Without an explicit value DeviceControlService defaults it to
+            # 60 seconds, which is shorter than the framework action budget
+            # and can report a timeout after the device already applied the
+            # startup command but before it returned the final prompt.
+            params["total_timeout_seconds"] = max(1, int(action.timeout_seconds))
             params["steps"] = _interactive_command_steps(
                 primary_commands,
                 allow_confirmation=True,
@@ -704,6 +724,9 @@ class DeviceExecutionActionHandler:
 
     def _sync_commands(self, action: ActionSpec, run: WorkflowRun) -> tuple[str, ...]:
         if not bool(self._precheck_topology(run).get("include_slave", False)):
+            return ()
+        standby_package = self._precheck_facts(run).get("standby_package")
+        if isinstance(standby_package, dict) and bool(standby_package.get("present")):
             return ()
         params = action.params
         package_name = PurePosixPath(str(params.get("package") or "").replace("\\", "/")).name
