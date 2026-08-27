@@ -9,6 +9,7 @@ def test_huawei_package_provider_declares_the_single_executable_path() -> None:
         "expected_version": "VRP V8",
         "validation_commands": ["display version"],
         "activation_policy": "reboot",
+        "auto_reboot": False,
         "topology_policy": "auto",
     })
 
@@ -49,6 +50,16 @@ def test_huawei_package_provider_can_auto_reboot_without_approval_state() -> Non
         "package_source": "device",
         "activation_policy": "reboot",
         "auto_reboot": True,
+    })
+
+    configure = next(state for state in workflow.states if state.id == "configure_startup")
+    assert configure.next_state == "reboot"
+
+
+def test_huawei_package_provider_defaults_to_automatic_reboot() -> None:
+    workflow = HuaweiVrpPackageUpgradeProvider().build({
+        "package_ref": "flash:/router-v2.cc",
+        "activation_policy": "reboot",
     })
 
     configure = next(state for state in workflow.states if state.id == "configure_startup")

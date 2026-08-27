@@ -364,7 +364,11 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
             <select v-else-if="parameter.control === 'select'" :value="String(parameterValue(parameter) ?? '')" @change="onParameterInput(parameter, $event)">
               <option v-for="option in workflowParameterOptions(parameter)" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
-            <input v-else-if="parameter.type === 'boolean'" type="checkbox" :checked="Boolean(parameterValue(parameter))" @change="onParameterInput(parameter, $event)" />
+            <div v-else-if="parameter.type === 'boolean'" class="task-toggle" :class="{ 'is-on': Boolean(parameterValue(parameter)) }">
+              <input type="checkbox" :checked="Boolean(parameterValue(parameter))" @change="onParameterInput(parameter, $event)" />
+              <span class="task-toggle-track" aria-hidden="true"><i></i></span>
+              <b>{{ Boolean(parameterValue(parameter)) ? '已开启' : '已关闭' }}</b>
+            </div>
             <input v-else :type="parameter.type === 'integer' ? 'number' : 'text'" :value="String(parameterValue(parameter) ?? '')" @input="onParameterInput(parameter, $event)" />
             <small v-if="parameter.control === 'file' && parameter.name === 'package_path' && usesDevicePackage()" class="task-package-hint">使用设备已有包，不启动本地 FTP 传输</small>
             <small v-else-if="parameter.control === 'file' && parameterValue(parameter) && isLocalPackage(String(parameterValue(parameter)))" class="task-package-hint">本地文件将在创建 Task 时放入文件服务目录</small>

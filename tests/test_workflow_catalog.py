@@ -54,7 +54,10 @@ def test_catalog_registers_provider_and_builds_without_api_changes() -> None:
 def test_catalog_rejects_unknown_and_invalid_parameters() -> None:
     catalog = build_default_workflow_catalog()
     descriptor = catalog.descriptor("device_upgrade")
-    assert descriptor.public_dict()["input_schema"]["properties"]["auto_reboot"]["type"] == "boolean"
+    public = descriptor.public_dict()
+    assert public["input_schema"]["properties"]["auto_reboot"]["type"] == "boolean"
+    assert public["input_schema"]["properties"]["auto_reboot"]["default"] is True
+    assert public["input_schema"]["properties"]["activation_policy"]["default"] == "reboot"
     with pytest.raises(WorkflowCatalogError, match="unknown workflow"):
         catalog.descriptor("does_not_exist")
     with pytest.raises(WorkflowCatalogError, match="must be one of"):

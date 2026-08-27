@@ -2233,20 +2233,31 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .task-ui-title { gap: 9px; }
 .task-ui-title h3 { margin: 2px 0 0; font-size: 18px; }
 .task-ui-icon { width: 32px; height: 32px; display: grid; place-items: center; color: var(--accent); border: 1px solid rgba(34,197,94,.32); border-radius: 8px; background: rgba(34,197,94,.08); }
-.task-ui-create { display: grid; grid-template-columns: 1fr 1.25fr auto; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); }
+.task-ui-create { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--shadow-card); }
 .task-mode-tabs { grid-column: 1 / -1; display: flex; gap: 5px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
 .task-mode-tabs button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; color: var(--muted); border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; font-size: 11px; }
 .task-mode-tabs button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 38%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .task-ui-create input { min-width: 0; height: 32px; padding: 0 8px; color: var(--text); border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); }
-.task-ui-create label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.task-ui-create label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .01em; }
 .task-ui-create select { min-width: 0; height: 32px; padding: 0 8px; color: var(--text); border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); }
 .task-package-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; }
 .task-package-picker .secondary-button { min-height: 32px; padding: 0 8px; white-space: nowrap; }
-.task-upgrade-options { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.task-upgrade-options { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .task-workflow-description { grid-column: 1 / -1; margin: -2px 0 0; color: var(--muted); font-size: 11px; }
-.task-workflow-parameters { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.task-workflow-parameters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.task-workflow-parameters > label:has(.task-toggle) { align-content: start; }
+.task-toggle { min-height: 32px; display: flex !important; grid-template-columns: none; align-items: center; gap: 9px !important; padding: 0 10px; color: var(--text) !important; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--bg); cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease; }
+.task-toggle:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); }
+.task-toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.task-toggle-track { position: relative; flex: 0 0 34px; width: 34px; height: 18px; border-radius: 999px; background: var(--line-strong); transition: background-color 160ms ease; }
+.task-toggle-track i { position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--text); transition: transform 160ms ease; }
+.task-toggle.is-on { border-color: color-mix(in srgb, var(--accent) 56%, var(--line-strong)); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.task-toggle.is-on .task-toggle-track { background: var(--accent); }
+.task-toggle.is-on .task-toggle-track i { transform: translateX(16px); }
+.task-toggle b { color: var(--muted); font-size: 11px; font-weight: 650; }
+.task-toggle.is-on b { color: var(--accent); }
 .task-package-hint { overflow: hidden; color: var(--accent); text-overflow: ellipsis; white-space: nowrap; }
-.task-ui-create .primary-button { align-self: end; min-height: 32px; white-space: nowrap; }
+.task-ui-create .primary-button { grid-column: 1 / -1; justify-self: start; min-height: 36px; padding-inline: 16px; white-space: nowrap; }
 .task-ui .primary-button, .task-ui .secondary-button, .task-ui .danger-button { min-height: 34px; padding: 0 11px; font-size: 12px; }
 .task-cancel-button { min-width: 92px; justify-content: center; }
 .task-error, .task-failure { display: flex; align-items: center; gap: 7px; margin: 0; padding: 8px 9px; color: var(--danger); border: 1px solid rgba(239,68,68,.3); border-radius: 7px; background: color-mix(in srgb, var(--danger) 8%, transparent); font-size: 10.5px; }

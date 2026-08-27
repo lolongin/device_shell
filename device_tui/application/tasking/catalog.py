@@ -268,12 +268,12 @@ class DeviceUpgradeWorkflowProvider:
                 enum_labels={"never": "不自动删除", "auto": "自动清理未使用旧包"},
             ),
             WorkflowParameter(
-                "activation_policy", label="激活方式", default="stage_only", control="select",
+                "activation_policy", label="激活方式", default="reboot", control="select",
                 enum=("stage_only", "reboot"),
-                enum_labels={"stage_only": "只设置下次启动项", "reboot": "确认后重启并验证"},
+                enum_labels={"stage_only": "只设置下次启动项", "reboot": "重启并验证"},
             ),
             WorkflowParameter(
-                "auto_reboot", type="boolean", label="自动重启", default=False, control="checkbox",
+                "auto_reboot", type="boolean", label="自动重启", default=True, control="checkbox",
                 description="设置启动项后自动执行重启，不等待人工批准。",
             ),
             WorkflowParameter(
