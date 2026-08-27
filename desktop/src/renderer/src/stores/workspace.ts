@@ -611,30 +611,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function openSession(kind: SessionKind): Promise<void> {
-    const device = kind === 'simulated'
-      ? devices.value.find((candidate) => candidate.is_simulated) || null
-      : selectedDevice.value
-    if (!device) {
-      error.value = kind === 'simulated'
-        ? '模拟终端不可用，请刷新设备列表后重试。'
-        : '请先选择设备。'
-      return
-    }
+  function sessionAvailabilityError(device: DeviceSummary, kind: SessionKind): string {
+    if (kind === 'simulated') return device.is_simulated ? '' : '当前设备不是模拟设备。'
     if (kind === 'ssh' && !device?.can_connect_ssh) {
-      error.value = device?.is_simulated ? '模拟终端不支持 SSH。' : '设备 SSH 地址不可用。'
-      return
+      return device.is_simulated ? '模拟终端不支持 SSH。' : '设备 SSH 地址不可用。'
     }
     if (kind === 'telnet' && !device?.can_connect_telnet) {
-      error.value = device?.is_simulated
+      return device.is_simulated
         ? '模拟终端不支持 Telnet。'
-        : device?.is_saved_server
+        : device.is_saved_server
           ? '保存服务器请使用 SSH。'
           : '设备 Telnet 地址不可用。'
-      return
     }
     if (kind === 'serial' && !device?.can_connect_serial) {
-      error.value = device?.serial_display || '请先占用设备后再连接串口。'
+      return device.serial_display || '请先占用设备后再连接串口。'
+    }
+    return ''
+  }
+
+  async function openSessionForDevice(device: DeviceSummary, kind: SessionKind): Promise<void> {
+    const availabilityError = sessionAvailabilityError(device, kind)
+    if (availabilityError) {
+      error.value = availabilityError
       return
     }
     openingKind.value = kind
@@ -648,6 +646,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } finally {
       openingKind.value = ''
     }
+  }
+
+  async function openSession(kind: SessionKind): Promise<void> {
+    const device = kind === 'simulated'
+      ? devices.value.find((candidate) => candidate.is_simulated) || null
+      : selectedDevice.value
+    if (!device) {
+      error.value = kind === 'simulated'
+        ? '模拟终端不可用，请刷新设备列表后重试。'
+        : '请先选择设备。'
+      return
+    }
+    await openSessionForDevice(device, kind)
   }
 
   const openSimulatedSession = (): Promise<void> => openSession('simulated')
@@ -1242,14 +1253,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     terminal_environment: 'auto' | 'linux' | 'vrp'
     command_mode: 'vrp' | 'ftpget'
   }): Promise<boolean> {
-    if (!activeSessionId.value) return false
+    const deviceId = selectedDeviceId.value
+    if (!deviceId) {
+      transferError.value = '请选择要传输文件的设备。'
+      return false
+    }
     transferBusy.value = true
     transferError.value = ''
     notice.value = ''
     try {
       const response = await desktopApi.startManagedTransfer({
         ...payload,
-        session_id: activeSessionId.value
+        device_id: deviceId
       })
       operations.value = [
         response.operation,
@@ -1827,6 +1842,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     startApplicationEvents,
     openSimulatedSession,
     openCustomDeviceSession,
+    openSessionForDevice,
     openSession,
     openProfileSession,
     manageProfileCredential,

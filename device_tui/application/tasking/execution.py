@@ -388,6 +388,11 @@ class DeviceExecutionTool:
             "message": operation.message,
             "error_code": operation.error_code,
             "revision": operation.revision,
+            "progress_percent": operation.progress_percent,
+            "bytes_transferred": operation.bytes_transferred,
+            "total_bytes": operation.total_bytes,
+            "bytes_per_second": operation.bytes_per_second,
+            "eta_seconds": operation.eta_seconds,
             "data": dict(operation.data),
         }
 

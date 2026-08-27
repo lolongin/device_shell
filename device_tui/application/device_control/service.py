@@ -70,24 +70,48 @@ class DeviceControlService:
         del timeout_seconds, context
         if target.session_id:
             session = self._session(target.session_id)
+            self._validate_session_target(session, target)
             if session.status.casefold() in {"disconnected", "failed"}:
                 session = await self._sessions.reconnect(session.id)
             return self._session_view(session, reused=True)
         device_id = self._required_device_id(target)
         requested_protocol = target.protocol.casefold()
-        if reuse:
-            for session in self._sessions.list_sessions():
-                same_protocol = (
-                    requested_protocol == "auto"
-                    or session.kind.casefold() == requested_protocol
-                )
-                if session.device_id == device_id and session.status == "connected" and same_protocol:
-                    return self._session_view(session, reused=True)
         protocol = requested_protocol
         if protocol == "auto":
             protocol = self._protocol_for(self._devices.require_device(device_id))
+        if reuse:
+            candidates = [
+                session
+                for session in self._sessions.list_sessions()
+                if session.device_id == device_id
+                and session.status == "connected"
+                and session.kind.casefold() == protocol
+            ]
+            if len(candidates) == 1:
+                return self._session_view(candidates[0], reused=True)
+            # More than one compatible interactive terminal is ambiguous.
+            # Create an isolated session instead of silently borrowing one.
         session = await self._sessions.create(device_id, protocol, title, term_size)
         return self._session_view(session)
+
+    async def resolve_or_open_session(
+        self,
+        target: DeviceTarget,
+        *,
+        context: ControlContext | None = None,
+    ) -> DeviceTarget:
+        """Return an explicit, device-validated session target for execution.
+
+        Device actions must never infer a terminal from the first item in the
+        session list.  Callers that have only a device id use this method to
+        reuse a compatible session or create one for that exact device.
+        """
+        view = await self.open_session(target, reuse=True, context=context)
+        return DeviceTarget(
+            device_id=view.device_id,
+            session_id=view.session_id,
+            protocol=view.protocol,
+        )
 
     async def open_connection(
         self,
@@ -100,9 +124,15 @@ class DeviceControlService:
     ) -> SessionView:
         del context
         if reuse:
-            for session in self._sessions.list_sessions():
-                if session.device_id == target.device_id and session.status == "connected":
-                    return self._session_view(session, reused=True)
+            candidates = [
+                session
+                for session in self._sessions.list_sessions()
+                if session.device_id == target.device_id
+                and session.status == "connected"
+                and session.kind.casefold() == target.protocol.casefold()
+            ]
+            if len(candidates) == 1:
+                return self._session_view(candidates[0], reused=True)
         session = await self._sessions.create_target(target, title, term_size)
         return self._session_view(session)
 
@@ -147,7 +177,8 @@ class DeviceControlService:
         value = str(text)
         if not value.strip():
             raise UnsupportedOperationError("Command text cannot be empty.")
-        session = self._connected_session_for_target(target)
+        resolved_target = await self.resolve_or_open_session(target, context=context)
+        session = self._connected_session_for_target(resolved_target)
         await self._sessions.write(session.id, CommandService.command_payload(value))
         return SendResult(session_id=session.id, device_id=session.device_id, sent=True)
 
@@ -183,7 +214,8 @@ class DeviceControlService:
         context: ControlContext | None = None,
     ) -> CommandResult:
         self._validate_task_lease(target, context)
-        session = self._connected_session_for_target(target)
+        resolved_target = await self.resolve_or_open_session(target, context=context)
+        session = self._connected_session_for_target(resolved_target)
         mode = request.mode.casefold()
         if mode == "interactive":
             if not request.steps:
@@ -378,14 +410,12 @@ class DeviceControlService:
 
     def _session_for_target(self, target: DeviceTarget) -> SessionRecord:
         if target.session_id:
-            return self._session(target.session_id)
-        device_id = self._required_device_id(target)
-        for session in self._sessions.list_sessions():
-            if session.device_id == device_id:
-                return session
-        raise ResourceNotFoundError(
-            f"No session for device: {device_id}",
-            details={"device_id": device_id},
+            session = self._session(target.session_id)
+            self._validate_session_target(session, target)
+            return session
+        raise UnsupportedOperationError(
+            "A session_id is required for this operation. Resolve or open a session for the device first.",
+            details={"device_id": self._required_device_id(target)},
         )
 
     def _connected_session_for_target(self, target: DeviceTarget) -> SessionRecord:
@@ -405,6 +435,29 @@ class DeviceControlService:
             f"Unknown session: {session_id}",
             details={"session_id": session_id},
         )
+
+    @staticmethod
+    def _validate_session_target(session: SessionRecord, target: DeviceTarget) -> None:
+        requested_device_id = target.device_id.strip()
+        if requested_device_id and session.device_id != requested_device_id:
+            raise UnsupportedOperationError(
+                "session_id does not belong to device_id.",
+                details={
+                    "session_id": session.id,
+                    "session_device_id": session.device_id,
+                    "device_id": requested_device_id,
+                },
+            )
+        requested_protocol = target.protocol.strip().casefold()
+        if requested_protocol and requested_protocol != "auto" and session.kind.casefold() != requested_protocol:
+            raise UnsupportedOperationError(
+                "session_id does not match the requested protocol.",
+                details={
+                    "session_id": session.id,
+                    "session_protocol": session.kind,
+                    "protocol": requested_protocol,
+                },
+            )
 
     @staticmethod
     def _required_device_id(target: DeviceTarget) -> str:

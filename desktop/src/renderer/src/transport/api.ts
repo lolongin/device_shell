@@ -401,7 +401,9 @@ export const desktopApi = {
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}/decision`, { method: 'POST', body: JSON.stringify(payload) }),
   startManagedTransfer: async (payload: {
     direction: 'upload' | 'download'
-    session_id: string
+    device_id: string
+    session_id?: string
+    protocol?: 'auto' | 'simulated' | 'ssh' | 'telnet' | 'serial'
     source_path: string
     destination_path: string
     overwrite: boolean

@@ -693,8 +693,7 @@ function recommendedSessionKind(device: DeviceSummary | null): SessionKind | '' 
 function openRecommendedDeviceSession(device = workspace.selectedDevice): void {
   const kind = recommendedSessionKind(device)
   if (!device || !kind) return
-  if (kind === 'simulated') void workspace.openSimulatedSession()
-  else void workspace.openSession(kind)
+  void workspace.openSessionForDevice(device, kind)
 }
 
 function deviceRowCopyText(device: DeviceSummary): string {
@@ -907,8 +906,19 @@ function copyDeviceInspectorField(label: string, value: string): void {
   void copyDeviceText(value, `已复制${label}: ${value}`)
 }
 
+function openDeviceContextRecommendedSession(): void {
+  const device = deviceContextMenu.value?.device
+  if (!device) return
+  selectDevice(device.row_id)
+  openRecommendedDeviceSession(device)
+  closeAppContextMenus()
+}
+
 function openDeviceContextSession(kind: 'ssh' | 'telnet' | 'serial'): void {
-  void workspace.openSession(kind)
+  const device = deviceContextMenu.value?.device
+  if (!device) return
+  selectDevice(device.row_id)
+  void workspace.openSessionForDevice(device, kind)
   closeAppContextMenus()
 }
 
@@ -1030,7 +1040,7 @@ function openSessionManagerDeviceSession(kind: 'ssh' | 'telnet' | 'serial'): voi
   if (!device) return
   activeSection.value = 'devices'
   selectDevice(device.row_id)
-  void workspace.openSession(kind)
+  void workspace.openSessionForDevice(device, kind)
   closeSessionManagerDeviceContextMenu()
 }
 
@@ -2442,6 +2452,14 @@ onBeforeUnmount(() => {
           :disabled="Boolean(workspace.openingKind)"
           @click="openDeviceContextSimulatedSession"
         >打开模拟终端</button>
+        <button
+          v-if="!deviceContextMenu.device.is_simulated && recommendedSessionKind(deviceContextMenu.device)"
+          type="button"
+          role="menuitem"
+          :disabled="Boolean(workspace.openingKind)"
+          title="按 SSH、Telnet、串口的优先级打开第一个可用终端"
+          @click="openDeviceContextRecommendedSession"
+        >快速打开推荐终端 · {{ sessionKindLabel(recommendedSessionKind(deviceContextMenu.device)) }}</button>
         <button
           v-if="deviceContextMenu.device.can_connect_telnet"
           type="button"

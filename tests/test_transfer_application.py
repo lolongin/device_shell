@@ -356,6 +356,42 @@ def test_backend_managed_upload_completes_and_verifies_simulated_device(
     assert cleared_history.json()["deleted_count"] >= 2
 
 
+def test_managed_transfer_opens_a_session_for_the_requested_device(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    package = share / "images" / "target.cc"
+    package.parent.mkdir(parents=True)
+    package.write_bytes(b"targeted-transfer")
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+        transfer_root=share,
+    )
+
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        started = client.post(
+            "/api/v1/file-transfers",
+            headers=headers,
+            json={
+                "direction": "upload",
+                "device_id": "MOCK-LAB-000",
+                "protocol": "simulated",
+                "source_path": "images/target.cc",
+                "destination_path": "flash:/target.cc",
+            },
+        )
+        sessions = client.get("/api/v1/sessions", headers=headers).json()["sessions"]
+
+    assert started.status_code == 200, started.text
+    operation = started.json()["operation"]
+    assert operation["device_id"] == "MOCK-LAB-000"
+    assert operation["session_id"]
+    assert [(item["id"], item["device_id"]) for item in sessions] == [
+        (operation["session_id"], "MOCK-LAB-000"),
+    ]
+
+
 def test_ftpget_command_mode_runs_one_protected_command_on_current_session(
     tmp_path: Path,
 ) -> None:

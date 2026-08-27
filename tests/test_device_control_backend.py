@@ -44,3 +44,31 @@ def test_legacy_mcp_backend_routes_to_device_control_facade() -> None:
         await desktop.sessions.close_all()
 
     asyncio.run(scenario())
+
+
+def test_legacy_mcp_backend_opens_a_session_for_the_requested_device() -> None:
+    async def scenario() -> None:
+        desktop = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(),
+            terminal_executor=FakeExecutor(),
+        )
+        backend = DeviceControlAppBackend(desktop)
+
+        result = backend.execute_ai_device_action(
+            AiDeviceAction(
+                "terminal_execute_start",
+                "execute",
+                RiskLevel.LOW,
+                device_id=SIMULATED_DEVICE_ID,
+                command="display version",
+            )
+        )
+
+        assert result.ok is True
+        sessions = desktop.sessions.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0].device_id == SIMULATED_DEVICE_ID
+        await desktop.sessions.close_all()
+
+    asyncio.run(scenario())

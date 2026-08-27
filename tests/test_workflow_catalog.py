@@ -107,3 +107,30 @@ def test_desktop_api_lists_and_builds_injected_provider() -> None:
     assert "device.health_check" in {item["id"] for item in workflows.json()["workflows"]}
     assert task.status_code == 200, task.text
     assert task.json()["task"]["workflow_id"] == "device.health_check"
+
+
+def test_task_create_rejects_a_session_from_another_device() -> None:
+    app = create_app(
+        token="catalog-token",
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+    )
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer catalog-token"}
+        session = client.post(
+            "/api/v1/sessions",
+            headers=headers,
+            json={"device_id": "MOCK-LAB-000", "kind": "simulated"},
+        ).json()
+        task = client.post(
+            "/api/v1/tasks",
+            headers=headers,
+            json={
+                "workflow_id": "device_upgrade",
+                "device_id": "LOCAL-SSH-001",
+                "session_id": session["id"],
+            },
+        )
+
+    assert task.status_code == 400
+    assert "does not belong" in task.json()["detail"]

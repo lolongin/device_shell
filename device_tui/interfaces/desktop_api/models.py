@@ -674,7 +674,9 @@ class ManagedTransferStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     direction: Literal["upload", "download"] = "upload"
-    session_id: str = Field(min_length=1, max_length=160)
+    device_id: str = Field(default="", max_length=160)
+    session_id: str = Field(default="", max_length=160)
+    protocol: Literal["auto", "simulated", "ssh", "telnet", "serial"] = "auto"
     source_path: str = Field(min_length=1, max_length=4_096)
     destination_path: str = Field(min_length=1, max_length=4_096)
     overwrite: bool = False

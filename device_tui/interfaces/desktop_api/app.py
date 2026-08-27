@@ -1089,6 +1089,16 @@ def create_app(
             session = next((item for item in desktop.sessions.list_sessions() if item.id == session_id), None)
             if session is None:
                 raise ResourceNotFoundError("Unknown session", details={"session_id": session_id})
+            if device_id and device_id != session.device_id:
+                raise UnsupportedOperationError(
+                    "session_id does not belong to device_id.",
+                    details={"session_id": session_id, "session_device_id": session.device_id, "device_id": device_id},
+                )
+            if request.protocol != "auto" and session.kind.casefold() != request.protocol:
+                raise UnsupportedOperationError(
+                    "session_id does not match the requested protocol.",
+                    details={"session_id": session_id, "session_protocol": session.kind, "protocol": request.protocol},
+                )
             device_id = session.device_id
         if not device_id:
             raise UnsupportedOperationError("device_id or session_id is required")
@@ -2354,15 +2364,38 @@ def create_app(
     async def start_managed_file_transfer(
         request: ManagedTransferStartRequest,
     ) -> OperationResponse:
-        session = next(
-            (item for item in desktop.sessions.list_sessions() if item.id == request.session_id),
-            None,
-        )
-        if session is None:
-            raise ResourceNotFoundError(
-                f"Unknown session: {request.session_id}",
-                details={"session_id": request.session_id},
+        session_id = request.session_id
+        device_id = request.device_id
+        if session_id:
+            session = next((item for item in desktop.sessions.list_sessions() if item.id == session_id), None)
+            if session is None:
+                raise ResourceNotFoundError(
+                    f"Unknown session: {session_id}",
+                    details={"session_id": session_id},
+                )
+            if device_id and device_id != session.device_id:
+                raise UnsupportedOperationError(
+                    "session_id does not belong to device_id.",
+                    details={"session_id": session_id, "session_device_id": session.device_id, "device_id": device_id},
+                )
+            if request.protocol != "auto" and session.kind.casefold() != request.protocol:
+                raise UnsupportedOperationError(
+                    "session_id does not match the requested protocol.",
+                    details={"session_id": session_id, "session_protocol": session.kind, "protocol": request.protocol},
+                )
+            device_id = session.device_id
+        if not device_id:
+            raise UnsupportedOperationError("device_id or session_id is required")
+        if not session_id:
+            view = await desktop.control.open_session(
+                DeviceTarget(device_id=device_id, protocol=request.protocol),
+                reuse=True,
+                context=ControlContext(source="electron"),
             )
+            session_id = view.session_id
+            session = next((item for item in desktop.sessions.list_sessions() if item.id == session_id), None)
+            if session is None:
+                raise ResourceNotFoundError("Session disappeared after opening", details={"session_id": session_id})
         operation = desktop.control.transfer(
             DeviceTarget(device_id=session.device_id, session_id=session.id),
             TransferRequest(

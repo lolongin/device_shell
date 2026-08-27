@@ -237,12 +237,21 @@ class HuaweiVrpPackageUpgradeProvider:
             StateNode(
                 id="configure_startup",
                 label="设置启动项",
-                description="写入下一次启动所使用的系统包。",
+                description="完成设备侧确认交互，并回读下一次启动项确认目标系统包已生效。",
                 action=ActionSpec(
                     id="configure_startup",
                     operation="huawei.startup.configure",
-                    params={"package": package},
-                    expectations=(Expectation("huawei.startup.configured", timeout_seconds=90),),
+                    params={
+                        "package": package,
+                        "master_storage": str(inputs.get("master_storage") or "flash:/"),
+                        "slave_storage": str(inputs.get("slave_storage") or "slave#flash:/"),
+                        "driver_id": str(inputs.get("driver_id") or "auto"),
+                    },
+                    expectations=(
+                        Expectation("framework.action.sent", timeout_seconds=5),
+                        Expectation("huawei.startup.command.completed", timeout_seconds=90),
+                        Expectation("huawei.startup.verified", timeout_seconds=120),
+                    ),
                     timeout_seconds=120,
                     risk="high",
                     reconcile=ReconcilePolicy(

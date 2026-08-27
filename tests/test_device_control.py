@@ -13,7 +13,7 @@ from device_tui.application import (
     SessionView,
     build_desktop_application,
 )
-from device_tui.application.errors import ApplicationError
+from device_tui.application.errors import ApplicationError, UnsupportedOperationError
 from device_tui.application.tasking import DeviceExecutionTool, DeviceWorkflowExecutionError
 from device_tui.application.tasking.models import WorkflowStep
 from device_tui.device_sources.sample import SampleDeviceRepository
@@ -184,6 +184,41 @@ def test_control_execute_uses_terminal_plan_executor_contract() -> None:
         assert result.execution_id == "exec-1"
         assert result.status == "completed"
         assert result.output == "ok\n"
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_control_executes_for_a_device_without_a_preopened_terminal() -> None:
+    async def scenario() -> None:
+        executor = FakeExecutor()
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(),
+            terminal_executor=executor,
+        )
+        result = await application.control.execute(
+            DeviceTarget(device_id=SIMULATED_DEVICE_ID),
+            CommandRequest(commands=("display version",)),
+        )
+
+        assert result.device_id == SIMULATED_DEVICE_ID
+        assert result.session_id
+        assert len(application.sessions.list_sessions()) == 1
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_control_rejects_a_session_bound_to_another_device() -> None:
+    async def scenario() -> None:
+        application = build_desktop_application(SampleDeviceRepository(), SessionHub())
+        session = await application.control.open_session(DeviceTarget(device_id=SIMULATED_DEVICE_ID))
+
+        with pytest.raises(UnsupportedOperationError, match="does not belong"):
+            await application.control.open_session(
+                DeviceTarget(device_id="another-device", session_id=session.session_id),
+            )
         await application.sessions.close_all()
 
     asyncio.run(scenario())

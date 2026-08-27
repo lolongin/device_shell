@@ -22,6 +22,13 @@ def test_huawei_package_provider_declares_the_single_executable_path() -> None:
     assert [option.id for option in reboot_approval.decision_options] == [
         "approve_reboot", "abort_reboot",
     ]
+    configure_startup = next(state for state in workflow.states if state.id == "configure_startup")
+    assert configure_startup.action is not None
+    assert [item.event_type for item in configure_startup.action.expectations] == [
+        "framework.action.sent",
+        "huawei.startup.command.completed",
+        "huawei.startup.verified",
+    ]
 
 
 def test_huawei_package_provider_omits_transfer_for_device_resident_package() -> None:

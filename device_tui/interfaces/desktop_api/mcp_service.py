@@ -833,7 +833,7 @@ class DesktopMcpService:
         }
 
     async def _tool_terminal_read(self, params: dict[str, Any]) -> dict[str, Any]:
-        session = self._resolve_session(device_id=self._text(params, "device_id"))
+        session = await self._terminal_target(params, ensure=True)
         log = self.desktop.sessions.read_log(session.id, int(params.get("max_chars") or 4096))
         return {"session_id": session.id, "device_id": session.device_id, "output": log.content, "truncated": log.truncated}
 
@@ -982,12 +982,26 @@ class DesktopMcpService:
         return session, view.reused
 
     def _resolve_session(self, *, session_id: str = "", device_id: str = "") -> Any:
-        for session in self.desktop.sessions.list_sessions():
-            if session_id and session.id == session_id:
-                return session
-            if device_id and session.device_id == device_id:
-                return session
-        raise ResourceNotFoundError("Unknown session", details={"session_id": session_id, "device_id": device_id})
+        sessions = self.desktop.sessions.list_sessions()
+        if session_id:
+            session = next((item for item in sessions if item.id == session_id), None)
+            if session is None:
+                raise ResourceNotFoundError("Unknown session", details={"session_id": session_id})
+            if device_id and session.device_id != device_id:
+                raise UnsupportedOperationError(
+                    "session_id does not belong to device_id.",
+                    details={"session_id": session_id, "session_device_id": session.device_id, "device_id": device_id},
+                )
+            return session
+        candidates = [item for item in sessions if item.device_id == device_id]
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            raise UnsupportedOperationError(
+                "Multiple sessions exist for device_id; session_id is required.",
+                details={"device_id": device_id, "session_ids": [item.id for item in candidates]},
+            )
+        raise ResourceNotFoundError("Unknown session", details={"device_id": device_id})
 
     @staticmethod
     def _protocol_for(device: Any) -> str:

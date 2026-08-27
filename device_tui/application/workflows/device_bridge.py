@@ -35,6 +35,7 @@ from device_tui.application.upgrades.package import (
     parse_dir_entries,
     package_basename,
     parse_display_startup,
+    startup_uses_package,
 )
 
 from .events import Event
@@ -100,6 +101,15 @@ class DeviceExecutionActionHandler:
             data = await self._execution.execute(target, step, context=context)
         if action.operation == "device.probe":
             data = await self._probe_confirmed_standby_storage(action, run, target, context, data, publish)
+        if action.operation == "huawei.startup.configure":
+            publish(Event(
+                type="huawei.startup.command.completed",
+                run_id=run.id,
+                action_id=action.id,
+                source="device.bridge",
+                payload={"execution_id": data.get("execution_id", "")},
+            ))
+            data = await self._verify_startup_configuration(action, run, target, context, data)
         if action.operation == "file.transfer":
             operation_id = str(data.get("operation_id") or "").strip()
             if operation_id:
@@ -156,6 +166,61 @@ class DeviceExecutionActionHandler:
             events=(),
             facts=facts,
         )
+
+    async def _verify_startup_configuration(
+        self,
+        action: ActionSpec,
+        run: WorkflowRun,
+        target: DeviceTarget,
+        context: ControlContext,
+        command_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Read back ``display startup`` before treating activation as successful."""
+        driver = self._driver(action, run)
+        package = package_basename(str(action.params.get("package") or ""))
+        if not package:
+            raise DeviceWorkflowExecutionError(
+                "startup_package_missing",
+                "Startup configuration requires the target package name.",
+                error_class="deterministic",
+            )
+        readback = await self._execution.execute(
+            target,
+            WorkflowStep(
+                f"{action.id}.readback",
+                kind="device",
+                action="command",
+                params={
+                    "commands": (driver.startup_query_command(),),
+                    "timeout_seconds": min(30, max(1, int(action.timeout_seconds))),
+                },
+            ),
+            context=context,
+        )
+        startup_output = str(readback.get("output") or "")
+        if not driver.startup_uses_artifact(startup_output, package):
+            raise DeviceWorkflowExecutionError(
+                "startup_verification_failed",
+                f"display startup did not confirm {package!r} as the next startup system software.",
+                error_class="deterministic",
+                details={"expected_package": package, "startup_output": startup_output},
+            )
+        command_output = str(command_data.get("output") or "")
+        evidence = list(command_data.get("evidence") or ())
+        evidence.extend(readback.get("evidence") or ())
+        evidence.append({
+            "kind": "startup_readback",
+            "command": driver.startup_query_command(),
+            "expected_package": package,
+            "verified": True,
+        })
+        return {
+            **command_data,
+            "output": "\n".join(item for item in (command_output, startup_output) if item),
+            "startup_output": startup_output,
+            "startup_verified": True,
+            "evidence": tuple(evidence),
+        }
 
     async def cancel(self, action: ActionSpec, run: WorkflowRun) -> None:
         """Request cancellation through the existing control-plane facade."""
@@ -239,6 +304,13 @@ class DeviceExecutionActionHandler:
                 "command_sent": bool(data.get("reboot_command_sent", False)),
                 "disconnect_observed": bool(data.get("reboot_disconnect_observed", False)),
             }
+        if action.operation == "huawei.startup.configure":
+            startup = parse_display_startup(str(data.get("startup_output") or output))
+            facts["startup"] = {
+                "current_system": startup.current_system,
+                "next_system": startup.next_system,
+                "verified": bool(data.get("startup_verified", False)),
+            }
         if action.operation == "device.wait_online":
             facts["readiness"] = {
                 "transport_status": str(data.get("transport_status") or "unknown"),
@@ -299,19 +371,34 @@ class DeviceExecutionActionHandler:
         publish: Any,
     ) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + max(1.0, timeout_seconds)
-        last_status = ""
+        last_progress_signature: tuple[object, ...] | None = None
         while True:
             snapshot = self._execution.get_resource("operation", operation_id)
             status = str(snapshot.get("status") or "").casefold()
-            if status and status != last_status:
-                last_status = status
+            progress_signature = (
+                snapshot.get("revision"),
+                status,
+                snapshot.get("stage", ""),
+                snapshot.get("bytes_transferred"),
+                snapshot.get("progress_percent"),
+            )
+            if progress_signature != last_progress_signature:
+                last_progress_signature = progress_signature
                 publish(Event(
                     type="huawei.transfer.progress",
                     run_id=run.id,
                     action_id=action.id,
                     source="device.bridge",
                     progress=True,
-                    payload={"operation_id": operation_id, "status": status, "stage": snapshot.get("stage", "")},
+                    payload={
+                        "operation_id": operation_id,
+                        "status": status,
+                        "stage": snapshot.get("stage", ""),
+                        "revision": snapshot.get("revision", 0),
+                        "bytes_transferred": snapshot.get("bytes_transferred", 0),
+                        "total_bytes": snapshot.get("total_bytes", 0),
+                        "progress_percent": snapshot.get("progress_percent", 0),
+                    },
                 ))
             if status in {"completed", "success", "succeeded"}:
                 publish(Event(
@@ -402,7 +489,10 @@ class DeviceExecutionActionHandler:
         event_types: list[tuple[str, bool]] = []
         if operation == "device.probe":
             event_types.extend((("huawei.cli.ready", False), ("huawei.device.facts.collected", True)))
-        elif operation == "file.transfer":
+        elif operation == "file.transfer" and not data.get("operation_id"):
+            # Normal transfers publish lifecycle events while their Operation
+            # is being observed. A skipped transfer has no Operation, so it
+            # completes semantically here instead.
             event_types.extend((("huawei.transfer.started", True), ("huawei.transfer.completed", True)))
         elif operation == "device.verify":
             fact = str(action.params.get("fact") or "")
@@ -414,8 +504,8 @@ class DeviceExecutionActionHandler:
                 }.get(fact, "huawei.verification.passed"),
                 False,
             ))
-        elif operation == "huawei.startup.configure":
-            event_types.append(("huawei.startup.configured", False))
+        elif operation == "huawei.startup.configure" and data.get("startup_verified"):
+            event_types.append(("huawei.startup.verified", False))
         elif operation == "huawei.storage.cleanup":
             event_types.append(("huawei.storage.cleaned", False))
         elif operation == "huawei.storage.sync":
@@ -481,7 +571,11 @@ class DeviceExecutionActionHandler:
                 bool(self._precheck_topology(run).get("include_slave", False)),
             )
             params["mode"] = "interactive"
-            params["steps"] = _interactive_command_steps(primary_commands, allow_confirmation=True)
+            params["steps"] = _interactive_command_steps(
+                primary_commands,
+                allow_confirmation=True,
+                failures=("Error:", "Failed", "Failure", "not found", "invalid", "denied", "refused"),
+            )
             return WorkflowStep(action.id, kind="device", action="activate", params=params)
         if operation == "huawei.storage.cleanup":
             params["commands"] = self._cleanup_commands(action, run)
@@ -517,7 +611,11 @@ class DeviceExecutionActionHandler:
                 destination_path=destination,
                 interaction_profile=asdict(self._driver(action, run).transfer_profile(protocol)),
             )
-            return WorkflowStep(action.id, kind="device", action="upload", params=params)
+            # ``transfer`` returns the Operation immediately. The framework
+            # can then observe progress and enforce milestone deadlines while
+            # FTP remains active; ``upload`` waits for completion and hides
+            # the started event until it is too late for the watchdog.
+            return WorkflowStep(action.id, kind="device", action="transfer", params=params)
         if operation == "device.reboot":
             params.setdefault("steps", list(self._driver(action, run).reboot_plan_steps()))
             return WorkflowStep(action.id, kind="device", action="reboot", params=params)
@@ -700,15 +798,16 @@ class DeviceReconcileProvider:
                     if status in {"failed", "cancelled", "canceled", "interrupted"}:
                         return ReconcileResult(ReconcileClassification.FAILED, snapshot, tuple(evidence))
             if self.id.endswith("startup"):
-                package = str(action.params.get("package") or "").casefold()
+                package = package_basename(str(action.params.get("package") or ""))
                 step = WorkflowStep(
                     "reconcile", kind="device", action="verify",
                     params={"commands": (self._commands.startup_query(),)},
                 )
                 data = await self._execution.execute(target, step, context=_control_context(run, action))
                 output = str(data.get("output") or "")
-                evidence.append({"probe": self._commands.startup_query(), "matched": bool(package and package in output.casefold())})
-                if package and package in output.casefold():
+                matched = bool(package and startup_uses_package(output, package))
+                evidence.append({"probe": self._commands.startup_query(), "expected_package": package, "matched": matched})
+                if matched:
                     return ReconcileResult(ReconcileClassification.SUCCESS, {"output": output}, tuple(evidence))
                 return ReconcileResult(ReconcileClassification.INDETERMINATE, {"output": output}, tuple(evidence))
             if self.id.endswith("rollback"):
@@ -785,6 +884,7 @@ def _interactive_command_steps(
     commands: tuple[str, ...],
     *,
     allow_confirmation: bool = False,
+    failures: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     for command in commands:
@@ -794,7 +894,7 @@ def _interactive_command_steps(
         steps.append({
             "type": "expect",
             "success": ["device_prompt"],
-            "failures": [],
+            "failures": list(failures),
             "responses": (
                 [{"match": "confirmation_prompt", "text": "y", "max_matches": 3}]
                 if allow_confirmation

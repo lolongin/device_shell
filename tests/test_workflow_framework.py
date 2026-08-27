@@ -26,12 +26,16 @@ from device_tui.application.workflows import (
     build_default_workflow_registry,
     compile_workflow,
 )
-from device_tui.application.workflows.plugins import ActionRegistry, ReconcileRegistry
+from device_tui.application.workflows.plugins import ActionRegistry, AdapterRegistry, ReconcileRegistry
 from device_tui.application.workflows.watchdog import Watchdog
 from device_tui.application.workflows.models import ActionAttempt, DeviceStateSnapshot
-from device_tui.application.workflows.device_bridge import DeviceExecutionActionHandler, DeviceReconcileProvider
+from device_tui.application.workflows.device_bridge import (
+    DeviceExecutionActionHandler,
+    DeviceReconcileProvider,
+)
 from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
-from device_tui.application.tasking import DeviceExecutionTool
+from device_tui.application.tasking import DeviceExecutionTool, DeviceWorkflowExecutionError
+from device_tui.application.tasking.models import WorkflowStep
 
 
 class Handler:
@@ -609,7 +613,148 @@ def test_framework_bridge_uses_command_set_for_reboot_and_transfer_profile() -> 
 
         command_set = HuaweiVrpCommandSet()
         assert reboot.params["steps"] == list(command_set.reboot_plan().steps)
+        assert transfer.action == "transfer"
         assert transfer.params["interaction_profile"] == asdict(command_set.transfer_profile("ftp"))
+
+    asyncio.run(scenario())
+
+
+def test_framework_transfer_publishes_started_before_waiting_for_completion() -> None:
+    class Execution:
+        def __init__(self) -> None:
+            self.step_action = ""
+            self.snapshots = iter((
+                {
+                    "operation_id": "transfer-1",
+                    "status": "running",
+                    "stage": "transferring",
+                    "revision": 2,
+                    "bytes_transferred": 128,
+                    "total_bytes": 1024,
+                    "progress_percent": 12,
+                },
+                {
+                    "operation_id": "transfer-1",
+                    "status": "completed",
+                    "stage": "completed",
+                    "revision": 3,
+                    "bytes_transferred": 1024,
+                    "total_bytes": 1024,
+                    "progress_percent": 100,
+                },
+            ))
+
+        async def execute(self, target, step, *, context):
+            del target, context
+            self.step_action = step.action
+            return {"operation_id": "transfer-1", "status": "queued", "data": {}}
+
+        def get_resource(self, kind, resource_id):
+            assert (kind, resource_id) == ("operation", "transfer-1")
+            return next(self.snapshots)
+
+    async def scenario() -> None:
+        execution = Execution()
+        handler = DeviceExecutionActionHandler(execution, AdapterRegistry())
+        action = ActionSpec("transfer", "file.transfer", params={"source": "images/target.cc"})
+        run = WorkflowRun("run-1", "test", "1", "device-1", context={"target": {}})
+        emitted: list[Event] = []
+
+        result = await handler.execute(action, run, emitted.append)
+
+        assert result.status == ActionStatus.SUCCEEDED
+        assert execution.step_action == "transfer"
+        assert [event.type for event in emitted] == [
+            "framework.action.sent",
+            "huawei.transfer.started",
+            "huawei.transfer.progress",
+            "huawei.transfer.progress",
+            "huawei.transfer.completed",
+        ]
+        first_progress = emitted[2]
+        assert first_progress.payload["bytes_transferred"] == 128
+        assert first_progress.payload["progress_percent"] == 12
+
+    asyncio.run(scenario())
+
+
+def test_framework_startup_configuration_requires_command_completion_and_readback() -> None:
+    class Execution:
+        def __init__(self) -> None:
+            self.steps: list[WorkflowStep] = []
+
+        async def execute(self, target, step, *, context):
+            del target, context
+            self.steps.append(step)
+            if step.id == "configure_startup":
+                return {
+                    "status": "completed",
+                    "execution_id": "startup-command",
+                    "output": "Info: Succeeded in setting next startup software to flash:/target.cc.\n<sim> ",
+                }
+            assert step.id == "configure_startup.readback"
+            assert step.params["commands"] == ("display startup",)
+            return {
+                "status": "completed",
+                "execution_id": "startup-readback",
+                "output": (
+                    "Current startup system software: flash:/current.cc\n"
+                    "Next startup system software: flash:/target.cc\n<sim> "
+                ),
+            }
+
+    async def scenario() -> None:
+        execution = Execution()
+        handler = DeviceExecutionActionHandler(execution, AdapterRegistry())
+        action = ActionSpec(
+            "configure_startup",
+            "huawei.startup.configure",
+            params={"package": "images/target.cc"},
+        )
+        run = WorkflowRun("run-1", "test", "1", "device-1", context={"target": {}})
+        emitted: list[Event] = []
+
+        result = await handler.execute(action, run, emitted.append)
+
+        assert result.status == ActionStatus.SUCCEEDED
+        assert [event.type for event in emitted] == [
+            "framework.action.sent",
+            "huawei.startup.command.completed",
+            "huawei.startup.verified",
+        ]
+        assert result.facts["startup"] == {
+            "current_system": "flash:/current.cc",
+            "next_system": "flash:/target.cc",
+            "verified": True,
+        }
+        expect_step = execution.steps[0].params["steps"][1]
+        assert "Error:" in expect_step["failures"]
+
+    asyncio.run(scenario())
+
+
+def test_framework_startup_configuration_rejects_unverified_readback() -> None:
+    class Execution:
+        async def execute(self, target, step, *, context):
+            del target, context
+            if step.id == "configure_startup":
+                return {"status": "completed", "output": "<sim> "}
+            return {
+                "status": "completed",
+                "output": "Next startup system software: flash:/old.cc\n<sim> ",
+            }
+
+    async def scenario() -> None:
+        handler = DeviceExecutionActionHandler(Execution(), AdapterRegistry())
+        action = ActionSpec(
+            "configure_startup",
+            "huawei.startup.configure",
+            params={"package": "images/target.cc"},
+        )
+        run = WorkflowRun("run-1", "test", "1", "device-1", context={"target": {}})
+
+        with pytest.raises(DeviceWorkflowExecutionError, match="did not confirm"):
+            await handler.execute(action, run, lambda event: event)
 
     asyncio.run(scenario())
 

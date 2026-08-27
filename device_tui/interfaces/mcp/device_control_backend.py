@@ -122,7 +122,7 @@ class DeviceControlAppBackend(AppControlBackend):
                 view = self._session_view(target)
             return {"session": asdict(view), "reused": view.reused}
         if kind in {"send_command", "terminal_send_command"}:
-            session = self._session_record(action.device_id, str(params.get("session_id") or ""))
+            session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
             result = self._run(self.desktop.control.send_raw(
                 DeviceTarget(device_id=session.device_id, session_id=session.id),
                 action.command,
@@ -131,7 +131,7 @@ class DeviceControlAppBackend(AppControlBackend):
             self.desktop.commands.record_for_session(session.id, action.command)
             return {"session_id": result.session_id, "device_id": result.device_id, "sent": result.sent, "command": action.command}
         if kind in {"terminal_plan_start", "terminal_execute_start"}:
-            session = self._session_record(action.device_id, str(params.get("session_id") or ""))
+            session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
             commands = tuple(str(item) for item in params.get("commands", []) if str(item).strip())
             request = CommandRequest(
                 mode="interactive" if params.get("plan_kind") == "interactive" else "batch",
@@ -148,11 +148,11 @@ class DeviceControlAppBackend(AppControlBackend):
         if kind == "terminal_execution_cancel":
             return self.desktop.control.cancel_execution(str(params.get("execution_id") or ""))
         if kind == "read_terminal":
-            session = self._session_record(action.device_id, str(params.get("session_id") or ""))
+            session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
             log = self.desktop.sessions.read_log(session.id, int(params.get("max_chars") or 4_096))
             return {"session_id": session.id, "device_id": session.device_id, "output": log.content, "truncated": log.truncated}
         if kind in {"start_managed_file_transfer", "ai_gateway_upload_file", "ai_gateway_download_file"}:
-            session = self._session_record(action.device_id, str(params.get("session_id") or ""))
+            session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
             direction = "download" if kind.endswith("download_file") else "upload"
             operation = self.desktop.control.transfer(
                 DeviceTarget(device_id=session.device_id, session_id=session.id),
@@ -161,7 +161,7 @@ class DeviceControlAppBackend(AppControlBackend):
             )
             return asdict(operation)
         if kind == "run_package_upgrade":
-            session = self._session_record(action.device_id, str(params.get("session_id") or ""))
+            session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
             package_path = str(params.get("package_path") or "")
             if not package_path:
                 packages = [
@@ -189,10 +189,29 @@ class DeviceControlAppBackend(AppControlBackend):
             return asdict(self.desktop.control.cancel_operation(operation_id))
         raise ValueError(f"Unsupported DeviceControl action: {kind}")
 
-    def _session_record(self, device_id: str, session_id: str):
-        for session in self.desktop.sessions.list_sessions():
-            if (session_id and session.id == session_id) or (device_id and session.device_id == device_id):
-                return session
+    def _session_record(self, device_id: str, session_id: str, *, ensure: bool = False):
+        sessions = self.desktop.sessions.list_sessions()
+        if session_id:
+            session = next((item for item in sessions if item.id == session_id), None)
+            if session is None:
+                raise ValueError("Unknown session")
+            if device_id and session.device_id != device_id:
+                raise ValueError("session_id does not belong to device_id")
+            return session
+        if not device_id:
+            raise ValueError("device_id or session_id is required")
+        candidates = [item for item in sessions if item.device_id == device_id]
+        if len(candidates) == 1:
+            return candidates[0]
+        if ensure:
+            view = self._run(self.desktop.control.open_session(
+                DeviceTarget(device_id=device_id),
+                reuse=True,
+                context=ControlContext(source="stdio-mcp"),
+            ))
+            return next(item for item in self.desktop.sessions.list_sessions() if item.id == view.session_id)
+        if len(candidates) > 1:
+            raise ValueError("Multiple sessions exist for device_id; session_id is required")
         raise ValueError("Unknown session")
 
     def _session_view(self, target: DeviceTarget):

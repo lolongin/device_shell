@@ -8,7 +8,7 @@ from typing import Callable
 
 @dataclass(frozen=True, slots=True)
 class DeviceTarget:
-    """A stable device reference; session_id takes precedence when present."""
+    """A device reference with an optional, device-validated session binding."""
 
     device_id: str = ""
     session_id: str = ""
