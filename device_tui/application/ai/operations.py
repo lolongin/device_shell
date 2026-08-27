@@ -155,8 +155,20 @@ class SimpleAiDevicePlanner:
             actions.extend(self._failure_toggle_actions(objective, device_id))
             actions.extend([
                 AiDeviceAction("select_device", "选择目标设备", RiskLevel.OBSERVE, device_id=device_id),
-                AiDeviceAction("open_session", "打开终端会话", RiskLevel.LOW, device_id=device_id),
-                AiDeviceAction("run_package_upgrade", "执行受控自动换包流程", RiskLevel.FLOW, device_id=device_id),
+                AiDeviceAction(
+                    "open_session",
+                    "打开 Telnet 终端会话",
+                    RiskLevel.LOW,
+                    device_id=device_id,
+                    params={"protocol": "telnet"},
+                ),
+                AiDeviceAction(
+                    "run_package_upgrade",
+                    "执行受控自动换包流程",
+                    RiskLevel.FLOW,
+                    device_id=device_id,
+                    params={"protocol": "telnet"},
+                ),
             ])
             return AiDevicePlan(
                 objective=objective,

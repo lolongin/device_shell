@@ -100,8 +100,9 @@ class DeviceControlAppBackend(AppControlBackend):
             )
             return {"files": [item.public_dict() for item in catalog.files], "truncated": catalog.truncated}
         if kind == "open_session":
+            protocol = str(params.get("protocol") or "auto").casefold()
             view = self._run(self.desktop.control.open_session(
-                DeviceTarget(device_id=action.device_id),
+                DeviceTarget(device_id=action.device_id, protocol=protocol),
                 reuse=True,
                 context=ControlContext(source="stdio-mcp"),
             ))
@@ -161,7 +162,13 @@ class DeviceControlAppBackend(AppControlBackend):
             )
             return asdict(operation)
         if kind == "run_package_upgrade":
-            session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
+            protocol = str(params.get("protocol") or "telnet").casefold()
+            session = self._session_record(
+                action.device_id,
+                str(params.get("session_id") or ""),
+                ensure=True,
+                protocol=protocol,
+            )
             package_path = str(params.get("package_path") or "")
             if not package_path:
                 packages = [
@@ -172,12 +179,12 @@ class DeviceControlAppBackend(AppControlBackend):
                     package_path = packages[0].relative_path
             workflow = self.desktop.workflows.build(
                 "device_upgrade",
-                WorkflowTarget(device_id=session.device_id, session_id=session.id),
+                WorkflowTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
                 {"package_path": package_path},
             )
             task = self.desktop.tasks.create(TaskCreate(
                 workflow=workflow,
-                target=DeviceTarget(device_id=session.device_id, session_id=session.id),
+                target=DeviceTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
                 source="stdio-mcp",
             ))
             return {"task_id": task.id, "task": asdict(task)}
@@ -189,7 +196,14 @@ class DeviceControlAppBackend(AppControlBackend):
             return asdict(self.desktop.control.cancel_operation(operation_id))
         raise ValueError(f"Unsupported DeviceControl action: {kind}")
 
-    def _session_record(self, device_id: str, session_id: str, *, ensure: bool = False):
+    def _session_record(
+        self,
+        device_id: str,
+        session_id: str,
+        *,
+        ensure: bool = False,
+        protocol: str = "auto",
+    ):
         sessions = self.desktop.sessions.list_sessions()
         if session_id:
             session = next((item for item in sessions if item.id == session_id), None)
@@ -205,7 +219,7 @@ class DeviceControlAppBackend(AppControlBackend):
             return candidates[0]
         if ensure:
             view = self._run(self.desktop.control.open_session(
-                DeviceTarget(device_id=device_id),
+                DeviceTarget(device_id=device_id, protocol=protocol),
                 reuse=True,
                 context=ControlContext(source="stdio-mcp"),
             ))

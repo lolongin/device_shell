@@ -547,6 +547,7 @@ class ActionBuilderMixin:
                 "启动自动换包流程",
                 RiskLevel.FLOW,
                 device_id=device_id,
+                params={"protocol": "telnet"},
             )
         if tool == "file_transfer_start":
             return AiDeviceAction(

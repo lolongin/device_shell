@@ -871,18 +871,18 @@ class DesktopMcpService:
         return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
 
     async def _tool_package_upgrade_start(self, params: dict[str, Any]) -> dict[str, Any]:
-        session, _ = await self._open_or_reuse(self._text(params, "device_id"), "auto")
+        session, _ = await self._open_or_reuse(self._text(params, "device_id"), "telnet")
         packages = [item for item in self.desktop.transfers.list_files(limit=1_000).files if item.name.casefold().endswith(".cc")]
         if not packages:
             raise UnsupportedOperationError("No .cc package is available in the managed transfer root.")
         workflow = self.desktop.workflows.build(
             "device_upgrade",
-            WorkflowTarget(device_id=session.device_id, session_id=session.id),
+            WorkflowTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
             {"package_path": packages[0].relative_path},
         )
         task = self.desktop.tasks.create(TaskCreate(
             workflow=workflow,
-            target=DeviceTarget(device_id=session.device_id, session_id=session.id),
+            target=DeviceTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
             source="mcp",
         ))
         return {"task_id": task.id, "task": task.to_dict()}

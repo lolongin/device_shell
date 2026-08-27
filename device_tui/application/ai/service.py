@@ -79,8 +79,20 @@ class AiApplicationService:
             warnings.append("No device is available; select a device before execution.")
         if any(word in lower for word in ("upgrade", "换包", "升级")):
             actions.extend([
-                self._action("open_session", "Open a terminal session", RiskLevel.LOW, device_id=device_id),
-                self._action("package_upgrade", "Run guarded package upgrade", RiskLevel.FLOW, device_id=device_id),
+                self._action(
+                    "open_session",
+                    "Open a Telnet terminal session",
+                    RiskLevel.LOW,
+                    device_id=device_id,
+                    protocol="telnet",
+                ),
+                self._action(
+                    "package_upgrade",
+                    "Run guarded package upgrade",
+                    RiskLevel.FLOW,
+                    device_id=device_id,
+                    protocol="telnet",
+                ),
             ])
         elif any(word in lower for word in ("version", "版本")):
             actions.extend([

@@ -1083,6 +1083,10 @@ def create_app(
 
     @app.post("/api/v1/tasks", response_model=TaskResponse, dependencies=[Depends(authorize)])
     async def task_create(request: TaskCreateRequest) -> TaskResponse:
+        # Package upgrades run against the network device CLI over Telnet by
+        # default. Keep the explicit protocol override available for callers
+        # that already bound the task to a session.
+        requested_protocol = request.protocol
         session_id = request.session_id
         device_id = request.device_id
         if session_id:
@@ -1094,16 +1098,22 @@ def create_app(
                     "session_id does not belong to device_id.",
                     details={"session_id": session_id, "session_device_id": session.device_id, "device_id": device_id},
                 )
-            if request.protocol != "auto" and session.kind.casefold() != request.protocol:
+            if request.workflow_id == "device_upgrade" and requested_protocol == "auto":
+                # An existing session is an explicit caller choice. Preserve
+                # its transport while defaulting new upgrade sessions to Telnet.
+                requested_protocol = session.kind.casefold()
+            if requested_protocol != "auto" and session.kind.casefold() != requested_protocol:
                 raise UnsupportedOperationError(
                     "session_id does not match the requested protocol.",
-                    details={"session_id": session_id, "session_protocol": session.kind, "protocol": request.protocol},
+                    details={"session_id": session_id, "session_protocol": session.kind, "protocol": requested_protocol},
                 )
             device_id = session.device_id
+        elif request.workflow_id == "device_upgrade" and requested_protocol == "auto":
+            requested_protocol = "telnet"
         if not device_id:
             raise UnsupportedOperationError("device_id or session_id is required")
         if not session_id:
-            view = await desktop.control.open_session(DeviceTarget(device_id=device_id, protocol=request.protocol), reuse=True, context=ControlContext(source=request.source))
+            view = await desktop.control.open_session(DeviceTarget(device_id=device_id, protocol=requested_protocol), reuse=True, context=ControlContext(source=request.source))
             session_id = view.session_id
         if desktop.workflows.contains(request.workflow_id):
             parameters = {**dict(request.options), **dict(request.parameters)}
@@ -1137,7 +1147,7 @@ def create_app(
             try:
                 workflow = desktop.workflows.build(
                     request.workflow_id,
-                    WorkflowTarget(device_id=device_id, session_id=session_id, protocol=request.protocol),
+                    WorkflowTarget(device_id=device_id, session_id=session_id, protocol=requested_protocol),
                     parameters,
                     legacy_steps=tuple(item.model_dump() for item in request.steps),
                 )
@@ -1147,7 +1157,7 @@ def create_app(
             raise UnsupportedOperationError(
                 f"Unknown workflow_id: {request.workflow_id}. Register a WorkflowProvider or submit a WorkflowPlan."
             )
-        record = desktop.tasks.create(TaskCreate(workflow=workflow, target=DeviceTarget(device_id=device_id, session_id=session_id, protocol=request.protocol), source=request.source, context=dict(request.context)))
+        record = desktop.tasks.create(TaskCreate(workflow=workflow, target=DeviceTarget(device_id=device_id, session_id=session_id, protocol=requested_protocol), source=request.source, context=dict(request.context)))
         return TaskResponse(task=_task_model(record))
 
     @app.get("/api/v1/workflows", dependencies=[Depends(authorize)])

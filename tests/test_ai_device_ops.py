@@ -31,6 +31,8 @@ def test_ai_planner_builds_simulated_package_upgrade_plan() -> None:
     ]
     assert plan.actions[-1].risk == RiskLevel.FLOW
     assert plan.actions[-1].device_id == "SIM-TERMINAL"
+    assert plan.actions[1].params["protocol"] == "telnet"
+    assert plan.actions[2].params["protocol"] == "telnet"
 
 
 def test_ai_planner_can_prepare_simulated_failure_toggle() -> None:
