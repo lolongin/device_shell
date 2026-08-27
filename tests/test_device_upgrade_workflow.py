@@ -30,6 +30,10 @@ def test_huawei_package_provider_declares_the_single_executable_path() -> None:
         "huawei.startup.command.completed",
         "huawei.startup.verified",
     ]
+    verify = next(state for state in workflow.states if state.id == "verify_version")
+    assert verify.action is not None
+    assert verify.action.params == {"fact": "startup_package", "expected": "images/router-v2.cc"}
+    assert verify.action.expectations[0].event_type == "huawei.startup.package.match"
 
 
 def test_huawei_package_provider_omits_transfer_for_device_resident_package() -> None:

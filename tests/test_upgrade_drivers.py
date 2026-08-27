@@ -32,6 +32,7 @@ def test_huawei_driver_owns_commands_and_artifact_policy() -> None:
     assert reboot_expect["responses"] == [
         {"match": "confirmation_prompt", "text": "y", "max_matches": 3},
     ]
+    assert driver.commands.verification_plan("startup_package").commands == ("display startup",)
 
 
 def test_driver_and_manual_renderer_share_the_huawei_command_set() -> None:

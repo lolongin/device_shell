@@ -84,6 +84,22 @@ class ReadinessControl:
         )
 
 
+class StartupVerificationControl:
+    def __init__(self, output: str) -> None:
+        self.output = output
+
+    async def execute(self, target, request, *, context):
+        del target, request, context
+        return CommandResult(
+            operation_id="startup-1",
+            execution_id="startup-1",
+            session_id="session-1",
+            device_id="d1",
+            status="completed",
+            output=self.output,
+        )
+
+
 def test_wait_online_requires_a_successful_cli_probe_after_transport_connects() -> None:
     async def scenario() -> None:
         control = ReadinessControl(cli_ready=True)
@@ -145,6 +161,60 @@ def test_wait_online_honors_a_framework_requested_reconnect() -> None:
 
         assert control.reconnects == 1
         assert result["cli_status"] == "ready"
+
+    asyncio.run(scenario())
+
+
+def test_verify_version_matches_rebooted_package_from_display_startup() -> None:
+    async def scenario() -> None:
+        control = StartupVerificationControl(
+            "Current startup system software: flash:/target.cc\n"
+            "Next startup system software: flash:/target.cc\n<Huawei> "
+        )
+        result = await DeviceExecutionTool(control).execute(
+            DeviceTarget(device_id="d1"),
+            WorkflowStep(
+                "verify_version",
+                kind="device",
+                action="verify_version",
+                params={
+                    "fact": "startup_package",
+                    "expected": "images/target.cc",
+                    "commands": ("display startup",),
+                },
+            ),
+            context=ControlContext(source="test"),
+        )
+
+        assert result["status"] == "completed"
+        assert result["output"].startswith("Current startup system software")
+
+    asyncio.run(scenario())
+
+
+def test_verify_version_rejects_wrong_rebooted_startup_package() -> None:
+    async def scenario() -> None:
+        control = StartupVerificationControl(
+            "Current startup system software: flash:/other.cc\n"
+            "Next startup system software: flash:/other.cc\n<Huawei> "
+        )
+        with pytest.raises(DeviceWorkflowExecutionError) as error:
+            await DeviceExecutionTool(control).execute(
+                DeviceTarget(device_id="d1"),
+                WorkflowStep(
+                    "verify_version",
+                    kind="device",
+                    action="verify_version",
+                    params={
+                        "fact": "startup_package",
+                        "expected": "images/target.cc",
+                        "commands": ("display startup",),
+                    },
+                ),
+                context=ControlContext(source="test"),
+            )
+
+        assert error.value.code == "version_mismatch"
 
     asyncio.run(scenario())
 

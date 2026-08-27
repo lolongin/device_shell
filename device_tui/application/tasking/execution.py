@@ -14,6 +14,7 @@ from device_tui.application.device_control import (
 )
 from device_tui.application.errors import ApplicationError, UnsupportedOperationError
 from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
+from device_tui.application.upgrades.package import startup_uses_package
 
 from .models import WorkflowStep
 
@@ -80,9 +81,17 @@ class DeviceExecutionTool:
             )
             self._notify(context, "execution", result.execution_id)
             self._raise_for_failed_result(result.status, result.error_code, result.output or "Device command failed.")
-            expected = str(params.get("expected_version") or "")
-            if action == "verify_version" and expected and expected not in result.output:
-                raise DeviceWorkflowExecutionError("version_mismatch", f"Expected version {expected!r} was not observed.")
+            if action == "verify_version":
+                fact = str(params.get("fact") or "")
+                expected = str(params.get("expected_version") or params.get("expected") or "")
+                if fact == "startup_package":
+                    if expected and not startup_uses_package(result.output, expected):
+                        raise DeviceWorkflowExecutionError(
+                            "version_mismatch",
+                            f"Expected startup package {expected!r} was not observed in display startup.",
+                        )
+                elif expected and expected not in result.output:
+                    raise DeviceWorkflowExecutionError("version_mismatch", f"Expected version {expected!r} was not observed.")
             return {
                 **dict(result.data),
                 "output": result.output,

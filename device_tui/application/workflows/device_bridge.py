@@ -442,6 +442,8 @@ class DeviceExecutionActionHandler:
     def _verification_confirmed(action: ActionSpec, output: str) -> bool:
         expected = str(action.params.get("expected") or "").strip()
         fact = str(action.params.get("fact") or "").casefold()
+        if fact == "startup_package":
+            return bool(expected and startup_uses_package(output, expected))
         if fact == "package" and expected:
             normalized_expected = expected.replace("\\", "/").rstrip("/").casefold()
             expected_name = PurePosixPath(normalized_expected).name
@@ -514,6 +516,7 @@ class DeviceExecutionActionHandler:
                 {
                     "package": "huawei.package.verified",
                     "running_version": "huawei.version.match",
+                    "startup_package": "huawei.startup.package.match",
                     "validation": "huawei.validation.passed",
                 }.get(fact, "huawei.verification.passed"),
                 False,
@@ -560,9 +563,11 @@ class DeviceExecutionActionHandler:
             return WorkflowStep(action.id, kind="device", action="precheck", params=params)
         if operation == "device.verify":
             fact = str(params.get("fact") or "")
-            action_name = "verify_version" if fact == "running_version" else "validation" if fact == "validation" else "verify"
+            action_name = "verify_version" if fact in {"running_version", "startup_package"} else "validation" if fact == "validation" else "verify"
             if "commands" not in params:
                 params["commands"] = self._driver(action, run).commands.verification_plan(fact).commands
+            if fact == "startup_package" and "expected_package" not in params:
+                params["expected_package"] = params.get("expected")
             return WorkflowStep(action.id, kind="device", action=action_name, params=params)
         if operation == "huawei.startup.configure":
             driver = self._driver(action, run)

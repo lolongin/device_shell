@@ -899,6 +899,61 @@ def test_framework_bridge_does_not_emit_verification_success_on_mismatch() -> No
     asyncio.run(scenario())
 
 
+def test_framework_bridge_builds_startup_package_verification_step() -> None:
+    class Execution:
+        async def execute(self, target, step, *, context):
+            del target, step, context
+            raise AssertionError("the legacy-step translation test must not execute a device command")
+
+    async def scenario() -> None:
+        handler = DeviceExecutionActionHandler(Execution(), ActionRegistry())
+        action = ActionSpec(
+            "verify_version",
+            "device.verify",
+            params={"fact": "startup_package", "expected": "images/target.cc"},
+        )
+        run = WorkflowRun("run-1", "test", "1", "device-1", context={"target": {}})
+
+        step = await handler._legacy_step(action, run)
+
+        assert step.action == "verify_version"
+        assert step.params["commands"] == ("display startup",)
+        assert step.params["expected_package"] == "images/target.cc"
+
+    asyncio.run(scenario())
+
+
+def test_framework_bridge_accepts_startup_package_path_when_output_has_basename() -> None:
+    class Execution:
+        async def execute(self, target, step, *, context):
+            del target, context
+            assert step.params["commands"] == ("display startup",)
+            return {
+                "status": "completed",
+                "output": (
+                    "Current startup system software: flash:/target.cc\n"
+                    "Next startup system software: flash:/target.cc\n<Huawei> "
+                ),
+            }
+
+    async def scenario() -> None:
+        handler = DeviceExecutionActionHandler(Execution(), AdapterRegistry())
+        action = ActionSpec(
+            "verify_version",
+            "device.verify",
+            params={"fact": "startup_package", "expected": "images/target.cc"},
+        )
+        run = WorkflowRun("run-1", "test", "1", "device-1", context={"target": {}})
+        emitted: list[Event] = []
+
+        result = await handler.execute(action, run, emitted.append)
+
+        assert result.status == ActionStatus.SUCCEEDED
+        assert "huawei.startup.package.match" in {event.type for event in emitted}
+
+    asyncio.run(scenario())
+
+
 def test_reboot_reconcile_requires_execution_evidence_before_retrying() -> None:
     async def scenario() -> None:
         provider = DeviceReconcileProvider("huawei.reconcile.reboot", object(), object())

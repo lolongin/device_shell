@@ -82,17 +82,17 @@ class HuaweiVrpPackageUpgradeProvider:
             validation_params["commands"] = tuple(str(item) for item in validation_commands)
         has_validation = bool(validation_params.get("commands"))
         version_state: tuple[StateNode, ...] = ()
-        if expected_version:
+        if activation_policy == "reboot":
             version_state = (
                 StateNode(
                     id="verify_version",
-                    label="校验运行版本",
-                    description="确认设备已运行目标版本。",
+                    label="校验启动版本",
+                    description="使用 display startup 确认设备当前运行的是目标系统包。",
                     action=ActionSpec(
                         id="verify_version",
                         operation="device.verify",
-                        params={"fact": "running_version", "expected": expected_version},
-                        expectations=(Expectation("huawei.version.match", timeout_seconds=90),),
+                        params={"fact": "startup_package", "expected": package},
+                        expectations=(Expectation("huawei.startup.package.match", timeout_seconds=90),),
                         timeout_seconds=120,
                     ),
                     next_state="validation" if has_validation else "complete",
@@ -318,7 +318,7 @@ class HuaweiVrpPackageUpgradeProvider:
                         retry_policy=retry_three,
                         reconcile=ReconcilePolicy(provider="huawei.reconcile.online", probes=("ping", "ssh", "cli")),
                     ),
-                    next_state="verify_version" if expected_version else "validation" if has_validation else "complete",
+                    next_state="verify_version",
                     decision_options=(
                         Option("reconnect", "reconnect", "重连管理通道"),
                         Option("abort_online", "abort", "终止流程", risk="high", requires_reason=True),

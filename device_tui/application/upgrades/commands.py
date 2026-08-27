@@ -106,6 +106,8 @@ class HuaweiVrpCommandSet:
         return CommandPlan(commands=tuple(commands or (self.version_query(),)))
 
     def verification_plan(self, fact: str) -> CommandPlan:
+        if fact == "startup_package":
+            return CommandPlan(commands=(self.startup_query(),))
         if fact == "running_version":
             return CommandPlan(commands=(self.version_query(),))
         return CommandPlan(commands=(self.storage_query(DEFAULT_MASTER_STORAGE),))
