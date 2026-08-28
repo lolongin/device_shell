@@ -141,6 +141,34 @@ def test_task_history_delete_route_removes_terminal_records_and_rejects_active()
     assert rejected.status_code == 409
 
 
+def test_task_history_batch_delete_route_returns_deleted_ids() -> None:
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+    )
+    tasks = app.state.desktop_application.tasks
+    workflow = WorkflowDefinition("test", (WorkflowStep("step", action="command"),))
+    request = TaskCreate(workflow=workflow, target=DeviceTarget(device_id="device-1"))
+    completed_ids = ["task-completed-a", "task-completed-b"]
+
+    with TestClient(app) as client:
+        for task_id in completed_ids:
+            tasks._records[task_id] = TaskRecord(id=task_id, status="completed", workflow_id="test", device_id="device-1")
+            tasks._requests[task_id] = request
+        response = client.request(
+            "DELETE",
+            "/api/v1/tasks",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"task_ids": [completed_ids[0], completed_ids[1], completed_ids[0]]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["deleted_count"] == 2
+    assert response.json()["deleted_task_ids"] == completed_ids
+    assert not any(task_id in tasks._records for task_id in completed_ids)
+
+
 def test_internal_auth_login_persists_safe_defaults_and_logout_clears_session() -> None:
     repository = _InternalAuthSampleRepository()
     secret_store = MemorySecretStore()

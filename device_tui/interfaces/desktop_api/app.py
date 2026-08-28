@@ -183,6 +183,8 @@ from .models import (
     TaskModel,
     TaskResponse,
     TaskListResponse,
+    TaskDeleteRequest,
+    TaskDeleteResponse,
 )
 from .session_hub import SessionHub, TerminalEvent
 from .terminal_executor import BackendTerminalExecutor
@@ -1195,6 +1197,14 @@ def create_app(
     @app.get("/api/v1/tasks", response_model=TaskListResponse, dependencies=[Depends(authorize)])
     async def task_list(limit: int = Query(default=200, ge=1, le=500)) -> TaskListResponse:
         return TaskListResponse(tasks=[_task_model(item) for item in desktop.tasks.list(limit=limit)])
+
+    @app.delete("/api/v1/tasks", response_model=TaskDeleteResponse, dependencies=[Depends(authorize)])
+    async def task_delete_many(request: TaskDeleteRequest) -> TaskDeleteResponse:
+        deleted_task_ids = desktop.tasks.delete_tasks(request.task_ids)
+        return TaskDeleteResponse(
+            deleted_count=len(deleted_task_ids),
+            deleted_task_ids=list(deleted_task_ids),
+        )
 
     @app.get("/api/v1/tasks/{task_id}", response_model=TaskResponse, dependencies=[Depends(authorize)])
     async def task_get(task_id: str) -> TaskResponse:

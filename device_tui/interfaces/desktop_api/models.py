@@ -882,6 +882,18 @@ class TaskListResponse(BaseModel):
     tasks: list[TaskModel]
 
 
+class TaskDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class TaskDeleteResponse(BaseModel):
+    api_version: int = API_VERSION
+    deleted_count: int
+    deleted_task_ids: list[str]
+
+
 class ConnectionProfileUpsertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

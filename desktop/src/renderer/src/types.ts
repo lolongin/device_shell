@@ -512,6 +512,12 @@ export interface TaskListResponse {
   tasks: TaskRecord[]
 }
 
+export interface TaskDeleteResponse {
+  api_version: number
+  deleted_count: number
+  deleted_task_ids: string[]
+}
+
 export interface TaskDecisionAction {
   name: string
   parameters?: Record<string, unknown>

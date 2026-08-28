@@ -51,6 +51,7 @@ def test_generic_renderer_bridge_rejects_sensitive_body_keys() -> None:
 
     assert "hasSensitiveKey(JSON.parse(request.body))" in electron_main
     assert "Sensitive values are not allowed through the renderer API bridge" in electron_main
+    assert "body: method === 'GET' ? undefined : body" in electron_main
     assert "credential:open-profile-session" in electron_main
     assert "credential:create-temporary-profile" in electron_main
     assert "profileId ? 'PUT' : 'POST'" in electron_main

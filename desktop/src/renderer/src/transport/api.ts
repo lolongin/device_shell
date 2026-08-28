@@ -37,6 +37,7 @@ import type {
   TaskResponse,
   TaskRecord,
   TaskListResponse,
+  TaskDeleteResponse,
   TaskDecisionResponse,
   TaskDecisionActionPayload,
   WorkflowCatalogResponse,
@@ -391,6 +392,11 @@ export const desktopApi = {
   listTasks: (): Promise<TaskListResponse> => request('/api/v1/tasks'),
   deleteTask: (taskId: string): Promise<void> =>
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),
+  deleteTasks: (taskIds: string[]): Promise<TaskDeleteResponse> =>
+    request('/api/v1/tasks', {
+      method: 'DELETE',
+      body: JSON.stringify({ task_ids: taskIds })
+    }),
   pauseTask: (taskId: string): Promise<TaskResponse> =>
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
   resumeTask: (taskId: string, stepId = ''): Promise<TaskResponse> =>

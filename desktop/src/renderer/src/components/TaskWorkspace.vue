@@ -12,6 +12,7 @@ const planObjective = ref('')
 const planCommand = ref('')
 const localError = ref('')
 const decisionInputReason = ref('')
+const selectedTaskIds = ref<Set<string>>(new Set())
 let initializedWorkflowId = ''
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -19,6 +20,10 @@ const workflowOptions = computed(() => workspace.workflows)
 const selectedWorkflow = computed(() => workflowOptions.value.find((item) => item.id === workflowId.value) || workflowOptions.value[0] || null)
 const workflowParametersVisible = computed(() => selectedWorkflow.value?.parameters.filter((item) => !item.advanced) || [])
 const selectedTask = computed(() => workspace.tasks.find((task) => task.id === workspace.activeTaskId) || null)
+const terminalTasks = computed(() => workspace.tasks.filter((task) => isTerminalStatus(task.status)))
+const selectedTerminalTaskCount = computed(() => terminalTasks.value.filter((task) => selectedTaskIds.value.has(task.id)).length)
+const allTerminalTasksSelected = computed(() => terminalTasks.value.length > 0 && selectedTerminalTaskCount.value === terminalTasks.value.length)
+const someTerminalTasksSelected = computed(() => selectedTerminalTaskCount.value > 0 && !allTerminalTasksSelected.value)
 const taskSteps = computed<TaskStepState[]>(() => {
   const task = selectedTask.value
   if (!task) return []
@@ -313,6 +318,24 @@ async function deleteTask(task: TaskRecord): Promise<void> {
   if (!window.confirm(`确定删除 Task ${task.id.slice(0, 8)} 的记录吗？`)) return
   await workspace.deleteTask(task.id)
 }
+function toggleTaskSelection(task: TaskRecord): void {
+  if (!isTerminalStatus(task.status)) return
+  const next = new Set(selectedTaskIds.value)
+  if (next.has(task.id)) next.delete(task.id)
+  else next.add(task.id)
+  selectedTaskIds.value = next
+}
+function toggleAllTerminalTasks(): void {
+  selectedTaskIds.value = allTerminalTasksSelected.value
+    ? new Set()
+    : new Set(terminalTasks.value.map((task) => task.id))
+}
+async function deleteSelectedTasks(): Promise<void> {
+  const ids = terminalTasks.value.filter((task) => selectedTaskIds.value.has(task.id)).map((task) => task.id)
+  if (!ids.length) return
+  if (!window.confirm(`确定删除选中的 ${ids.length} 条 Task 记录吗？`)) return
+  if (await workspace.deleteTasks(ids)) selectedTaskIds.value = new Set()
+}
 function isTerminalStatus(status: string): boolean {
   return ['completed', 'failed', 'cancelled'].includes(status)
 }
@@ -337,6 +360,10 @@ watch(selectedWorkflow, (workflow) => {
   initializeWorkflowParameters(workflow)
 }, { immediate: true })
 watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { deep: true })
+watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })), (items) => {
+  const available = new Set(items.filter((item) => isTerminalStatus(item.status)).map((item) => item.id))
+  selectedTaskIds.value = new Set([...selectedTaskIds.value].filter((id) => available.has(id)))
+})
 </script>
 
 <template>
@@ -394,9 +421,9 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
     </div>
 
     <div class="task-ui-list" aria-label="Task 列表">
-      <div class="task-ui-list-heading"><strong>Task 记录</strong><small>{{ workspace.tasks.length }} 条</small></div>
+      <div class="task-ui-list-heading"><strong>Task 记录</strong><div class="task-ui-list-actions"><small>{{ workspace.tasks.length }} 条</small><label v-if="terminalTasks.length" class="task-select-all" title="选择全部已结束任务"><input type="checkbox" :checked="allTerminalTasksSelected" :indeterminate="someTerminalTasksSelected" :disabled="workspace.taskBusy" @change="toggleAllTerminalTasks" /><span>已结束</span></label><button v-if="selectedTerminalTaskCount" class="task-bulk-delete" type="button" :disabled="workspace.taskBusy" title="删除选中的任务记录" @click="deleteSelectedTasks"><Trash2 :size="13" />删除选中 ({{ selectedTerminalTaskCount }})</button></div></div>
       <div v-for="task in workspace.tasks" :key="task.id" class="task-row" :data-active="task.id === workspace.activeTaskId" role="button" tabindex="0" @click="chooseTask(task)" @keydown.enter="chooseTask(task)">
-        <span class="task-row-status" :data-status="task.status"></span><span><strong>{{ task.workflow_id }}</strong><small>{{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
+        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ task.workflow_id }}</strong><small>{{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
       </div>
       <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择 Workflow 或“制定任务”开始。</p>
     </div>

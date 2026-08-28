@@ -187,6 +187,21 @@ def test_task_manager_deletes_terminal_history_from_memory_and_store() -> None:
     assert store.list_tasks() == []
 
 
+def test_task_manager_deletes_terminal_history_in_one_batch() -> None:
+    store = MemoryTaskStore()
+    workflow = WorkflowDefinition("wf", (WorkflowStep("done", action="command"),))
+    request = TaskCreate(workflow=workflow, target=DeviceTarget(device_id="d"))
+    for task_id, status in (("task-completed", "completed"), ("task-failed", "failed"), ("task-cancelled", "cancelled")):
+        store.upsert_task(TaskRecord(id=task_id, status=status, workflow_id="wf", device_id="d"), request)
+    manager = TaskManager(FakeExecution(), EventBus(), store=store)
+
+    deleted = manager.delete_tasks(["task-completed", "task-failed", "task-cancelled", "task-failed"])
+
+    assert deleted == ("task-completed", "task-failed", "task-cancelled")
+    assert manager.list() == []
+    assert store.list_tasks() == []
+
+
 def test_task_manager_rejects_deleting_active_history() -> None:
     async def scenario() -> None:
         manager = TaskManager(FakeExecution(), EventBus())

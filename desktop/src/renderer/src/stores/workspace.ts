@@ -1536,6 +1536,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } finally { taskBusy.value = false }
   }
 
+  async function deleteTasks(taskIds: string[]): Promise<boolean> {
+    const ids = [...new Set(taskIds.map((item) => item.trim()).filter(Boolean))]
+    if (!ids.length) return false
+    taskBusy.value = true
+    taskError.value = ''
+    try {
+      const response = await desktopApi.deleteTasks(ids)
+      const wasActive = activeTaskId.value !== '' && response.deleted_task_ids.includes(activeTaskId.value)
+      const deleted = new Set(response.deleted_task_ids)
+      tasks.value = tasks.value.filter((item) => !deleted.has(item.id))
+      if (wasActive) {
+        activeTaskId.value = tasks.value[0]?.id || ''
+        taskDecision.value = null
+        if (activeTaskId.value) await getTask(activeTaskId.value, false)
+      }
+      notice.value = `已删除 ${response.deleted_count} 条 Task 记录`
+      return true
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally { taskBusy.value = false }
+  }
+
   async function applyTaskDecision(action: TaskDecisionActionPayload, reason = ''): Promise<void> {
     const task = tasks.value.find((item) => item.id === activeTaskId.value)
     if (!task || !taskDecision.value) return
@@ -1816,6 +1839,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     resumeTask,
     cancelTask,
     deleteTask,
+    deleteTasks,
     applyTaskDecision,
     aiPanelOpen, aiBusy, aiObjective, aiPlan,
     buildAiPlan,

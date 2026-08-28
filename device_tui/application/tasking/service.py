@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 from uuid import uuid4
 
 from device_tui.application.device_control import ControlContext, DeviceLeaseService, DeviceTarget
@@ -1321,6 +1321,20 @@ class TaskManager:
         self._release_task_resources(task_id)
         if self._store is not None:
             self._store.delete_task(task_id)
+
+    def delete_tasks(self, task_ids: Iterable[str]) -> tuple[str, ...]:
+        """Remove a validated batch of terminal task history records."""
+        normalized = tuple(dict.fromkeys(str(task_id).strip() for task_id in task_ids if str(task_id).strip()))
+        records = [self.get(task_id) for task_id in normalized]
+        for record in records:
+            if record.status not in {"completed", "failed", "cancelled"}:
+                raise ApplicationConflictError(
+                    "只能删除已结束的任务记录。",
+                    details={"task_id": record.id, "status": str(record.status)},
+                )
+        for task_id in normalized:
+            self.delete_task(task_id)
+        return normalized
 
     def cancel_session(self, session_id: str) -> int:
         """Cancel active tasks bound to a session before it is disconnected."""

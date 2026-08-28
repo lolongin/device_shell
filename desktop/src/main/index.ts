@@ -201,7 +201,7 @@ async function fetchBackend(
       Authorization: `Bearer ${runtime.token}`,
       'Content-Type': 'application/json'
     },
-    body: method === 'GET' || method === 'DELETE' ? undefined : body
+    body: method === 'GET' ? undefined : body
   })
   return { status: response.status, body: await response.text() }
 }
