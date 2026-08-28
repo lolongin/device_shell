@@ -376,6 +376,11 @@ class SQLiteDesktopStore(SQLiteConnectionProfileStore):
                 ),
             )
 
+    def delete_task(self, task_id: str) -> None:
+        """Delete one persisted task history record."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM tasks WHERE id = ?", (str(task_id),))
+
     def list_plans(self, *, limit: int = 500) -> list[dict[str, object]]:
         with self._connect() as connection:
             rows = connection.execute(

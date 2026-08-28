@@ -1200,6 +1200,10 @@ def create_app(
     async def task_get(task_id: str) -> TaskResponse:
         return TaskResponse(task=_task_model(desktop.tasks.get(task_id)))
 
+    @app.delete("/api/v1/tasks/{task_id}", status_code=204, dependencies=[Depends(authorize)])
+    async def task_delete(task_id: str) -> None:
+        desktop.tasks.delete_task(task_id)
+
     @app.post("/api/v1/tasks/{task_id}/cancel", response_model=TaskResponse, dependencies=[Depends(authorize)])
     async def task_cancel(task_id: str) -> TaskResponse:
         return TaskResponse(task=_task_model(desktop.tasks.cancel(task_id)))

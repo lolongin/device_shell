@@ -1,6 +1,9 @@
 import asyncio
 
+import pytest
+
 from device_tui.application.device_control import ControlContext, DeviceTarget
+from device_tui.application.errors import ApplicationConflictError
 from device_tui.application.events import EventBus
 from device_tui.application.tasking import (
     Checkpoint,
@@ -158,6 +161,46 @@ def test_sqlite_task_store_round_trips_task_history(tmp_path):
     assert restored.result.steps[0].output == "ok"
     assert restored_request.workflow.steps[0].id == "precheck"
     assert restored_request.target.session_id == "s"
+
+    store.delete_task("task-1")
+    assert store.list_tasks() == []
+
+
+def test_task_manager_deletes_terminal_history_from_memory_and_store() -> None:
+    store = MemoryTaskStore()
+    request = TaskCreate(
+        workflow=WorkflowDefinition("wf", (WorkflowStep("done", action="command"),)),
+        target=DeviceTarget(device_id="d"),
+    )
+    record = TaskRecord(
+        id="task-completed",
+        status="completed",
+        workflow_id="wf",
+        device_id="d",
+    )
+    store.upsert_task(record, request)
+    manager = TaskManager(FakeExecution(), EventBus(), store=store)
+
+    manager.delete_task(record.id)
+
+    assert manager.list() == []
+    assert store.list_tasks() == []
+
+
+def test_task_manager_rejects_deleting_active_history() -> None:
+    async def scenario() -> None:
+        manager = TaskManager(FakeExecution(), EventBus())
+        request = TaskCreate(
+            workflow=WorkflowDefinition("wf", (WorkflowStep("run", action="command"),)),
+            target=DeviceTarget(device_id="d"),
+        )
+        record = manager.create(request)
+
+        with pytest.raises(ApplicationConflictError):
+            manager.delete_task(record.id)
+        await manager.close()
+
+    asyncio.run(scenario())
 
 
 def test_task_cancel_propagates_to_registered_operation_and_checkpoints_id() -> None:

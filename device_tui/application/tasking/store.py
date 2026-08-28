@@ -10,6 +10,7 @@ from .models import TaskRecord, TaskCreate
 class TaskStore(Protocol):
     def list_tasks(self, *, limit: int = 500) -> list[tuple[TaskRecord, TaskCreate]]: ...
     def upsert_task(self, record: TaskRecord, request: TaskCreate) -> None: ...
+    def delete_task(self, task_id: str) -> None: ...
 
 
 class MemoryTaskStore:
@@ -22,3 +23,6 @@ class MemoryTaskStore:
 
     def upsert_task(self, record: TaskRecord, request: TaskCreate) -> None:
         self._items[record.id] = (record, request)
+
+    def delete_task(self, task_id: str) -> None:
+        self._items.pop(task_id, None)

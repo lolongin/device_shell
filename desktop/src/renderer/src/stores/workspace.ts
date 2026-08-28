@@ -1515,6 +1515,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
   }
 
+  async function deleteTask(taskId: string): Promise<boolean> {
+    if (!taskId) return false
+    taskBusy.value = true
+    taskError.value = ''
+    try {
+      await desktopApi.deleteTask(taskId)
+      const wasActive = activeTaskId.value === taskId
+      tasks.value = tasks.value.filter((item) => item.id !== taskId)
+      if (wasActive) {
+        activeTaskId.value = tasks.value[0]?.id || ''
+        taskDecision.value = null
+        if (activeTaskId.value) await getTask(activeTaskId.value, false)
+      }
+      notice.value = 'Task 记录已删除'
+      return true
+    } catch (cause) {
+      taskError.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    } finally { taskBusy.value = false }
+  }
+
   async function applyTaskDecision(action: TaskDecisionActionPayload, reason = ''): Promise<void> {
     const task = tasks.value.find((item) => item.id === activeTaskId.value)
     if (!task || !taskDecision.value) return
@@ -1794,6 +1815,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pauseTask,
     resumeTask,
     cancelTask,
+    deleteTask,
     applyTaskDecision,
     aiPanelOpen, aiBusy, aiObjective, aiPlan,
     buildAiPlan,

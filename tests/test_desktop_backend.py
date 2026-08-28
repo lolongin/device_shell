@@ -21,6 +21,8 @@ from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.domain.devices.repository import InternalAuthStatus
 from device_tui.application.secrets import MemorySecretStore
 from device_tui.application.settings import MemorySettingsStore
+from device_tui.application.device_control import DeviceTarget
+from device_tui.application.tasking import TaskCreate, TaskRecord, WorkflowDefinition, WorkflowStep
 from pathlib import Path
 
 
@@ -109,6 +111,34 @@ def test_health_does_not_require_token() -> None:
         response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "api_version": 1}
+
+
+def test_task_history_delete_route_removes_terminal_records_and_rejects_active() -> None:
+    app = create_app(
+        token=TOKEN,
+        repository=SampleDeviceRepository(),
+        session_hub=SessionHub(),
+    )
+    tasks = app.state.desktop_application.tasks
+    workflow = WorkflowDefinition("test", (WorkflowStep("step", action="command"),))
+    request = TaskCreate(workflow=workflow, target=DeviceTarget(device_id="device-1"))
+    completed = TaskRecord(id="task-completed", status="completed", workflow_id="test", device_id="device-1")
+    active = TaskRecord(id="task-running", status="running", workflow_id="test", device_id="device-1")
+
+    with TestClient(app) as client:
+        tasks._records[completed.id] = completed
+        tasks._requests[completed.id] = request
+        tasks._records[active.id] = active
+        tasks._requests[active.id] = request
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        deleted = client.delete(f"/api/v1/tasks/{completed.id}", headers=headers)
+        missing = client.delete("/api/v1/tasks/unknown", headers=headers)
+        rejected = client.delete(f"/api/v1/tasks/{active.id}", headers=headers)
+
+    assert deleted.status_code == 204
+    assert completed.id not in tasks._records
+    assert missing.status_code == 404
+    assert rejected.status_code == 409
 
 
 def test_internal_auth_login_persists_safe_defaults_and_logout_clears_session() -> None:

@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from device_tui.application.device_control import ControlContext, DeviceLeaseService, DeviceTarget
-from device_tui.application.errors import ApplicationError, ResourceNotFoundError
+from device_tui.application.errors import ApplicationConflictError, ApplicationError, ResourceNotFoundError
 from device_tui.application.events import EventBus
 from device_tui.application.workflows.decisions import DecisionSubmission as FrameworkDecisionSubmission
 from device_tui.application.workflows.models import (
@@ -1303,6 +1303,24 @@ class TaskManager:
         self._update(task_id, status="cancelled", message="Task cancelled.", error_code="task_cancelled")
         self._release_task_resources(task_id)
         return self.get(task_id)
+
+    def delete_task(self, task_id: str) -> None:
+        """Remove a completed task from in-memory and persisted history."""
+        record = self.get(task_id)
+        if record.status not in {"completed", "failed", "cancelled"}:
+            raise ApplicationConflictError(
+                "只能删除已结束的任务记录。",
+                details={"task_id": task_id, "status": str(record.status)},
+            )
+        self._records.pop(task_id, None)
+        self._requests.pop(task_id, None)
+        self._completed_steps.pop(task_id, None)
+        self._cancel.pop(task_id, None)
+        self._stateful_engines.pop(task_id, None)
+        self._framework_definitions.pop(task_id, None)
+        self._release_task_resources(task_id)
+        if self._store is not None:
+            self._store.delete_task(task_id)
 
     def cancel_session(self, session_id: str) -> int:
         """Cancel active tasks bound to a session before it is disconnected."""

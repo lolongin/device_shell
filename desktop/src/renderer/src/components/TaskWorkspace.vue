@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, FileArchive, RotateCcw, ShieldAlert, Workflow, X } from 'lucide-vue-next'
+import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, FileArchive, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { TaskDecisionActionPayload, TaskRecord, TaskStepState, WorkflowParameterDescriptor } from '../types'
 
@@ -308,6 +308,14 @@ async function chooseTask(task: TaskRecord): Promise<void> {
   // focus from a device/session the operator is currently inspecting.
   await workspace.getTask(task.id, false)
 }
+async function deleteTask(task: TaskRecord): Promise<void> {
+  if (!isTerminalStatus(task.status)) return
+  if (!window.confirm(`确定删除 Task ${task.id.slice(0, 8)} 的记录吗？`)) return
+  await workspace.deleteTask(task.id)
+}
+function isTerminalStatus(status: string): boolean {
+  return ['completed', 'failed', 'cancelled'].includes(status)
+}
 function openLatestTask(): void {
   const latest = workspace.tasks[0]
   // Restoring task details must not replace the device or terminal currently
@@ -387,9 +395,9 @@ watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { dee
 
     <div class="task-ui-list" aria-label="Task 列表">
       <div class="task-ui-list-heading"><strong>Task 记录</strong><small>{{ workspace.tasks.length }} 条</small></div>
-      <button v-for="task in workspace.tasks" :key="task.id" type="button" class="task-row" :data-active="task.id === workspace.activeTaskId" @click="chooseTask(task)">
-        <span class="task-row-status" :data-status="task.status"></span><span><strong>{{ task.workflow_id }}</strong><small>{{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b>
-      </button>
+      <div v-for="task in workspace.tasks" :key="task.id" class="task-row" :data-active="task.id === workspace.activeTaskId" role="button" tabindex="0" @click="chooseTask(task)" @keydown.enter="chooseTask(task)">
+        <span class="task-row-status" :data-status="task.status"></span><span><strong>{{ task.workflow_id }}</strong><small>{{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
+      </div>
       <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择 Workflow 或“制定任务”开始。</p>
     </div>
 

@@ -389,6 +389,8 @@ export const desktopApi = {
   getTask: (taskId: string): Promise<TaskResponse> =>
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}`),
   listTasks: (): Promise<TaskListResponse> => request('/api/v1/tasks'),
+  deleteTask: (taskId: string): Promise<void> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),
   pauseTask: (taskId: string): Promise<TaskResponse> =>
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
   resumeTask: (taskId: string, stepId = ''): Promise<TaskResponse> =>
