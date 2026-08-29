@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from device_tui.framework.errors import ResourceConflictError
+
 
 class ApplicationError(Exception):
     """An expected application failure safe to expose through an adapter."""
@@ -20,8 +22,7 @@ class ResourceNotFoundError(ApplicationError):
     code = "resource_not_found"
 
 
-class ApplicationConflictError(ApplicationError):
-    code = "conflict"
+ApplicationConflictError = ResourceConflictError
 
 
 class UnsupportedOperationError(ApplicationError):

@@ -71,6 +71,7 @@ from .runtime import MemoryWorkflowRunStore, WorkflowRuntime
 from .resources import LeaseResourceCoordinator, ResourceCoordinator, ResourceLease, ResourceRequest
 from .supervisor import ActionSupervisor, SupervisedActionResult
 from .watchdog import Watchdog, WatchdogIncident
+from .errors import ResourceConflictError
 
 __all__ = [
     "ActivityContext",
@@ -143,5 +144,6 @@ __all__ = [
     "ResourceLease",
     "ResourceRequest",
     "VerificationSpec",
+    "ResourceConflictError",
     "compile_workflow",
 ]

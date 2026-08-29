@@ -2,6 +2,7 @@
 
 from .commands import CommandPlan, HuaweiVrpCommandSet, HuaweiVrpDeviceCommandProfile
 from .activity_adapter import HuaweiVrpDeviceVendorAdapter
+from .workflow_adapter import HuaweiVrpWorkflowAdapter
 from .drivers import (
     HuaweiVrpUpgradeDriver,
     SimulatedVrpUpgradeDriver,
@@ -17,6 +18,7 @@ __all__ = [
     "HuaweiVrpCommandSet",
     "HuaweiVrpDeviceCommandProfile",
     "HuaweiVrpDeviceVendorAdapter",
+    "HuaweiVrpWorkflowAdapter",
     "HuaweiVrpUpgradeDriver",
     "SimulatedVrpUpgradeDriver",
     "UpgradeCleanupDecision",

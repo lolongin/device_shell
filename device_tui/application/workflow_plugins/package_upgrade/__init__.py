@@ -11,7 +11,7 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "HuaweiVrpPackageUpgradeProvider": (".workflow", "HuaweiVrpPackageUpgradeProvider"),
-    "HuaweiVrpWorkflowAdapter": (".workflow", "HuaweiVrpWorkflowAdapter"),
+    "HuaweiVrpWorkflowAdapter": ("device_tui.infrastructure.vendor_adapters.huawei_vrp.workflow_adapter", "HuaweiVrpWorkflowAdapter"),
     "PackageUpgradeService": (".service", "PackageUpgradeService"),
 }
 

@@ -131,7 +131,7 @@ from device_tui.framework import (
     WorkflowNode,
     WorkflowRuntime,
 )
-from .workflow_plugins.builtins import build_default_adapter_registry, build_default_workflow_registry
+from .composition.workflows import build_default_adapter_registry, build_default_workflow_registry
 
 __all__ = [
     "ApplicationError",

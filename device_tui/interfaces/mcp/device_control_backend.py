@@ -24,6 +24,7 @@ from device_tui.application import (
 from device_tui.application.ai.gateway.service import GatewayService
 from device_tui.application.ai.operations import AiDeviceAction, AiDeviceToolResult
 from device_tui.application.errors import ApplicationError
+from device_tui.framework.errors import ResourceConflictError
 from .core import AppControlBackend
 
 
@@ -45,7 +46,7 @@ class DeviceControlAppBackend(AppControlBackend):
         try:
             data = self._execute(action)
             return AiDeviceToolResult(action, ok=True, message="设备动作执行完成。", data=data)
-        except ApplicationError as exc:
+        except (ApplicationError, ResourceConflictError) as exc:
             return AiDeviceToolResult(
                 action,
                 ok=False,

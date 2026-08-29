@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from device_tui.framework.errors import ResourceConflictError
 
 from device_tui.application import (
     ApplicationError,
@@ -1049,6 +1050,19 @@ def create_app(
             },
         )
         return JSONResponse(status_code=status_code, content=payload.model_dump())
+
+    @app.exception_handler(ResourceConflictError)
+    async def framework_resource_error_handler(
+        _request: Request,
+        exc: ResourceConflictError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=ErrorResponse(
+                detail=exc.message,
+                error={"code": exc.code, "message": exc.message, "details": exc.details},
+            ).model_dump(),
+        )
 
     @app.exception_handler(AppControlError)
     async def app_control_error_handler(

@@ -1,4 +1,4 @@
-"""Default domain plugins shipped with the desktop product."""
+"""Desktop composition of framework contracts and shipped Workflow plugins."""
 
 from device_tui.application.device_control import DeviceControlService
 from device_tui.application.tasking.execution import DeviceExecutionTool
@@ -12,15 +12,16 @@ from device_tui.framework import (
 )
 from device_tui.framework.plugins import AdapterRegistry, WorkflowRegistry
 
-from .package_upgrade.workflow import HuaweiVrpPackageUpgradeProvider, HuaweiVrpWorkflowAdapter
-from .process import ProcessActivityHandler
-from .terminal_transfer import TerminalTransferAdapter
-from .device_activity import DeviceActivityHandler
-from .device_bridge import DeviceExecutionActionHandler
-from .transfer import TransferActivityHandler
-from .generic import build_default_activity_workflow_providers
-from .vendor_adapter import DeviceVendorActivityHandler
+from ..workflow_plugins.package_upgrade.workflow import HuaweiVrpPackageUpgradeProvider
+from ..workflow_plugins.process import ProcessActivityHandler
+from ..workflow_plugins.terminal_transfer import TerminalTransferAdapter
+from ..workflow_plugins.device_activity import DeviceActivityHandler
+from ..workflow_plugins.device_bridge import DeviceExecutionActionHandler
+from ..workflow_plugins.transfer import TransferActivityHandler
+from ..workflow_plugins.generic import build_default_activity_workflow_providers
+from ..workflow_plugins.vendor_adapter import DeviceVendorActivityHandler
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.activity_adapter import HuaweiVrpDeviceVendorAdapter
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.workflow_adapter import HuaweiVrpWorkflowAdapter
 
 
 def build_default_workflow_registry() -> WorkflowRegistry:
@@ -129,7 +130,7 @@ def build_default_activity_executor(
             "device.startup.configure": "huawei.startup.configure",
             "device.startup.rollback": "huawei.startup.rollback",
         }
-        for activity_id, legacy_operation in migrated_operations.items():
+        for activity_id in migrated_operations:
             executor.register_definition(ActivityDefinition(
                 id=activity_id,
                 idempotency=(

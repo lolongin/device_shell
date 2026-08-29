@@ -13,7 +13,7 @@ import threading
 from typing import Protocol
 from uuid import uuid4
 
-from device_tui.application.errors import ApplicationConflictError
+from .errors import ResourceConflictError
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +75,7 @@ class LeaseResourceCoordinator:
             self._expire_locked()
             current = self._claims.get(key)
             if current is not None and current.owner_id != owner_id:
-                raise ApplicationConflictError(
+                raise ResourceConflictError(
                     "资源正在被另一个任务占用。",
                     details={
                         "resource_kind": kind,

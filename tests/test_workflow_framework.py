@@ -24,7 +24,7 @@ from device_tui.framework import (
     WorkflowRuntime,
     compile_workflow,
 )
-from device_tui.application.workflow_plugins.builtins import (
+from device_tui.application.composition.workflows import (
     build_default_adapter_registry,
     build_default_workflow_registry,
 )

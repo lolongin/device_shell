@@ -99,6 +99,12 @@ built-in tasks have migrated.
   protocol; process-backed `script.run` and `artifact.build` have no legacy
   `TaskManager` entry point to migrate or keep in sync.
 - The current verification baseline is the full Python suite (`626 passed`).
+- The framework resource conflict error is now owned by `device_tui.framework`;
+  the desktop and MCP boundaries translate it to the existing application/API
+  error shape without making the framework import `application.errors`.
+- Default Workflow and Activity registry construction now lives in
+  `application.composition.workflows`; Huawei Workflow discovery/output
+  translation lives in `infrastructure.vendor_adapters.huawei_vrp.workflow_adapter`.
 
 ## 2. Target Ownership
 

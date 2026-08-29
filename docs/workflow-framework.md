@@ -21,6 +21,7 @@ The package layout follows the same direction:
 framework/                                    generic runtime and contracts
 application/workflow_plugins/                 reusable workflow composition
 application/workflow_plugins/package_upgrade/ upgrade workflow and policy
+application/composition/                     application registry/adapter assembly
 infrastructure/vendor_adapters/huawei_vrp/    Huawei CLI and upgrade adapter
 ```
 
@@ -29,6 +30,8 @@ such as package replacement, device control, file transfer, and test scripts
 belong in `application/workflow_plugins` or another application-owned package.
 The package-upgrade feature keeps its Workflow, business policy, and manual
 application service together under `application/workflow_plugins/package_upgrade`.
+The application composition root in `application/composition` assembles these
+plugins with framework runtimes; it is not part of the generic framework.
 The old `application.workflows` and `application.upgrades` modules have been
 removed; new code must import framework contracts from `device_tui.framework`,
 upgrade features from `application.workflow_plugins.package_upgrade`, and
@@ -40,7 +43,7 @@ Huawei command profiles and drivers from
 Register a provider and adapter through the default registries:
 
 ```python
-from device_tui.application.workflow_plugins.builtins import (
+from device_tui.application.composition.workflows import (
     build_default_adapter_registry,
     build_default_workflow_registry,
 )

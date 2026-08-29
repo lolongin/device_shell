@@ -48,8 +48,8 @@ from device_tui.framework import (
     WorkflowRegistry,
     WorkflowRuntime,
 )
-from .workflow_plugins.builtins import build_default_adapter_registry, build_default_workflow_registry
-from .workflow_plugins.builtins import build_default_activity_executor
+from .composition.workflows import build_default_adapter_registry, build_default_workflow_registry
+from .composition.workflows import build_default_activity_executor
 from device_tui.framework.events import WorkflowEventStore
 from device_tui.framework.runtime import WorkflowRunStore
 from .workflow_plugins.device_bridge import build_device_action_registry, build_device_reconcile_registry
