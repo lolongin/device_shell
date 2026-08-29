@@ -17,8 +17,6 @@ from device_tui.application.terminal.orchestration import (
     parse_terminal_plan,
 )
 from device_tui.application.transfers import ManagedTransferService, TerminalPlanExecutor
-from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
-
 from .models import (
     CommandRequest,
     CommandResult,
@@ -31,6 +29,7 @@ from .models import (
     TransferRequest,
 )
 from .lease import DeviceLeaseService
+from .protocol import CompatibilityDeviceCommandProfile, DeviceCommandProfile
 
 
 class DeviceControlService:
@@ -49,6 +48,7 @@ class DeviceControlService:
         operations: OperationManager,
         terminal_executor: TerminalPlanExecutor,
         leases: DeviceLeaseService | None = None,
+        command_profile: DeviceCommandProfile | None = None,
     ) -> None:
         self._devices = devices
         self._sessions = sessions
@@ -56,6 +56,7 @@ class DeviceControlService:
         self._operations = operations
         self._executor = terminal_executor
         self._leases = leases
+        self._command_profile = command_profile or CompatibilityDeviceCommandProfile()
 
     async def open_session(
         self,
@@ -319,7 +320,7 @@ class DeviceControlService:
         context: ControlContext | None = None,
     ) -> CommandResult:
         self._validate_task_lease(target, context)
-        plan_steps = steps or HuaweiVrpCommandSet().reboot_plan().steps
+        plan_steps = steps or self._command_profile.reboot_steps()
         commands = tuple(
             str(step.get("text") or "")
             for step in plan_steps

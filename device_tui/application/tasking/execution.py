@@ -12,9 +12,11 @@ from device_tui.application.device_control import (
     DeviceTarget,
     TransferRequest,
 )
+from device_tui.application.device_control.protocol import (
+    CompatibilityDeviceCommandProfile,
+    DeviceCommandProfile,
+)
 from device_tui.application.errors import ApplicationError, UnsupportedOperationError
-from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
-from device_tui.application.upgrades.package import startup_uses_package
 
 from .models import WorkflowStep
 
@@ -51,8 +53,14 @@ class DeviceWorkflowExecutionError(RuntimeError):
 class DeviceExecutionTool:
     """Translate workflow actions into DeviceControlService calls."""
 
-    def __init__(self, control: DeviceControlService) -> None:
+    def __init__(
+        self,
+        control: DeviceControlService,
+        *,
+        command_profile: DeviceCommandProfile | None = None,
+    ) -> None:
         self._control = control
+        self._command_profile = command_profile or CompatibilityDeviceCommandProfile()
 
     async def execute(
         self,
@@ -85,7 +93,7 @@ class DeviceExecutionTool:
                 fact = str(params.get("fact") or "")
                 expected = str(params.get("expected_version") or params.get("expected") or "")
                 if fact == "startup_package":
-                    if expected and not startup_uses_package(result.output, expected):
+                    if expected and not self._command_profile.startup_package_matches(result.output, expected):
                         raise DeviceWorkflowExecutionError(
                             "version_mismatch",
                             f"Expected startup package {expected!r} was not observed in display startup.",
@@ -162,7 +170,7 @@ class DeviceExecutionTool:
                         DeviceTarget(session_id=view.session_id),
                         command=str(
                             params.get("readiness_command")
-                            or HuaweiVrpCommandSet.version_query()
+                            or self._command_profile.version_query()
                         ),
                         timeout_seconds=probe_timeout,
                         context=context,
@@ -431,23 +439,21 @@ class DeviceExecutionTool:
             "data": dict(operation.data),
         }
 
-    @staticmethod
-    def _default_command(action: str, params: dict[str, Any]) -> str:
-        commands = HuaweiVrpCommandSet()
+    def _default_command(self, action: str, params: dict[str, Any]) -> str:
         defaults = {
-            "precheck": commands.version_query(),
-            "backup": commands.startup_query(),
-            "verify": commands.storage_query("flash:/"),
+            "precheck": self._command_profile.version_query(),
+            "backup": self._command_profile.startup_query(),
+            "verify": self._command_profile.storage_query("flash:/"),
             "activate": str(
                 params.get("activate_command")
                 or (
-                    commands.activation(str(params.get("destination_path") or ""), "", False)[0][0]
+                    self._command_profile.activation_command(str(params.get("destination_path") or ""))
                     if str(params.get("destination_path") or "").strip()
-                    else commands.activation("", "", False)[0][0]
+                    else self._command_profile.activation_command("")
                 )
             ),
-            "verify_version": commands.version_query(),
-            "validation": str(params.get("validation_command") or commands.version_query()),
+            "verify_version": self._command_profile.version_query(),
+            "validation": str(params.get("validation_command") or self._command_profile.version_query()),
         }
         return defaults[action]
 

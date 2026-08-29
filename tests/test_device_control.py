@@ -100,6 +100,26 @@ class StartupVerificationControl:
         )
 
 
+class CustomCommandProfile:
+    def version_query(self) -> str:
+        return "show version"
+
+    def startup_query(self) -> str:
+        return "show startup"
+
+    def storage_query(self, storage: str) -> str:
+        return f"list {storage}"
+
+    def activation_command(self, destination_path: str) -> str:
+        return f"boot {destination_path}"
+
+    def startup_package_matches(self, output: str, package_name: str) -> bool:
+        return package_name in output
+
+    def reboot_steps(self) -> tuple[dict[str, object], ...]:
+        return ({"type": "send", "text": "restart"},)
+
+
 def test_wait_online_requires_a_successful_cli_probe_after_transport_connects() -> None:
     async def scenario() -> None:
         control = ReadinessControl(cli_ready=True)
@@ -118,6 +138,42 @@ def test_wait_online_requires_a_successful_cli_probe_after_transport_connects() 
         assert result["transport_status"] == "connected"
         assert result["cli_status"] == "ready"
         assert result["probe_execution_id"] == "probe-1"
+
+    asyncio.run(scenario())
+
+
+def test_device_execution_tool_uses_injected_command_profile() -> None:
+    class ProfileControl:
+        async def execute(self, target, request, *, context):
+            del target, context
+            assert request.commands == ("show startup",)
+            return CommandResult(
+                operation_id="probe-1",
+                execution_id="probe-1",
+                session_id="session-1",
+                device_id="d1",
+                status="completed",
+                output="target.cc",
+            )
+
+    async def scenario() -> None:
+        result = await DeviceExecutionTool(
+            ProfileControl(), command_profile=CustomCommandProfile()
+        ).execute(
+            DeviceTarget(device_id="d1"),
+            WorkflowStep(
+                "verify_version",
+                kind="device",
+                action="verify_version",
+                params={
+                    "fact": "startup_package",
+                    "expected": "target.cc",
+                    "commands": ("show startup",),
+                },
+            ),
+            context=ControlContext(source="test"),
+        )
+        assert result["status"] == "completed"
 
     asyncio.run(scenario())
 

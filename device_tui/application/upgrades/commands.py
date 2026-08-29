@@ -157,6 +157,7 @@ class HuaweiVrpCommandSet:
             },
         ))
 
+
     def manual_upgrade_plan(self, config: PackageUpgradeConfig) -> CommandPlan:
         """Render the same command vocabulary for the controlled manual fallback."""
         package_name = Path(config.package_path).name
@@ -227,4 +228,31 @@ class HuaweiVrpCommandSet:
         return tuple(commands)
 
 
-__all__ = ["CommandPlan", "HuaweiVrpCommandSet"]
+class HuaweiVrpDeviceCommandProfile:
+    """Adapt the Huawei command vocabulary to the device-control port."""
+
+    def __init__(self, command_set: HuaweiVrpCommandSet | None = None) -> None:
+        self._commands = command_set or HuaweiVrpCommandSet()
+
+    def version_query(self) -> str:
+        return self._commands.version_query()
+
+    def startup_query(self) -> str:
+        return self._commands.startup_query()
+
+    def storage_query(self, storage: str) -> str:
+        return self._commands.storage_query(storage)
+
+    def activation_command(self, destination_path: str) -> str:
+        return self._commands.activation(destination_path, "", False)[0][0]
+
+    def startup_package_matches(self, output: str, package_name: str) -> bool:
+        from .package import startup_uses_package
+
+        return startup_uses_package(output, package_name)
+
+    def reboot_steps(self) -> tuple[dict[str, object], ...]:
+        return self._commands.reboot_plan().steps
+
+
+__all__ = ["CommandPlan", "HuaweiVrpCommandSet", "HuaweiVrpDeviceCommandProfile"]

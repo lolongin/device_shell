@@ -13,6 +13,7 @@ from .models import (
 )
 from .lease import DeviceLease, DeviceLeaseService
 from .service import DeviceControlService
+from .protocol import CompatibilityDeviceCommandProfile, DeviceCommandProfile
 
 __all__ = [
     "CommandRequest",
@@ -27,4 +28,6 @@ __all__ = [
     "TransferRequest",
     "DeviceLease",
     "DeviceLeaseService",
+    "CompatibilityDeviceCommandProfile",
+    "DeviceCommandProfile",
 ]

@@ -53,6 +53,7 @@ from .workflow_plugins.builtins import build_default_activity_executor
 from .workflows.events import WorkflowEventStore
 from .workflows.runtime import WorkflowRunStore
 from .workflow_plugins.device_bridge import build_device_action_registry, build_device_reconcile_registry
+from .upgrades.commands import HuaweiVrpDeviceCommandProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,8 +145,17 @@ def build_desktop_application(
     # normal completion, pause, and cancellation release them explicitly.
     leases = DeviceLeaseService(ttl_seconds=21_600)
     resources = LeaseResourceCoordinator(device_leases=leases, default_ttl_seconds=21_600)
-    control = DeviceControlService(devices, sessions, transfers, operations, executor, leases=leases)
-    execution = DeviceExecutionTool(control)
+    command_profile = HuaweiVrpDeviceCommandProfile()
+    control = DeviceControlService(
+        devices,
+        sessions,
+        transfers,
+        operations,
+        executor,
+        leases=leases,
+        command_profile=command_profile,
+    )
+    execution = DeviceExecutionTool(control, command_profile=command_profile)
     workflows = workflow_catalog or build_default_workflow_catalog()
     framework_workflows = framework_workflow_registry or build_default_workflow_registry()
     framework_adapters = framework_adapter_registry or build_default_adapter_registry()
