@@ -4,7 +4,7 @@ import asyncio
 
 from device_tui.application.device_control import DeviceTarget
 from device_tui.application.tasking.execution import DeviceWorkflowExecutionError
-from device_tui.application.workflow_plugins import CompatibilityDeviceActivityHandler, DeviceActivityHandler
+from device_tui.application.workflow_plugins import DeviceActivityHandler
 from device_tui.framework import (
     ActionResult,
     ActionStatus,
@@ -119,66 +119,3 @@ def test_device_activity_emits_legacy_reboot_and_readiness_signals_during_migrat
         "huawei.reboot.started", "huawei.cli.ready", "huawei.startup.package.match",
     ]
 
-
-def test_compatibility_activity_preserves_vendor_operation_and_workflow_deadline():
-    class Legacy:
-        def __init__(self) -> None:
-            self.action = None
-
-        async def execute(self, action, run, emit):
-            del run
-            self.action = action
-            emit(DeviceActivityHandler._event("huawei.startup.verified", invocation, {}))
-            return ActionResult(
-                ActionStatus.SUCCEEDED,
-                facts={"execution_id": "exec-1", "evidence": [{"kind": "readback"}]},
-            )
-
-        async def cancel(self, action, run):
-            del action, run
-
-    invocation = _invocation(
-        "device.startup.configure",
-        package="target.cc",
-        activity_timeout_seconds=120,
-    )
-    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "dev-1"), invocation)
-    legacy = Legacy()
-    handler = CompatibilityDeviceActivityHandler(
-        legacy,
-        "device.startup.configure",
-        "huawei.startup.configure",
-    )
-    events = []
-
-    result = asyncio.run(handler.execute(invocation, context, events.append))
-
-    assert result.status == ActivityStatus.SUCCEEDED
-    assert result.operation_id == "exec-1"
-    assert result.evidence == ({"kind": "readback"},)
-    assert legacy.action.operation == "huawei.startup.configure"
-    assert legacy.action.timeout_seconds == 120
-    assert events[-1].type == "huawei.startup.verified"
-
-
-def test_compatibility_startup_timeout_is_unknown_until_reconciled():
-    class Legacy:
-        async def execute(self, action, run, emit):
-            del action, run, emit
-            raise DeviceWorkflowExecutionError(
-                "terminal_timeout",
-                "connection lost after startup command",
-                error_class="unknown",
-            )
-
-        async def cancel(self, action, run):
-            del action, run
-
-    invocation = _invocation("device.startup.configure", activity_timeout_seconds=120)
-    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "dev-1"), invocation)
-    result = asyncio.run(CompatibilityDeviceActivityHandler(
-        Legacy(), "device.startup.configure", "huawei.startup.configure",
-    ).execute(invocation, context, lambda event: event))
-
-    assert result.status == ActivityStatus.UNKNOWN
-    assert result.error["code"] == "terminal_timeout"

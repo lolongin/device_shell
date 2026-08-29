@@ -24,7 +24,6 @@ __all__ = [
     "DeviceActivityHandler",
     "DeviceVendorActivityHandler",
     "HuaweiVrpDeviceVendorAdapter",
-    "CompatibilityDeviceActivityHandler",
     "ActivityWorkflowProvider",
     "build_default_activity_workflow_providers",
 ]
@@ -45,7 +44,6 @@ _EXPORT_MODULES = {
     "DeviceActivityHandler": (".device_activity", "DeviceActivityHandler"),
     "DeviceVendorActivityHandler": (".vendor_adapter", "DeviceVendorActivityHandler"),
     "HuaweiVrpDeviceVendorAdapter": ("device_tui.infrastructure.vendor_adapters.huawei_vrp.activity_adapter", "HuaweiVrpDeviceVendorAdapter"),
-    "CompatibilityDeviceActivityHandler": (".device_activity", "CompatibilityDeviceActivityHandler"),
     "ActivityWorkflowProvider": (".generic", "ActivityWorkflowProvider"),
     "build_default_activity_workflow_providers": (".generic", "build_default_activity_workflow_providers"),
 }

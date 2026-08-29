@@ -98,7 +98,7 @@ built-in tasks have migrated.
   orchestration. It is intentionally separate from the legacy `TaskLifecycle`
   protocol; process-backed `script.run` and `artifact.build` have no legacy
   `TaskManager` entry point to migrate or keep in sync.
-- The current verification baseline is the full Python suite (`626 passed`).
+- The current verification baseline is the full Python suite (`631 passed`).
 - The framework resource conflict error is now owned by `device_tui.framework`;
   the desktop and MCP boundaries translate it to the existing application/API
   error shape without making the framework import `application.errors`.
@@ -108,6 +108,10 @@ built-in tasks have migrated.
 - Huawei CLI output parsing now lives in
   `infrastructure.vendor_adapters.huawei_vrp.parsers`; package-upgrade policy
   no longer contains duplicate terminal-format implementations.
+- The obsolete `CompatibilityDeviceActivityHandler` has been removed. The
+  remaining `DeviceExecutionActionHandler` is still used by storage/startup
+  migration Activities and must be replaced by native handlers before the
+  legacy device bridge can be deleted.
 
 ## 2. Target Ownership
 
