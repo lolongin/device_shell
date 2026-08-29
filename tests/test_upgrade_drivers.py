@@ -10,6 +10,10 @@ from device_tui.application.upgrades.drivers import (
 )
 from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
 from device_tui.application.upgrades.package import PackageUpgradeConfig
+from device_tui.infrastructure.vendor_adapters.huawei_vrp import (
+    HuaweiVrpCommandSet as VendorHuaweiVrpCommandSet,
+    HuaweiVrpUpgradeDriver as VendorHuaweiVrpUpgradeDriver,
+)
 
 
 def test_registry_matches_huawei_and_rejects_known_unknown_vendor() -> None:
@@ -18,6 +22,13 @@ def test_registry_matches_huawei_and_rejects_known_unknown_vendor() -> None:
     assert registry.resolve(UpgradeTargetFacts("SIM-TERMINAL", vendor="本地", model="终端"), "auto").id == "simulated-vrp"
     with pytest.raises(KeyError):
         registry.resolve(UpgradeTargetFacts("d", vendor="Cisco"), "auto")
+
+
+def test_vendor_adapter_is_the_canonical_home_for_huawei_implementations() -> None:
+    assert HuaweiVrpCommandSet is VendorHuaweiVrpCommandSet
+    assert HuaweiVrpUpgradeDriver is VendorHuaweiVrpUpgradeDriver
+    assert HuaweiVrpCommandSet.__module__.startswith("device_tui.infrastructure.vendor_adapters.")
+    assert HuaweiVrpUpgradeDriver.__module__.startswith("device_tui.infrastructure.vendor_adapters.")
 
 
 def test_huawei_driver_owns_commands_and_artifact_policy() -> None:

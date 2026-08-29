@@ -1,11 +1,7 @@
-"""Compatibility imports for relocated Huawei upgrade adapters.
+"""Huawei VRP command and protocol adapters."""
 
-New code should import vendor drivers from
-``infrastructure.vendor_adapters.huawei_vrp``. The upgrade package keeps
-this module as a stable import path for existing integrations.
-"""
-
-from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import (
+from .commands import CommandPlan, HuaweiVrpCommandSet, HuaweiVrpDeviceCommandProfile
+from .drivers import (
     HuaweiVrpUpgradeDriver,
     SimulatedVrpUpgradeDriver,
     UpgradeCleanupDecision,
@@ -16,6 +12,9 @@ from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import (
 )
 
 __all__ = [
+    "CommandPlan",
+    "HuaweiVrpCommandSet",
+    "HuaweiVrpDeviceCommandProfile",
     "HuaweiVrpUpgradeDriver",
     "SimulatedVrpUpgradeDriver",
     "UpgradeCleanupDecision",

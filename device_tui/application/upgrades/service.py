@@ -27,7 +27,7 @@ from device_tui.application.upgrades.package import (
     parse_display_startup,
     parse_free_space_bytes,
 )
-from device_tui.application.upgrades.drivers import (
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import (
     UpgradeDriver,
     UpgradeDriverRegistry,
     UpgradeTargetFacts,

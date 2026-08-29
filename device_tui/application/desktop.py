@@ -53,7 +53,7 @@ from .workflow_plugins.builtins import build_default_activity_executor
 from .workflows.events import WorkflowEventStore
 from .workflows.runtime import WorkflowRunStore
 from .workflow_plugins.device_bridge import build_device_action_registry, build_device_reconcile_registry
-from .upgrades.commands import HuaweiVrpDeviceCommandProfile
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpDeviceCommandProfile
 
 
 @dataclass(frozen=True, slots=True)

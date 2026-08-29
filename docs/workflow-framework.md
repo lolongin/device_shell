@@ -15,6 +15,20 @@ Credentials, FTP username/password prompts, pagination, SSH host-key prompts,
 and Y/N confirmations remain in the interaction layer. They never become a
 DecisionPoint.
 
+The package layout follows the same direction:
+
+```text
+application/workflows/                       generic runtime and contracts
+application/workflow_plugins/                reusable workflow composition
+application/upgrades/                        package-upgrade rules and manual API
+infrastructure/vendor_adapters/huawei_vrp/   Huawei CLI and upgrade adapter
+```
+
+`application/upgrades/commands.py` and `drivers.py` are compatibility import
+paths only. New code should resolve Huawei command profiles and upgrade drivers
+from `infrastructure.vendor_adapters.huawei_vrp`; the generic runtime must not
+import either package.
+
 ## Extension points
 
 Register a provider and adapter through the default registries:
@@ -65,8 +79,8 @@ precheck → ftp_login → transfer → verify_package → configure_startup
 
 It also declares a rollback state. The provider requires the Huawei VRP,
 file-transfer, and reboot capabilities. It does not contain Huawei CLI
-strings; those belong to `HuaweiVrpWorkflowAdapter` and the existing upgrade
-driver.
+strings; those belong to `HuaweiVrpWorkflowAdapter` and the Huawei vendor
+adapter.
 
 ## API
 

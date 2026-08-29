@@ -460,7 +460,7 @@ def _can_delete_package(
 def generate_huawei_upgrade_plan(config: PackageUpgradeConfig) -> PackageUpgradePlan:
     # Kept as the legacy public renderer. CLI syntax belongs to CommandSet,
     # so manual scripts cannot drift from the automatic workflow.
-    from .commands import HuaweiVrpCommandSet
+    from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 
     command_plan = HuaweiVrpCommandSet().manual_upgrade_plan(config)
     cleanup_paths = [

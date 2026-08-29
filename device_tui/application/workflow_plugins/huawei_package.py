@@ -23,7 +23,7 @@ from device_tui.application.workflows.models import (
     StateNode,
     WorkflowDefinition,
 )
-from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 
 
 class HuaweiVrpPackageUpgradeProvider:

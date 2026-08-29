@@ -20,8 +20,8 @@ from device_tui.application.tasking.execution import (
     DeviceWorkflowExecutionError,
 )
 from device_tui.application.tasking.models import WorkflowStep
-from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
-from device_tui.application.upgrades.drivers import UpgradeDriverRegistry, UpgradeTargetFacts
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import UpgradeDriverRegistry, UpgradeTargetFacts
 from device_tui.application.upgrades.package import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
