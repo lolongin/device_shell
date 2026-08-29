@@ -3,7 +3,7 @@
 from .sqlite_desktop import SQLiteDesktopStore
 from .sqlite_profiles import SQLiteConnectionProfileStore
 from .sqlite_settings import SQLiteSettingsStore
-from .sqlite_workflows import SQLiteWorkflowEventStore, SQLiteWorkflowRunStore
+from .sqlite_workflows import SQLiteTaskRunStore, SQLiteWorkflowEventStore, SQLiteWorkflowRunStore
 
 __all__ = [
     "SQLiteConnectionProfileStore",
@@ -11,4 +11,5 @@ __all__ = [
     "SQLiteSettingsStore",
     "SQLiteWorkflowEventStore",
     "SQLiteWorkflowRunStore",
+    "SQLiteTaskRunStore",
 ]

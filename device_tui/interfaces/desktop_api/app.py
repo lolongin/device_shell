@@ -80,7 +80,11 @@ from device_tui.domain.devices.repository import (
 )
 from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
 from device_tui.infrastructure.persistence.sqlite_settings import SQLiteSettingsStore
-from device_tui.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowEventStore, SQLiteWorkflowRunStore
+from device_tui.infrastructure.persistence.sqlite_workflows import (
+    SQLiteTaskRunStore,
+    SQLiteWorkflowEventStore,
+    SQLiteWorkflowRunStore,
+)
 from device_tui.interfaces.mcp.core import AppControlError
 from .models import (
     DeviceListResponse,
@@ -931,6 +935,11 @@ def create_app(
             if production_defaults and framework_runtime is None
             else None
         ),
+        framework_task_run_store=(
+            SQLiteTaskRunStore(data_root / "device-tui.sqlite3")
+            if production_defaults and framework_runtime is None
+            else None
+        ),
     )
     _attempt_internal_auto_login(
         repo,
@@ -978,6 +987,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        desktop.task_service.bind_runner_loop(asyncio.get_running_loop())
         yield
         await desktop.tasks.close()
         await desktop.upgrades.close()
@@ -2420,20 +2430,25 @@ def create_app(
             session = next((item for item in desktop.sessions.list_sessions() if item.id == session_id), None)
             if session is None:
                 raise ResourceNotFoundError("Session disappeared after opening", details={"session_id": session_id})
-        operation = desktop.control.transfer(
-            DeviceTarget(device_id=session.device_id, session_id=session.id),
-            TransferRequest(
-                direction=request.direction,
-                source_path=request.source_path,
-                destination_path=request.destination_path,
-                overwrite=request.overwrite,
-                terminal_environment=request.terminal_environment,
-                command_mode=request.command_mode,
-            ),
-            context=ControlContext(source="electron"),
+        _task_run, operation_id = await desktop.task_service.start_file_transfer(
+            device_id=session.device_id,
+            session_id=session.id,
+            direction=request.direction,
+            source_path=request.source_path,
+            destination_path=request.destination_path,
+            overwrite=request.overwrite,
+            protocol=request.protocol,
+            terminal_environment=request.terminal_environment,
+            command_mode=request.command_mode,
+            context={"source": "electron"},
         )
+        desktop.operations.update(
+            operation_id,
+            data={"task_run_id": _task_run.id, "task_plan_id": _task_run.plan_id},
+        )
+        operation = desktop.control.get_operation(operation_id)
         return OperationResponse(
-            operation=_operation_model(desktop.control.get_operation(operation.operation_id))
+            operation=_operation_model(operation)
         )
 
     @app.post(

@@ -11,8 +11,14 @@ from device_tui.application.workflows import (
     ProgressSnapshot,
     RunStatus,
     WorkflowRun,
+    TaskRun,
+    TaskRunStatus,
 )
-from device_tui.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowEventStore, SQLiteWorkflowRunStore
+from device_tui.infrastructure.persistence.sqlite_workflows import (
+    SQLiteTaskRunStore,
+    SQLiteWorkflowEventStore,
+    SQLiteWorkflowRunStore,
+)
 
 
 def test_sqlite_workflow_run_store_round_trip(tmp_path: Path) -> None:
@@ -46,3 +52,23 @@ def test_sqlite_workflow_event_store_assigns_per_run_sequence_and_is_idempotent(
     assert second.sequence == 2
     assert other.sequence == 1
     assert [event.type for event in store.list("run-1")] == ["workflow.started", "action.started"]
+
+
+def test_sqlite_task_run_store_round_trip_composition_state(tmp_path: Path) -> None:
+    store = SQLiteTaskRunStore(tmp_path / "device.sqlite3")
+    run = TaskRun(
+        id="task-1",
+        plan_id="upgrade-and-test",
+        device_id="d1",
+        status=TaskRunStatus.WAITING_CHILD,
+        inputs={"package": "firmware.bin"},
+        node_runs={"build": "workflow-1"},
+        outputs={"build": {"package_path": "firmware.bin"}},
+        context={"target": {"session_id": "s1", "protocol": "ssh"}},
+    )
+    store.save(run)
+    restored = store.get("task-1")
+    assert restored.status == TaskRunStatus.WAITING_CHILD
+    assert restored.node_runs == {"build": "workflow-1"}
+    assert restored.outputs["build"]["package_path"] == "firmware.bin"
+    assert restored.context["target"]["session_id"] == "s1"

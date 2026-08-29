@@ -34,20 +34,25 @@ from .tasking import (
     DeviceExecutionTool,
     MemoryTaskStore,
     TaskManager,
+    TaskService,
     TaskStore,
     WorkflowCatalog,
     build_default_workflow_catalog,
 )
 from .workflows import (
+    ActivityExecutor,
     AdapterRegistry,
+    LeaseResourceCoordinator,
+    TaskOrchestrator,
+    TaskRunStore,
     WorkflowRegistry,
     WorkflowRuntime,
-    build_default_adapter_registry,
-    build_default_workflow_registry,
 )
+from .workflow_plugins.builtins import build_default_adapter_registry, build_default_workflow_registry
+from .workflow_plugins.builtins import build_default_activity_executor
 from .workflows.events import WorkflowEventStore
 from .workflows.runtime import WorkflowRunStore
-from .workflows.device_bridge import build_device_action_registry, build_device_reconcile_registry
+from .workflow_plugins.device_bridge import build_device_action_registry, build_device_reconcile_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +72,13 @@ class DesktopApplication:
     leases: DeviceLeaseService
     control: DeviceControlService
     tasks: TaskManager
+    task_service: TaskService
     workflows: WorkflowCatalog
     framework_workflows: WorkflowRegistry
     framework_adapters: AdapterRegistry
     workflow_runtime: WorkflowRuntime
+    activity_executor: ActivityExecutor
+    task_orchestrator: TaskOrchestrator
 
 
 def build_desktop_application(
@@ -93,6 +101,7 @@ def build_desktop_application(
     workflow_runtime: WorkflowRuntime | None = None,
     framework_run_store: WorkflowRunStore | None = None,
     framework_event_store: WorkflowEventStore | None = None,
+    framework_task_run_store: TaskRunStore | None = None,
 ) -> DesktopApplication:
     events = EventBus()
     devices = DeviceService(repository)
@@ -134,17 +143,38 @@ def build_desktop_application(
     # short operation timeout. Process restart clears these in-memory leases;
     # normal completion, pause, and cancellation release them explicitly.
     leases = DeviceLeaseService(ttl_seconds=21_600)
+    resources = LeaseResourceCoordinator(device_leases=leases, default_ttl_seconds=21_600)
     control = DeviceControlService(devices, sessions, transfers, operations, executor, leases=leases)
     execution = DeviceExecutionTool(control)
     workflows = workflow_catalog or build_default_workflow_catalog()
     framework_workflows = framework_workflow_registry or build_default_workflow_registry()
     framework_adapters = framework_adapter_registry or build_default_adapter_registry()
+    activity_executor = build_default_activity_executor(
+        control,
+        execution,
+        adapters=framework_adapters,
+        transfers=transfers,
+    )
     runtime = workflow_runtime or WorkflowRuntime(
-        actions=build_device_action_registry(execution, framework_adapters, transfers),
+        actions=build_device_action_registry(
+            execution,
+            framework_adapters,
+            transfers,
+            activity_executor=activity_executor,
+        ),
         reconciliations=build_device_reconcile_registry(execution, control),
         runs=framework_run_store,
         events=framework_event_store,
-        leases=leases,
+        resource_coordinator=resources,
+    )
+    # Fence persisted in-flight WorkflowRuns before any new work is accepted.
+    # Resume APIs will perform reconcile before retrying their last Activity.
+    runtime.recover_inflight()
+    task_orchestrator = TaskOrchestrator(
+        runtime,
+        framework_workflows,
+        store=framework_task_run_store,
+        resource_coordinator=resources,
     )
     tasks = TaskManager(
         execution,
@@ -153,6 +183,8 @@ def build_desktop_application(
         leases=leases,
         framework_runtime=runtime,
         framework_workflows=framework_workflows,
+        resource_coordinator=resources,
+        task_orchestrator=task_orchestrator,
     )
     return DesktopApplication(
         devices=devices,
@@ -170,8 +202,15 @@ def build_desktop_application(
         leases=leases,
         control=control,
         tasks=tasks,
+        task_service=TaskService(
+            tasks,
+            task_orchestrator,
+            operation_status=lambda operation_id: control.get_operation(operation_id).status,
+        ),
         workflows=workflows,
         framework_workflows=framework_workflows,
         framework_adapters=framework_adapters,
         workflow_runtime=runtime,
+        activity_executor=activity_executor,
+        task_orchestrator=task_orchestrator,
     )

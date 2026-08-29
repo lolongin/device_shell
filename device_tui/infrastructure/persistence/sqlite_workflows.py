@@ -17,6 +17,7 @@ from device_tui.application.workflows.models import (
     ProgressSnapshot,
     WorkflowRun,
 )
+from device_tui.application.workflows.orchestrator import TaskRun, TaskRunStore
 
 
 class SQLiteWorkflowRunStore:
@@ -71,6 +72,66 @@ class SQLiteWorkflowRunStore:
                 """
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_workflow_runs_updated ON workflow_runs(updated_at DESC, id DESC)")
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+
+class SQLiteTaskRunStore(TaskRunStore):
+    """Durable store for Task-level composition state."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._migrate()
+
+    def save(self, run: TaskRun) -> TaskRun:
+        payload = json.dumps(run.to_dict(), ensure_ascii=False, separators=(",", ":"))
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO task_runs (id, plan_id, device_id, status, payload)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    plan_id=excluded.plan_id,
+                    device_id=excluded.device_id,
+                    status=excluded.status,
+                    payload=excluded.payload
+                """,
+                (run.id, run.plan_id, run.device_id, str(run.status), payload),
+            )
+        return run
+
+    def get(self, task_run_id: str) -> TaskRun:
+        with self._connect() as connection:
+            row = connection.execute("SELECT payload FROM task_runs WHERE id = ?", (task_run_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"task run not found: {task_run_id}")
+        return _task_run_from_dict(json.loads(str(row["payload"])))
+
+    def list(self, *, limit: int = 500) -> list[TaskRun]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM task_runs ORDER BY rowid DESC LIMIT ?",
+                (max(0, limit),),
+            ).fetchall()
+        return [_task_run_from_dict(json.loads(str(row["payload"]))) for row in rows]
+
+    def _migrate(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_runs (
+                    id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -164,6 +225,21 @@ def _run_from_dict(payload: dict[str, Any]) -> WorkflowRun:
             expires_at=str(raw_decision.get("expires_at") or ""),
         ) if isinstance(raw_decision, dict) else None),
         error=dict(payload.get("error") or {}) if isinstance(payload.get("error"), dict) else None,
+        outputs=dict(payload.get("outputs") or {}),
+    )
+
+
+def _task_run_from_dict(payload: dict[str, Any]) -> TaskRun:
+    return TaskRun(
+        id=str(payload.get("id") or ""),
+        plan_id=str(payload.get("plan_id") or ""),
+        device_id=str(payload.get("device_id") or ""),
+        status=str(payload.get("status") or "created"),
+        inputs=dict(payload.get("inputs") or {}),
+        node_runs={str(key): str(value) for key, value in dict(payload.get("node_runs") or {}).items()},
+        outputs=dict(payload.get("outputs") or {}),
+        error=dict(payload.get("error") or {}) if isinstance(payload.get("error"), dict) else None,
+        context=dict(payload.get("context") or {}),
     )
 
 
@@ -178,4 +254,4 @@ def _event_from_dict(payload: dict[str, Any]) -> Event:
     )
 
 
-__all__ = ["SQLiteWorkflowEventStore", "SQLiteWorkflowRunStore"]
+__all__ = ["SQLiteTaskRunStore", "SQLiteWorkflowEventStore", "SQLiteWorkflowRunStore"]

@@ -155,12 +155,25 @@ class DeviceControlAppBackend(AppControlBackend):
         if kind in {"start_managed_file_transfer", "ai_gateway_upload_file", "ai_gateway_download_file"}:
             session = self._session_record(action.device_id, str(params.get("session_id") or ""), ensure=True)
             direction = "download" if kind.endswith("download_file") else "upload"
-            operation = self.desktop.control.transfer(
-                DeviceTarget(device_id=session.device_id, session_id=session.id),
-                TransferRequest(direction=direction, source_path=str(params.get("source_path") or ""), destination_path=str(params.get("destination_path") or ""), overwrite=bool(params.get("overwrite", False))),
-                context=ControlContext(source="stdio-mcp"),
+            task_run, operation_id = self._run(self.desktop.task_service.start_file_transfer(
+                device_id=session.device_id,
+                session_id=session.id,
+                direction=direction,
+                source_path=str(params.get("source_path") or ""),
+                destination_path=str(params.get("destination_path") or ""),
+                overwrite=bool(params.get("overwrite", False)),
+                protocol=str(params.get("protocol") or "auto"),
+                context={"source": "stdio-mcp"},
+            ))
+            self.desktop.operations.update(
+                operation_id,
+                data={"task_run_id": task_run.id, "task_plan_id": task_run.plan_id},
             )
-            return asdict(operation)
+            operation = self.desktop.control.get_operation(operation_id)
+            payload = asdict(operation)
+            payload["task_run_id"] = task_run.id
+            payload["task_plan_id"] = task_run.plan_id
+            return payload
         if kind == "run_package_upgrade":
             protocol = str(params.get("protocol") or "telnet").casefold()
             session = self._session_record(

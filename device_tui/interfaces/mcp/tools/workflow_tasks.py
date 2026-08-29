@@ -46,6 +46,40 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
         """List backend Tasks."""
         return gateway.call("mcp_tool", "task.list", limit=limit)
 
+    @mcp.tool(name="task.framework.start")
+    def task_framework_start(
+        plan: dict[str, Any],
+        device_id: str,
+        inputs: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        task_run_id: str = "",
+    ) -> dict[str, Any]:
+        """Create a generic Task that composes reusable Workflow providers."""
+        return gateway.call(
+            "mcp_tool",
+            "task.framework.start",
+            plan=plan,
+            device_id=device_id,
+            inputs=inputs or {},
+            context=context or {},
+            task_run_id=task_run_id,
+        )
+
+    @mcp.tool(name="task.framework.execute")
+    def task_framework_execute(task_run_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+        """Execute a generic Task until terminal or recovery/decision state."""
+        return gateway.call(
+            "mcp_tool",
+            "task.framework.execute",
+            task_run_id=task_run_id,
+            plan=plan,
+        )
+
+    @mcp.tool(name="task.framework.get")
+    def task_framework_get(task_run_id: str) -> dict[str, Any]:
+        """Read generic TaskRun composition state and child Workflow outputs."""
+        return gateway.call("mcp_tool", "task.framework.get", task_run_id=task_run_id)
+
     @mcp.tool(name="task.resume")
     def task_resume(task_id: str, step_id: str = "", context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resume a paused or failed Task from its checkpoint."""

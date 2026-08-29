@@ -1,20 +1,15 @@
-"""Default framework plugin registries."""
+"""Backward-compatible domain registry imports.
 
-from .huawei_package import HuaweiVrpPackageUpgradeProvider, HuaweiVrpWorkflowAdapter
-from .plugins import AdapterRegistry, WorkflowRegistry
+New composition roots should import these builders from
+``application.workflow_plugins`` so the framework remains vendor-neutral.
+"""
 
-
-def build_default_workflow_registry() -> WorkflowRegistry:
-    registry = WorkflowRegistry()
-    registry.register(HuaweiVrpPackageUpgradeProvider())
-    return registry
-
-
-def build_default_adapter_registry() -> AdapterRegistry:
-    registry = AdapterRegistry()
-    registry.register(HuaweiVrpWorkflowAdapter())
-    return registry
-
+from device_tui.application.workflow_plugins.builtins import (
+    HuaweiVrpPackageUpgradeProvider,
+    HuaweiVrpWorkflowAdapter,
+    build_default_adapter_registry,
+    build_default_workflow_registry,
+)
 
 __all__ = [
     "HuaweiVrpPackageUpgradeProvider",

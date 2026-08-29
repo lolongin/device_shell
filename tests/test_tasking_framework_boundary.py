@@ -15,7 +15,7 @@ from device_tui.application.tasking import (
     WorkflowTarget,
     build_default_workflow_catalog,
 )
-from device_tui.application.workflows import WorkflowRuntime, build_default_workflow_registry
+from device_tui.application.workflows import TaskOrchestrator, WorkflowRuntime, build_default_workflow_registry
 
 
 class NoopExecution:
@@ -61,6 +61,30 @@ def test_device_upgrade_task_requires_framework_configuration() -> None:
     manager = TaskManager(NoopExecution(), EventBus())
     with pytest.raises(ApplicationError, match="requires the Workflow Framework"):
         manager.create(_upgrade_task())
+
+
+def test_orchestrated_framework_lifecycle_projects_pause_and_cancel_before_child_start() -> None:
+    async def scenario() -> None:
+        runtime = WorkflowRuntime()
+        orchestrator = TaskOrchestrator(runtime, build_default_workflow_registry())
+        manager = TaskManager(
+            NoopExecution(), EventBus(), framework_runtime=runtime,
+            framework_workflows=build_default_workflow_registry(),
+            task_orchestrator=orchestrator,
+        )
+        record = manager.create(_upgrade_task())
+
+        paused = manager.pause(record.id)
+        assert paused.status == "paused"
+        assert orchestrator.get(record.id).status == "waiting_reconcile"
+
+        cancelled = manager.cancel(record.id)
+        assert cancelled.status == "cancelled"
+        assert orchestrator.get(record.id).status == "cancelled"
+
+        await manager.close()
+
+    asyncio.run(scenario())
 
 
 def test_framework_task_restore_requires_reconcile_before_resume() -> None:

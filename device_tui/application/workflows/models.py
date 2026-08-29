@@ -263,3 +263,6 @@ class WorkflowRun(FrameworkModel):
     attempts: tuple[ActionAttempt, ...] = ()
     decision_point: DecisionPoint | None = None
     error: dict[str, Any] | None = None
+    # Explicit Workflow outputs are consumed by parent Task orchestration.
+    # ``context`` remains the execution context and compatibility surface.
+    outputs: dict[str, Any] = field(default_factory=dict)

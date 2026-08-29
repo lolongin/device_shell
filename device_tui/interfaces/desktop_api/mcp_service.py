@@ -19,6 +19,7 @@ from device_tui.application import (
     DecisionActor,
     TransferRequest,
     TaskCreate,
+    TaskPlan,
     WorkflowCatalogError,
     WorkflowTarget,
     WorkflowPlan,
@@ -107,7 +108,7 @@ class DesktopMcpService:
                 "devices": {"read": ["list", "get", "select"], "write": ["open", "action"]},
                 "sessions": {"read": ["list", "status"], "write": ["open", "reconnect", "disconnect", "close"]},
                 "workflows": {"read": ["list", "plan.get"], "write": ["run", "plan.validate", "plan.approve", "replan"]},
-                "tasks": {"read": ["list", "get", "decision.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply"]},
+                "tasks": {"read": ["list", "get", "decision.get", "framework.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply", "framework.start", "framework.execute"]},
                 "terminal": {"read": ["read", "execution.get"], "write": ["execute", "batch", "interact", "execution.cancel"]},
                 "profiles": {"read": ["list"], "write": ["save", "delete"]},
                 "connections": {"write": ["open"]},
@@ -477,6 +478,45 @@ class DesktopMcpService:
     async def _tool_task_create(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a Task through the same backend boundary as Electron."""
         return await self._create_task(params)
+
+    async def _tool_task_framework_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Start a generic TaskPlan composed of reusable Workflows."""
+        raw_plan = params.get("plan")
+        if not isinstance(raw_plan, dict):
+            raise UnsupportedOperationError("task.framework.start requires a plan object.")
+        plan = TaskPlan.from_dict(raw_plan)
+        device_id = str(params.get("device_id") or "").strip()
+        if not device_id:
+            raise UnsupportedOperationError("task.framework.start requires device_id.")
+        run = self.desktop.task_service.start_plan(
+            plan,
+            device_id=device_id,
+            inputs=dict(params.get("inputs") or {}) if isinstance(params.get("inputs"), dict) else {},
+            context=dict(params.get("context") or {}) if isinstance(params.get("context"), dict) else {},
+            task_run_id=str(params.get("task_run_id") or "") or None,
+        )
+        return {"task_run": run.to_dict()}
+
+    async def _tool_task_framework_execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Drive a generic TaskPlan until completion or a resumable state."""
+        raw_plan = params.get("plan")
+        if not isinstance(raw_plan, dict):
+            raise UnsupportedOperationError("task.framework.execute requires a plan object.")
+        plan = TaskPlan.from_dict(raw_plan)
+        task_run_id = str(params.get("task_run_id") or "").strip()
+        if not task_run_id:
+            raise UnsupportedOperationError("task.framework.execute requires task_run_id.")
+        run = await self.desktop.task_service.execute_plan(task_run_id, plan)
+        return {"task_run": run.to_dict()}
+
+    async def _tool_task_framework_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read a persisted generic TaskRun."""
+        task_run_id = str(params.get("task_run_id") or "").strip()
+        if not task_run_id:
+            raise UnsupportedOperationError("task.framework.get requires task_run_id.")
+        if self.desktop.task_orchestrator is None:
+            raise UnsupportedOperationError("generic TaskPlan orchestration is not configured")
+        return {"task_run": self.desktop.task_orchestrator.get(task_run_id).to_dict()}
 
     async def _tool_workflow_plan_validate(self, params: dict[str, Any]) -> dict[str, Any]:
         raw = params.get("plan")
@@ -858,17 +898,19 @@ class DesktopMcpService:
     async def _tool_file_transfer_start(self, params: dict[str, Any]) -> dict[str, Any]:
         device_id = self._text(params, "device_id")
         session, _ = await self._open_or_reuse(device_id, "auto")
-        operation = self.desktop.control.transfer(
-            DeviceTarget(device_id=device_id, session_id=session.id),
-            TransferRequest(
-                direction="upload",
-                source_path=self._text(params, "source_path"),
-                destination_path=self._text(params, "destination_path"),
-                overwrite=bool(params.get("overwrite", False)),
-            ),
-            context=ControlContext(source="mcp"),
+        task_run, operation_id = await self.desktop.task_service.start_file_transfer(
+            device_id=device_id,
+            session_id=session.id,
+            direction="upload",
+            source_path=self._text(params, "source_path"),
+            destination_path=self._text(params, "destination_path"),
+            overwrite=bool(params.get("overwrite", False)),
+            protocol=str(params.get("protocol") or "auto"),
+            context={"source": "mcp"},
         )
-        return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
+        self.desktop.operations.update(operation_id, data={"task_run_id": task_run.id, "task_plan_id": task_run.plan_id})
+        operation = self.desktop.control.get_operation(operation_id)
+        return {"operation_id": operation.operation_id, "task_run_id": task_run.id, "operation": self._operation_view_payload(operation)}
 
     async def _tool_package_upgrade_start(self, params: dict[str, Any]) -> dict[str, Any]:
         session, _ = await self._open_or_reuse(self._text(params, "device_id"), "telnet")
@@ -928,17 +970,19 @@ class DesktopMcpService:
     async def _tool_ai_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
         device_id = self._text(params, "device_id")
         session, _ = await self._open_or_reuse(device_id, "auto")
-        operation = self.desktop.control.transfer(
-            DeviceTarget(device_id=device_id, session_id=session.id),
-            TransferRequest(
-                direction="download",
-                source_path=self._text(params, "source_path"),
-                destination_path=self._text(params, "destination_path"),
-                overwrite=False,
-            ),
-            context=ControlContext(source="mcp"),
+        task_run, operation_id = await self.desktop.task_service.start_file_transfer(
+            device_id=device_id,
+            session_id=session.id,
+            direction="download",
+            source_path=self._text(params, "source_path"),
+            destination_path=self._text(params, "destination_path"),
+            overwrite=False,
+            protocol=str(params.get("protocol") or "auto"),
+            context={"source": "mcp"},
         )
-        return {"operation_id": operation.operation_id, "operation": self._operation_view_payload(operation)}
+        self.desktop.operations.update(operation_id, data={"task_run_id": task_run.id, "task_plan_id": task_run.plan_id})
+        operation = self.desktop.control.get_operation(operation_id)
+        return {"operation_id": operation.operation_id, "task_run_id": task_run.id, "operation": self._operation_view_payload(operation)}
 
     async def _tool_ai_get_result(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.ai.get_result(self._text(params, "result_id"), include_raw=bool(params.get("include_raw", False)))

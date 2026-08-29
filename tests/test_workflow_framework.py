@@ -70,7 +70,9 @@ def test_provider_is_generic_and_huawei_is_only_a_registered_workflow() -> None:
     assert workflow.start_state == "precheck"
     assert {item.id for item in workflow.states} >= {"transfer", "reboot", "verify_version", "rollback"}
     assert workflow.states[1].action is not None
-    assert workflow.states[1].action.operation == "huawei.storage.cleanup"
+    assert workflow.states[1].action.operation == "device.storage.cleanup"
+    assert next(item for item in workflow.states if item.id == "reboot").action.params["_framework_activity"] is True
+    assert next(item for item in workflow.states if item.id == "wait_online").action.params["_framework_activity"] is True
 
 
 def test_huawei_adapter_parses_semantic_events_and_capabilities() -> None:

@@ -23,6 +23,7 @@ from .models import (
     WorkflowRun,
 )
 from .plugins import ActionHandler, ActionRegistry, ReconcileRegistry
+from .resources import LeaseResourceCoordinator, ResourceCoordinator, ResourceLease, ResourceRequest
 from .supervisor import ActionSupervisor
 from .watchdog import Watchdog
 
@@ -30,6 +31,7 @@ from .watchdog import Watchdog
 class WorkflowRunStore(Protocol):
     def save(self, run: WorkflowRun) -> WorkflowRun: ...
     def get(self, run_id: str) -> WorkflowRun: ...
+    def list(self, *, limit: int = 500) -> list[WorkflowRun]: ...
 
 
 class WorkflowLeaseService(Protocol):
@@ -51,6 +53,9 @@ class MemoryWorkflowRunStore:
         except KeyError as exc:
             raise KeyError(f"workflow run not found: {run_id}") from exc
 
+    def list(self, *, limit: int = 500) -> list[WorkflowRun]:
+        return list(self._runs.values())[:max(0, limit)]
+
 
 class WorkflowRuntime:
     def __init__(
@@ -65,6 +70,7 @@ class WorkflowRuntime:
         recovery_poll_seconds: float = 5.0,
         decisions: DecisionEngine | None = None,
         leases: WorkflowLeaseService | None = None,
+        resource_coordinator: ResourceCoordinator | None = None,
     ) -> None:
         self.actions = actions or ActionRegistry()
         self.reconciliations = reconciliations or ReconcileRegistry()
@@ -75,7 +81,11 @@ class WorkflowRuntime:
         self.recovery_poll_seconds = max(0.01, recovery_poll_seconds)
         self.decisions = decisions or DecisionEngine()
         self.leases = leases
+        self.resource_coordinator = resource_coordinator or (
+            LeaseResourceCoordinator(device_leases=leases) if leases is not None else None
+        )
         self._lease_tokens: dict[str, tuple[str, str]] = {}
+        self._resource_leases: dict[str, ResourceLease] = {}
         self._definitions: dict[str, WorkflowDefinition] = {}
 
     def register_definition(self, definition: WorkflowDefinition) -> None:
@@ -87,8 +97,14 @@ class WorkflowRuntime:
         self.register_definition(definition)
         resolved_run_id = run_id or str(uuid4())
         run_context = dict(context or {})
-        if self.leases is not None:
-            lease = self.leases.acquire(device_id, resolved_run_id)
+        resource_owner_id = str(run_context.get("resource_owner_id") or resolved_run_id)
+        if self.resource_coordinator is not None:
+            lease = self.resource_coordinator.acquire(
+                ResourceRequest("device", device_id, resource_owner_id)
+            )
+            self._resource_leases[resolved_run_id] = lease
+        elif self.leases is not None:
+            lease = self.leases.acquire(device_id, resource_owner_id)
             token = str(getattr(lease, "token", ""))
             self._lease_tokens[resolved_run_id] = (device_id, token)
         run = WorkflowRun(
@@ -238,6 +254,24 @@ class WorkflowRuntime:
             context={**run.context, "framework.recovery": {"required": True, "reason": reason, "observed_at": _now()}},
             revision=run.revision + 1,
         ))
+
+    def recover_inflight(self, *, reason: str = "process_restart", limit: int = 500) -> tuple[WorkflowRun, ...]:
+        """Fence persisted in-flight runs after a worker/process restart.
+
+        Stores that support ``list`` can be scanned at composition time.  The
+        method intentionally does not run reconcile itself; callers must resume
+        each returned run through the normal recovery path so side effects are
+        never repeated before their outcome is observed.
+        """
+        list_runs = getattr(self.runs, "list", None)
+        if not callable(list_runs):
+            return ()
+        recovered: list[WorkflowRun] = []
+        for run in list_runs(limit=max(0, limit)):
+            if str(run.status) not in {RunStatus.RUNNING.value, RunStatus.RECOVERING.value}:
+                continue
+            recovered.append(self.mark_interrupted(run.id, reason=reason))
+        return tuple(recovered)
 
     def pause(self, run_id: str) -> WorkflowRun:
         run = self.runs.get(run_id)
@@ -464,18 +498,31 @@ class WorkflowRuntime:
                 **run.context,
                 f"action.{action_id}.facts": dict(facts),
             },
+            outputs={**run.outputs, action_id: dict(facts)},
         )
 
     def _save(self, run: WorkflowRun) -> WorkflowRun:
         saved = self.runs.save(run)
         if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            resource_lease = self._resource_leases.pop(run.id, None)
+            if resource_lease is not None and self.resource_coordinator is not None:
+                self.resource_coordinator.release(resource_lease)
             lease = self._lease_tokens.pop(run.id, None)
-            if lease is not None and self.leases is not None:
+            if lease is not None and self.leases is not None and self.resource_coordinator is None:
                 self.leases.release(lease[0], lease[1])
         return saved
 
     def _execution_run(self, run: WorkflowRun) -> WorkflowRun:
         """Expose the fencing token only to backend handlers, never to run state."""
+        if self.resource_coordinator is not None:
+            lease = self._resource_leases.get(run.id)
+            if lease is None:
+                owner_id = str(run.context.get("resource_owner_id") or run.id)
+                lease = self.resource_coordinator.acquire(
+                    ResourceRequest("device", run.device_id, owner_id)
+                )
+                self._resource_leases[run.id] = lease
+            return replace(run, context={**run.context, "lease_token": lease.token})
         if self.leases is None:
             return run
         lease = self._lease_tokens.get(run.id)

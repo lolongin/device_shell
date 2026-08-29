@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from fastapi.testclient import TestClient
 
 from device_tui.interfaces.desktop_api.app import create_app
@@ -94,11 +96,56 @@ def test_qt_free_mcp_facade_covers_registered_tool_surface() -> None:
         "ai_upload_file", "ai_download_file", "ai_get_result", "ai_run_skill",
         "ai_list_skills", "approval_get",
         "task_create", "task_get", "task_list", "task_resume", "task_cancel",
+        "task_framework_start", "task_framework_execute", "task_framework_get",
         "workflow_list", "workflow_plan_validate", "workflow_plan_get", "workflow_plan_approve", "workflow_run",
         "task_replan", "decision_get", "decision_apply", "tool_execute",
     }
 
     assert all(callable(getattr(service, f"_tool_{tool}", None)) for tool in expected)
+
+
+def test_generic_task_framework_mcp_composes_workflows_and_persists_run() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        plan = {
+            "id": "build-and-test",
+            "nodes": [
+                {
+                    "id": "build",
+                    "workflow_id": "script.run",
+                    "input_mapping": {"argv": "${build_argv}"},
+                },
+                {
+                    "id": "test",
+                    "workflow_id": "script.run",
+                    "depends_on": ["build"],
+                    "input_mapping": {
+                        "argv": "${test_argv}",
+                        "previous": "${build.run.output}",
+                    },
+                },
+            ],
+        }
+        started = _call(client, "task.framework.start", {
+            "plan": plan,
+            "device_id": device_id,
+            "inputs": {
+                "build_argv": [sys.executable, "-c", "print('built')"],
+                "test_argv": [sys.executable, "-c", "print('tested')"],
+            },
+        })
+        task_run_id = started["data"]["task_run"]["id"]
+        executed = _call(client, "task.framework.execute", {
+            "task_run_id": task_run_id,
+            "plan": plan,
+        })
+        fetched = _call(client, "task.framework.get", {"task_run_id": task_run_id})
+
+    task_run = executed["data"]["task_run"]
+    assert task_run["status"] == "succeeded"
+    assert set(task_run["node_runs"]) == {"build", "test"}
+    assert task_run["outputs"]["test"]["run"]["output"].strip() == "tested"
+    assert fetched["data"]["task_run"]["id"] == task_run_id
 
 
 def test_qt_free_mcp_facade_is_idempotent_and_audited() -> None:

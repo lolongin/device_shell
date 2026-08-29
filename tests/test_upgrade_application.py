@@ -59,8 +59,16 @@ def test_package_upgrade_is_a_task_and_never_creates_upgrade_operation(tmp_path:
         operations = client.get("/api/v1/operations?kind=package_upgrade", headers=headers).json()["operations"]
         removed_route = client.post("/api/v1/package-upgrades", headers=headers, json={})
 
+        desktop = app.state.desktop_application
+        task_run = desktop.task_orchestrator.get(task["id"])
+        workflow_run = desktop.workflow_runtime.runs.get(task["id"])
+
     assert task["workflow_id"] == "device_upgrade"
     assert task["workflow_view"]["id"] == "network.package_upgrade"
     assert task["status"] == "completed", task
+    assert task_run.status == "succeeded"
+    assert task_run.node_runs == {"workflow": task["id"]}
+    assert task_run.inputs["package_ref"] == "images/target-v2.cc"
+    assert workflow_run.status == "succeeded"
     assert operations == []
     assert removed_route.status_code == 404

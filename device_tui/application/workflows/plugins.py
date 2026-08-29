@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from .activity import (
+    ActivityContext,
+    ActivityDefinition,
+    ActivityHandler,
+    ActivityInvocation,
+    ActivityResult,
+)
 from .events import Event
 from .models import ActionResult, ActionSpec, ReconcileResult, WorkflowDefinition, WorkflowRun
 
@@ -37,6 +44,31 @@ class DeviceAdapter(Protocol):
     def matches(self, facts: dict[str, Any]) -> bool: ...
     def capabilities(self) -> set[str]: ...
     def parse_output(self, output: str, *, run_id: str, action_id: str) -> tuple[Event, ...]: ...
+
+
+class DeviceVendorAdapter(Protocol):
+    """Vendor port used by generic device Activities.
+
+    Command syntax, output parsing, and vendor-specific read-back checks stay
+    behind this port.  The Activity runtime only sees structured results.
+    """
+
+    id: str
+
+    async def execute_activity(
+        self,
+        activity_id: str,
+        invocation: ActivityInvocation,
+        context: ActivityContext,
+        report: Any,
+    ) -> ActivityResult: ...
+
+    async def cancel_activity(
+        self,
+        activity_id: str,
+        invocation: ActivityInvocation,
+        context: ActivityContext,
+    ) -> None: ...
 
 
 class WorkflowProvider(Protocol):
@@ -90,6 +122,23 @@ class AdapterRegistry(_Registry):
 class ActionRegistry(_Registry):
     def resolve(self, operation: str) -> ActionHandler:
         return self.get(operation)
+
+
+class ActivityRegistry(_Registry):
+    """Registry for versioned Activity contracts during migration."""
+
+    def register_definition(self, definition: ActivityDefinition) -> None:
+        definition.validate()
+        self.register(definition, item_id=f"{definition.id}:{definition.version}")
+
+    def register_handler(self, handler: ActivityHandler, *, activity_id: str | None = None) -> None:
+        self.register(handler, item_id=activity_id or handler.activity_id)
+
+    def resolve_definition(self, activity_id: str, version: str = "1") -> ActivityDefinition:
+        return self.get(f"{activity_id}:{version}")
+
+    def resolve_handler(self, activity_id: str) -> ActivityHandler:
+        return self.get(activity_id)
 
 
 class ReconcileRegistry(_Registry):
