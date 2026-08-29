@@ -2,13 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from device_tui.application.upgrades.drivers import (
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import (
     HuaweiVrpUpgradeDriver,
     SimulatedVrpUpgradeDriver,
     UpgradeDriverRegistry,
     UpgradeTargetFacts,
 )
-from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 from device_tui.application.upgrades.package import PackageUpgradeConfig
 from device_tui.infrastructure.vendor_adapters.huawei_vrp import (
     HuaweiVrpCommandSet as VendorHuaweiVrpCommandSet,

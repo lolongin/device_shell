@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from device_tui.application.device_control import DeviceTarget, OperationView
-from device_tui.application.workflows import ActivityInvocation, Event
+from device_tui.framework import ActivityInvocation, Event
 from device_tui.application.workflow_plugins import TerminalTransferAdapter
 
 

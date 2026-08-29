@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from device_tui.application.workflows import (
+from device_tui.framework import (
     MemoryWorkflowRunStore,
     RunStatus,
     StateNode,

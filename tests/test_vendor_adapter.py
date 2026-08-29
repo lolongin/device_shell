@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionResult,
     ActionStatus,
     ActivityContext,

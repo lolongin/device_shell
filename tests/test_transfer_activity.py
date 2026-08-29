@@ -7,7 +7,7 @@ from device_tui.application.workflow_plugins.transfer import (
     TransferHandle,
     TransferObservation,
 )
-from device_tui.application.workflows import ActivityContext, ActivityInvocation, ActivityStatus, Event, WorkflowRun
+from device_tui.framework import ActivityContext, ActivityInvocation, ActivityStatus, Event, WorkflowRun
 
 
 class FakeTransfer:

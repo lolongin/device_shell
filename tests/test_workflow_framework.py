@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionResult,
     ActionSpec,
     ActionStatus,
@@ -22,18 +22,20 @@ from device_tui.application.workflows import (
     WorkflowDefinition,
     WorkflowRun,
     WorkflowRuntime,
-    build_default_adapter_registry,
-    build_default_workflow_registry,
     compile_workflow,
 )
-from device_tui.application.workflows.plugins import ActionRegistry, AdapterRegistry, ReconcileRegistry
-from device_tui.application.workflows.watchdog import Watchdog
-from device_tui.application.workflows.models import ActionAttempt, DeviceStateSnapshot
-from device_tui.application.workflows.device_bridge import (
+from device_tui.application.workflow_plugins.builtins import (
+    build_default_adapter_registry,
+    build_default_workflow_registry,
+)
+from device_tui.framework.plugins import ActionRegistry, AdapterRegistry, ReconcileRegistry
+from device_tui.framework.watchdog import Watchdog
+from device_tui.framework.models import ActionAttempt, DeviceStateSnapshot
+from device_tui.application.workflow_plugins.device_bridge import (
     DeviceExecutionActionHandler,
     DeviceReconcileProvider,
 )
-from device_tui.application.upgrades.commands import HuaweiVrpCommandSet
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 from device_tui.application.tasking import DeviceExecutionTool, DeviceWorkflowExecutionError
 from device_tui.application.tasking.models import WorkflowStep
 

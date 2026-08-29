@@ -5,7 +5,7 @@ import asyncio
 from device_tui.application.device_control import DeviceTarget
 from device_tui.application.tasking.execution import DeviceWorkflowExecutionError
 from device_tui.application.workflow_plugins import CompatibilityDeviceActivityHandler, DeviceActivityHandler
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionResult,
     ActionStatus,
     ActivityContext,

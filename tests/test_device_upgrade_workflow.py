@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from device_tui.application.workflows import HuaweiVrpPackageUpgradeProvider
+from device_tui.application.workflow_plugins.huawei_package import HuaweiVrpPackageUpgradeProvider
 
 
 def test_huawei_package_provider_declares_the_single_executable_path() -> None:

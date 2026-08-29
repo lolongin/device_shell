@@ -7,7 +7,7 @@ import pytest
 
 from device_tui.application import build_desktop_application
 from device_tui.application.tasking import TaskPlanLifecycle, TaskService
-from device_tui.application.workflows import TaskPlan, TaskRun, TaskRunStatus, WorkflowNode
+from device_tui.framework import TaskPlan, TaskRun, TaskRunStatus, WorkflowNode
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
 

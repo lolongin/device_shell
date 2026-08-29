@@ -4,7 +4,7 @@ import asyncio
 import sys
 
 from device_tui.application.workflow_plugins.process import ProcessActivityHandler
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActivityContext,
     ActivityInvocation,
     ActivityResult,

@@ -1,5 +1,5 @@
 from device_tui.application.tasking import TaskRunProjector
-from device_tui.application.workflows import TaskRun, TaskRunStatus
+from device_tui.framework import TaskRun, TaskRunStatus
 
 
 def test_task_run_projection_is_read_only_and_maps_framework_status() -> None:

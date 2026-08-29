@@ -5,7 +5,7 @@ import sys
 
 from device_tui.application.device_control import OperationView
 from device_tui.application.workflow_plugins.builtins import build_default_activity_executor
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionRegistry,
     ActionSpec,
     ActivityContext,

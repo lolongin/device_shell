@@ -6,7 +6,7 @@ import pytest
 
 from device_tui.application.device_control.lease import DeviceLeaseService
 from device_tui.application.errors import ApplicationConflictError
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionRegistry,
     ActionResult,
     ActionSpec,

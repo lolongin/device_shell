@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from device_tui.application.workflows import (
+from device_tui.framework import (
     DecisionPoint,
     DeviceStateSnapshot,
     Event,

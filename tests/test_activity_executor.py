@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActivityContext,
     ActivityDefinition,
     ActivityExecutor,

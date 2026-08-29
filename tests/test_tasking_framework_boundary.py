@@ -15,8 +15,8 @@ from device_tui.application.tasking import (
     WorkflowTarget,
     build_default_workflow_catalog,
 )
-from device_tui.application.workflows import TaskOrchestrator, WorkflowRuntime, build_default_workflow_registry
-from device_tui.framework import ActivityInvocation, TaskRun
+from device_tui.application.workflow_plugins.builtins import build_default_workflow_registry
+from device_tui.framework import ActivityInvocation, TaskOrchestrator, TaskRun, WorkflowRuntime
 
 
 class NoopExecution:
