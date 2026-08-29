@@ -22,14 +22,13 @@ from device_tui.application.tasking.execution import (
 from device_tui.application.tasking.models import WorkflowStep
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import UpgradeDriverRegistry, UpgradeTargetFacts
-from device_tui.application.workflow_plugins.package_upgrade.policy import (
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
     CONTROLLER_TOPOLOGY_DUAL,
     CONTROLLER_TOPOLOGY_SINGLE,
     STANDBY_STORAGE_NOT_PROBED,
     classify_controller_topology,
-    build_cleanup_plan,
     classify_standby_storage,
     dir_contains_package,
     find_free_space_bytes,
@@ -38,6 +37,7 @@ from device_tui.application.workflow_plugins.package_upgrade.policy import (
     parse_display_startup,
     startup_uses_package,
 )
+from device_tui.application.workflow_plugins.package_upgrade.policy import build_cleanup_plan
 
 from device_tui.framework.events import Event
 from device_tui.framework.models import (

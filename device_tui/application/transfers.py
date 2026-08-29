@@ -22,7 +22,7 @@ from device_tui.application.terminal.orchestration import (
     TerminalPlanError,
     parse_terminal_plan,
 )
-from device_tui.application.workflow_plugins.package_upgrade.policy import find_free_space_bytes
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import find_free_space_bytes
 from device_tui.infrastructure.transfers.file_transfer_service import (
     TransferServiceConfig,
     TransferServiceController,

@@ -38,6 +38,10 @@ upgrade features from `application.workflow_plugins.package_upgrade`, and
 Huawei command profiles and drivers from
 `infrastructure.vendor_adapters.huawei_vrp`.
 
+Huawei terminal parsing is also isolated in
+`infrastructure.vendor_adapters.huawei_vrp.parsers`; upgrade policy consumes
+structured parser results and must not grow CLI-format parsing logic.
+
 ## Extension points
 
 Register a provider and adapter through the default registries:

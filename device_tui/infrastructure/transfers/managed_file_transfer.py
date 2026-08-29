@@ -10,7 +10,7 @@ import re
 import shlex
 from typing import Any
 
-from device_tui.application.workflow_plugins.package_upgrade.policy import PackageFileEntry, parse_dir_entries
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import PackageFileEntry, parse_dir_entries
 
 
 MAX_TRANSFER_FILES = 1_000

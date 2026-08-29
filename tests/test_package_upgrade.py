@@ -1,6 +1,11 @@
 from pathlib import Path
 
 from device_tui.application.workflow_plugins.package_upgrade.policy import (
+    PackageUpgradeConfig,
+    build_cleanup_plan,
+    generate_huawei_upgrade_plan,
+)
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import (
     STANDBY_STORAGE_ABSENT,
     STANDBY_STORAGE_AVAILABLE,
     STANDBY_STORAGE_INDETERMINATE,
@@ -8,15 +13,12 @@ from device_tui.application.workflow_plugins.package_upgrade.policy import (
     CONTROLLER_TOPOLOGY_INDETERMINATE,
     CONTROLLER_TOPOLOGY_SINGLE,
     PackageFileEntry,
-    PackageUpgradeConfig,
     StartupInfo,
-    build_cleanup_plan,
     classify_standby_storage,
     classify_controller_topology,
     dir_contains_package,
     find_upgrade_failure,
     find_free_space_bytes,
-    generate_huawei_upgrade_plan,
     parse_dir_entries,
     parse_display_startup,
     parse_free_space_bytes,

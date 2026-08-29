@@ -17,12 +17,14 @@ from device_tui.application.transfers import (
     PreparedTransferSource,
 )
 from .policy import (
-    DEFAULT_MASTER_STORAGE,
-    DEFAULT_SLAVE_STORAGE,
     PackageFileEntry,
     PackageUpgradeConfig,
     build_cleanup_plan,
     package_basename,
+)
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import (
+    DEFAULT_MASTER_STORAGE,
+    DEFAULT_SLAVE_STORAGE,
     parse_dir_entries,
     parse_display_startup,
     parse_free_space_bytes,

@@ -14,6 +14,7 @@ from device_tui.infrastructure.vendor_adapters.huawei_vrp import (
     HuaweiVrpCommandSet as VendorHuaweiVrpCommandSet,
     HuaweiVrpUpgradeDriver as VendorHuaweiVrpUpgradeDriver,
 )
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import parse_dir_entries
 
 
 def test_registry_matches_huawei_and_rejects_known_unknown_vendor() -> None:
@@ -29,6 +30,7 @@ def test_vendor_adapter_is_the_canonical_home_for_huawei_implementations() -> No
     assert HuaweiVrpUpgradeDriver is VendorHuaweiVrpUpgradeDriver
     assert HuaweiVrpCommandSet.__module__.startswith("device_tui.infrastructure.vendor_adapters.")
     assert HuaweiVrpUpgradeDriver.__module__.startswith("device_tui.infrastructure.vendor_adapters.")
+    assert parse_dir_entries.__module__.startswith("device_tui.infrastructure.vendor_adapters.")
 
 
 def test_huawei_driver_owns_commands_and_artifact_policy() -> None:

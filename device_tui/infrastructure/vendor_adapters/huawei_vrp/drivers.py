@@ -11,14 +11,13 @@ from pathlib import Path
 from typing import Protocol
 
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
-from device_tui.application.workflow_plugins.package_upgrade.policy import (
+from device_tui.application.workflow_plugins.package_upgrade.policy import PackageUpgradeConfig, build_cleanup_plan
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
-    PackageUpgradeConfig,
     STANDBY_STORAGE_ABSENT,
     STANDBY_STORAGE_AVAILABLE,
     StartupInfo,
-    build_cleanup_plan,
     classify_standby_storage,
     dir_contains_package,
     find_upgrade_failure,

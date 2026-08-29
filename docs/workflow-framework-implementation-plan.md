@@ -105,6 +105,9 @@ built-in tasks have migrated.
 - Default Workflow and Activity registry construction now lives in
   `application.composition.workflows`; Huawei Workflow discovery/output
   translation lives in `infrastructure.vendor_adapters.huawei_vrp.workflow_adapter`.
+- Huawei CLI output parsing now lives in
+  `infrastructure.vendor_adapters.huawei_vrp.parsers`; package-upgrade policy
+  no longer contains duplicate terminal-format implementations.
 
 ## 2. Target Ownership
 
