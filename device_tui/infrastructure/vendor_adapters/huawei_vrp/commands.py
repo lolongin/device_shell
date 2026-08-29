@@ -12,14 +12,14 @@ from typing import TYPE_CHECKING, Any
 
 from device_tui.infrastructure.transfers.managed_file_transfer import TransferInteractionProfile
 
-from device_tui.application.upgrades.package import (
+from device_tui.application.workflow_plugins.package_upgrade.policy import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
     join_storage_path,
 )
 
 if TYPE_CHECKING:
-    from device_tui.application.upgrades.package import PackageUpgradeConfig
+    from device_tui.application.workflow_plugins.package_upgrade.policy import PackageUpgradeConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +251,7 @@ class HuaweiVrpDeviceCommandProfile:
         return self._commands.activation(destination_path, "", False)[0][0]
 
     def startup_package_matches(self, output: str, package_name: str) -> bool:
-        from device_tui.application.upgrades.package import startup_uses_package
+        from device_tui.application.workflow_plugins.package_upgrade.policy import startup_uses_package
 
         return startup_uses_package(output, package_name)
 

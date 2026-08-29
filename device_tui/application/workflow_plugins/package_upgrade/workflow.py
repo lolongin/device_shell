@@ -1,4 +1,4 @@
-"""Huawei VRP package replacement as a framework Workflow Provider.
+"""Huawei VRP package replacement as an application Workflow Provider.
 
 The provider declares business states and recovery options.  Huawei command
 syntax stays in the device adapter/legacy upgrade driver and is not used by

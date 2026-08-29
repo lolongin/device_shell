@@ -1,4 +1,4 @@
-"""Compatibility facade for the framework-backed package-upgrade workflow."""
+"""Application service for package-upgrade workflow support."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from device_tui.application.transfers import (
     ManagedTransferService,
     PreparedTransferSource,
 )
-from device_tui.application.upgrades.package import (
+from .policy import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
     PackageFileEntry,

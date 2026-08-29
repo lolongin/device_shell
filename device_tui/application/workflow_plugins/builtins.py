@@ -12,14 +12,15 @@ from device_tui.framework import (
 )
 from device_tui.framework.plugins import AdapterRegistry, WorkflowRegistry
 
-from .huawei_package import HuaweiVrpPackageUpgradeProvider, HuaweiVrpWorkflowAdapter
+from .package_upgrade.workflow import HuaweiVrpPackageUpgradeProvider, HuaweiVrpWorkflowAdapter
 from .process import ProcessActivityHandler
 from .terminal_transfer import TerminalTransferAdapter
 from .device_activity import DeviceActivityHandler
 from .device_bridge import DeviceExecutionActionHandler
 from .transfer import TransferActivityHandler
 from .generic import build_default_activity_workflow_providers
-from .vendor_adapter import DeviceVendorActivityHandler, HuaweiVrpDeviceVendorAdapter
+from .vendor_adapter import DeviceVendorActivityHandler
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.activity_adapter import HuaweiVrpDeviceVendorAdapter
 
 
 def build_default_workflow_registry() -> WorkflowRegistry:

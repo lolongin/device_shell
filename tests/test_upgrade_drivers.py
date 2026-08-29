@@ -9,7 +9,7 @@ from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import (
     UpgradeTargetFacts,
 )
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
-from device_tui.application.upgrades.package import PackageUpgradeConfig
+from device_tui.application.workflow_plugins.package_upgrade.policy import PackageUpgradeConfig
 from device_tui.infrastructure.vendor_adapters.huawei_vrp import (
     HuaweiVrpCommandSet as VendorHuaweiVrpCommandSet,
     HuaweiVrpUpgradeDriver as VendorHuaweiVrpUpgradeDriver,

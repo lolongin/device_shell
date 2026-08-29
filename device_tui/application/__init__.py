@@ -70,7 +70,7 @@ from .transfers import (
     TransferSettings,
     TransferStore,
 )
-from .upgrades import PackageUpgradeService
+from .workflow_plugins.package_upgrade.service import PackageUpgradeService
 from .tasking import (
     Action,
     Checkpoint,

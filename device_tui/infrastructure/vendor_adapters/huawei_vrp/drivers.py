@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Protocol
 
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
-from device_tui.application.upgrades.package import (
+from device_tui.application.workflow_plugins.package_upgrade.policy import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
     PackageUpgradeConfig,

@@ -1,4 +1,8 @@
-"""Huawei VRP system package upgrade planning helpers."""
+"""Package-upgrade policy, planning, and device-output parsing.
+
+These rules belong to the package-upgrade feature, not to the generic
+Workflow framework. Vendor command generation remains in infrastructure.
+"""
 
 from __future__ import annotations
 

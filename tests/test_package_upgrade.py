@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from device_tui.application.upgrades.package import (
+from device_tui.application.workflow_plugins.package_upgrade.policy import (
     STANDBY_STORAGE_ABSENT,
     STANDBY_STORAGE_AVAILABLE,
     STANDBY_STORAGE_INDETERMINATE,

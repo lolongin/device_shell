@@ -10,10 +10,8 @@ from device_tui.framework import (
     ActivityStatus,
     WorkflowRun,
 )
-from device_tui.application.workflow_plugins import (
-    DeviceVendorActivityHandler,
-    HuaweiVrpDeviceVendorAdapter,
-)
+from device_tui.application.workflow_plugins import DeviceVendorActivityHandler
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.activity_adapter import HuaweiVrpDeviceVendorAdapter
 
 
 class _Legacy:
