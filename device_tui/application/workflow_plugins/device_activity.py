@@ -11,7 +11,7 @@ from typing import Any
 from device_tui.application.device_control import ControlContext, DeviceTarget
 from device_tui.application.tasking.execution import DeviceExecutionTool, DeviceWorkflowExecutionError
 from device_tui.application.tasking.models import WorkflowStep
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionResult,
     ActionSpec,
     ActionStatus,

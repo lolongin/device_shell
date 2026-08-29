@@ -12,8 +12,8 @@ from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import Any
 
-from device_tui.application.workflows.events import Event
-from device_tui.application.workflows.models import (
+from device_tui.framework.events import Event
+from device_tui.framework.models import (
     ActionSpec,
     Expectation,
     InteractionPolicy,

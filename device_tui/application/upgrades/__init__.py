@@ -1,6 +1,6 @@
 """Package-upgrade domain rules and the manual compatibility service.
 
-Generic Workflow execution lives in :mod:`device_tui.application.workflows`.
+Generic Workflow execution lives in :mod:`device_tui.framework`.
 Huawei command and driver implementations live in
 ``device_tui.infrastructure.vendor_adapters.huawei_vrp``; the re-exports below
 are retained only for callers using the historical import paths.

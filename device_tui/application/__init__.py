@@ -122,7 +122,7 @@ from .tasking import (
     PlanStore,
     MemoryPlanStore,
 )
-from .workflows import (
+from device_tui.framework import (
     AdapterRegistry,
     DecisionSubmission,
     TaskPlan,

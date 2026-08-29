@@ -14,7 +14,7 @@ import logging
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, runtime_checkable
 
-from device_tui.application.workflows import TaskPlan, TaskRun, WorkflowNode
+from device_tui.framework import TaskPlan, TaskRun, WorkflowNode
 
 from .models import DecisionContext, TaskCreate, TaskRecord
 from .projection import TaskRunProjector

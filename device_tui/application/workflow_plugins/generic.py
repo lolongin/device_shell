@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from device_tui.application.workflows import ActionSpec, StateNode, WorkflowDefinition
+from device_tui.framework import ActionSpec, StateNode, WorkflowDefinition
 
 
 class ActivityWorkflowProvider:

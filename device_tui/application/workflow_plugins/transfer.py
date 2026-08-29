@@ -6,8 +6,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from device_tui.application.workflows.activity import ActivityContext, ActivityInvocation, ActivityResult, ActivityStatus
-from device_tui.application.workflows.events import Event
+from device_tui.framework.activity import ActivityContext, ActivityInvocation, ActivityResult, ActivityStatus
+from device_tui.framework.events import Event
 
 
 @dataclass(frozen=True, slots=True)

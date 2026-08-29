@@ -39,8 +39,8 @@ from device_tui.application.upgrades.package import (
     startup_uses_package,
 )
 
-from device_tui.application.workflows.events import Event
-from device_tui.application.workflows.models import (
+from device_tui.framework.events import Event
+from device_tui.framework.models import (
     ActionResult,
     ActionSpec,
     ActionStatus,
@@ -48,8 +48,8 @@ from device_tui.application.workflows.models import (
     ReconcileResult,
     WorkflowRun,
 )
-from device_tui.application.workflows.activity_executor import ActivityActionHandler, ActivityExecutor
-from device_tui.application.workflows.plugins import ActionRegistry, AdapterRegistry, ReconcileRegistry
+from device_tui.framework.activity_executor import ActivityActionHandler, ActivityExecutor
+from device_tui.framework.plugins import ActionRegistry, AdapterRegistry, ReconcileRegistry
 
 
 class DeviceExecutionActionHandler:

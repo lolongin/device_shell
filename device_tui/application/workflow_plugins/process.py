@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from device_tui.application.workflows.activity import (
+from device_tui.framework.activity import (
     ActivityContext,
     ActivityInvocation,
     ActivityResult,
     ActivityStatus,
 )
-from device_tui.application.workflows.events import Event
+from device_tui.framework.events import Event
 from device_tui.infrastructure.processes import LocalProcessAdapter
 
 

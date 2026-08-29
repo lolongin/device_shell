@@ -11,17 +11,17 @@ from uuid import uuid4
 from device_tui.application.device_control import ControlContext, DeviceLeaseService, DeviceTarget
 from device_tui.application.errors import ApplicationConflictError, ApplicationError, ResourceNotFoundError
 from device_tui.application.events import EventBus
-from device_tui.application.workflows.decisions import DecisionSubmission as FrameworkDecisionSubmission
-from device_tui.application.workflows.models import (
+from device_tui.framework.decisions import DecisionSubmission as FrameworkDecisionSubmission
+from device_tui.framework.models import (
     ActionStatus as FrameworkActionStatus,
     RunStatus as FrameworkRunStatus,
     WorkflowDefinition as FrameworkWorkflowDefinition,
     WorkflowRun as FrameworkWorkflowRun,
 )
-from device_tui.application.workflows.plugins import WorkflowRegistry
-from device_tui.application.workflows.resources import ResourceCoordinator, ResourceLease, ResourceRequest
-from device_tui.application.workflows.runtime import WorkflowRuntime
-from device_tui.application.workflows.orchestrator import TaskOrchestrator, TaskPlan, WorkflowNode
+from device_tui.framework.plugins import WorkflowRegistry
+from device_tui.framework.resources import ResourceCoordinator, ResourceLease, ResourceRequest
+from device_tui.framework.runtime import WorkflowRuntime
+from device_tui.framework.orchestrator import TaskOrchestrator, TaskPlan, WorkflowNode
 
 from .decision import DecisionEngine, RuleDecisionEngine
 from .execution import DeviceExecutionTool, ExecutionTool

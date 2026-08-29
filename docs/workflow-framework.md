@@ -1,6 +1,6 @@
 # Workflow Framework
 
-The framework in `device_tui.application.workflows` is the generic execution
+The framework in `device_tui.framework` is the generic execution
 boundary for network-device workflows. Package replacement is one provider,
 not a special case in the runtime.
 
@@ -18,11 +18,17 @@ DecisionPoint.
 The package layout follows the same direction:
 
 ```text
-application/workflows/                       generic runtime and contracts
-application/workflow_plugins/                reusable workflow composition
-application/upgrades/                        package-upgrade rules and manual API
-infrastructure/vendor_adapters/huawei_vrp/   Huawei CLI and upgrade adapter
+framework/                                    generic runtime and contracts
+application/workflow_plugins/                 reusable workflow composition
+application/upgrades/                         package-upgrade rules and manual API
+infrastructure/vendor_adapters/huawei_vrp/    Huawei CLI and upgrade adapter
 ```
+
+`framework` is intentionally vendor- and product-neutral. Concrete workflows
+such as package replacement, device control, file transfer, and test scripts
+belong in `application/workflow_plugins` or another application-owned package.
+The old `application.workflows` package is a compatibility import path only;
+new production code must import framework contracts from `device_tui.framework`.
 
 `application/upgrades/commands.py` and `drivers.py` are compatibility import
 paths only. New code should resolve Huawei command profiles and upgrade drivers
@@ -34,7 +40,7 @@ import either package.
 Register a provider and adapter through the default registries:
 
 ```python
-from device_tui.application.workflows import (
+from device_tui.application.workflow_plugins.builtins import (
     build_default_adapter_registry,
     build_default_workflow_registry,
 )

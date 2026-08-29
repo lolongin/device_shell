@@ -7,8 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from device_tui.application.workflows.events import Event, WorkflowEventStore
-from device_tui.application.workflows.models import (
+from device_tui.framework.events import Event, WorkflowEventStore
+from device_tui.framework.models import (
     ActionAttempt,
     ActionStatus,
     DecisionPoint,
@@ -17,7 +17,7 @@ from device_tui.application.workflows.models import (
     ProgressSnapshot,
     WorkflowRun,
 )
-from device_tui.application.workflows.orchestrator import TaskRun, TaskRunStore
+from device_tui.framework.orchestrator import TaskRun, TaskRunStore
 
 
 class SQLiteWorkflowRunStore:

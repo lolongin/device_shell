@@ -1,6 +1,6 @@
 """Optional domain workflow plugins.
 
-The framework in :mod:`device_tui.application.workflows` is vendor-neutral.
+The framework in :mod:`device_tui.framework` is vendor-neutral.
 This package contains the Huawei VRP package-replacement implementation and
 the bridge to the device-control application services.
 """

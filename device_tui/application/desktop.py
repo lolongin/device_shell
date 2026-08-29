@@ -39,7 +39,7 @@ from .tasking import (
     WorkflowCatalog,
     build_default_workflow_catalog,
 )
-from .workflows import (
+from device_tui.framework import (
     ActivityExecutor,
     AdapterRegistry,
     LeaseResourceCoordinator,
@@ -50,8 +50,8 @@ from .workflows import (
 )
 from .workflow_plugins.builtins import build_default_adapter_registry, build_default_workflow_registry
 from .workflow_plugins.builtins import build_default_activity_executor
-from .workflows.events import WorkflowEventStore
-from .workflows.runtime import WorkflowRunStore
+from device_tui.framework.events import WorkflowEventStore
+from device_tui.framework.runtime import WorkflowRunStore
 from .workflow_plugins.device_bridge import build_device_action_registry, build_device_reconcile_registry
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpDeviceCommandProfile
 

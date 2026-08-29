@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActionResult,
     ActionSpec,
     ActionStatus,

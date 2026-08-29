@@ -2,7 +2,7 @@
 
 from device_tui.application.device_control import DeviceControlService
 from device_tui.application.tasking.execution import DeviceExecutionTool
-from device_tui.application.workflows import (
+from device_tui.framework import (
     ActivityDefinition,
     ActivityExecutor,
     ExchangeSpec,
@@ -10,7 +10,7 @@ from device_tui.application.workflows import (
     IdempotencyPolicy,
     MonitorSpec,
 )
-from device_tui.application.workflows.plugins import AdapterRegistry, WorkflowRegistry
+from device_tui.framework.plugins import AdapterRegistry, WorkflowRegistry
 
 from .huawei_package import HuaweiVrpPackageUpgradeProvider, HuaweiVrpWorkflowAdapter
 from .process import ProcessActivityHandler

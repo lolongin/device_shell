@@ -164,7 +164,7 @@ Exit criteria:
 
 ### Phase 1: Framework contracts
 
-Use `device_tui.application.workflows.activity` for the versioned Activity
+Use `device_tui.framework.activity` for the versioned Activity
 contracts and `ActivityRegistry` for definitions and handlers. Keep
 `ActionSpec`/`ActionRegistry` as a compatibility layer only.
 

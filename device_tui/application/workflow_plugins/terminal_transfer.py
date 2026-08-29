@@ -18,7 +18,7 @@ from device_tui.application.device_control import (
     TransferRequest,
 )
 from device_tui.application.device_control.models import OperationView
-from device_tui.application.workflows import ActivityInvocation, Event
+from device_tui.framework import ActivityInvocation, Event
 
 from .transfer import TransferAdapter, TransferHandle, TransferObservation
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from device_tui.application.workflows import TaskRun, TaskRunStatus
+from device_tui.framework import TaskRun, TaskRunStatus
 
 from .models import TaskRecord, TaskStatus, WorkflowResult
 

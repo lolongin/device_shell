@@ -16,12 +16,18 @@ from device_tui.application.tasking import (
     build_default_workflow_catalog,
 )
 from device_tui.application.workflows import TaskOrchestrator, WorkflowRuntime, build_default_workflow_registry
+from device_tui.framework import ActivityInvocation, TaskRun
 
 
 class NoopExecution:
     async def execute(self, target, step, *, context):
         del target, step, context
         return {"status": "completed"}
+
+
+def test_framework_contracts_are_defined_in_framework_package() -> None:
+    assert ActivityInvocation.__module__.startswith("device_tui.framework.")
+    assert TaskRun.__module__.startswith("device_tui.framework.")
 
 
 def _upgrade_task():
