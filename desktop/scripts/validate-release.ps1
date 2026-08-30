@@ -30,7 +30,7 @@ function Start-Installer([string]$Installer, [string]$InstallDir) {
 }
 
 function Invoke-PackagedCapture([string]$InstallDir, [string]$UserDataDir, [string]$CapturePath) {
-    $appExe = Join-Path $InstallDir "Device TUI.exe"
+    $appExe = Join-Path $InstallDir "OdyTerm.exe"
     if (-not (Test-Path -LiteralPath $appExe)) {
         throw "Installed app executable was not found: $appExe"
     }
@@ -61,7 +61,7 @@ function Invoke-PackagedCapture([string]$InstallDir, [string]$UserDataDir, [stri
         throw "Backend lifecycle log was not written: $backendLog"
     }
     $logText = Get-Content -LiteralPath $backendLog -Raw
-    if ($logText -notmatch "device-tui-backend(.exe)? --port 0") {
+    if ($logText -notmatch "odyterm-backend(.exe)? --port 0") {
         throw "Backend log does not show bundled backend startup: $backendLog"
     }
     $stdoutText = if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Raw } else { "" }
@@ -91,12 +91,12 @@ function Invoke-Uninstall([string]$InstallDir) {
 }
 
 $desktopRoot = Split-Path -Parent $PSScriptRoot
-$defaultInstaller = Join-Path $desktopRoot "release\Device TUI Setup 0.1.0.exe"
+$defaultInstaller = Join-Path $desktopRoot "release\OdyTerm Setup 0.1.0.exe"
 $current = Resolve-Installer $CurrentInstaller $defaultInstaller
 $previous = if ($PreviousInstaller) { Resolve-Installer $PreviousInstaller $PreviousInstaller } else { $current }
 $createdWorkRoot = $false
 if (-not $WorkRoot) {
-    $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("device-tui-release-smoke-" + [System.Guid]::NewGuid().ToString("N"))
+    $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("odyterm-release-smoke-" + [System.Guid]::NewGuid().ToString("N"))
     $createdWorkRoot = $true
 }
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)

@@ -298,7 +298,7 @@ class ActivityActionHandler:
     """Compatibility adapter from legacy ``ActionHandler`` to Activities.
 
     This lets the existing WorkflowRuntime drive new Activity handlers while
-    the TaskManager and older plugins are migrated incrementally.
+    older action-handler plugins are migrated incrementally.
     """
 
     def __init__(self, executor: ActivityExecutor, activity_id: str, *, version: str = "1") -> None:

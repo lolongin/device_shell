@@ -201,3 +201,19 @@ def test_task_orchestrator_controls_active_child_at_task_boundary() -> None:
     cancelled = orchestrator.cancel("task-1")
     assert cancelled.status == TaskRunStatus.CANCELLED
     assert runtime.cancelled == ["child-1"]
+
+
+def test_task_orchestrator_fences_persisted_inflight_runs_after_restart() -> None:
+    store = MemoryTaskRunStore()
+    running = TaskRun("task-running", "plan-1", "d1", status=TaskRunStatus.RUNNING)
+    waiting = TaskRun("task-waiting", "plan-1", "d1", status=TaskRunStatus.WAITING_CHILD)
+    done = TaskRun("task-done", "plan-1", "d1", status=TaskRunStatus.SUCCEEDED)
+    for item in (running, waiting, done):
+        store.save(item)
+
+    orchestrator = TaskOrchestrator(_ExistingChildRuntime(WorkflowRun("child", "wf", "1", "d1")), Builder(), store=store)
+
+    assert orchestrator.get("task-running").status == TaskRunStatus.WAITING_RECONCILE
+    assert orchestrator.get("task-waiting").status == TaskRunStatus.WAITING_RECONCILE
+    assert orchestrator.get("task-done").status == TaskRunStatus.SUCCEEDED
+    assert orchestrator.get("task-running").context["framework.recovery"]["reason"] == "process_restart"

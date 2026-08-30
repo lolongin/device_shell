@@ -1,4 +1,4 @@
-"""FastMCP entry point for the Device TUI desktop application."""
+"""FastMCP entry point for the OdyTerm desktop application."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .tools import register_all_tools
 
 
 INSTRUCTIONS = (
-    "Operate the running Device TUI application through its policy-controlled "
+    "Operate the running OdyTerm application through its policy-controlled "
     "application control plane. Discover the available resources with "
     "app.capabilities. The public MCP surface includes app, device, session, "
     "source, profile, command, automation, transfer, and namespaced "
@@ -32,7 +32,7 @@ INSTRUCTIONS = (
 
 
 gateway = McpGateway()
-mcp = FastMCP("Device TUI", instructions=INSTRUCTIONS)
+mcp = FastMCP("OdyTerm", instructions=INSTRUCTIONS)
 register_all_tools(mcp, gateway)
 
 

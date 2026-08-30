@@ -13,7 +13,7 @@ $pyInstallerArgs = @(
     "--noconfirm",
     "--clean",
     "--onedir",
-    "--name", "device-tui-backend",
+    "--name", "odyterm-backend",
     "--distpath", $outputRoot,
     "--workpath", $workRoot,
     "--specpath", $specRoot,
@@ -52,7 +52,7 @@ $pyInstallerArgs += (Join-Path $projectRoot "device_tui\interfaces\desktop_api\f
 
 & $Python -m PyInstaller @pyInstallerArgs
 
-$executable = Join-Path $outputRoot "device-tui-backend\device-tui-backend.exe"
+$executable = Join-Path $outputRoot "odyterm-backend\odyterm-backend.exe"
 if (-not (Test-Path -LiteralPath $executable)) {
     throw "PyInstaller did not produce $executable"
 }

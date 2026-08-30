@@ -32,7 +32,9 @@ class WorkflowNode(FrameworkModel):
     id: str
     workflow_id: str
     depends_on: tuple[str, ...] = ()
-    input_mapping: dict[str, str] = field(default_factory=dict)
+    # Values may be literal JSON-compatible inputs or ``${path}`` references
+    # resolved against the parent TaskRun inputs/outputs.
+    input_mapping: dict[str, Any] = field(default_factory=dict)
     version: str = "1"
 
     @classmethod
@@ -41,7 +43,7 @@ class WorkflowNode(FrameworkModel):
             id=str(payload.get("id") or ""),
             workflow_id=str(payload.get("workflow_id") or payload.get("workflow") or ""),
             depends_on=tuple(str(item) for item in payload.get("depends_on", ()) if str(item)),
-            input_mapping={str(key): str(value) for key, value in dict(payload.get("input_mapping") or payload.get("inputs") or {}).items()},
+            input_mapping={str(key): value for key, value in dict(payload.get("input_mapping") or payload.get("inputs") or {}).items()},
             version=str(payload.get("version") or "1"),
         )
 
@@ -109,6 +111,7 @@ class TaskRunStore(Protocol):
     def save(self, run: TaskRun) -> TaskRun: ...
     def get(self, task_run_id: str) -> TaskRun: ...
     def list(self, *, limit: int = 500) -> list[TaskRun]: ...
+    def delete(self, task_run_id: str) -> None: ...
 
 
 class MemoryTaskRunStore:
@@ -127,6 +130,9 @@ class MemoryTaskRunStore:
 
     def list(self, *, limit: int = 500) -> list[TaskRun]:
         return list(self._runs.values())[:max(0, limit)]
+
+    def delete(self, task_run_id: str) -> None:
+        self._runs.pop(task_run_id, None)
 
 
 class WorkflowBuilder(Protocol):
@@ -151,6 +157,28 @@ class TaskOrchestrator:
         self._runs: dict[str, TaskRun] = {}
         self._resource_leases: dict[str, ResourceLease] = {}
         for run in self.store.list():
+            # A TaskRun is a durable parent boundary. On process restart any
+            # in-flight parent must be fenced until its child WorkflowRun has
+            # gone through the runtime recovery path. This keeps the parent
+            # projection from advertising ``running`` while the child is
+            # paused/recovering, including tasks that had not created a child
+            # yet when the process stopped.
+            if str(run.status) in {
+                TaskRunStatus.RUNNING.value,
+                TaskRunStatus.WAITING_CHILD.value,
+            }:
+                run = replace(
+                    run,
+                    status=TaskRunStatus.WAITING_RECONCILE,
+                    context={
+                        **run.context,
+                        "framework.recovery": {
+                            "required": True,
+                            "reason": "process_restart",
+                        },
+                    },
+                )
+                self.store.save(run)
             self._runs[run.id] = run
 
     def start(
@@ -236,6 +264,34 @@ class TaskOrchestrator:
             self.runtime.cancel(child.id)
         return self._save(replace(task, status=TaskRunStatus.CANCELLED))
 
+    def delete(self, task_run_id: str) -> None:
+        """Remove a terminal TaskRun from the task history store."""
+        task = self.get(task_run_id)
+        if str(task.status) not in {
+            TaskRunStatus.SUCCEEDED.value,
+            TaskRunStatus.FAILED.value,
+            TaskRunStatus.CANCELLED.value,
+        }:
+            raise ValueError("only terminal task runs can be deleted")
+        self._runs.pop(task_run_id, None)
+        delete = getattr(self.store, "delete", None)
+        if callable(delete):
+            delete(task_run_id)
+
+    def apply_decision(self, task_run_id: str, submission: Any) -> TaskRun:
+        """Apply a decision to the active child Workflow and project status."""
+        task = self.get(task_run_id)
+        child = self._active_child(task)
+        if child is None:
+            raise ValueError("task is not waiting for a child Workflow decision")
+        updated_child = self.runtime.apply_decision(child.id, submission)
+        status = self._aggregate_child_status(str(updated_child.status))
+        if str(updated_child.status) == RunStatus.RUNNING.value:
+            status = TaskRunStatus.RUNNING
+        elif str(updated_child.status) == RunStatus.SUCCEEDED.value:
+            status = TaskRunStatus.RUNNING
+        return self._save(replace(task, status=status))
+
     def _active_child(self, task: TaskRun):
         for node_id in reversed(tuple(task.node_runs)):
             child = self.runtime.runs.get(task.node_runs[node_id])
@@ -316,6 +372,20 @@ class TaskOrchestrator:
                 task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
             return self._save(replace(task, status=TaskRunStatus.SUCCEEDED, outputs=outputs))
         except Exception as exc:
+            # A failed child creation/resolution can leave a runtime lease
+            # behind before the child reaches a terminal state. Fence those
+            # children so a failed Task cannot block later plans forever.
+            for child_id in node_runs.values():
+                try:
+                    child = self.runtime.runs.get(child_id)
+                except KeyError:
+                    continue
+                if str(child.status) not in {
+                    RunStatus.SUCCEEDED.value,
+                    RunStatus.FAILED.value,
+                    RunStatus.CANCELLED.value,
+                }:
+                    self.runtime.cancel(child.id)
             return self._save(replace(task, status=TaskRunStatus.FAILED, outputs=outputs, error={"code": "task_orchestration_failed", "message": str(exc)}))
 
     @staticmethod
@@ -333,10 +403,10 @@ class TaskOrchestrator:
         return mapping.get(status, TaskRunStatus.WAITING_CHILD)
 
     @staticmethod
-    def _resolve_inputs(mapping: Mapping[str, str], values: Mapping[str, Any]) -> dict[str, Any]:
+    def _resolve_inputs(mapping: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
         resolved: dict[str, Any] = {}
         for name, expression in mapping.items():
-            if not expression.startswith("${") or not expression.endswith("}"):
+            if not isinstance(expression, str) or not expression.startswith("${") or not expression.endswith("}"):
                 resolved[name] = expression
                 continue
             path = expression[2:-1].split(".")

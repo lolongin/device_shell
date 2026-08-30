@@ -16,7 +16,6 @@ from ..workflow_plugins.package_upgrade.workflow import HuaweiVrpPackageUpgradeP
 from ..workflow_plugins.process import ProcessActivityHandler
 from ..workflow_plugins.terminal_transfer import TerminalTransferAdapter
 from ..workflow_plugins.device_activity import DeviceActivityHandler
-from ..workflow_plugins.device_bridge import DeviceExecutionActionHandler
 from ..workflow_plugins.transfer import TransferActivityHandler
 from ..workflow_plugins.generic import build_default_activity_workflow_providers
 from ..workflow_plugins.vendor_adapter import DeviceVendorActivityHandler
@@ -91,7 +90,15 @@ def build_default_activity_executor(
         # contract; the Activity handler owns lifecycle/status mapping.
         executor.register_handler(TransferActivityHandler(TerminalTransferAdapter(control)))
     if execution is not None:
-        for activity_id in ("device.reboot", "device.wait_online", "device.verify_version"):
+        for activity_id in (
+            "device.reboot",
+            "device.wait_online",
+            "device.verify_version",
+            "terminal.command",
+            "terminal.batch",
+            "device.power_off",
+            "operation.wait",
+        ):
             if activity_id == "device.reboot":
                 definition = ActivityDefinition(
                     id=activity_id,
@@ -105,6 +112,26 @@ def build_default_activity_executor(
                     preparation=("session.reconnect",),
                     monitor=MonitorSpec(id="device-readiness", poller="cli.readiness", timeout_seconds=300),
                 )
+            elif activity_id in {"terminal.command", "terminal.batch"}:
+                definition = ActivityDefinition(
+                    id=activity_id,
+                    preconditions=(GuardSpec(
+                        id="session.connected",
+                        probe="session.status",
+                        predicate={"equals": "connected"},
+                    ),),
+                )
+            elif activity_id == "operation.wait":
+                definition = ActivityDefinition(
+                    id=activity_id,
+                    exchanges=(ExchangeSpec(
+                        id="operation.wait.dispatched",
+                        send="operation_wait",
+                        accepted_signals=("operation.completed",),
+                        failure_signals=("operation.failed",),
+                    ),),
+                    monitor=MonitorSpec(id="operation-status", poller="operation.poll", timeout_seconds=3_600),
+                )
             else:
                 definition = ActivityDefinition(
                     id=activity_id,
@@ -113,23 +140,23 @@ def build_default_activity_executor(
                 )
             executor.register_definition(definition)
             executor.register_handler(DeviceActivityHandler(execution, activity_id))
-        # Storage and startup operations are exposed under stable, vendor-
-        # neutral Activity ids.  The temporary compatibility handler delegates
-        # command generation and read-back verification to the registered
-        # vendor bridge; the executor still owns Activity lifecycle/status.
-        legacy = DeviceExecutionActionHandler(
+        # Huawei-specific Activities own command generation and read-back
+        # verification. They are registered directly; no legacy ActionHandler
+        # is constructed on the production path.
+        vendor = HuaweiVrpDeviceVendorAdapter(
             execution,
             adapters or build_default_adapter_registry(),
             transfers,
         )
-        vendor = HuaweiVrpDeviceVendorAdapter(legacy)
-        migrated_operations = {
-            "device.storage.cleanup": "huawei.storage.cleanup",
-            "device.storage.sync": "huawei.storage.sync",
-            "device.verify_artifact": "device.verify",
-            "device.startup.configure": "huawei.startup.configure",
-            "device.startup.rollback": "huawei.startup.rollback",
-        }
+        migrated_operations = (
+            "device.probe",
+            "device.verify",
+            "device.storage.cleanup",
+            "device.storage.sync",
+            "device.verify_artifact",
+            "device.startup.configure",
+            "device.startup.rollback",
+        )
         for activity_id in migrated_operations:
             executor.register_definition(ActivityDefinition(
                 id=activity_id,

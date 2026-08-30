@@ -41,9 +41,9 @@ const emit = defineEmits<{
   updateCollapsed: [collapsed: boolean]
 }>()
 
-const WIDTH_KEY = 'device-tui.desktop-v2.session-manager-width'
-const COLLAPSED_GROUPS_KEY = 'device-tui.desktop-v2.session-manager-collapsed-groups'
-const SESSION_DRAG_TYPE = 'application/x-device-tui-session'
+const WIDTH_KEY = 'odyterm.desktop-v2.session-manager-width'
+const COLLAPSED_GROUPS_KEY = 'odyterm.desktop-v2.session-manager-collapsed-groups'
+const SESSION_DRAG_TYPE = 'application/x-odyterm-session'
 const manager = ref<HTMLElement | null>(null)
 const query = ref('')
 const managerWidth = ref(readManagerWidth())

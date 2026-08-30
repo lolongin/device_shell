@@ -8,7 +8,26 @@ working while they migrate to an explicit profile.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
+
+
+class DeviceWorkflowExecutionError(RuntimeError):
+    """Structured failure returned by the device-control execution boundary."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        error_class: str = "unknown",
+        retryable: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.error_class = error_class
+        self.retryable = retryable
+        self.details = dict(details or {})
 
 
 class DeviceCommandProfile(Protocol):
@@ -74,4 +93,8 @@ class CompatibilityDeviceCommandProfile:
         return str(value).strip().replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
 
-__all__ = ["CompatibilityDeviceCommandProfile", "DeviceCommandProfile"]
+__all__ = [
+    "CompatibilityDeviceCommandProfile",
+    "DeviceCommandProfile",
+    "DeviceWorkflowExecutionError",
+]

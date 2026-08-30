@@ -14,7 +14,7 @@ from .models import API_VERSION
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Device TUI desktop backend")
+    parser = argparse.ArgumentParser(description="OdyTerm desktop backend")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=0, type=int)
     return parser

@@ -39,13 +39,20 @@ def sqlite_user_version(path: Path) -> int:
 def prepare_persistent_data(
     data_root: Path,
     *,
-    database_name: str = "device-tui.sqlite3",
+    database_name: str = "odyterm.sqlite3",
     target_schema_version: int,
     backup_retention: int = 5,
 ) -> PersistenceMigrationStatus:
     data_root = data_root.resolve()
     data_root.mkdir(parents=True, exist_ok=True)
     database_path = data_root / database_name
+    legacy_database_path = data_root / "device-tui.sqlite3"
+    if not database_path.exists() and legacy_database_path.exists():
+        with (
+            sqlite3.connect(legacy_database_path) as source,
+            sqlite3.connect(database_path) as target,
+        ):
+            source.backup(target)
     schema_before = sqlite_user_version(database_path)
     backup_path: Path | None = None
     if database_path.exists() and schema_before < target_schema_version:

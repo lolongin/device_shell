@@ -16,19 +16,8 @@ from device_tui.application.transfers import (
     ManagedTransferService,
     PreparedTransferSource,
 )
-from .policy import (
-    PackageFileEntry,
-    PackageUpgradeConfig,
-    build_cleanup_plan,
-    package_basename,
-)
-from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import (
-    DEFAULT_MASTER_STORAGE,
-    DEFAULT_SLAVE_STORAGE,
-    parse_dir_entries,
-    parse_display_startup,
-    parse_free_space_bytes,
-)
+from .policy import PackageFileEntry, PackageUpgradeConfig, package_basename
+from device_tui.domain.package_upgrade import DEFAULT_MASTER_STORAGE, DEFAULT_SLAVE_STORAGE
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.drivers import (
     UpgradeDriver,
     UpgradeDriverRegistry,
@@ -56,7 +45,7 @@ class PackageUpgradeService:
     """Manual package-upgrade fallback support.
 
     Automatic package upgrades are executed exclusively by ``WorkflowRuntime``
-    through ``TaskManager``. This service intentionally has no scheduler,
+    through ``TaskService``. This service intentionally has no scheduler,
     workflow runner, or operation projection.
     """
 
@@ -120,6 +109,7 @@ class PackageUpgradeService:
         settings = self._transfers.settings()
         cleanup_entries, cleanup_notes = self._manual_cleanup_entries(
             source=source,
+            driver=driver,
             startup_output=startup_output,
             master_storage=master_storage,
             master_output=master_dir_output,
@@ -208,6 +198,7 @@ class PackageUpgradeService:
         self,
         *,
         source: PreparedTransferSource,
+        driver: UpgradeDriver,
         startup_output: str,
         master_storage: str,
         master_output: str,
@@ -218,7 +209,6 @@ class PackageUpgradeService:
     ) -> tuple[list[PackageFileEntry], list[str]]:
         if not auto_delete:
             return [], ["自动清理已关闭，脚本不会删除旧系统包。"]
-        startup = parse_display_startup(startup_output)
         entries: list[PackageFileEntry] = []
         notes: list[str] = []
         candidates = [("主控", master_storage, master_output)]
@@ -228,13 +218,12 @@ class PackageUpgradeService:
             if not output.strip():
                 notes.append(f"未提供{label}目录输出，已跳过{label}旧包自动清理。")
                 continue
-            cleanup = build_cleanup_plan(
+            cleanup = driver.cleanup_plan(
                 storage=storage,
-                free_bytes=parse_free_space_bytes(output),
-                target_bytes=source.size_bytes,
-                entries=parse_dir_entries(output, storage),
-                startup=startup,
-                target_package_name=source.name,
+                output=output,
+                startup_output=startup_output,
+                package_name=source.name,
+                package_size=source.size_bytes,
             )
             entries.extend(cleanup.delete_entries)
             notes.append(

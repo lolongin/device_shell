@@ -127,7 +127,7 @@ def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> Non
     assert 'data-testid="quick-send-response"' in toolbar
     assert 'data-testid="quick-send-save"' in toolbar
     assert "workspace.sendQuickSendButton(button.id)" in toolbar
-    assert "device-tui.desktop-v2.quick-toolbar-collapsed" in toolbar
+    assert "odyterm.desktop-v2.quick-toolbar-collapsed" in toolbar
     assert ':aria-label="`编辑 ${button.name}`"' in toolbar
     assert "import TerminalQuickToolbar from './TerminalQuickToolbar.vue'" in command
     assert command.count("<TerminalQuickToolbar />") == 2
@@ -172,12 +172,12 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
     assert 'role="tree"' in manager
     assert 'role="treeitem"' in manager
     assert ':data-device-group-id="group.id"' in manager
-    assert "device-tui.desktop-v2.session-manager-width" in manager
-    assert "device-tui.desktop-v2.session-manager-collapsed-groups" in manager
+    assert "odyterm.desktop-v2.session-manager-width" in manager
+    assert "odyterm.desktop-v2.session-manager-collapsed-groups" in manager
     assert "Math.max(200, Math.min(480" in manager
     assert "rect.right - event.clientX" in manager
     assert "event.key === 'ArrowLeft' ? 10 : -10" in manager
-    assert "application/x-device-tui-session" in manager
+    assert "application/x-odyterm-session" in manager
     assert "emit('deviceContext'" in manager
     assert "emit('sessionContext'" in manager
 
@@ -353,8 +353,8 @@ def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
     assert "overflow-x: auto" in styles
     assert "terminalAutomationKeepsTerminalVisibleAndInteractive" in main
     assert "leftOperationWorkbenchWidthResizePersists" in main
-    assert "device-tui:focus-terminal" in automation
-    assert "device-tui:focus-terminal" in terminal
+    assert "odyterm:focus-terminal" in automation
+    assert "odyterm:focus-terminal" in terminal
     assert "handleTerminalFocusRequest" in terminal
     assert "document.querySelector('.automation-workspace')" in terminal
     assert "runSelectedRule" in automation
@@ -522,17 +522,18 @@ def test_terminal_toolbar_exposes_current_session_operations_without_navigation(
 
     assert 'title="托管传输当前设备"' in pane
     assert 'title="升级当前设备系统包"' in pane
-    assert 'title="当前会话操作"' in pane
+    assert 'aria-label="当前设备快速连接"' in pane
+    assert 'class="terminal-device-connect-menu"' in pane
+    assert "openProtocol: [kind: DeviceProtocolKind]" in pane
     assert "transfer: [sessionId: string]" in pane
     assert "upgrade: [sessionId: string]" in pane
-    assert "context: [sessionId: string, event: MouseEvent]" in pane
     assert '@transfer="emit(\'transfer\', $event)"' in split
     assert '@upgrade="emit(\'upgrade\', $event)"' in split
-    assert '@context="(sessionId, event) => emit(\'context\', sessionId, event)"' in split
+    assert '@open-protocol="emit(\'openProtocol\', $event)"' in split
     assert "function openSessionTransfer(sessionId: string)" in app
     assert "function openSessionUpgrade(sessionId: string)" in app
-    assert "function openSessionToolbarContext(sessionId: string, event: MouseEvent)" in app
-    assert ".terminal-operation-button" in styles
+    assert "function openOrActivateDeviceProtocol(deviceId: string, kind: DeviceProtocolKind)" in app
+    assert ".terminal-device-connect-popover" in styles
 
 
 def test_transfer_workspace_uses_realtime_events_without_polling() -> None:
@@ -748,10 +749,10 @@ def test_electron_terminal_supports_split_context_actions_and_drag_drop() -> Non
         assert f"'{direction}'" in split
     assert 'draggable="true"' in app
     assert '@dragstart="startSessionTabDrag($event, session)"' in app
-    assert "application/x-device-tui-session" in split
+    assert "application/x-odyterm-session" in split
     assert "@dragover=\"handleDragOver($event, pane)\"" in split
     assert "@drop=\"handleDrop($event, pane)\"" in split
-    assert "device-tui.desktop-v2.terminal-split-layout" in split
+    assert "odyterm.desktop-v2.terminal-split-layout" in split
     assert 'role="separator"' in split
     assert 'aria-valuemin="20"' in split
     assert '@pointerdown="startSplitResize"' in split
@@ -878,7 +879,7 @@ def test_electron_renderer_restores_persisted_theme_toggle() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    assert "device-tui.desktop-v2.theme" in app
+    assert "odyterm.desktop-v2.theme" in app
     assert "toggleTheme" in app
     assert "applyRendererTheme" in app
     assert "document.documentElement.dataset.theme" in app
@@ -923,7 +924,7 @@ def test_electron_restores_persisted_always_on_top_toggle() -> None:
     main = MAIN_TS.read_text(encoding="utf-8")
     preload = PRELOAD_TS.read_text(encoding="utf-8")
 
-    assert "device-tui.desktop-v2.always-on-top" in app
+    assert "odyterm.desktop-v2.always-on-top" in app
     assert "always-on-top-toggle" in app
     assert "窗口置顶" in app
     assert "取消窗口置顶" in app
@@ -1114,8 +1115,9 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
         "放大字体 (Ctrl++)",
     ):
         assert title in bottom_toolbar
-    for title in ("当前会话操作", "断开连接", "重新连接 (Ctrl+Shift+R)"):
+    for title in ("断开连接", "重新连接 (Ctrl+Shift+R)"):
         assert title in bottom_toolbar
+    assert "当前设备快速连接" in bottom_toolbar
 
     assert 'class="split-session-tab"' not in split
     assert 'class="split-pane-session-title"' in split
@@ -1223,7 +1225,7 @@ def test_electron_server_groups_remember_collapsed_state() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
     smoke = MAIN_TS.read_text(encoding="utf-8")
 
-    assert "device-tui.desktop-v2.profile-collapsed-groups" in app
+    assert "odyterm.desktop-v2.profile-collapsed-groups" in app
     assert "storedCollapsedProfileGroups" in app
     assert "profileGroupCollapsed" in app
     assert "toggleProfileGroup" in app
@@ -1372,7 +1374,7 @@ def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
-    assert "device-tui.desktop-v2.command-panel-height" in command
+    assert "odyterm.desktop-v2.command-panel-height" in command
     assert "COMMAND_PANEL_MIN_HEIGHT = 180" in command
     assert "availableCommandPanelHeight" in command
     assert "startCommandPanelResize" in command
@@ -1410,10 +1412,11 @@ def test_electron_command_group_tabs_support_drag_reordering() -> None:
 def test_electron_command_group_tabs_keep_independent_scroll_positions() -> None:
     command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
 
-    assert "const commandGroupScrollTops = new Map<string, number>()" in command
-    assert "commandGroupScrollTops.set(editorGroupId, editor.value.scrollTop)" in command
-    assert "const scrollTop = commandGroupScrollTops.get(editorGroupId) || 0" in command
-    assert "lineNumberGutter.value.scrollTop = scrollTop" in command
+    assert "const commandGroupViewStates = new Map<string, CommandEditorViewState>()" in command
+    assert "commandGroupViewStates.set(groupId" in command
+    assert "const state = commandGroupViewStates.get(groupId)" in command
+    assert "element.setSelectionRange(start, end, state.selectionDirection)" in command
+    assert "lineNumberGutter.value.scrollTop = state.scrollTop" in command
 
 
 def test_electron_empty_workspace_does_not_leave_a_dead_command_region() -> None:
@@ -1433,7 +1436,7 @@ def test_electron_device_detail_shares_left_navigator() -> None:
     navigator_detail = app.index('class="navigator-detail"')
     workspace = app.index('<main class="workspace-stage">')
     assert navigator_detail < workspace
-    assert "device-tui.desktop-v2.navigator-detail-collapsed" in app
+    assert "odyterm.desktop-v2.navigator-detail-collapsed" in app
     assert 'aria-label="设备与连接详情"' in app
     assert ".navigator-detail-content" in styles
     assert "deviceDetailSharesLeftNavigator" in main
@@ -1445,7 +1448,7 @@ def test_electron_device_navigator_width_is_resizable_and_persistent() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
-    assert "device-tui.desktop-v2.navigator-width" in app
+    assert "odyterm.desktop-v2.navigator-width" in app
     assert 'data-testid="navigator-resize-handle"' in app
     assert 'role="separator"' in app
     assert 'aria-orientation="vertical"' in app
@@ -1465,7 +1468,7 @@ def test_electron_device_navigator_can_hide_restore_and_persist() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
-    assert "device-tui.desktop-v2.navigator-visible" in app
+    assert "odyterm.desktop-v2.navigator-visible" in app
     assert "const navigatorVisible = ref" in app
     assert "function setNavigatorVisible" in app
     assert "const hideCurrentSection = navigatorVisible.value" in app
@@ -1568,7 +1571,7 @@ def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
         assert label in settings
     assert "chooseSessionLogDirectory()" in settings
     assert "updateSessionLogSettings" in settings
-    assert "device-tui:terminal-font-size" in settings
+    assert "odyterm:terminal-font-size" in settings
     assert "settings-behavior-note" in settings
     assert "logSettingsDirty" in settings
     assert "settings-dirty-state" in settings
@@ -1874,7 +1877,9 @@ def test_electron_automation_rules_can_be_safely_cloned() -> None:
     automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
-    backend = Path("device_tui/interfaces/desktop_api/app.py").read_text(encoding="utf-8")
+    backend = Path(
+        "device_tui/interfaces/desktop_api/routers/automation.py"
+    ).read_text(encoding="utf-8")
     smoke = MAIN_TS.read_text(encoding="utf-8")
 
     assert 'data-testid="automation-clone"' in automation
@@ -1885,7 +1890,8 @@ def test_electron_automation_rules_can_be_safely_cloned() -> None:
     assert "async function cloneAutomationRule" in store
     assert "desktopApi.cloneAutomationRule(ruleId)" in store
     assert "cloneAutomationRule: (ruleId: string)" in api
-    assert '"/api/v1/automation/rules/{rule_id}/clone"' in backend
+    assert 'prefix="/api/v1"' in backend
+    assert '"/automation/rules/{rule_id}/clone"' in backend
 
     assert "automationCloneCreatesDisabledIndependentRule" in smoke
     assert "cloneSmokeAssertions" in smoke
@@ -1896,7 +1902,9 @@ def test_electron_automation_workspace_shows_recent_execution_activity() -> None
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     types = TYPES_TS.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    backend = Path("device_tui/interfaces/desktop_api/app.py").read_text(encoding="utf-8")
+    backend = Path("device_tui/interfaces/desktop_api/serializers.py").read_text(
+        encoding="utf-8"
+    )
     smoke = MAIN_TS.read_text(encoding="utf-8")
 
     assert "interface AutomationActivityRecord" in types

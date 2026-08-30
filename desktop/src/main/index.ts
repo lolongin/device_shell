@@ -2,10 +2,74 @@ import path from 'node:path'
 import { existsSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { PythonBackend } from './python-backend.js'
 
 let mainWindow: BrowserWindow | null = null
+
+type NativeThemeMode = 'dark' | 'light'
+type ApplicationMenuKey = 'file' | 'edit' | 'view' | 'window'
+
+const WINDOW_TITLE_BAR_HEIGHT = 32
+
+function titleBarOverlayForTheme(mode: NativeThemeMode): Electron.TitleBarOverlayOptions {
+  return mode === 'light'
+    ? { color: '#f8fafc', symbolColor: '#334155', height: WINDOW_TITLE_BAR_HEIGHT }
+    : { color: '#0f172a', symbolColor: '#cbd5e1', height: WINDOW_TITLE_BAR_HEIGHT }
+}
+
+function buildApplicationMenu(): Menu {
+  return Menu.buildFromTemplate([
+    {
+      id: 'file',
+      label: '文件',
+      submenu: [
+        { role: 'close', label: '关闭窗口' },
+        { type: 'separator' },
+        { role: 'quit', label: '退出' }
+      ]
+    },
+    {
+      id: 'edit',
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' }
+      ]
+    },
+    {
+      id: 'view',
+      label: '视图',
+      submenu: [
+        { role: 'reload', label: '重新加载' },
+        { role: 'forceReload', label: '强制重新加载' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: '重置缩放' },
+        { role: 'zoomIn', label: '放大' },
+        { role: 'zoomOut', label: '缩小' },
+        { type: 'separator' },
+        { role: 'toggleDevTools', label: '切换开发者工具' }
+      ]
+    },
+    {
+      id: 'window',
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '最大化/还原' },
+        { type: 'separator' },
+        { role: 'close', label: '关闭窗口' }
+      ]
+    }
+  ])
+}
+
+const applicationMenu = buildApplicationMenu()
 
 function validDialogDefaultPath(value: unknown): string | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined
@@ -382,12 +446,34 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('file-transfer:save-settings')
   ipcMain.removeHandler('file-transfer:copy-command')
   ipcMain.removeHandler('window:set-always-on-top')
+  ipcMain.removeHandler('window:set-native-theme')
+  ipcMain.removeHandler('window:show-application-menu')
   ipcMain.handle('runtime:get', () => {
     const runtime = backend.config
     return {
       apiBaseUrl: runtime.apiBaseUrl,
       apiVersion: runtime.apiVersion
     }
+  })
+  ipcMain.handle('window:set-native-theme', (event, mode: unknown): NativeThemeMode => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted theme request')
+    if (mode !== 'dark' && mode !== 'light') throw new Error('Invalid native theme')
+    nativeTheme.themeSource = mode
+    mainWindow.setTitleBarOverlay(titleBarOverlayForTheme(mode))
+    return mode
+  })
+  ipcMain.handle('window:show-application-menu', (event, key: unknown, x: unknown, y: unknown): void => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) {
+      throw new Error('Untrusted application-menu caller')
+    }
+    if (key !== 'file' && key !== 'edit' && key !== 'view' && key !== 'window') {
+      throw new Error('Invalid application-menu key')
+    }
+    if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error('Invalid application-menu coordinates')
+    }
+    const submenu = applicationMenu.getMenuItemById(key as ApplicationMenuKey)?.submenu
+    submenu?.popup({ window: mainWindow, x: Math.round(x), y: Math.round(y) })
   })
   ipcMain.handle('backend:request', async (event, request: BackendRequest): Promise<BackendResponse> => {
     if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted backend API caller')
@@ -558,6 +644,9 @@ async function createWindow(): Promise<void> {
     minHeight: 720,
     show: false,
     backgroundColor: '#020617',
+    ...(app.isPackaged ? {} : { icon: path.join(__dirname, '../../resources/odyterm-icon.png') }),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: titleBarOverlayForTheme('dark'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -565,6 +654,8 @@ async function createWindow(): Promise<void> {
       sandbox: true
     }
   })
+  Menu.setApplicationMenu(applicationMenu)
+  mainWindow.setMenuBarVisibility(false)
 
   mainWindow.once('ready-to-show', () => {
     const window = mainWindow
@@ -963,7 +1054,7 @@ async function createWindow(): Promise<void> {
           `(() => {
             const action = document.querySelector('.empty-workspace .primary-button')
             const context = document.querySelector('.empty-workspace-context')
-            sessionStorage.setItem('device-tui.smoke.real-empty-action', JSON.stringify({
+            sessionStorage.setItem('odyterm.smoke.real-empty-action', JSON.stringify({
               action: action?.textContent?.trim() || '',
               context: context?.textContent?.trim() || '',
               disabled: Boolean(action?.disabled)
@@ -979,7 +1070,7 @@ async function createWindow(): Promise<void> {
           `(() => {
             const action = document.querySelector('.empty-workspace .primary-button')
             const context = document.querySelector('.empty-workspace-context')
-            sessionStorage.setItem('device-tui.smoke.simulated-empty-action', JSON.stringify({
+            sessionStorage.setItem('odyterm.smoke.simulated-empty-action', JSON.stringify({
               action: action?.textContent?.trim() || '',
               context: context?.textContent?.trim() || '',
               disabled: Boolean(action?.disabled)
@@ -996,7 +1087,7 @@ async function createWindow(): Promise<void> {
         await mkdir(manualUpgradeRoot, { recursive: true })
         await writeFile(
           path.join(manualUpgradeRoot, manualUpgradePackageName),
-          Buffer.from('device-tui-manual-upgrade-smoke', 'utf8')
+          Buffer.from('odyterm-manual-upgrade-smoke', 'utf8')
         )
         const nativeTerminalPasteReady = await mainWindow.webContents.executeJavaScript(
           `(() => {
@@ -1004,7 +1095,7 @@ async function createWindow(): Promise<void> {
             const output = [...document.querySelectorAll('.xterm-rows')]
               .map((rows) => rows.textContent || '').join('')
             input?.focus()
-            sessionStorage.setItem('device-tui.smoke.native-terminal-paste-before', String(output.split('clipboard-smoke').length - 1))
+            sessionStorage.setItem('odyterm.smoke.native-terminal-paste-before', String(output.split('clipboard-smoke').length - 1))
             return Boolean(input && document.activeElement === input)
           })()`,
           true
@@ -1019,10 +1110,10 @@ async function createWindow(): Promise<void> {
         clipboard.writeText(previousClipboardText)
         await mainWindow.webContents.executeJavaScript(
           `(() => {
-            const before = Number(sessionStorage.getItem('device-tui.smoke.native-terminal-paste-before') || 0)
+            const before = Number(sessionStorage.getItem('odyterm.smoke.native-terminal-paste-before') || 0)
             const output = [...document.querySelectorAll('.xterm-rows')]
               .map((rows) => rows.textContent || '').join('')
-            sessionStorage.setItem('device-tui.smoke.native-terminal-paste', JSON.stringify({
+            sessionStorage.setItem('odyterm.smoke.native-terminal-paste', JSON.stringify({
               ready: ${JSON.stringify(Boolean(nativeTerminalPasteReady))},
               before,
               after: output.split('clipboard-smoke').length - 1
@@ -1057,7 +1148,7 @@ async function createWindow(): Promise<void> {
               value: input?.value || '',
               focused: document.activeElement === input
             }
-            sessionStorage.setItem('device-tui.smoke.native-input', JSON.stringify(result))
+            sessionStorage.setItem('odyterm.smoke.native-input', JSON.stringify(result))
             if (input) {
               input.value = ''
               input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1162,10 +1253,10 @@ async function createWindow(): Promise<void> {
             let nativeInput = {}
             let nativeTerminalPaste = {}
             try {
-              realEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.real-empty-action') || '{}')
-              simulatedEmptyAction = JSON.parse(sessionStorage.getItem('device-tui.smoke.simulated-empty-action') || '{}')
-              nativeInput = JSON.parse(sessionStorage.getItem('device-tui.smoke.native-input') || '{}')
-              nativeTerminalPaste = JSON.parse(sessionStorage.getItem('device-tui.smoke.native-terminal-paste') || '{}')
+              realEmptyAction = JSON.parse(sessionStorage.getItem('odyterm.smoke.real-empty-action') || '{}')
+              simulatedEmptyAction = JSON.parse(sessionStorage.getItem('odyterm.smoke.simulated-empty-action') || '{}')
+              nativeInput = JSON.parse(sessionStorage.getItem('odyterm.smoke.native-input') || '{}')
+              nativeTerminalPaste = JSON.parse(sessionStorage.getItem('odyterm.smoke.native-terminal-paste') || '{}')
             } catch {
               realEmptyAction = {}
               simulatedEmptyAction = {}
@@ -1255,14 +1346,14 @@ async function createWindow(): Promise<void> {
             document.querySelector('.navigator-detail-header .icon-button')?.click()
             await sleep(40)
             const detailCollapsedByControl = document.querySelector('.navigator-detail')?.getAttribute('data-collapsed') === 'true'
-              && localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '1'
+              && localStorage.getItem('odyterm.desktop-v2.navigator-detail-collapsed') === '1'
             document.querySelector('.navigator-detail-header .icon-button')?.click()
             await sleep(40)
             setCheck(
               'navigatorDetailCollapsePersists',
               detailCollapsedByControl
                 && document.querySelector('.navigator-detail')?.getAttribute('data-collapsed') === 'false'
-                && localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '0',
+                && localStorage.getItem('odyterm.desktop-v2.navigator-detail-collapsed') === '0',
               'collapsed=' + detailCollapsedByControl
                 + ' restored=' + (document.querySelector('.navigator-detail')?.getAttribute('data-collapsed') || '')
             )
@@ -1272,7 +1363,7 @@ async function createWindow(): Promise<void> {
             navigatorResizeHandle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
             await sleep(40)
             const navigatorWidthAfter = navigator?.getBoundingClientRect().width || 0
-            const storedNavigatorWidth = Number(localStorage.getItem('device-tui.desktop-v2.navigator-width') || 0)
+            const storedNavigatorWidth = Number(localStorage.getItem('odyterm.desktop-v2.navigator-width') || 0)
             setCheck(
               'navigatorWidthResizePersists',
               Boolean(navigatorResizeHandle)
@@ -1286,7 +1377,7 @@ async function createWindow(): Promise<void> {
             const hiddenNavigator = document.querySelector('.navigator')
             const navigatorWasHidden = hiddenNavigator?.getClientRects().length === 0
             const workspaceWithNavigatorHidden = document.querySelector('.workspace-stage')?.getBoundingClientRect()
-            const navigatorHiddenPersisted = localStorage.getItem('device-tui.desktop-v2.navigator-visible') === '0'
+            const navigatorHiddenPersisted = localStorage.getItem('odyterm.desktop-v2.navigator-visible') === '0'
             const navigatorRestoreButton = [...document.querySelectorAll('.activity-rail button')]
               .find((button) => button.getAttribute('title') === '显示设备工作台')
             navigatorRestoreButton?.click()
@@ -1302,7 +1393,7 @@ async function createWindow(): Promise<void> {
                   && workspaceWithNavigatorHidden.width >= workspaceBeforeNavigatorHide.width + navigatorWidthAfter - 2
                   && Math.abs(workspaceAfterNavigatorRestore.left - workspaceBeforeNavigatorHide.left) <= 1
                   && Math.abs(workspaceAfterNavigatorRestore.width - workspaceBeforeNavigatorHide.width) <= 1)
-                && localStorage.getItem('device-tui.desktop-v2.navigator-visible') === '1',
+                && localStorage.getItem('odyterm.desktop-v2.navigator-visible') === '1',
               'hidden=' + navigatorWasHidden
                 + ' before=' + JSON.stringify(workspaceBeforeNavigatorHide?.toJSON() || {})
                 + ' hiddenWorkspace=' + JSON.stringify(workspaceWithNavigatorHidden?.toJSON() || {})
@@ -1471,7 +1562,7 @@ async function createWindow(): Promise<void> {
             setCheck(
               'alwaysOnTopTogglePersistsState',
               alwaysOnTopAfter !== alwaysOnTopBefore
-                && localStorage.getItem('device-tui.desktop-v2.always-on-top') === (alwaysOnTopAfter ? '1' : '0'),
+                && localStorage.getItem('odyterm.desktop-v2.always-on-top') === (alwaysOnTopAfter ? '1' : '0'),
               (alwaysOnTopButton?.getAttribute('title') || '') + ':' + (alwaysOnTopButton?.getAttribute('aria-pressed') || '')
             )
             if (!alwaysOnTopAfter) {
@@ -1526,7 +1617,7 @@ async function createWindow(): Promise<void> {
             setCheck(
               'sessionTabSideLayoutAppliesAndPersists',
               document.querySelector('.session-workspace')?.getAttribute('data-tab-layout') === 'side'
-                && localStorage.getItem('device-tui.desktop-v2.session-tab-layout') === 'side',
+                && localStorage.getItem('odyterm.desktop-v2.session-tab-layout') === 'side',
               document.querySelector('.session-workspace')?.getAttribute('data-tab-layout') || ''
             )
             const collapseSetting = [...document.querySelectorAll('.settings-panel label')]
@@ -1537,7 +1628,7 @@ async function createWindow(): Promise<void> {
             setCheck(
               'sessionTabCollapsedPreferenceAppliesAndPersists',
               document.querySelector('.session-workspace')?.getAttribute('data-tab-collapsed') === 'true'
-                && localStorage.getItem('device-tui.desktop-v2.session-tab-rail-collapsed') === '1',
+                && localStorage.getItem('odyterm.desktop-v2.session-tab-rail-collapsed') === '1',
               document.querySelector('.session-workspace')?.getAttribute('data-tab-collapsed') || ''
             )
             if (document.querySelector('.settings-panel input[type="range"]')) {
@@ -1546,8 +1637,8 @@ async function createWindow(): Promise<void> {
             await sleep(80)
             setCheck(
               'settingsTerminalFontAppliesImmediately',
-              localStorage.getItem('device-tui.desktop-v2.terminal-font-size') === '15',
-              localStorage.getItem('device-tui.desktop-v2.terminal-font-size') || ''
+              localStorage.getItem('odyterm.desktop-v2.terminal-font-size') === '15',
+              localStorage.getItem('odyterm.desktop-v2.terminal-font-size') || ''
             )
             const chooseLogDirectory = [...document.querySelectorAll('.directory-control button')]
               .find((button) => button.textContent?.trim() === '选择')
@@ -1781,7 +1872,7 @@ async function createWindow(): Promise<void> {
             setCheck(
               'sessionManagerWidthResizePersists',
               managerWidthAfter === managerWidthBefore + 10
-                && localStorage.getItem('device-tui.desktop-v2.session-manager-width') === String(managerWidthAfter),
+                && localStorage.getItem('odyterm.desktop-v2.session-manager-width') === String(managerWidthAfter),
               managerWidthBefore + '->' + managerWidthAfter
             )
             setValue('.session-manager-search-row input', 'SIM-TERMINAL')
@@ -1829,7 +1920,7 @@ async function createWindow(): Promise<void> {
             await sleep(60)
             let collapsedManagerGroups = []
             try {
-              collapsedManagerGroups = JSON.parse(localStorage.getItem('device-tui.desktop-v2.session-manager-collapsed-groups') || '[]')
+              collapsedManagerGroups = JSON.parse(localStorage.getItem('odyterm.desktop-v2.session-manager-collapsed-groups') || '[]')
             } catch {
               collapsedManagerGroups = []
             }
@@ -1911,9 +2002,9 @@ async function createWindow(): Promise<void> {
               'leftOperationWorkbenchWidthResizePersists',
               Boolean(operationResizeHandle)
                 && operationWidthAfter >= operationWidthBefore + 9
-                && Math.abs(Number(localStorage.getItem('device-tui.desktop-v2.navigator-width') || 0) - operationWidthAfter) <= 1,
+                && Math.abs(Number(localStorage.getItem('odyterm.desktop-v2.navigator-width') || 0) - operationWidthAfter) <= 1,
               operationWidthBefore + '->' + operationWidthAfter
-                + ' stored=' + (localStorage.getItem('device-tui.desktop-v2.navigator-width') || '')
+                + ' stored=' + (localStorage.getItem('odyterm.desktop-v2.navigator-width') || '')
             )
 
             document.querySelector('.automation-new-button')?.click()
@@ -2324,7 +2415,7 @@ async function createWindow(): Promise<void> {
 
             clickButtonByTitle('收起快捷发送')
             await sleep(60)
-            const quickToolbarCollapsed = localStorage.getItem('device-tui.desktop-v2.quick-toolbar-collapsed') === '1'
+            const quickToolbarCollapsed = localStorage.getItem('odyterm.desktop-v2.quick-toolbar-collapsed') === '1'
               && Boolean(document.querySelector('.quick-toolbar-restore'))
               && !document.querySelector('[data-testid="terminal-quick-toolbar"]')
             clickButtonByTitle('展开快捷发送')
@@ -2332,9 +2423,9 @@ async function createWindow(): Promise<void> {
             setCheck(
               'quickToolbarCollapseAndRestorePersist',
               quickToolbarCollapsed
-                && localStorage.getItem('device-tui.desktop-v2.quick-toolbar-collapsed') === '0'
+                && localStorage.getItem('odyterm.desktop-v2.quick-toolbar-collapsed') === '0'
                 && Boolean(document.querySelector('[data-testid="terminal-quick-toolbar"]')),
-              'collapsed=' + quickToolbarCollapsed + ' state=' + localStorage.getItem('device-tui.desktop-v2.quick-toolbar-collapsed')
+              'collapsed=' + quickToolbarCollapsed + ' state=' + localStorage.getItem('odyterm.desktop-v2.quick-toolbar-collapsed')
             )
 
             const editedQuickSendButton = [...document.querySelectorAll('.quick-send-edit')]
@@ -2777,7 +2868,7 @@ async function createWindow(): Promise<void> {
             document.querySelector('.command-collapsed-trigger')?.click()
             await sleep(80)
             const commandHeightAfterCollapseRestore = document.querySelector('.command-workspace.open')?.getBoundingClientRect().height || 0
-            const persistedCommandHeight = Number(localStorage.getItem('device-tui.desktop-v2.command-panel-height') || 0)
+            const persistedCommandHeight = Number(localStorage.getItem('odyterm.desktop-v2.command-panel-height') || 0)
             setCheck(
               'commandPanelDragResizePersistsAndClampsToWindow',
               Boolean(commandResizeHandle)
@@ -3260,6 +3351,44 @@ async function createWindow(): Promise<void> {
               'devices=' + deviceTabIds.join('|') + ' active=' + activeDeviceTabId
                 + ' children=' + childSessions.map((session) => session.kind + ':' + session.device_id).join('|')
             )
+            const quickConnectToggle = visibleElement('.terminal-device-connect-toggle')
+            const quickConnectMenu = quickConnectToggle?.closest('details')
+            quickConnectToggle?.click()
+            await sleep(40)
+            const visibleDeviceQuickActions = [...(quickConnectMenu?.querySelectorAll('.terminal-device-connect-menu-item') || [])]
+            setCheck(
+              'deviceSessionQuickConnectActionsAreVisible',
+              Boolean(quickConnectToggle)
+                && Boolean(quickConnectMenu?.hasAttribute('open'))
+                && visibleDeviceQuickActions.length > 0
+                && visibleDeviceQuickActions.every((button) => {
+                  const protocol = button.getAttribute('data-protocol') || ''
+                  return ['ssh', 'telnet', 'serial'].includes(protocol)
+                    && Boolean(button.getAttribute('title'))
+                    && Boolean(button.getAttribute('aria-label'))
+                }),
+              visibleDeviceQuickActions.map((button) =>
+                (button.getAttribute('data-protocol') || '') + ':' + (button.textContent?.trim() || '')
+              ).join('|')
+            )
+            quickConnectToggle?.click()
+            await sleep(40)
+            setCheck(
+              'deviceSessionTabContextActionsAreScopedToDevice',
+              openContextMenu('.device-session-tab') && await sleep(40).then(() => {
+                const menuText = text('.session-device-context-menu')
+                return menuHasLabels('.session-device-context-menu', [
+                  '定位到设备列表',
+                  '关闭此设备全部会话'
+                ])
+                  && !menuText.includes('关闭左侧页签')
+                  && !menuText.includes('关闭右侧页签')
+                  && !menuText.includes('分屏到')
+              }),
+              text('.session-device-context-menu')
+            )
+            document.querySelector('.workspace-stage')?.click()
+            await sleep(40)
             const visibleSessionLabels = [...document.querySelectorAll('.session-child-tabs .session-tab-select > span')]
               .map((label) => label.textContent?.trim() || '')
             setCheck(
@@ -3406,7 +3535,7 @@ async function createWindow(): Promise<void> {
             await sleep(60)
             let collapsedProfileGroups = []
             try {
-              collapsedProfileGroups = JSON.parse(localStorage.getItem('device-tui.desktop-v2.profile-collapsed-groups') || '[]')
+              collapsedProfileGroups = JSON.parse(localStorage.getItem('odyterm.desktop-v2.profile-collapsed-groups') || '[]')
             } catch {
               collapsedProfileGroups = []
             }
@@ -4088,12 +4217,12 @@ async function createWindow(): Promise<void> {
             alwaysOnTop: document.querySelector('.always-on-top-toggle')?.getAttribute('aria-pressed') === 'true',
             sessionTabLayout: document.querySelector('.session-workspace')?.getAttribute('data-tab-layout') || '',
             sessionTabRailCollapsed: document.querySelector('.session-workspace')?.getAttribute('data-tab-collapsed') === 'true',
-            sessionManagerWidth: localStorage.getItem('device-tui.desktop-v2.session-manager-width') || '',
-            sessionManagerCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.session-manager-collapsed-groups') || '',
-            profileCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.profile-collapsed-groups') || '',
-            navigatorDetailCollapsed: localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '1',
-            navigatorWidth: localStorage.getItem('device-tui.desktop-v2.navigator-width') || '',
-            commandPanelHeight: localStorage.getItem('device-tui.desktop-v2.command-panel-height') || '',
+            sessionManagerWidth: localStorage.getItem('odyterm.desktop-v2.session-manager-width') || '',
+            sessionManagerCollapsedGroups: localStorage.getItem('odyterm.desktop-v2.session-manager-collapsed-groups') || '',
+            profileCollapsedGroups: localStorage.getItem('odyterm.desktop-v2.profile-collapsed-groups') || '',
+            navigatorDetailCollapsed: localStorage.getItem('odyterm.desktop-v2.navigator-detail-collapsed') === '1',
+            navigatorWidth: localStorage.getItem('odyterm.desktop-v2.navigator-width') || '',
+            commandPanelHeight: localStorage.getItem('odyterm.desktop-v2.command-panel-height') || '',
             terminalSplitDirection: document.querySelector('.terminal-workspace-stack.active .terminal-split-layout')?.getAttribute('data-split-direction') || '',
             terminalSplitPaneCount: document.querySelectorAll('.terminal-workspace-stack.active .terminal-split-pane').length
           })`,
@@ -4125,15 +4254,15 @@ async function createWindow(): Promise<void> {
               alwaysOnTop: document.querySelector('.always-on-top-toggle')?.getAttribute('aria-pressed') === 'true',
               sessionTabLayout: document.querySelector('.session-workspace')?.getAttribute('data-tab-layout') || '',
               sessionTabRailCollapsed: document.querySelector('.session-workspace')?.getAttribute('data-tab-collapsed') === 'true',
-              sessionManagerWidth: localStorage.getItem('device-tui.desktop-v2.session-manager-width') || '',
-              sessionManagerCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.session-manager-collapsed-groups') || '',
-              profileCollapsedGroups: localStorage.getItem('device-tui.desktop-v2.profile-collapsed-groups') || '',
-              navigatorDetailCollapsed: localStorage.getItem('device-tui.desktop-v2.navigator-detail-collapsed') === '1',
+              sessionManagerWidth: localStorage.getItem('odyterm.desktop-v2.session-manager-width') || '',
+              sessionManagerCollapsedGroups: localStorage.getItem('odyterm.desktop-v2.session-manager-collapsed-groups') || '',
+              profileCollapsedGroups: localStorage.getItem('odyterm.desktop-v2.profile-collapsed-groups') || '',
+              navigatorDetailCollapsed: localStorage.getItem('odyterm.desktop-v2.navigator-detail-collapsed') === '1',
               navigatorDetailCollapsedDom: document.querySelector('.navigator-detail')?.getAttribute('data-collapsed') === 'true',
-              navigatorWidth: localStorage.getItem('device-tui.desktop-v2.navigator-width') || '',
+              navigatorWidth: localStorage.getItem('odyterm.desktop-v2.navigator-width') || '',
               navigatorWidthDom: String(Math.round(document.querySelector('.navigator')?.getBoundingClientRect().width || 0)),
               rightSessionSidebarPresent: Boolean(document.querySelector('.app-shell > .session-sidebar > .session-manager')),
-              commandPanelHeight: localStorage.getItem('device-tui.desktop-v2.command-panel-height') || '',
+              commandPanelHeight: localStorage.getItem('odyterm.desktop-v2.command-panel-height') || '',
               commandPanelDomHeight: document.querySelector('.command-workspace.open')?.getAttribute('data-panel-height') || '',
               terminalSplitDirection: document.querySelector('.terminal-workspace-stack.active .terminal-split-layout')?.getAttribute('data-split-direction') || '',
               terminalSplitPaneCount: document.querySelectorAll('.terminal-workspace-stack.active .terminal-split-pane').length,
@@ -4585,7 +4714,12 @@ if (!instanceLock) {
     }
   })
 
-  app.whenReady().then(createWindow).catch((error: unknown) => {
+  app.whenReady().then(async () => {
+    // Keep native chrome aligned with the renderer's dark default until it restores
+    // the user's saved theme preference.
+    nativeTheme.themeSource = 'dark'
+    await createWindow()
+  }).catch((error: unknown) => {
     console.error(error)
     app.quit()
   })

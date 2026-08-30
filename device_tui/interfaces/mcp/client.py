@@ -1,4 +1,4 @@
-"""Persistent client for the Device TUI loopback control API."""
+"""Persistent client for the OdyTerm loopback control API."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class AppControlClient:
         base_url: str,
         token: str,
         *,
-        source: str = "device-tui-mcp",
+        source: str = "odyterm-mcp",
         timeout_seconds: float = 12.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -69,7 +69,7 @@ class AppControlClient:
         parsed = urlsplit(self.base_url)
         if parsed.scheme != "http" or not parsed.hostname:
             raise AppControlClientError(
-                f"Device TUI 控制服务地址无效: {self.base_url}"
+                f"OdyTerm 控制服务地址无效: {self.base_url}"
             )
         self._base_path = parsed.path.rstrip("/")
         self._pool = _HttpConnectionPool(parsed.hostname, parsed.port or 80)
@@ -83,7 +83,7 @@ class AppControlClient:
             token = str(payload["token"])
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AppControlClientError(
-                f"未找到可用的 Device TUI 控制服务状态: {state_path}"
+                f"未找到可用的 OdyTerm 控制服务状态: {state_path}"
             ) from exc
         return cls(base_url, token)
 
@@ -417,7 +417,7 @@ class AppControlClient:
         request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         body: bytes | None = None
-        headers = {"Accept": "application/json", "X-Device-TUI-Client": self.source}
+        headers = {"Accept": "application/json", "X-OdyTerm-Client": self.source}
         if authenticated:
             headers["Authorization"] = f"Bearer {self.token}"
         if payload is not None:
@@ -450,7 +450,7 @@ class AppControlClient:
             except (OSError, HTTPException, TimeoutError) as exc:
                 last_error = exc
                 self._pool.discard(connection)
-        raise AppControlClientError("无法连接 Device TUI，请确认桌面应用正在运行。") from last_error
+        raise AppControlClientError("无法连接 OdyTerm，请确认桌面应用正在运行。") from last_error
 
     @staticmethod
     def _decode_response(raw: bytes) -> dict[str, Any]:

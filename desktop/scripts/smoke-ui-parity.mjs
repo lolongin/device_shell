@@ -31,7 +31,7 @@ const captureCommandPanelPath = path.join(captureDir, 'ui-parity-command-panel.p
 const captureCommandPanelLightPath = path.join(captureDir, 'ui-parity-command-panel-light.png')
 const logExportPath = path.join(captureDir, 'session-log-export.log')
 const configuredSessionLogDir = path.join(captureDir, 'configured-session-logs')
-const userDataDir = mkdtempSync(path.join(tmpdir(), 'device-tui-ui-parity-'))
+const userDataDir = mkdtempSync(path.join(tmpdir(), 'odyterm-ui-parity-'))
 
 if (!existsSync(outMain)) {
   throw new Error('Electron output is missing. Run npm run build before smoke:ui-parity.')

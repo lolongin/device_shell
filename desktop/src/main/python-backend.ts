@@ -175,14 +175,14 @@ export class PythonBackend {
     const override = process.env.DEVICE_TUI_BACKEND_EXECUTABLE
     if (override) return path.resolve(override)
     if (!app.isPackaged) return null
-    const executable = process.platform === 'win32' ? 'device-tui-backend.exe' : 'device-tui-backend'
-    return path.join(process.resourcesPath, 'backend', 'device-tui-backend', executable)
+    const executable = process.platform === 'win32' ? 'odyterm-backend.exe' : 'odyterm-backend'
+    return path.join(process.resourcesPath, 'backend', 'odyterm-backend', executable)
   }
 
   private writeControlState(runtime: BackendRuntime): void {
     const configuredPath = process.env.DEVICE_TUI_CONTROL_STATE?.trim()
     const localAppData = process.env.LOCALAPPDATA || path.join(app.getPath('appData'), '..', 'Local')
-    const statePath = configuredPath || path.join(localAppData, 'DeviceTUI', 'app-control.json')
+    const statePath = configuredPath || path.join(localAppData, 'OdyTerm', 'app-control.json')
     try {
       mkdirSync(path.dirname(statePath), { recursive: true })
       writeFileSync(

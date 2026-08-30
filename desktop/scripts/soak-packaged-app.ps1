@@ -62,14 +62,14 @@ function Invoke-AppRecoveryCycle(
 }
 
 $desktopRoot = Split-Path -Parent $PSScriptRoot
-$defaultApp = Join-Path $desktopRoot "release\win-unpacked\Device TUI.exe"
+$defaultApp = Join-Path $desktopRoot "release\win-unpacked\OdyTerm.exe"
 $appExe = Resolve-App $AppExecutable $defaultApp
 $Cycles = [Math]::Max(1, $Cycles)
 $DurationMinutes = [Math]::Max(0, $DurationMinutes)
 $PauseSeconds = [Math]::Max(0, $PauseSeconds)
 $createdWorkRoot = $false
 if (-not $WorkRoot) {
-    $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("device-tui-packaged-app-soak-" + [System.Guid]::NewGuid().ToString("N"))
+    $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("odyterm-packaged-app-soak-" + [System.Guid]::NewGuid().ToString("N"))
     $createdWorkRoot = $true
 }
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)

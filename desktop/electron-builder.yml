@@ -1,5 +1,5 @@
-appId: com.device-tui.desktop
-productName: Device TUI
+appId: com.odyterm.desktop
+productName: OdyTerm
 electronVersion: 43.3.0
 electronDist: node_modules/electron/dist
 compression: store
@@ -21,6 +21,7 @@ extraResources:
   - from: resources/product-profile.json
     to: product-profile.json
 win:
+  icon: resources/odyterm-icon.ico
   target:
     - nsis
 nsis:

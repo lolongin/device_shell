@@ -10,7 +10,7 @@ from ..gateway import McpGateway
 def register_device_tools(mcp: Any, gateway: McpGateway) -> None:
     @mcp.tool()
     def device_list() -> dict[str, Any]:
-        """List devices visible in Device TUI, including the simulated device."""
+        """List devices visible in OdyTerm, including the simulated device."""
         return gateway.call("device_list")
 
     @mcp.tool()
@@ -20,5 +20,5 @@ def register_device_tools(mcp: Any, gateway: McpGateway) -> None:
 
     @mcp.tool()
     def device_select(device_id: str) -> dict[str, Any]:
-        """Select a device by its stable Device TUI ID."""
+        """Select a device by its stable OdyTerm ID."""
         return gateway.call("device_select", device_id)

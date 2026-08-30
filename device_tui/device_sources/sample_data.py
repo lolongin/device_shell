@@ -26,6 +26,11 @@ MOCK_LINUX_SSH_PASSWORD = "ops123"
 MOCK_PROTOCOL_FAILURE = os.getenv("DEVICE_TUI_MOCK_PROTOCOL_FAILURE") == "1"
 MOCK_DEVICE_SSH_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2200
 MOCK_DEVICE_TELNET_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2323
+ENSP_AR_TELNET_IP = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_IP", "192.168.40.20").strip()
+ENSP_AR_TELNET_USER = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_USER", "appadmin").strip()
+# Keep the lab credential out of source control. The custom connection dialog
+# can supply it for a one-time session when this is empty.
+ENSP_AR_TELNET_PASSWORD = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_PASSWORD", "").strip()
 SAMPLE_NOW = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
 
 def sample_devices() -> list[Device]:
@@ -76,6 +81,26 @@ def sample_devices() -> list[Device]:
             rack="N/A",
             version="OpenSSH_for_Windows_9.5p2",
             notes="专用于本机 SSH 联调。按 s 可直接测试连接。",
+        ),
+        Device(
+            id="ENSP-AR-001",
+            name="eNSP-Pro-AR-1",
+            domain="测试",
+            device_type="AR Router",
+            cpu="Virtual",
+            status=STATUS_IDLE,
+            owner=None,
+            ssh_ip="",
+            telnet_ip=ENSP_AR_TELNET_IP,
+            username=ENSP_AR_TELNET_USER,
+            password=ENSP_AR_TELNET_PASSWORD,
+            vendor="Huawei",
+            model="eNSP Pro AR",
+            site="Local eNSP Pro",
+            rack="VMnet3",
+            version="Telnet / GE0/0/0",
+            notes="本地 eNSP Pro AR 测试设备。未配置密码时，请在设备详情中使用 Telnet 编辑按钮输入凭据。",
+            telnet_port=23,
         ),
         Device(
             id="RTN-BJ-001",

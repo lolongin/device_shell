@@ -114,7 +114,7 @@ const canSavePlugin = computed(() => Boolean(
 ))
 
 function readTerminalFontSize(): number {
-  const value = Number(localStorage.getItem('device-tui.desktop-v2.terminal-font-size') || 13)
+  const value = Number(localStorage.getItem('odyterm.desktop-v2.terminal-font-size') || 13)
   return Math.max(9, Math.min(28, Number.isFinite(value) ? value : 13))
 }
 
@@ -293,11 +293,11 @@ async function saveLogSettings(): Promise<void> {
 function updateTerminalFontSize(value: number): void {
   terminalFontSize.value = Math.max(9, Math.min(28, Math.round(value)))
   localStorage.setItem(
-    'device-tui.desktop-v2.terminal-font-size',
+    'odyterm.desktop-v2.terminal-font-size',
     String(terminalFontSize.value)
   )
   window.dispatchEvent(
-    new CustomEvent('device-tui:terminal-font-size', { detail: terminalFontSize.value })
+    new CustomEvent('odyterm:terminal-font-size', { detail: terminalFontSize.value })
   )
 }
 

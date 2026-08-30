@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from device_tui.application.device_control import DeviceTarget
+from device_tui.framework.orchestrator import TaskPlan
 
 from .protocol import (
     Action,
@@ -160,6 +161,9 @@ class TaskCreate(ProtocolModel):
     target: DeviceTarget
     source: str = "unknown"
     context: dict[str, Any] = field(default_factory=dict)
+    # Framework-native plans are explicit at the task boundary.  The metadata
+    # fallback remains readable for tasks persisted before this field existed.
+    framework_plan: TaskPlan | None = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> TaskCreate:
@@ -176,6 +180,7 @@ class TaskCreate(ProtocolModel):
             ),
             source=str(payload.get("source") or "unknown"),
             context=dict(payload.get("context") or {}),
+            framework_plan=(TaskPlan.from_dict(payload["framework_plan"]) if isinstance(payload.get("framework_plan"), Mapping) else None),
         )
 
 

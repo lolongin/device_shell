@@ -110,10 +110,16 @@ execution is always compiled to `network.package_upgrade` and driven by
 `WorkflowRuntime`; the old `WorkflowEngine` is not an upgrade executor. The
 legacy Task and Operation records are projections for existing clients.
 
-The old task engine remains available only for non-Framework workflows and
-legacy Agent plans while those callers are migrated. New device workflows
-must register a Framework provider and action handlers instead of adding a
-special branch to `TaskManager`.
+The old task engine remains available only as an explicit compatibility surface
+for historical callers. Production composition uses the history-only
+`TaskRecordCompatibilityBackend`; it does not construct `LegacyTaskManager` or
+schedule through `WorkflowEngine`. A new request must carry a Framework
+`TaskPlan`, or be one of the narrowly allow-listed legacy steps (`command`,
+`batch`, `reboot`, `wait_online`, or `verify_version`) that `TaskService`
+compiles into Framework Activity nodes. Unknown legacy actions are rejected
+before any compatibility backend is called. New device workflows must register
+a Framework provider and action handlers instead of adding a special branch to
+`TaskManager`.
 
 Execution handlers are deliberately registered by the application composition
 root. A caller must not bypass the existing session, credential, operation,

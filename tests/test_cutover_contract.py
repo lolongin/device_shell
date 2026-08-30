@@ -46,8 +46,8 @@ def test_python_package_has_no_qt_runtime_dependency_or_gui_script() -> None:
     assert "pyqt" not in dependencies
     assert "pyte" not in dependencies
     assert scripts == {
-        "device-tui-backend": "device_tui.interfaces.desktop_api.main:main",
-        "device-tui-mcp": "device_tui.interfaces.mcp.server:main",
+        "odyterm-backend": "device_tui.interfaces.desktop_api.main:main",
+        "odyterm-mcp": "device_tui.interfaces.mcp.server:main",
     }
 
 

@@ -90,6 +90,6 @@ class McpGateway:
             stat = self.state_path.stat()
         except OSError as exc:
             raise AppControlClientError(
-                f"未找到可用的 Device TUI 控制服务状态: {self.state_path}"
+                f"未找到可用的 OdyTerm 控制服务状态: {self.state_path}"
             ) from exc
         return stat.st_mtime_ns, stat.st_size

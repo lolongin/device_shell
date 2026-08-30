@@ -6,6 +6,13 @@ import type { SessionSummary } from '../types'
 
 type PaneId = 'primary' | 'secondary'
 type SplitDirection = 'left' | 'right' | 'top' | 'bottom'
+type DeviceProtocolKind = 'ssh' | 'telnet' | 'serial'
+
+interface DeviceProtocolAction {
+  kind: DeviceProtocolKind
+  label: string
+  opened: boolean
+}
 
 interface StoredSplitLayout {
   direction: SplitDirection | null
@@ -20,6 +27,7 @@ const props = defineProps<{
   deviceId: string
   sessions: SessionSummary[]
   activeSessionId: string
+  protocolActions: DeviceProtocolAction[]
 }>()
 const emit = defineEmits<{
   activate: [sessionId: string]
@@ -27,12 +35,12 @@ const emit = defineEmits<{
   automation: [sessionId: string]
   transfer: [sessionId: string]
   upgrade: [sessionId: string]
-  context: [sessionId: string, event: MouseEvent]
+  openProtocol: [kind: DeviceProtocolKind]
   splitChange: [active: boolean]
 }>()
 
-const STORAGE_KEY = 'device-tui.desktop-v2.terminal-split-layout'
-const SESSION_DRAG_TYPE = 'application/x-device-tui-session'
+const STORAGE_KEY = 'odyterm.desktop-v2.terminal-split-layout'
+const SESSION_DRAG_TYPE = 'application/x-odyterm-session'
 const MAX_WARM_TERMINAL_PANES = 6
 const restored = readStoredLayout()
 const splitDirection = ref<SplitDirection | null>(restored.direction)
@@ -347,11 +355,12 @@ defineExpose({ splitSession, resetSplit })
         :key="session.id"
         :session="session"
         :active="active && focusedPane === pane && activeSessionFor(pane)?.id === session.id"
+        :protocol-actions="protocolActions"
         @status="(sessionId, status, sequence) => emit('status', sessionId, status, sequence)"
         @automation="emit('automation', $event)"
         @transfer="emit('transfer', $event)"
         @upgrade="emit('upgrade', $event)"
-        @context="(sessionId, event) => emit('context', sessionId, event)"
+        @open-protocol="emit('openProtocol', $event)"
       ></TerminalPane>
       <div v-if="!sessionsForPane(pane).length" class="split-empty-pane">
         <Columns2 :size="24" />

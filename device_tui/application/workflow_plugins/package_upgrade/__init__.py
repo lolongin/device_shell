@@ -5,13 +5,11 @@ from typing import Any
 
 __all__ = [
     "HuaweiVrpPackageUpgradeProvider",
-    "HuaweiVrpWorkflowAdapter",
     "PackageUpgradeService",
 ]
 
 _EXPORT_MODULES = {
     "HuaweiVrpPackageUpgradeProvider": (".workflow", "HuaweiVrpPackageUpgradeProvider"),
-    "HuaweiVrpWorkflowAdapter": ("device_tui.infrastructure.vendor_adapters.huawei_vrp.workflow_adapter", "HuaweiVrpWorkflowAdapter"),
     "PackageUpgradeService": (".service", "PackageUpgradeService"),
 }
 

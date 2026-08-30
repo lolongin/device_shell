@@ -15,7 +15,7 @@ from device_tui.infrastructure.transfers.managed_file_transfer import TransferIn
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import DEFAULT_MASTER_STORAGE, DEFAULT_SLAVE_STORAGE, join_storage_path, startup_uses_package
 
 if TYPE_CHECKING:
-    from device_tui.application.workflow_plugins.package_upgrade.policy import PackageUpgradeConfig
+    from device_tui.domain.package_upgrade import PackageUpgradeConfig
 
 
 @dataclass(frozen=True, slots=True)

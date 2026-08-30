@@ -8,7 +8,11 @@
       "Bash(pytest --version)",
       "Bash(pytest tests/ -v)",
       "Bash(pytest tests/test_app_state.py -v)",
-      "Bash(pytest tests/test_api_client.py -v)"
+      "Bash(pytest tests/test_api_client.py -v)",
+      "Bash(C:/Python313/python.exe --version)",
+      "Bash(C:/Python313/python.exe -c \"import device_tui; print\\(device_tui.__file__\\)\")",
+      "Bash(C:/Python313/python.exe *)",
+      "Bash(claude mcp *)"
     ]
   }
 }

@@ -42,7 +42,7 @@ const ruleQuery = ref('')
 const ruleStatusFilter = ref<'all' | 'active' | 'enabled' | 'disabled'>('all')
 const ruleSearchInput = ref<HTMLInputElement | null>(null)
 const activityExpanded = ref(false)
-const PREVIEW_OPEN_KEY = 'device-tui.desktop-v2.automation-live-preview-open'
+const PREVIEW_OPEN_KEY = 'odyterm.desktop-v2.automation-live-preview-open'
 const previewExpanded = ref(localStorage.getItem(PREVIEW_OPEN_KEY) === '1')
 const previewSampleOutput = ref('')
 const previewResult = ref<AutomationPreviewResponse | null>(null)
@@ -297,7 +297,7 @@ function requestClose(): void {
 
 function focusActiveTerminal(): void {
   if (!workspace.activeSessionId) return
-  window.dispatchEvent(new CustomEvent('device-tui:focus-terminal', {
+  window.dispatchEvent(new CustomEvent('odyterm:focus-terminal', {
     detail: { sessionId: workspace.activeSessionId }
   }))
 }

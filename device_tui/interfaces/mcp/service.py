@@ -112,7 +112,7 @@ class AppControlService(
                 request_id,
                 AppControlError(
                     "ui_timeout",
-                    "Device TUI 主线程未在限定时间内响应。",
+                    "OdyTerm 主线程未在限定时间内响应。",
                     status=504,
                 ),
             )
@@ -211,7 +211,7 @@ class AppControlService(
         if tool == "health":
             return self._success(
                 request_id,
-                "Device TUI 控制服务运行中。",
+                "OdyTerm 控制服务运行中。",
                 {
                     "status": "ready",
                     "approval_mode": self.approval_mode,
@@ -429,7 +429,7 @@ class AppControlService(
         return {
             "ok": False,
             "request_id": request_id,
-            "message": "该动作需要用户在 Device TUI 中确认。",
+            "message": "该动作需要用户在 OdyTerm 中确认。",
             "data": {},
             "approval": record.public_dict(),
             "error": {

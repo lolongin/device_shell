@@ -6,7 +6,7 @@ export interface ContextMenuPoint {
 const CONTEXT_MENU_EDGE_GAP = 8
 const CONTEXT_MENU_FALLBACK_WIDTH = 210
 const CONTEXT_MENU_FALLBACK_HEIGHT = 320
-const CONTEXT_MENU_OPEN_EVENT = 'device-tui:context-menu-open'
+const CONTEXT_MENU_OPEN_EVENT = 'odyterm:context-menu-open'
 
 export function announceContextMenuOpen(): void {
   window.dispatchEvent(new Event(CONTEXT_MENU_OPEN_EVENT))

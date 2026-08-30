@@ -1,5 +1,5 @@
 [project]
-name = "device-tui"
+name = "odyterm"
 version = "0.1.0"
 description = "Python backend and device services for the Electron device dashboard."
 readme = "README.md"
@@ -22,8 +22,8 @@ packaging = [
 ]
 
 [project.scripts]
-device-tui-backend = "device_tui.interfaces.desktop_api.main:main"
-device-tui-mcp = "device_tui.interfaces.mcp.server:main"
+odyterm-backend = "device_tui.interfaces.desktop_api.main:main"
+odyterm-mcp = "device_tui.interfaces.mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]

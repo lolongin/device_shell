@@ -24,7 +24,7 @@ def register_app_control_tools(mcp: Any, gateway: McpGateway) -> None:
 
     @mcp.tool(name="device.list")
     def device_list() -> dict[str, Any]:
-        """List devices visible to the active Device TUI source."""
+        """List devices visible to the active OdyTerm source."""
         return _call(gateway, "device_list")
 
     @mcp.tool(name="device.get")

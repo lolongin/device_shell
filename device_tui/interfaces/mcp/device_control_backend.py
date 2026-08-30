@@ -196,7 +196,7 @@ class DeviceControlAppBackend(AppControlBackend):
                 WorkflowTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
                 {"package_path": package_path},
             )
-            task = self.desktop.tasks.create(TaskCreate(
+            task = self.desktop.task_service.create(TaskCreate(
                 workflow=workflow,
                 target=DeviceTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
                 source="stdio-mcp",

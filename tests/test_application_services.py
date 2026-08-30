@@ -48,7 +48,7 @@ def test_device_inventory_appends_one_canonical_simulated_terminal() -> None:
         device for device in inventory.devices if device.id == SIMULATED_DEVICE_ID
     ]
 
-    assert len(inventory.devices) == 21
+    assert len(inventory.devices) == 22
     assert len(simulated) == 1
     assert inventory.devices[-1] == simulated[0]
     assert simulated[0].row_id == "SIM-TERMINAL::0000"

@@ -36,7 +36,7 @@ import type {
   WorkflowDescriptor
 } from '../types'
 
-const VIEW_STATE_KEY = 'device-tui.desktop-v2.workspace'
+const VIEW_STATE_KEY = 'odyterm.desktop-v2.workspace'
 
 function storedViewState(): {
   selectedDeviceRowId?: string
@@ -65,7 +65,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const commandHistory = ref<CommandHistoryItem[]>([])
   const currentCommandGroupId = ref('')
   const commandEnterSends = ref(false)
-  const commandPanelOpen = ref(localStorage.getItem('device-tui.desktop-v2.commands-open') === '1')
+  const commandPanelOpen = ref(localStorage.getItem('odyterm.desktop-v2.commands-open') === '1')
   const commandSuggestions = ref<string[]>([])
   const commandBusy = ref(false)
   const automationRules = ref<AutomationRuleRecord[]>([])
@@ -73,7 +73,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const automationSessions = ref<AutomationSessionStatus[]>([])
   const automationActivity = ref<AutomationActivityRecord[]>([])
   const automationPanelOpen = ref(
-    localStorage.getItem('device-tui.desktop-v2.automation-open') === '1'
+    localStorage.getItem('odyterm.desktop-v2.automation-open') === '1'
   )
   const automationBusy = ref(false)
   let automationCloseGuard: (() => boolean) | null = null
@@ -86,12 +86,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const transferFileNextOffset = ref<number | null>(null)
   const operations = ref<OperationRecord[]>([])
   const transferPanelOpen = ref(
-    localStorage.getItem('device-tui.desktop-v2.transfer-open') === '1'
+    localStorage.getItem('odyterm.desktop-v2.transfer-open') === '1'
   )
   const transferBusy = ref(false)
   const transferError = ref('')
   const upgradePanelOpen = ref(
-    localStorage.getItem('device-tui.desktop-v2.upgrade-open') === '1'
+    localStorage.getItem('odyterm.desktop-v2.upgrade-open') === '1'
   )
   const tasks = ref<TaskRecord[]>([])
   const workflows = ref<WorkflowDescriptor[]>([])
@@ -100,7 +100,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const taskDecision = ref<TaskDecisionContext | null>(null)
   const taskError = ref('')
   let taskRefreshTimer: ReturnType<typeof setInterval> | null = null
-  const aiPanelOpen = ref(localStorage.getItem('device-tui.desktop-v2.ai-open') === '1')
+  const aiPanelOpen = ref(localStorage.getItem('odyterm.desktop-v2.ai-open') === '1')
   const aiBusy = ref(false)
   const aiObjective = ref('')
   const aiPlan = ref<AiPlanResponse | null>(null)
@@ -1773,20 +1773,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   })
   watch(commandPanelOpen, (open) => {
-    localStorage.setItem('device-tui.desktop-v2.commands-open', open ? '1' : '0')
+    localStorage.setItem('odyterm.desktop-v2.commands-open', open ? '1' : '0')
   })
   watch(automationPanelOpen, (open) => {
-    localStorage.setItem('device-tui.desktop-v2.automation-open', open ? '1' : '0')
+    localStorage.setItem('odyterm.desktop-v2.automation-open', open ? '1' : '0')
   })
   watch(transferPanelOpen, (open) => {
-    localStorage.setItem('device-tui.desktop-v2.transfer-open', open ? '1' : '0')
+    localStorage.setItem('odyterm.desktop-v2.transfer-open', open ? '1' : '0')
     if (open) transferError.value = ''
   })
   watch(upgradePanelOpen, (open) => {
-    localStorage.setItem('device-tui.desktop-v2.upgrade-open', open ? '1' : '0')
+    localStorage.setItem('odyterm.desktop-v2.upgrade-open', open ? '1' : '0')
   })
   watch(aiPanelOpen, (open) => {
-    localStorage.setItem('device-tui.desktop-v2.ai-open', open ? '1' : '0')
+    localStorage.setItem('odyterm.desktop-v2.ai-open', open ? '1' : '0')
   })
 
   return {

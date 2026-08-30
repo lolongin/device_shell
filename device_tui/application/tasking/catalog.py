@@ -298,7 +298,8 @@ class DeviceUpgradeWorkflowProvider:
         values = dict(parameters)
         package = str(values.pop("package_path"))
         # This is a Task envelope, not a second executable workflow. The
-        # framework definition is built exactly once by TaskManager.
+        # framework definition is built exactly once by TaskService and its
+        # TaskOrchestrator.
         return WorkflowDefinition(
             id="device_upgrade",
             name="设备系统包升级",

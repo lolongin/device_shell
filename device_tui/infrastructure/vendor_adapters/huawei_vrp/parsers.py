@@ -7,8 +7,13 @@ the structured values returned here and does not parse vendor output itself.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from pathlib import Path
+from device_tui.domain.package_upgrade import (
+    PackageFileEntry,
+    StartupInfo,
+    join_storage_path,
+    normalize_storage,
+    package_basename,
+)
 
 
 DEFAULT_MASTER_STORAGE = "flash:/"
@@ -34,35 +39,6 @@ STANDBY_STORAGE_ABSENT_PATTERNS = (
     "file system does not exist", "wrong device", "设备不存在", "存储设备不存在",
     "文件系统不存在", "无此设备",
 )
-
-
-@dataclass(slots=True)
-class StartupInfo:
-    current_system: str = ""
-    next_system: str = ""
-
-
-@dataclass(slots=True)
-class PackageFileEntry:
-    path: str
-    name: str
-    size_bytes: int
-    storage: str = DEFAULT_MASTER_STORAGE
-    modified_text: str = ""
-
-
-def normalize_storage(value: str) -> str:
-    storage = value.strip() or DEFAULT_MASTER_STORAGE
-    return storage if storage.endswith("/") else f"{storage}/"
-
-
-def join_storage_path(storage: str, filename: str) -> str:
-    return f"{normalize_storage(storage)}{Path(filename).name}"
-
-
-def package_basename(value: str) -> str:
-    cleaned = value.strip().replace("\\", "/")
-    return cleaned.rsplit("/", 1)[-1].casefold()
 
 
 def parse_display_startup(output: str) -> StartupInfo:

@@ -83,13 +83,13 @@ def test_backend_bundle_script_has_stable_pyinstaller_output() -> None:
     assert '"--noconfirm"' in script
     assert '"--clean"' in script
     assert '"--onedir"' in script
-    assert '"--name", "device-tui-backend"' in script
+    assert '"--name", "odyterm-backend"' in script
     assert '"--collect-data", "device_tui"' in script
     assert '"--distpath", $outputRoot' in script
     assert '& $Python -m PyInstaller @pyInstallerArgs' in script
     assert 'device_tui\\interfaces\\desktop_api\\frozen_main.py' in script
     assert 'resources\\backend' in script
-    assert 'device-tui-backend\\device-tui-backend.exe' in script
+    assert 'odyterm-backend\\odyterm-backend.exe' in script
 
 
 def test_release_validation_script_exercises_install_upgrade_rollback() -> None:
@@ -104,7 +104,7 @@ def test_release_validation_script_exercises_install_upgrade_rollback() -> None:
     assert 'if ($PreviousInstaller)' in script
     assert 'Invoke-Uninstall $installDir' in script
     assert 'tokenExposed=false' in script
-    assert 'device-tui-backend(.exe)? --port 0' in script
+    assert 'odyterm-backend(.exe)? --port 0' in script
     assert 'Remove-Item -LiteralPath $WorkRoot -Recurse -Force' in script
 
 
@@ -119,7 +119,7 @@ def test_clean_runtime_validation_script_masks_python_and_node() -> None:
     assert '"DEVICE_TUI_PROJECT_ROOT"' in script
     assert '"NODE_OPTIONS"' in script
     assert "System32\\WindowsPowerShell\\v1.0" in script
-    assert "resources\\\\backend\\\\device-tui-backend" in script
+    assert "resources\\\\backend\\\\odyterm-backend" in script
     assert "python -m device_tui\\.interfaces\\.desktop_api\\.main" in script
     assert "Clean runtime validation passed" in script
     assert "Invoke-Uninstall $installDir" in script
@@ -131,7 +131,7 @@ def test_backend_soak_script_exercises_packaged_api_load() -> None:
 
     assert "$SessionCount" in script
     assert "$Cycles" in script
-    assert "device-tui-backend.exe" in script
+    assert "odyterm-backend.exe" in script
     assert "/api/v1/sessions" in script
     assert "/api/v1/commands/send" in script
     assert "/api/v1/diagnostics" in script
@@ -143,7 +143,7 @@ def test_backend_soak_script_exercises_packaged_api_load() -> None:
 def test_packaged_app_soak_script_exercises_electron_recovery() -> None:
     script = Path("desktop/scripts/soak-packaged-app.ps1").read_text(encoding="utf-8")
 
-    assert "Device TUI.exe" in script
+    assert "OdyTerm.exe" in script
     assert "$Cycles" in script
     assert "$DurationMinutes" in script
     assert "$PauseSeconds" in script
@@ -168,7 +168,7 @@ def test_electron_backend_launcher_supports_packaged_recovery() -> None:
     assert "DEVICE_TUI_BACKEND_EXECUTABLE" in launcher
     assert "app.isPackaged" in launcher
     assert "process.resourcesPath" in launcher
-    assert "'backend', 'device-tui-backend', executable" in launcher
+    assert "'backend', 'odyterm-backend', executable" in launcher
     assert "DEVICE_TUI_PACKAGED" in launcher
     assert "backend.log" in launcher
     assert "rotateDiagnosticIfNeeded" in launcher

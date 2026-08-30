@@ -10,8 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from device_tui.domain.package_upgrade import (
+    PackageFileEntry,
+    PackageUpgradeConfig,
+    build_cleanup_plan,
+)
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
-from device_tui.application.workflow_plugins.package_upgrade.policy import PackageUpgradeConfig, build_cleanup_plan
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import (
     DEFAULT_MASTER_STORAGE,
     DEFAULT_SLAVE_STORAGE,
@@ -39,6 +43,7 @@ class UpgradeTargetFacts:
 
 @dataclass(frozen=True, slots=True)
 class UpgradeCleanupDecision:
+    delete_entries: tuple[PackageFileEntry, ...]
     delete_paths: tuple[str, ...]
     has_enough_space: bool
     free_bytes: int
@@ -65,6 +70,14 @@ class UpgradeDriver(Protocol):
     def disable_paging_command(self) -> str: ...
     def version_query_command(self) -> str: ...
     def startup_query_command(self) -> str: ...
+    def probe_commands(
+        self,
+        probes: tuple[str, ...] | list[str],
+        *,
+        master_storage: str,
+        slave_storage: str,
+    ) -> tuple[str, ...]: ...
+    def verification_commands(self, fact: str) -> tuple[str, ...]: ...
     def storage_query_command(self, storage: str) -> str: ...
     def package_path(self, storage: str, package_name: str) -> str: ...
     def classify_standby(self, output: str, storage: str) -> str: ...
@@ -106,6 +119,22 @@ class HuaweiVrpUpgradeDriver:
     def startup_query_command(self) -> str:
         return self.commands.startup_query()
 
+    def probe_commands(
+        self,
+        probes: tuple[str, ...] | list[str],
+        *,
+        master_storage: str,
+        slave_storage: str,
+    ) -> tuple[str, ...]:
+        return self.commands.probe_plan(
+            probes,
+            master_storage=master_storage,
+            slave_storage=slave_storage,
+        ).commands
+
+    def verification_commands(self, fact: str) -> tuple[str, ...]:
+        return self.commands.verification_plan(fact).commands
+
     def storage_query_command(self, storage: str) -> str:
         return self.commands.storage_query(storage)
 
@@ -134,6 +163,7 @@ class HuaweiVrpUpgradeDriver:
             target_package_name=package_name,
         )
         return UpgradeCleanupDecision(
+            delete_entries=tuple(plan.delete_entries),
             delete_paths=tuple(item.path for item in plan.delete_entries),
             has_enough_space=plan.has_enough_space,
             free_bytes=plan.free_bytes,

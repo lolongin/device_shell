@@ -15,7 +15,7 @@ def register_operation_tools(mcp: Any, gateway: McpGateway) -> None:
 
     @mcp.tool()
     def operation_get(operation_id: str) -> dict[str, Any]:
-        """Read a long-running Device TUI operation."""
+        """Read a long-running OdyTerm operation."""
         return gateway.call("operation_get", operation_id)
 
     @mcp.tool()
@@ -34,5 +34,5 @@ def register_operation_tools(mcp: Any, gateway: McpGateway) -> None:
 
     @mcp.tool()
     def operation_cancel(operation_id: str) -> dict[str, Any]:
-        """Cancel a cancellable long-running Device TUI operation."""
+        """Cancel a cancellable long-running OdyTerm operation."""
         return gateway.call("operation_cancel", operation_id)

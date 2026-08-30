@@ -109,10 +109,12 @@ def test_prepare_persistent_data_backs_up_old_schema_before_migration(tmp_path: 
         data_root,
         target_schema_version=SQLiteDesktopStore.SCHEMA_VERSION,
     )
-    SQLiteDesktopStore(database)
-    status = status.with_schema_version_after(sqlite_user_version(database))
+    SQLiteDesktopStore(status.database_path)
+    status = status.with_schema_version_after(sqlite_user_version(status.database_path))
 
     assert status.schema_version_before == 1
+    assert status.database_path == data_root.resolve() / "odyterm.sqlite3"
+    assert database.exists()
     assert status.schema_version_after == SQLiteDesktopStore.SCHEMA_VERSION
     assert status.migrated
     assert status.backup_created

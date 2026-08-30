@@ -62,11 +62,11 @@ function Wait-ForSessionOutput([string]$SessionId, [string]$Needle) {
 }
 
 $desktopRoot = Split-Path -Parent $PSScriptRoot
-$defaultBackend = Join-Path $desktopRoot "release\win-unpacked\resources\backend\device-tui-backend\device-tui-backend.exe"
+$defaultBackend = Join-Path $desktopRoot "release\win-unpacked\resources\backend\odyterm-backend\odyterm-backend.exe"
 $backend = Resolve-Backend $BackendExecutable $defaultBackend
 $createdWorkRoot = $false
 if (-not $WorkRoot) {
-    $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("device-tui-backend-soak-" + [System.Guid]::NewGuid().ToString("N"))
+    $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("odyterm-backend-soak-" + [System.Guid]::NewGuid().ToString("N"))
     $createdWorkRoot = $true
 }
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)

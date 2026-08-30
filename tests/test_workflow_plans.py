@@ -58,6 +58,39 @@ def test_plan_hash_is_stable_and_compiled_metadata_keeps_hash() -> None:
     assert result.workflow.metadata["plan_hash"] == result.plan_hash
 
 
+def test_plan_compiler_emits_framework_task_plan_with_literal_inputs() -> None:
+    plan = WorkflowPlan(
+        "framework-plan",
+        "run a command batch",
+        {"device_id": "d1"},
+        (
+            PlanStep(
+                "batch",
+                "terminal.batch",
+                {"commands": ["display version", "display startup"], "timeout_seconds": 20},
+            ),
+        ),
+    )
+    result = WorkflowPlanCompiler().validate(plan)
+    assert result.task_plan is not None
+    assert result.task_plan.nodes[0].workflow_id == "terminal.batch"
+    assert result.task_plan.nodes[0].input_mapping["commands"] == ["display version", "display startup"]
+
+
+def test_plan_compiler_maps_file_capabilities_to_transfer_workflow() -> None:
+    plan = WorkflowPlan(
+        "upload-plan",
+        "upload artifact",
+        {"device_id": "d1"},
+        (PlanStep("upload", "file.upload", {"source_path": "a.cc", "destination_path": "flash:/a.cc"}),),
+    )
+    result = WorkflowPlanCompiler().validate(plan)
+    assert result.task_plan is not None
+    node = result.task_plan.nodes[0]
+    assert node.workflow_id == "file.transfer"
+    assert node.input_mapping["direction"] == "upload"
+
+
 def test_plan_compiler_publishes_capability_contracts_and_validates_params() -> None:
     specs = WorkflowPlanCompiler.capability_specs()
     assert specs["device.upgrade"]["required_params"] == ["package_path"]

@@ -36,11 +36,11 @@ built-in tasks have migrated.
   adapter whose Huawei command generation and read-back verification remain in
   the vendor bridge; the runtime owns their lifecycle and recovery semantics.
 - The desktop composition root exposes the Activity executor and a
-  `TaskOrchestrator`; `TaskService` is wired to that orchestrator for generic
-  plan start/execute calls while retaining its lifecycle facade over the
-  compatibility manager. Huawei package workflows retain the compatibility
-  device bridge only as the implementation adapter for vendor-specific
-  storage/startup behavior.
+  `TaskOrchestrator`; `TaskService` is the public lifecycle and execution
+  boundary. Framework-backed requests are persisted as TaskRun projections
+  and do not enter the compatibility manager's scheduler. Huawei package
+  workflows retain the compatibility device bridge only as the implementation
+  adapter for vendor-specific storage/startup behavior.
 - `TaskRunStore` and `SQLiteTaskRunStore` now persist Task composition state
   (`node_runs`, outputs, status, errors, and execution context); production
   desktop composition wires this store to the existing SQLite database.
@@ -69,12 +69,14 @@ built-in tasks have migrated.
   before creating a child Workflow.
 - The compatibility `TaskManager` also uses the coordinator for legacy task
   leases when it is available; direct `DeviceLeaseService` calls remain only as
-  a fallback for external callers during migration.
+  a fallback for external callers during migration. Production composition
+  disables its legacy scheduler, so new requests cannot enter `_run` or
+  `_run_stateful`.
 - `DeviceVendorAdapter` and `DeviceVendorActivityHandler` now form the vendor
-  port for generic device Activities. The Huawei implementation maps stable
-  Activity ids to the existing bridge internally, so generic handlers no longer
-  depend on `DeviceExecutionActionHandler`; the bridge can be replaced behind
-  the adapter without changing Workflow definitions.
+  port for generic device Activities. The Huawei implementation executes
+  stable Activity ids through a native vendor adapter, so generic handlers no
+  longer depend on `DeviceExecutionActionHandler`. The old ActionHandler
+  remains only as an explicit compatibility import for historical callers.
 - `WorkflowRuntime.recover_inflight()` scans stores that expose `list()` during
   composition startup and fences persisted `running/recovering` runs as
   `paused`. Resume then reacquires resources and enters the existing reconcile
@@ -90,15 +92,19 @@ built-in tasks have migrated.
 - `TaskOrchestrator` now owns TaskRun-level pause/resume/cancel coordination and
   delegates control to the active child `WorkflowRun`; `TaskService` exposes
   these operations through explicit `*_plan` methods.
-- Framework-backed `TaskManager` lifecycle calls now delegate to the same
+- Framework-backed `TaskService` lifecycle calls delegate to the same
   `TaskOrchestrator` instance. Resume drives an existing `running/recovering`
   child through `WorkflowRuntime.run_until_blocked`, and TaskRecord projection
   remains consistent even when pause/cancel occurs before child creation.
+- The desktop composition root does not inject Framework services into
+  `LegacyTaskManager`; it is retained as a persistence/compatibility backend.
+  `TaskService` adopts persisted TaskRuns on startup and owns Framework task
+  cancellation, decision application, deletion, and shutdown waiting.
 - `TaskPlanLifecycle` is an explicit port between `TaskService` and framework
   orchestration. It is intentionally separate from the legacy `TaskLifecycle`
   protocol; process-backed `script.run` and `artifact.build` have no legacy
   `TaskManager` entry point to migrate or keep in sync.
-- The current verification baseline is the full Python suite (`631 passed`).
+- The current verification baseline is the full Python suite (`645 passed`).
 - The framework resource conflict error is now owned by `device_tui.framework`;
   the desktop and MCP boundaries translate it to the existing application/API
   error shape without making the framework import `application.errors`.
@@ -108,10 +114,10 @@ built-in tasks have migrated.
 - Huawei CLI output parsing now lives in
   `infrastructure.vendor_adapters.huawei_vrp.parsers`; package-upgrade policy
   no longer contains duplicate terminal-format implementations.
-- The obsolete `CompatibilityDeviceActivityHandler` has been removed. The
-  remaining `DeviceExecutionActionHandler` is still used by storage/startup
-  migration Activities and must be replaced by native handlers before the
-  legacy device bridge can be deleted.
+- The obsolete `CompatibilityDeviceActivityHandler` has been removed. Storage,
+  artifact verification, topology probing, and startup Activities now use the
+  native Huawei vendor adapter. The old device bridge remains only as a lazy
+  compatibility surface for integrations that explicitly import it.
 
 ## 2. Target Ownership
 
@@ -277,7 +283,7 @@ Move concrete behavior behind infrastructure contracts:
 - `ProcessAdapter`: package builders and test scripts;
 - `DeviceVendorAdapter`: Huawei VRP command generation and output parsing.
 
-`DeviceExecutionActionHandler` is temporary migration code. New Activity
+The old `DeviceExecutionActionHandler` is compatibility-only. New Activity
 handlers must not import `TaskManager`, FastAPI, Electron, or another
 Workflow's implementation.
 
@@ -299,15 +305,23 @@ Exit criteria:
 - transfer and reboot recovery never blindly repeats an unsafe operation;
 - all UI state is a projection of persisted execution state.
 
-### Phase 7: Remove the legacy path
+### Phase 7: Remove the legacy execution path
 
 After all Task sources, including Agent/MCP requests, use the new orchestrator:
 
-1. stop creating `WorkflowEngine` instances;
-2. remove the old `_run` and `_run_stateful` branches;
-3. retain read/API compatibility conversions;
-4. remove duplicated state fields only after projection consumers migrate;
-5. delete `WorkflowEngine` and compatibility imports in a separate release.
+The production cutover is complete when:
+
+1. no production request creates a `WorkflowEngine` instance;
+2. the old `_run` and `_run_stateful` branches are unreachable from the
+   application composition path;
+3. `TaskRecordCompatibilityBackend` retains only read/history projections and
+   terminal record fencing while persisted legacy records are migrated;
+4. duplicated state fields are removed only after projection consumers migrate.
+
+`LegacyTaskManager` and `WorkflowEngine` remain exported from the compatibility
+module for integrations that still import the historical API. Their removal is
+a separate breaking release after persisted legacy records have been migrated;
+they are not part of the production dependency graph.
 
 ## 5. Acceptance Matrix
 

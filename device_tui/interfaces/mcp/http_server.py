@@ -157,7 +157,7 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
         status, body = self.server.service.invoke(
             tool,
             params,
-            source=self.headers.get("X-Device-TUI-Client", "http-client")[:100],
+            source=self.headers.get("X-OdyTerm-Client", "http-client")[:100],
             request_id=self.headers.get("X-Request-ID") or None,
         )
         self._send_json(status, body)
@@ -217,7 +217,7 @@ class AppControlHttpServer:
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             daemon=True,
-            name="device-tui-app-control",
+            name="odyterm-app-control",
         )
         self._thread.start()
         self._write_state_file()

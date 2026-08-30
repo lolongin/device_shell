@@ -397,6 +397,7 @@ class DesktopMcpService:
 
     async def _create_task(self, params: dict[str, Any]) -> dict[str, Any]:
         """Build and persist a Task for both task.create and workflow.run."""
+        compiled_task_plan = None
         validated_plan_id = str(params.get("validated_plan_id") or params.get("plan_id") or "").strip()
         if validated_plan_id:
             stored = self._plans.get(validated_plan_id)
@@ -417,6 +418,7 @@ class DesktopMcpService:
                 "steps": [],
             }
             compiled = validation.workflow
+            compiled_task_plan = getattr(validation, "task_plan", None)
             if compiled is None:
                 raise UnsupportedOperationError("Validated workflow has no compiled definition.")
         else:
@@ -467,11 +469,12 @@ class DesktopMcpService:
                 item.target_step for item in validation.required_actions
                 if getattr(item, "target_step", "")
             ]
-        record = self.desktop.tasks.create(TaskCreate(
+        record = self.desktop.task_service.create(TaskCreate(
             workflow=workflow,
             target=DeviceTarget(device_id=device_id, session_id=session_id, protocol=str(params.get("protocol") or "auto")),
             source=source,
             context=task_context,
+            framework_plan=compiled_task_plan,
         ))
         return {"task": self._task_payload(record)}
 
@@ -551,6 +554,7 @@ class DesktopMcpService:
             "warnings": list(validation.warnings),
             "required_actions": [item.to_dict() for item in validation.required_actions],
             "workflow": validation.workflow.to_dict() if validation.workflow is not None else None,
+            "task_plan": validation.task_plan.to_dict() if validation.task_plan is not None else None,
         }
 
     async def _tool_workflow_plan_get(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -566,6 +570,7 @@ class DesktopMcpService:
             "errors": list(validation.errors),
             "warnings": list(validation.warnings),
             "workflow": validation.workflow.to_dict() if validation.workflow else None,
+            "task_plan": validation.task_plan.to_dict() if validation.task_plan else None,
         }
 
     async def _tool_workflow_plan_approve(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -585,7 +590,7 @@ class DesktopMcpService:
 
     async def _tool_task_replan(self, params: dict[str, Any]) -> dict[str, Any]:
         parent_task_id = self._text(params, "parent_task_id")
-        parent = self.desktop.tasks.get(parent_task_id)
+        parent = self.desktop.task_service.get(parent_task_id)
         raw = params.get("plan")
         if not isinstance(raw, dict):
             raise UnsupportedOperationError("task.replan requires a plan object.")
@@ -632,6 +637,7 @@ class DesktopMcpService:
             "warnings": list(validation.warnings),
             "required_actions": [item.to_dict() for item in validation.required_actions],
             "workflow": validation.workflow.to_dict() if validation.workflow else None,
+            "task_plan": validation.task_plan.to_dict() if validation.task_plan else None,
         })
 
     @staticmethod
@@ -642,18 +648,22 @@ class DesktopMcpService:
                 PlanValidationResult,
                 WorkflowDefinition,
             )
+            from device_tui.framework import TaskPlan
             raw_plan = payload.get("plan")
             if not isinstance(raw_plan, dict):
                 return None
             plan = WorkflowPlan.from_dict(raw_plan)
             raw_workflow = payload.get("workflow")
             workflow = WorkflowDefinition.from_dict(raw_workflow) if isinstance(raw_workflow, dict) else None
+            raw_task_plan = payload.get("task_plan")
+            task_plan = TaskPlan.from_dict(raw_task_plan) if isinstance(raw_task_plan, dict) else None
             required = tuple(Action.from_dict(item) for item in payload.get("required_actions", ()) if isinstance(item, dict))
             validation = PlanValidationResult(
                 str(payload.get("status") or "rejected"),
                 plan,
                 str(payload.get("plan_hash") or plan.content_hash()),
                 workflow=workflow,
+                task_plan=task_plan,
                 errors=tuple(dict(item) for item in payload.get("errors", ()) if isinstance(item, dict)),
                 warnings=tuple(str(item) for item in payload.get("warnings", ()) if str(item)),
                 required_actions=required,
@@ -663,24 +673,24 @@ class DesktopMcpService:
             return None
 
     async def _tool_task_get(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"task": self._task_payload(self.desktop.tasks.get(self._text(params, "task_id")))}
+        return {"task": self._task_payload(self.desktop.task_service.get(self._text(params, "task_id")))}
 
     async def _get_decision(self, params: dict[str, Any]) -> dict[str, Any]:
-        decision = self.desktop.tasks.get_decision(self._text(params, "task_id"))
+        decision = self.desktop.task_service.get_decision(self._text(params, "task_id"))
         return {"decision": decision.to_dict() if decision is not None else None}
 
     async def _tool_task_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"tasks": [self._task_payload(item) for item in self.desktop.tasks.list(limit=int(params.get("limit") or 200))]}
+        return {"tasks": [self._task_payload(item) for item in self.desktop.task_service.list(limit=int(params.get("limit") or 200))]}
 
     async def _tool_task_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"task": self._task_payload(self.desktop.tasks.cancel(self._text(params, "task_id")))}
+        return {"task": self._task_payload(self.desktop.task_service.cancel(self._text(params, "task_id")))}
 
     async def _tool_task_pause(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"task": self._task_payload(self.desktop.tasks.pause(self._text(params, "task_id")))}
+        return {"task": self._task_payload(self.desktop.task_service.pause(self._text(params, "task_id")))}
 
     async def _tool_task_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         context = params.get("context")
-        return {"task": self._task_payload(self.desktop.tasks.resume(
+        return {"task": self._task_payload(self.desktop.task_service.resume(
             self._text(params, "task_id"),
             context=dict(context) if isinstance(context, dict) else {},
             step_id=str(params.get("step_id") or ""),
@@ -699,7 +709,7 @@ class DesktopMcpService:
             action=action, reason=str(params.get("reason") or ""), task_id=task_id,
             expected_revision=(int(params["expected_revision"]) if params.get("expected_revision") is not None else None),
         )
-        return {"task": self._task_payload(self.desktop.tasks.apply_decision(task_id, decision))}
+        return {"task": self._task_payload(self.desktop.task_service.apply_decision(task_id, decision))}
 
     async def _tool_decision_get(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._get_decision(params)
@@ -781,7 +791,7 @@ class DesktopMcpService:
             )
             return {"session": self._session_view_payload(updated)}
         if action == "disconnect":
-            self.desktop.tasks.cancel_session(session.id)
+            self.desktop.task_service.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
             updated = await self.desktop.control.disconnect_session(
                 DeviceTarget(device_id=session.device_id, session_id=session.id),
@@ -790,7 +800,7 @@ class DesktopMcpService:
             return {"session": self._session_view_payload(updated)}
         if action == "close":
             self.desktop.automation.cancel_session(session.id, reason="mcp_close")
-            self.desktop.tasks.cancel_session(session.id)
+            self.desktop.task_service.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
             await self.desktop.control.close_session(
                 DeviceTarget(device_id=session.device_id, session_id=session.id),
@@ -922,7 +932,7 @@ class DesktopMcpService:
             WorkflowTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
             {"package_path": packages[0].relative_path},
         )
-        task = self.desktop.tasks.create(TaskCreate(
+        task = self.desktop.task_service.create(TaskCreate(
             workflow=workflow,
             target=DeviceTarget(device_id=session.device_id, session_id=session.id, protocol=session.kind),
             source="mcp",

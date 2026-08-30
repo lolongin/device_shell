@@ -27,8 +27,9 @@ from .models import (
     WorkflowStepResult,
     WorkflowStepState,
 )
-from .service import TaskManager, WorkflowEngine
-from .task_service import TaskLifecycle, TaskPlanLifecycle, TaskService
+from .service import LegacyTaskManager, TaskManager, WorkflowEngine
+from .compatibility import TaskRecordCompatibilityBackend
+from .task_service import TaskCompatibilityPersistence, TaskLifecycle, TaskPlanLifecycle, TaskService
 from .projection import TaskRunProjector
 from .catalog import (
     DeviceUpgradeWorkflowProvider,
@@ -61,9 +62,12 @@ __all__ = [
     "Task",
     "TaskCreate",
     "TaskManager",
+    "LegacyTaskManager",
     "TaskLifecycle",
+    "TaskCompatibilityPersistence",
     "TaskPlanLifecycle",
     "TaskService",
+    "TaskRecordCompatibilityBackend",
     "TaskRunProjector",
     "TaskRecord",
     "TaskStatus",

@@ -18,6 +18,19 @@ def test_sample_data_includes_frame_device_boards() -> None:
     assert all(board.board_id.startswith("XTN-NJ-018-") for board in boards)
 
 
+def test_sample_data_includes_ensp_ar_telnet_device() -> None:
+    devices = [device for device in sample_devices() if device.id == "ENSP-AR-001"]
+
+    assert len(devices) == 1
+    device = devices[0]
+    assert device.name == "eNSP-Pro-AR-1"
+    assert device.telnet_ip == "192.168.40.20"
+    assert device.telnet_port == 23
+    assert device.username == "appadmin"
+    assert device.password == ""
+    assert device.ssh_ip == ""
+
+
 def test_sample_repository_updates_frame_device_as_one_unit() -> None:
     repository = SampleDeviceRepository()
 

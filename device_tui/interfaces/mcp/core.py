@@ -34,7 +34,7 @@ TERMINAL_EXECUTE_IDLE_SECONDS = 0.8
 TERMINAL_EXECUTE_POLL_SECONDS = 0.05
 
 def resolve_approval_mode(value: str | None = None) -> str:
-    """Resolve the Device TUI approval policy from an explicit value or env."""
+    """Resolve the OdyTerm approval policy from an explicit value or env."""
     configured = os.getenv("DEVICE_TUI_APPROVAL_MODE", "") if value is None else value
     if configured.strip().casefold() == APPROVAL_MODE_REQUIRED:
         return APPROVAL_MODE_REQUIRED

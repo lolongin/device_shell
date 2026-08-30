@@ -265,7 +265,7 @@ class TransferServiceController:
             except Exception as exc:
                 self._on_log(f"FTP 服务异常: {exc}")
 
-        self._thread = threading.Thread(target=run, daemon=True, name="device-tui-ftp-server")
+        self._thread = threading.Thread(target=run, daemon=True, name="odyterm-ftp-server")
         self._thread.start()
 
     def _start_sftp(self, config: TransferServiceConfig) -> None:
@@ -434,7 +434,7 @@ class TransferServiceController:
             finally:
                 loop.close()
 
-        self._thread = threading.Thread(target=run, daemon=True, name="device-tui-sftp-server")
+        self._thread = threading.Thread(target=run, daemon=True, name="odyterm-sftp-server")
         self._thread.start()
         if not ready.wait(timeout=5):
             loop.call_soon_threadsafe(loop.stop)

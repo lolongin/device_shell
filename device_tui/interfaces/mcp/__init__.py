@@ -1,4 +1,4 @@
-"""Device TUI MCP integration package."""
+"""OdyTerm MCP integration package."""
 
 from .client import AppControlClient, AppControlClientError
 from .http_server import AppControlHttpServer

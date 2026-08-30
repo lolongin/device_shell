@@ -37,7 +37,7 @@ class MemorySecretStore:
 class KeyringSecretStore:
     """Use python-keyring without providing an insecure plaintext fallback."""
 
-    def __init__(self, service_name: str = "device-tui") -> None:
+    def __init__(self, service_name: str = "odyterm") -> None:
         self._service_name = service_name
 
     def get(self, secret_id: str) -> str | None:

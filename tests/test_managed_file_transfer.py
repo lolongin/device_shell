@@ -240,9 +240,9 @@ def test_auto_terminal_environment_accepts_vrp_and_linux_paths() -> None:
 def test_linux_inspection_command_and_markers_cover_client_file_and_space() -> None:
     command = build_linux_inspection_command("/tmp/target image.cc", "ftp")
     output = """
-__DEVICE_TUI_TRANSFER_CLIENT__=1
-__DEVICE_TUI_TRANSFER_SIZE__=1024
-__DEVICE_TUI_TRANSFER_FREE__=4096
+__ODYTERM_TRANSFER_CLIENT__=1
+__ODYTERM_TRANSFER_SIZE__=1024
+__ODYTERM_TRANSFER_FREE__=4096
 """
 
     assert "command -v ftp" in command
@@ -251,7 +251,7 @@ __DEVICE_TUI_TRANSFER_FREE__=4096
     assert linux_directory_available(output)
     assert linux_file_size(output) == 1024
     assert linux_free_space_bytes(output) == 4096
-    assert not linux_directory_available("__DEVICE_TUI_TRANSFER_DIRECTORY__=0\n")
+    assert not linux_directory_available("__ODYTERM_TRANSFER_DIRECTORY__=0\n")
 
 
 def test_linux_ftp_plan_uses_standard_interactive_client_and_posix_path() -> None:

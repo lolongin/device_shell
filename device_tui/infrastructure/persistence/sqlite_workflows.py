@@ -119,6 +119,10 @@ class SQLiteTaskRunStore(TaskRunStore):
             ).fetchall()
         return [_task_run_from_dict(json.loads(str(row["payload"]))) for row in rows]
 
+    def delete(self, task_run_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM task_runs WHERE id = ?", (task_run_id,))
+
     def _migrate(self) -> None:
         with self._connect() as connection:
             connection.execute(

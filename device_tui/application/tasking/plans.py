@@ -15,6 +15,7 @@ from typing import Any, Mapping, Protocol
 
 from .protocol import Action, ProtocolModel, WorkflowDefinition, WorkflowStep
 from .catalog import WorkflowCatalog, WorkflowCatalogError, WorkflowTarget, build_default_workflow_catalog
+from device_tui.framework.orchestrator import TaskPlan, WorkflowNode
 
 
 class PlanValidationError(ValueError):
@@ -88,6 +89,9 @@ class PlanValidationResult(ProtocolModel):
     plan: WorkflowPlan
     plan_hash: str
     workflow: WorkflowDefinition | None = None
+    # Framework-native executable plan. ``workflow`` remains populated for
+    # clients that still consume the legacy TaskRecord shape.
+    task_plan: TaskPlan | None = None
     errors: tuple[dict[str, str], ...] = ()
     warnings: tuple[str, ...] = ()
     required_actions: tuple[Action, ...] = ()
@@ -272,8 +276,9 @@ class WorkflowPlanCompiler:
         if errors:
             return PlanValidationResult("rejected", plan, plan.content_hash(), errors=tuple(errors), warnings=tuple(warnings), required_actions=tuple(required))
         workflow = self.compile(plan)
+        task_plan = self.compile_task_plan(plan)
         status = "requires_confirmation" if required else "validated"
-        return PlanValidationResult(status, plan, plan.content_hash(), workflow=workflow, warnings=tuple(warnings), required_actions=tuple(required))
+        return PlanValidationResult(status, plan, plan.content_hash(), workflow=workflow, task_plan=task_plan, warnings=tuple(warnings), required_actions=tuple(required))
 
     def compile(self, plan: WorkflowPlan) -> WorkflowDefinition:
         steps: list[WorkflowStep] = []
@@ -332,6 +337,56 @@ class WorkflowPlanCompiler:
             max_steps=self.MAX_STEPS,
             metadata={"plan_hash": plan.content_hash(), "plan_id": plan.plan_id, "parent_task_id": plan.parent_task_id, "success_criteria": list(plan.success_criteria), "budget": dict(plan.budget)},
         )
+
+    def compile_task_plan(self, plan: WorkflowPlan) -> TaskPlan:
+        """Compile an allow-listed proposal into the Framework Task boundary."""
+        nodes: list[WorkflowNode] = []
+        for item in plan.steps:
+            spec = self._capabilities.get(item.capability)
+            if spec.workflow_id == "device_upgrade":
+                raise PlanValidationError(
+                    "workflow_task_only",
+                    "device.upgrade must be started as a named Workflow Task.",
+                    path=f"steps.{item.id}.capability",
+                )
+            workflow_id = self._framework_workflow_id(item.capability, spec)
+            params = dict(item.params)
+            if item.capability in {"file.upload", "file.download"}:
+                params["direction"] = "upload" if item.capability == "file.upload" else "download"
+            if item.capability == "terminal.command":
+                params["command"] = str(params.get("command") or "")
+            if item.capability == "terminal.batch":
+                params["commands"] = list(params.get("commands") or [])
+            nodes.append(WorkflowNode(
+                id=item.id,
+                workflow_id=workflow_id,
+                depends_on=tuple(item.depends_on),
+                input_mapping=params,
+            ))
+        task_plan = TaskPlan(
+            id=plan.plan_id or "agent-plan",
+            version=str(plan.revision),
+            nodes=tuple(nodes),
+        )
+        task_plan.validate()
+        return task_plan
+
+    @staticmethod
+    def _framework_workflow_id(capability: str, spec: CapabilitySpec) -> str:
+        if spec.workflow_id and spec.workflow_id != "device_upgrade":
+            return spec.workflow_id
+        return {
+            "session.open": "device.wait_online",
+            "device.wait_online": "device.wait_online",
+            "device.version_check": "device.verify_version",
+            "terminal.command": "terminal.command",
+            "terminal.batch": "terminal.batch",
+            "device.reboot": "device.reboot",
+            "device.power_off": "device.power_off",
+            "file.upload": "file.transfer",
+            "file.download": "file.transfer",
+            "operation.wait": "operation.wait",
+        }.get(capability, spec.action)
 
     @staticmethod
     def _compile_named_workflow(

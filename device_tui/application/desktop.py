@@ -33,7 +33,7 @@ from .workflow_plugins.package_upgrade.service import PackageUpgradeService
 from .tasking import (
     DeviceExecutionTool,
     MemoryTaskStore,
-    TaskManager,
+    TaskRecordCompatibilityBackend,
     TaskService,
     TaskStore,
     WorkflowCatalog,
@@ -52,7 +52,8 @@ from .composition.workflows import build_default_adapter_registry, build_default
 from .composition.workflows import build_default_activity_executor
 from device_tui.framework.events import WorkflowEventStore
 from device_tui.framework.runtime import WorkflowRunStore
-from .workflow_plugins.device_bridge import build_device_action_registry, build_device_reconcile_registry
+from .workflow_plugins.device_bridge import build_device_action_registry
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.reconcile import build_huawei_reconcile_registry
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpDeviceCommandProfile
 
 
@@ -72,7 +73,6 @@ class DesktopApplication:
     upgrades: PackageUpgradeService
     leases: DeviceLeaseService
     control: DeviceControlService
-    tasks: TaskManager
     task_service: TaskService
     workflows: WorkflowCatalog
     framework_workflows: WorkflowRegistry
@@ -80,6 +80,11 @@ class DesktopApplication:
     workflow_runtime: WorkflowRuntime
     activity_executor: ActivityExecutor
     task_orchestrator: TaskOrchestrator
+
+    @property
+    def tasks(self) -> TaskService:
+        """Compatibility alias for clients written before TaskService cutover."""
+        return self.task_service
 
 
 def build_desktop_application(
@@ -172,7 +177,7 @@ def build_desktop_application(
             transfers,
             activity_executor=activity_executor,
         ),
-        reconciliations=build_device_reconcile_registry(execution, control),
+        reconciliations=build_huawei_reconcile_registry(execution, control),
         runs=framework_run_store,
         events=framework_event_store,
         resource_coordinator=resources,
@@ -186,15 +191,19 @@ def build_desktop_application(
         store=framework_task_run_store,
         resource_coordinator=resources,
     )
-    tasks = TaskManager(
-        execution,
+    # Only the TaskRecord projection/history adapter is kept at the
+    # composition boundary.  LegacyTaskManager and WorkflowEngine are not
+    # production dependencies and cannot schedule new work.
+    compatibility_backend = TaskRecordCompatibilityBackend(
+        task_store or MemoryTaskStore(),
         events,
-        store=task_store or MemoryTaskStore(),
-        leases=leases,
-        framework_runtime=runtime,
+    )
+    task_service = TaskService(
+        compatibility_backend,
+        task_orchestrator,
+        operation_status=lambda operation_id: control.get_operation(operation_id).status,
         framework_workflows=framework_workflows,
-        resource_coordinator=resources,
-        task_orchestrator=task_orchestrator,
+        event_bus=events,
     )
     return DesktopApplication(
         devices=devices,
@@ -211,12 +220,7 @@ def build_desktop_application(
         upgrades=upgrades,
         leases=leases,
         control=control,
-        tasks=tasks,
-        task_service=TaskService(
-            tasks,
-            task_orchestrator,
-            operation_status=lambda operation_id: control.get_operation(operation_id).status,
-        ),
+        task_service=task_service,
         workflows=workflows,
         framework_workflows=framework_workflows,
         framework_adapters=framework_adapters,

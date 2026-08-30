@@ -17,7 +17,7 @@ class DesktopApiClientError(RuntimeError):
 class DesktopApiClient:
     """Drop-in client for the public MCP tool names served by Electron Backend."""
 
-    def __init__(self, base_url: str, token: str, *, source: str = "device-tui-mcp") -> None:
+    def __init__(self, base_url: str, token: str, *, source: str = "odyterm-mcp") -> None:
         parsed = urlsplit(base_url.rstrip("/"))
         if parsed.scheme != "http" or not parsed.hostname:
             raise DesktopApiClientError(f"Invalid desktop API URL: {base_url}")
@@ -147,7 +147,7 @@ class DesktopApiClient:
         body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if method != "GET" else None
         connection = HTTPConnection(self.host, self.port, timeout=request_timeout_seconds or 30)
         try:
-            connection.request(method, f"{self.prefix}{path}", body=body, headers={"Authorization": f"Bearer {self.token}" if authenticated else "", "Content-Type": "application/json", "X-Device-TUI-Client": self.source})
+            connection.request(method, f"{self.prefix}{path}", body=body, headers={"Authorization": f"Bearer {self.token}" if authenticated else "", "Content-Type": "application/json", "X-OdyTerm-Client": self.source})
             response = connection.getresponse()
             raw = response.read().decode("utf-8", "replace")
         finally:

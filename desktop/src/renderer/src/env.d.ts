@@ -84,6 +84,8 @@ interface DesktopApi {
   readClipboardText(): Promise<string>
   writeClipboardText(value: string): Promise<boolean>
   setAlwaysOnTop(enabled: boolean): Promise<boolean>
+  setNativeTheme(mode: 'dark' | 'light'): Promise<'dark' | 'light'>
+  showApplicationMenu(key: 'file' | 'edit' | 'view' | 'window', x: number, y: number): Promise<void>
   onBackendExit(callback: (details: string) => void): () => void
   onBackendRecovered(callback: (details: string) => void): () => void
 }

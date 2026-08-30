@@ -14,7 +14,7 @@ def register_transfer_tools(mcp: Any, gateway: McpGateway) -> None:
         recursive: bool = True,
         limit: int = 200,
     ) -> dict[str, Any]:
-        """List non-sensitive files available in Device TUI's transfer share."""
+        """List non-sensitive files available in OdyTerm's transfer share."""
         return gateway.call(
             "file_transfer_list",
             path=path,

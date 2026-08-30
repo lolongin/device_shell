@@ -60,3 +60,39 @@ def test_huawei_vendor_adapter_preserves_unknown_for_uncertain_startup() -> None
     result = asyncio.run(handler.execute(invocation, context, lambda event: event))
 
     assert result.status == ActivityStatus.UNKNOWN
+
+
+def test_huawei_vendor_adapter_native_path_uses_structured_execution_port() -> None:
+    class NativeExecution:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def execute_operation(self, target, operation, params, *, context):
+            self.calls.append((target, operation, dict(params), context))
+            return {
+                "status": "completed",
+                "output": "Directory of flash:/\n  0  -rw-  1024  Jan 01 2026  target.cc",
+                "execution_id": "verify-1",
+                "evidence": ({"kind": "terminal_execution"},),
+            }
+
+        def cancel_target(self, target):
+            return "cancelled"
+
+    execution = NativeExecution()
+    adapter = HuaweiVrpDeviceVendorAdapter(execution)
+    invocation, context = _context("device.verify_artifact")
+    invocation = ActivityInvocation(
+        invocation.activity_id,
+        invocation.invocation_id,
+        invocation.workflow_run_id,
+        inputs={"fact": "package", "expected": "target.cc"},
+        context={"target": {"device_id": "d1"}},
+    )
+    context = ActivityContext(context.workflow_run, invocation)
+
+    result = asyncio.run(adapter.execute_activity("device.verify_artifact", invocation, context, lambda event: event))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert execution.calls[0][1] == "verify"
+    assert execution.calls[0][2]["commands"] == ("dir flash:/",)

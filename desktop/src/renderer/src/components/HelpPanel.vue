@@ -122,7 +122,7 @@ watch(() => props.open, (open) => {
     >
       <header>
         <div>
-          <p>DEVICE TUI</p>
+          <p>ODYTERM</p>
           <h2 id="desktop-help-title">操作帮助</h2>
         </div>
         <button type="button" title="关闭帮助" aria-label="关闭操作帮助" @click="emit('close')"><X :size="17" /></button>

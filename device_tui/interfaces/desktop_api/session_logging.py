@@ -101,7 +101,7 @@ class FileSessionLogSink:
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
-            name="device-tui-session-log",
+            name="odyterm-session-log",
         )
         self._thread.start()
 

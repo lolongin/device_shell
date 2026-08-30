@@ -1,8 +1,8 @@
 {
-  "name": "device-tui-desktop",
+  "name": "odyterm-desktop",
   "version": "0.1.0",
-  "description": "Device TUI Electron desktop client.",
-  "author": "Device TUI Contributors",
+  "description": "OdyTerm Electron desktop client.",
+  "author": "OdyTerm Contributors",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",

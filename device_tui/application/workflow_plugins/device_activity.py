@@ -31,6 +31,10 @@ class DeviceActivityHandler:
         "device.reboot": "reboot",
         "device.wait_online": "wait_online",
         "device.verify_version": "verify_version",
+        "terminal.command": "command",
+        "terminal.batch": "batch",
+        "device.power_off": "power_off",
+        "operation.wait": "operation_wait",
     }
 
     def __init__(self, execution: DeviceExecutionTool, activity_id: str) -> None:
@@ -61,11 +65,22 @@ class DeviceActivityHandler:
         report(self._event("device.activity.dispatching", invocation, {"operation": operation}))
         execution_action = self._EXECUTION_ACTIONS.get(operation, operation)
         try:
-            data = await self._execution.execute(
-                target,
-                WorkflowStep(invocation.activity_id, kind="device", action=execution_action, params=params),
-                context=control_context,
-            )
+            execute_operation = getattr(self._execution, "execute_operation", None)
+            if callable(execute_operation):
+                data = await execute_operation(
+                    target,
+                    execution_action,
+                    params,
+                    context=control_context,
+                )
+            else:
+                # External execution adapters may still implement only the
+                # historical WorkflowStep port during migration.
+                data = await self._execution.execute(
+                    target,
+                    WorkflowStep(invocation.activity_id, kind="device", action=execution_action, params=params),
+                    context=control_context,
+                )
         except DeviceWorkflowExecutionError as exc:
             status = (
                 ActivityStatus.UNKNOWN

@@ -6,7 +6,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 import type { QuickSendButtonPayload, QuickSendButtonRecord } from '../types'
 
 const workspace = useWorkspaceStore()
-const COLLAPSED_KEY = 'device-tui.desktop-v2.quick-toolbar-collapsed'
+const COLLAPSED_KEY = 'odyterm.desktop-v2.quick-toolbar-collapsed'
 const collapsed = ref(localStorage.getItem(COLLAPSED_KEY) === '1')
 const editing = ref<QuickSendButtonRecord | null>(null)
 const dialogOpen = ref(false)

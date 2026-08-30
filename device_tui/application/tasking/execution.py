@@ -12,6 +12,7 @@ from device_tui.application.device_control import (
     DeviceTarget,
     TransferRequest,
 )
+from device_tui.application.device_control.protocol import DeviceWorkflowExecutionError
 from device_tui.application.device_control.protocol import (
     CompatibilityDeviceCommandProfile,
     DeviceCommandProfile,
@@ -29,25 +30,6 @@ class ExecutionTool(Protocol):
         *,
         context: ControlContext,
     ) -> dict[str, Any]: ...
-
-
-class DeviceWorkflowExecutionError(RuntimeError):
-    """Structured failure returned by a DeviceControlService workflow step."""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        error_class: str = "unknown",
-        retryable: bool = False,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.error_class = error_class
-        self.retryable = retryable
-        self.details = dict(details or {})
 
 
 class DeviceExecutionTool:
@@ -345,6 +327,31 @@ class DeviceExecutionTool:
                 "evidence": ({"kind": "operation", **operation},),
             }
         raise ValueError(f"Unsupported workflow action: {step.action or step.kind}")
+
+    async def execute_operation(
+        self,
+        target: DeviceTarget,
+        operation: str,
+        params: dict[str, Any] | None = None,
+        *,
+        context: ControlContext,
+    ) -> dict[str, Any]:
+        """Activity-facing operation port.
+
+        New Activities pass a stable operation id and structured parameters;
+        only this compatibility adapter constructs the legacy WorkflowStep
+        understood by the existing device-control implementation.
+        """
+        return await self.execute(
+            target,
+            WorkflowStep(
+                id=str(operation),
+                kind="device",
+                action=str(operation),
+                params=dict(params or {}),
+            ),
+            context=context,
+        )
 
     async def probe_cli(
         self,

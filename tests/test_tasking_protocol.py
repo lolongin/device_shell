@@ -8,6 +8,7 @@ from device_tui.application.tasking import (
     DecisionContext,
     StepStatus,
     Task,
+    TaskCreate,
     TaskStatus,
     ToolError,
     ToolResult,
@@ -16,6 +17,8 @@ from device_tui.application.tasking import (
     WorkflowInstance,
     WorkflowStep,
 )
+from device_tui.application.device_control import DeviceTarget
+from device_tui.framework import TaskPlan, WorkflowNode
 
 
 def test_tool_result_contains_facts_not_next_action() -> None:
@@ -138,3 +141,17 @@ def test_task_checkpoint_and_decision_are_persistable() -> None:
     assert restored_decision.actor.type == "agent"
     assert restored_decision.action.target_step == "storage"
     assert StepStatus.FAILED.value == "failed"
+
+
+def test_task_create_keeps_framework_plan_outside_legacy_workflow_metadata() -> None:
+    request = TaskCreate(
+        workflow=WorkflowDefinition("legacy", steps=()),
+        target=DeviceTarget(device_id="device-1"),
+        framework_plan=TaskPlan(
+            "plan-1",
+            nodes=(WorkflowNode("check", "terminal.command", input_mapping={"command": "display version"}),),
+        ),
+    )
+    restored = TaskCreate.from_json(request.to_json())
+    assert restored.framework_plan == request.framework_plan
+    assert "framework_task_plan" not in restored.workflow.metadata

@@ -18,7 +18,6 @@ import {
   LogIn,
   LogOut,
   MonitorDot,
-  Network,
   PanelLeftClose,
   Pencil,
   Pin,
@@ -105,14 +104,16 @@ type ThemeMode = 'dark' | 'light'
 type SessionTabLayout = 'top' | 'side'
 type SplitDirection = 'left' | 'right' | 'top' | 'bottom'
 type SessionContextSource = 'tab' | 'manager' | 'terminal'
-const THEME_KEY = 'device-tui.desktop-v2.theme'
-const ALWAYS_ON_TOP_KEY = 'device-tui.desktop-v2.always-on-top'
-const SESSION_TAB_LAYOUT_KEY = 'device-tui.desktop-v2.session-tab-layout'
-const SESSION_TAB_RAIL_COLLAPSED_KEY = 'device-tui.desktop-v2.session-tab-rail-collapsed'
-const NAVIGATOR_DETAIL_COLLAPSED_KEY = 'device-tui.desktop-v2.navigator-detail-collapsed'
-const NAVIGATOR_VISIBLE_KEY = 'device-tui.desktop-v2.navigator-visible'
-const NAVIGATOR_WIDTH_KEY = 'device-tui.desktop-v2.navigator-width'
-const PROFILE_GROUP_COLLAPSE_KEY = 'device-tui.desktop-v2.profile-collapsed-groups'
+type DeviceProtocolKind = 'ssh' | 'telnet' | 'serial'
+type ApplicationMenuKey = 'file' | 'edit' | 'view' | 'window'
+const THEME_KEY = 'odyterm.desktop-v2.theme'
+const ALWAYS_ON_TOP_KEY = 'odyterm.desktop-v2.always-on-top'
+const SESSION_TAB_LAYOUT_KEY = 'odyterm.desktop-v2.session-tab-layout'
+const SESSION_TAB_RAIL_COLLAPSED_KEY = 'odyterm.desktop-v2.session-tab-rail-collapsed'
+const NAVIGATOR_DETAIL_COLLAPSED_KEY = 'odyterm.desktop-v2.navigator-detail-collapsed'
+const NAVIGATOR_VISIBLE_KEY = 'odyterm.desktop-v2.navigator-visible'
+const NAVIGATOR_WIDTH_KEY = 'odyterm.desktop-v2.navigator-width'
+const PROFILE_GROUP_COLLAPSE_KEY = 'odyterm.desktop-v2.profile-collapsed-groups'
 const NAVIGATOR_MIN_WIDTH = 400
 const NAVIGATOR_MAX_WIDTH = 760
 const ACTIVITY_RAIL_WIDTH = 52
@@ -428,6 +429,23 @@ const warmSessionDeviceGroups = computed(() => {
 const activeDeviceSessions = computed(() =>
   sessionsByDevice.value.get(activeSessionDeviceId.value) || []
 )
+function deviceProtocolActions(deviceId: string): Array<{
+  kind: DeviceProtocolKind
+  label: string
+  opened: boolean
+}> {
+  const device = deviceById.value.get(deviceId)
+  if (!device || device.is_simulated) return []
+  const deviceSessions = sessionsByDevice.value.get(deviceId) || []
+  return [
+    { kind: 'ssh' as const, label: 'SSH', available: device.can_connect_ssh },
+    { kind: 'telnet' as const, label: 'Telnet', available: device.can_connect_telnet },
+    { kind: 'serial' as const, label: '串口', available: device.can_connect_serial }
+  ].filter((action) => action.available).map((action) => ({
+    ...action,
+    opened: deviceSessions.some((session) => session.kind === action.kind)
+  }))
+}
 const activeProtocolLabels = computed<Record<string, string>>(() => {
   const totals = new Map<string, number>()
   const seen = new Map<string, number>()
@@ -803,6 +821,15 @@ function closeAppContextMenus(): void {
   closeProfileContextMenu()
 }
 
+function showApplicationMenu(key: ApplicationMenuKey, event: MouseEvent): void {
+  const button = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (!button) return
+  const { left, bottom } = button.getBoundingClientRect()
+  void window.desktopApi?.showApplicationMenu(key, Math.round(left), Math.round(bottom)).catch(() => {
+    // The rest of the workspace stays usable if the native menu cannot be opened.
+  })
+}
+
 watch(deviceContextMenu, async (menu) => {
   if (!menu) return
   await nextTick()
@@ -973,6 +1000,33 @@ function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string
   }
 }
 
+function openDeviceSessionTabContextMenu(event: MouseEvent, deviceId: string): void {
+  activateSessionDevice(deviceId)
+  openSessionManagerDeviceContextMenu(event, deviceId)
+}
+
+function handleDeviceSessionTabKeydown(event: KeyboardEvent, deviceId: string): void {
+  if (event.key === 'Escape') {
+    closeSessionManagerDeviceContextMenu()
+    return
+  }
+  if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+  event.preventDefault()
+  activateSessionDevice(deviceId)
+  announceContextMenuOpen()
+  const deviceTab = document.querySelector<HTMLElement>(
+    `[data-device-tab-id="${CSS.escape(deviceId)}"] .device-session-tab-select`
+  )
+  const trigger = deviceTab || (event.currentTarget as HTMLElement | null)
+  const rect = trigger?.getBoundingClientRect()
+  sessionManagerDeviceContextMenuReturnFocus.value = trigger
+  sessionManagerDeviceContextMenu.value = {
+    deviceId,
+    x: rect ? rect.left + 24 : 140,
+    y: rect ? rect.bottom + 4 : 140
+  }
+}
+
 function sessionManagerContextDevice(): DeviceSummary | null {
   const deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''
   return deviceById.value.get(deviceId) || null
@@ -1038,17 +1092,35 @@ function locateSessionManagerDevice(deviceId = sessionManagerDeviceContextMenu.v
 function openSessionManagerDeviceSession(kind: 'ssh' | 'telnet' | 'serial'): void {
   const device = sessionManagerContextDevice()
   if (!device) return
-  activeSection.value = 'devices'
-  selectDevice(device.row_id)
-  void workspace.openSessionForDevice(device, kind)
+  openOrActivateDeviceSession(device, kind)
   closeSessionManagerDeviceContextMenu()
+}
+
+function openOrActivateDeviceSession(
+  device: DeviceSummary,
+  kind: 'ssh' | 'telnet' | 'serial'
+): void {
+  const existing = workspace.sessions.find((session) =>
+    session.device_id === device.id && session.kind === kind
+  )
+  if (existing) {
+    activateSession(existing.id)
+    workspace.notice = `已切换至 ${device.name} 的 ${sessionKindLabel(kind)} 会话`
+    return
+  }
+  void workspace.openSessionForDevice(device, kind)
+}
+
+function openOrActivateDeviceProtocol(deviceId: string, kind: DeviceProtocolKind): void {
+  const device = deviceById.value.get(deviceId)
+  if (device) openOrActivateDeviceSession(device, kind)
 }
 
 function startSessionTabDrag(event: DragEvent, session: SessionSummary): void {
   if (!event.dataTransfer) return
   workspace.activeSessionId = session.id
   event.dataTransfer.effectAllowed = 'move'
-  event.dataTransfer.setData('application/x-device-tui-session', session.id)
+  event.dataTransfer.setData('application/x-odyterm-session', session.id)
   event.dataTransfer.setData('text/plain', session.id)
 }
 
@@ -1396,12 +1468,6 @@ function openSessionUpgrade(sessionId: string): void {
   workspace.aiPanelOpen = false
 }
 
-function openSessionToolbarContext(sessionId: string, event: MouseEvent): void {
-  const session = workspace.sessions.find((candidate) => candidate.id === sessionId)
-  if (!session) return
-  openSessionContextMenu(event, session, 'terminal')
-}
-
 function toggleTransferPanel(): void {
   const open = !workspace.transferPanelOpen
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
@@ -1425,6 +1491,9 @@ function applyRendererTheme(mode: ThemeMode): void {
   document.documentElement.dataset.theme = mode
   document.documentElement.style.colorScheme = mode
   localStorage.setItem(THEME_KEY, mode)
+  void window.desktopApi?.setNativeTheme(mode).catch(() => {
+    // The renderer theme remains usable if the preload bridge is unavailable.
+  })
 }
 
 async function setAlwaysOnTop(enabled: boolean, announce = true): Promise<void> {
@@ -1647,6 +1716,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <div class="app-frame">
+    <header class="app-titlebar" aria-label="应用菜单">
+      <div class="app-titlebar-identity"><span>OdyTerm</span></div>
+      <div class="app-titlebar-menus" role="menubar" aria-label="应用菜单">
+        <button type="button" role="menuitem" @click.stop="showApplicationMenu('file', $event)">文件</button>
+        <button type="button" role="menuitem" @click.stop="showApplicationMenu('edit', $event)">编辑</button>
+        <button type="button" role="menuitem" @click.stop="showApplicationMenu('view', $event)">视图</button>
+        <button type="button" role="menuitem" @click.stop="showApplicationMenu('window', $event)">窗口</button>
+      </div>
+    </header>
   <div
     class="app-shell"
     :class="{
@@ -1659,7 +1738,6 @@ onBeforeUnmount(() => {
     @click="closeAppContextMenus"
   >
     <nav class="activity-rail" aria-label="主功能">
-      <div class="brand-mark" title="Device TUI"><Network :size="20" /></div>
       <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'devices' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'devices' ? '隐藏设备列表' : '显示设备列表'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'devices'" @click="setSection('devices')">
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
       </button>
@@ -2602,6 +2680,7 @@ onBeforeUnmount(() => {
             class="device-session-tab"
             :class="{ active: group.id === activeSessionDeviceId }"
             :data-device-tab-id="group.id"
+            @contextmenu.prevent="openDeviceSessionTabContextMenu($event, group.id)"
           >
             <button
               class="device-session-tab-select"
@@ -2611,6 +2690,7 @@ onBeforeUnmount(() => {
               :aria-label="`${group.label}，${group.sessions.length} 个终端，${sessionHealthLabel(group.health)}`"
               :aria-selected="group.id === activeSessionDeviceId"
               @click="activateSessionDevice(group.id)"
+              @keydown="handleDeviceSessionTabKeydown($event, group.id)"
             >
               <span class="device-session-health" :data-state="group.health" aria-hidden="true">
                 <MonitorDot :size="13" />
@@ -2863,12 +2943,13 @@ onBeforeUnmount(() => {
         :device-id="group.id"
         :sessions="group.sessions"
         :active-session-id="activeSessionIdForDevice(group.id, group.sessions)"
+        :protocol-actions="deviceProtocolActions(group.id)"
         @activate="activateSession"
+        @open-protocol="openOrActivateDeviceProtocol(group.id, $event)"
         @status="workspace.updateSessionStatus"
         @automation="openSessionAutomation"
         @transfer="openSessionTransfer"
         @upgrade="openSessionUpgrade"
-        @context="openSessionToolbarContext"
         @split-change="updateTerminalSplitState(group.id, $event)"
       />
       <section v-if="!workspace.activeSession" class="empty-workspace">
@@ -2997,5 +3078,6 @@ onBeforeUnmount(() => {
       @device-sources-changed="workspace.initialize"
     />
     <HelpPanel :open="helpPanelOpen" :return-focus="helpReturnFocus" @close="helpPanelOpen = false" />
+  </div>
   </div>
 </template>

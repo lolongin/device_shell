@@ -666,14 +666,20 @@ class WorkflowEngine:
         return WorkflowResult(status, tuple(results), outputs, "workflow_failed" if failed else "", "Workflow completed." if not failed else "Workflow failed.")
 
 
-class TaskManager:
-    """Own task lifecycle and delegate every device action to workflow ports."""
+class LegacyTaskManager:
+    """Compatibility backend for pre-framework ``TaskRecord`` callers.
+
+    The desktop application exposes :class:`TaskService`, not this class.
+    This backend remains only for historical records and legacy requests that
+    predate a Framework ``TaskPlan``.
+    """
 
     def __init__(
         self,
         execution: DeviceExecutionTool,
         events: EventBus,
         *,
+        allow_legacy_execution: bool = True,
         workflow_engine: WorkflowEngine | None = None,
         decision_engine: DecisionEngine | None = None,
         store: TaskStore | None = None,
@@ -685,7 +691,14 @@ class TaskManager:
     ) -> None:
         self._execution = execution
         self._events = events
-        self._engine = workflow_engine or WorkflowEngine()
+        # Production composition disables this scheduler.  Keeping the flag
+        # here lets direct historical integrations opt into the old runner
+        # while making that choice explicit and testable.
+        self._allow_legacy_execution = bool(allow_legacy_execution)
+        # Framework-only applications should not initialize the legacy state
+        # machine. Historical tasks create it when they use the compatibility
+        # runner.
+        self._engine = workflow_engine
         self._decision = decision_engine or RuleDecisionEngine()
         self._records: dict[str, TaskRecord] = {}
         self._jobs: dict[str, asyncio.Task[None]] = {}
@@ -703,11 +716,18 @@ class TaskManager:
         self._framework_workflows = framework_workflows
         self._task_orchestrator = task_orchestrator
         self._framework_definitions: dict[str, FrameworkWorkflowDefinition] = {}
+        self._framework_task_plans: dict[str, TaskPlan] = {}
+        self._framework_projection_ids: set[str] = set()
         if store is not None:
             for record, request in store.list_tasks():
+                if self._is_framework_projection(request):
+                    self._framework_projection_ids.add(record.id)
                 framework_definition = self._framework_definition(request.workflow)
                 if framework_definition is not None:
                     self._framework_definitions[record.id] = framework_definition
+                framework_plan = self._task_plan_from_workflow(request.workflow)
+                if framework_plan is not None:
+                    self._framework_task_plans[record.id] = framework_plan
                 interrupted = self._interrupted_operation(record)
                 if record.status in {"running", "pending"}:
                     record = replace(
@@ -736,9 +756,12 @@ class TaskManager:
         task_id = str(uuid4())
         device_id = str(request.target.device_id or "").strip()
         framework_definition = self._framework_definition(request.workflow)
+        framework_task_plan = request.framework_plan or self._task_plan_from_workflow(request.workflow)
         if request.workflow.id == "device_upgrade" and framework_definition is None:
             raise ApplicationError("The device_upgrade workflow requires the Workflow Framework.")
-        if framework_definition is None and device_id:
+        if framework_task_plan is not None and self._task_orchestrator is None:
+            raise ApplicationError("Framework TaskPlan orchestration is not configured.")
+        if framework_definition is None and (framework_task_plan is None or self._task_orchestrator is None) and device_id:
             self._ensure_lease(task_id, device_id)
         now = self._now()
         metadata = dict(request.workflow.metadata)
@@ -763,6 +786,32 @@ class TaskManager:
         self._cancel[task_id] = cancel_event
         self._resources[task_id] = set()
         self._completed_steps[task_id] = 0
+        if framework_task_plan is not None and self._task_orchestrator is not None:
+            self._framework_task_plans[task_id] = framework_task_plan
+            run = self._task_orchestrator.start(
+                framework_task_plan,
+                device_id=device_id,
+                inputs={},
+                context={
+                    **dict(request.context),
+                    "source": request.source,
+                    "resource_owner_id": str(metadata.get("parent_task_id") or task_id),
+                    "target": {
+                        "device_id": device_id,
+                        "session_id": request.target.session_id,
+                        "protocol": request.target.protocol,
+                    },
+                },
+                task_run_id=task_id,
+            )
+            self._update_framework_task_record(task_id, request, run)
+            self._jobs[task_id] = asyncio.create_task(
+                self._run_framework_orchestrated(task_id, request, framework_task_plan),
+                name=f"framework-plan-{task_id}",
+            )
+            self._publish("task.created", self.get(task_id))
+            self._persist(self.get(task_id), request)
+            return self.get(task_id)
         if framework_definition is not None:
             if self._task_orchestrator is not None:
                 framework_inputs = dict(request.workflow.metadata.get("framework_inputs") or {})
@@ -777,6 +826,7 @@ class TaskManager:
                     context={
                         **dict(request.context),
                         "source": request.source,
+                        "resource_owner_id": str(metadata.get("parent_task_id") or task_id),
                         "target": {
                             "device_id": device_id,
                             "session_id": request.target.session_id,
@@ -818,8 +868,13 @@ class TaskManager:
             self._publish("task.created", self.get(task_id))
             self._persist(self.get(task_id), request)
             return self.get(task_id)
-        # Agent-authored plans still use the resumable legacy engine until the
-        # generic plan compiler is migrated to Framework definitions.
+        if not self._allow_legacy_execution:
+            raise ApplicationError(
+                "Legacy task execution is disabled; submit a Framework TaskPlan."
+            )
+        # Only workflows without a Framework representation use the legacy
+        # engine.  This is the compatibility path for historical persisted
+        # tasks and callers that still submit the old WorkflowStep contract.
         runner = self._run_stateful if request.source in {"agent", "mcp-agent"} else self._run
         self._jobs[task_id] = asyncio.create_task(runner(task_id, request), name=f"device-task-{task_id}")
         self._publish("task.created", record)
@@ -848,6 +903,36 @@ class TaskManager:
             self._update_framework_record(task_id, request, self._framework_runtime.runs.get(child_id))
             return
         definition = self._framework_definitions.get(task_id)
+        if definition is None and hasattr(run, "status"):
+            status_map = {
+                "created": TaskStatus.PENDING.value,
+                "running": TaskStatus.RUNNING.value,
+                "waiting_child": TaskStatus.RUNNING.value,
+                "waiting_decision": TaskStatus.WAITING_FOR_DECISION.value,
+                "waiting_reconcile": TaskStatus.PAUSED.value,
+                "unknown": TaskStatus.PAUSED.value,
+                "succeeded": TaskStatus.COMPLETED.value,
+                "failed": TaskStatus.FAILED.value,
+                "cancelled": TaskStatus.CANCELLED.value,
+            }
+            status = status_map.get(str(run.status), TaskStatus.RUNNING.value)
+            task_plan = self._framework_task_plans.get(task_id)
+            completed_nodes = 0
+            if task_plan is not None:
+                completed_nodes = sum(
+                    1 for node_id in run.node_runs
+                    if node_id in run.outputs
+                )
+            total_nodes = max(1, len(task_plan.nodes) if task_plan is not None else 1)
+            self._update(
+                task_id,
+                status=status,
+                current_step_id=next(reversed(run.node_runs), "") if run.node_runs else "",
+                progress_percent=100 if status == TaskStatus.COMPLETED.value else min(99, int(completed_nodes * 100 / total_nodes)),
+                message=("Task completed." if status == TaskStatus.COMPLETED.value else "Task waiting." if status.startswith("waiting") else "Task running."),
+                error_code=str((getattr(run, "error", None) or {}).get("code") or ""),
+            )
+            return
         status_map = {
             "created": TaskStatus.PENDING.value,
             "running": TaskStatus.RUNNING.value,
@@ -929,6 +1014,25 @@ class TaskManager:
             # without a TaskRun created by the orchestrator.
             return None
 
+    def _framework_child_run(self, task_id: str) -> FrameworkWorkflowRun | None:
+        """Resolve the active child Workflow for a composed TaskRun."""
+        task = self._orchestrated_task_run(task_id)
+        if task is None or self._framework_runtime is None:
+            return None
+        for node_id in reversed(tuple(task.node_runs)):
+            child_id = task.node_runs[node_id]
+            try:
+                child = self._framework_runtime.runs.get(child_id)
+            except KeyError:
+                continue
+            if str(child.status) not in {
+                FrameworkRunStatus.SUCCEEDED.value,
+                FrameworkRunStatus.FAILED.value,
+                FrameworkRunStatus.CANCELLED.value,
+            }:
+                return child
+        return None
+
     def _framework_definition(self, workflow: WorkflowDefinition) -> FrameworkWorkflowDefinition | None:
         if self._framework_runtime is None or self._framework_workflows is None:
             return None
@@ -940,6 +1044,46 @@ class TaskManager:
         if not isinstance(raw_inputs, dict):
             return None
         return self._framework_workflows.build(canonical_id, dict(raw_inputs))
+
+    @staticmethod
+    def _task_plan_from_workflow(workflow: WorkflowDefinition) -> TaskPlan | None:
+        raw = dict(workflow.metadata).get("framework_task_plan")
+        if not isinstance(raw, dict):
+            return None
+        try:
+            plan = TaskPlan.from_dict(raw)
+            plan.validate()
+            return plan
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_framework_projection(request: TaskCreate) -> bool:
+        metadata = dict(request.workflow.metadata)
+        return bool(
+            request.framework_plan is not None
+            or isinstance(metadata.get("framework_task_plan"), dict)
+            or str(metadata.get("canonical_workflow_id") or "").strip()
+        )
+
+    def _is_framework_managed(self, task_id: str) -> bool:
+        return (
+            self._framework_definition_for_task(task_id) is not None
+            or self._task_plan_from_request(task_id) is not None
+            or self._orchestrated_task_run(task_id) is not None
+        )
+
+    def _task_plan_from_request(self, task_id: str) -> TaskPlan | None:
+        plan = self._framework_task_plans.get(task_id)
+        if plan is not None:
+            return plan
+        request = self._requests.get(task_id)
+        if request is None:
+            return None
+        plan = self._task_plan_from_workflow(request.workflow)
+        if plan is not None:
+            self._framework_task_plans[task_id] = plan
+        return plan
 
     @staticmethod
     def _framework_workflow_view(definition: FrameworkWorkflowDefinition) -> dict[str, Any]:
@@ -1127,10 +1271,47 @@ class TaskManager:
         request = self._requests.get(task_id)
         if request is None:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
-        if self._framework_definition_for_task(task_id) is not None:
-            run = self._framework_runtime.runs.get(task_id)
+        if self._is_framework_managed(task_id):
             action = decision.action if isinstance(decision, Decision) else decision
             if isinstance(action, Action):
+                orchestrated = self._orchestrated_task_run(task_id)
+                if orchestrated is not None and task_id not in self._framework_definitions:
+                    point_run = self._framework_child_run(task_id)
+                    if point_run is None or point_run.decision_point is None:
+                        raise ValueError("Workflow is not waiting for a decision")
+                    point = point_run.decision_point
+                    option = next(
+                        (
+                            item for item in point.options
+                            if item.id.casefold() == action.name.casefold()
+                            or item.kind.casefold() == action.name.casefold()
+                            or (action.name.casefold() == "cancel" and item.kind.casefold() == "abort")
+                        ),
+                        None,
+                    )
+                    if option is None:
+                        raise ValueError(f"Workflow decision action is not available: {action.name}")
+                    actor = decision.actor if isinstance(decision, Decision) else DecisionActor(type="user")
+                    submission = FrameworkDecisionSubmission(
+                        decision_point_id=point.id,
+                        expected_revision=(decision.expected_revision if isinstance(decision, Decision) and decision.expected_revision is not None else point_run.revision),
+                        option_id=option.id,
+                        actor_type="human" if actor.type == "user" else "agent",
+                        actor_id=actor.id,
+                        inputs=dict(action.parameters),
+                        reason=str(decision.reason if isinstance(decision, Decision) else ""),
+                        idempotency_key=str(decision.decision_id if isinstance(decision, Decision) else ""),
+                    )
+                    updated_task = self._task_orchestrator.apply_decision(task_id, submission)
+                    self._update_framework_task_record(task_id, request, updated_task)
+                    plan = self._task_plan_from_request(task_id)
+                    if plan is not None and str(updated_task.status) == "running" and task_id not in self._jobs:
+                        self._jobs[task_id] = asyncio.create_task(
+                            self._run_framework_orchestrated(task_id, request, plan),
+                            name=f"framework-plan-{task_id}-decision",
+                        )
+                    return self.get(task_id)
+                run = self._framework_runtime.runs.get(task_id)
                 action_name = action.name.casefold()
                 point = run.decision_point
                 if point is None:
@@ -1220,7 +1401,8 @@ class TaskManager:
         self._update(task_id, status="running", message="Task running.")
         try:
             await self._reset_session_if_requested(task_id, request)
-            result = await self._engine.run(
+            engine = self._engine or WorkflowEngine()
+            result = await engine.run(
                 request.workflow,
                 task_id=task_id,
                 target=request.target,
@@ -1270,7 +1452,7 @@ class TaskManager:
             raise ResourceNotFoundError("Task workflow definition is no longer available.", details={"task_id": task_id})
         request = replace(request, context={**request.context, **dict(context or {}), "reset_session": True})
         self._requests[task_id] = request
-        if self._framework_definition_for_task(task_id) is not None:
+        if self._is_framework_managed(task_id):
             orchestrated = self._orchestrated_task_run(task_id)
             if orchestrated is not None:
                 run = self._task_orchestrator.resume(task_id, context=dict(context or {}))  # type: ignore[union-attr]
@@ -1278,10 +1460,18 @@ class TaskManager:
                 if child_id and self._framework_runtime is not None:
                     self._update_framework_record(task_id, request, self._framework_runtime.runs.get(child_id))
                 if str(run.status) == "running" and task_id not in self._jobs:
-                    plan = self._framework_task_plan(
-                        self._framework_definitions[task_id],
-                        dict(request.workflow.metadata.get("framework_inputs") or {}),
-                    )
+                    plan = self._framework_task_plans.get(task_id)
+                    if plan is None:
+                        definition = self._framework_definitions.get(task_id)
+                        if definition is None:
+                            plan = self._task_plan_from_request(task_id)
+                        else:
+                            plan = self._framework_task_plan(
+                                definition,
+                                dict(request.workflow.metadata.get("framework_inputs") or {}),
+                            )
+                    if plan is None:
+                        raise ResourceNotFoundError("Framework TaskPlan is no longer available.", details={"task_id": task_id})
                     self._jobs[task_id] = asyncio.create_task(
                         self._run_framework_orchestrated(task_id, request, plan),
                         name=f"framework-task-{task_id}-resume",
@@ -1328,7 +1518,7 @@ class TaskManager:
         if record.status in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
             return record
         request = self._requests.get(task_id)
-        if request is not None and self._framework_definition_for_task(task_id) is not None:
+        if request is not None and self._is_framework_managed(task_id):
             orchestrated = self._orchestrated_task_run(task_id)
             run = (
                 self._task_orchestrator.pause(task_id)  # type: ignore[union-attr]
@@ -1364,8 +1554,14 @@ class TaskManager:
     def get_decision(self, task_id: str) -> DecisionContext | None:
         record = self.get(task_id)
         request = self._requests.get(task_id)
-        if request is not None and self._framework_definition_for_task(task_id) is not None:
-            run = self._framework_runtime.runs.get(task_id)
+        if request is not None and self._is_framework_managed(task_id):
+            run = (
+                self._framework_runtime.runs.get(task_id)
+                if task_id in self._framework_definitions
+                else self._framework_child_run(task_id)
+            )
+            if run is None:
+                return None
             point = run.decision_point
             if point is None:
                 return None
@@ -1422,7 +1618,7 @@ class TaskManager:
         if record.status in {"completed", "failed", "cancelled"}:
             return record
         request = self._requests.get(task_id)
-        if request is not None and self._framework_definition_for_task(task_id) is not None:
+        if request is not None and self._is_framework_managed(task_id):
             orchestrated = self._orchestrated_task_run(task_id)
             if orchestrated is not None:
                 self._task_orchestrator.cancel(task_id)  # type: ignore[union-attr]
@@ -1465,6 +1661,7 @@ class TaskManager:
         self._cancel.pop(task_id, None)
         self._stateful_engines.pop(task_id, None)
         self._framework_definitions.pop(task_id, None)
+        self._framework_task_plans.pop(task_id, None)
         self._release_task_resources(task_id)
         if self._store is not None:
             self._store.delete_task(task_id)
@@ -1488,6 +1685,11 @@ class TaskManager:
         cancelled = 0
         for task_id, request in tuple(self._requests.items()):
             if request.target.session_id != session_id:
+                continue
+            # Framework-backed tasks are owned by TaskService. They may be
+            # present in this compatibility projection for persistence, but
+            # must not be driven through the legacy lifecycle here.
+            if task_id in self._framework_projection_ids or self._is_framework_managed(task_id):
                 continue
             if self.get(task_id).status in {
                 TaskStatus.COMPLETED.value,
@@ -1635,6 +1837,26 @@ class TaskManager:
         if self._store is not None:
             self._store.upsert_task(record, request)
 
+    def persist_framework_task(self, task_id: str, request: TaskCreate, record: TaskRecord) -> None:
+        """Persist a Framework projection without scheduling legacy work."""
+        self._framework_projection_ids.add(task_id)
+        self._records[task_id] = record
+        self._requests[task_id] = request
+        plan = request.framework_plan or self._task_plan_from_workflow(request.workflow)
+        if plan is not None:
+            self._framework_task_plans[task_id] = plan
+        self._persist(record, request)
+
+    def forget_framework_task(self, task_id: str) -> None:
+        """Remove only the compatibility projection for a Framework task."""
+        self._framework_projection_ids.discard(task_id)
+        self._records.pop(task_id, None)
+        self._requests.pop(task_id, None)
+        self._framework_task_plans.pop(task_id, None)
+        self._framework_definitions.pop(task_id, None)
+        if self._store is not None:
+            self._store.delete_task(task_id)
+
     def _publish(self, event_type: str, record: TaskRecord) -> None:
         self._events.publish(
             event_type,
@@ -1657,3 +1879,8 @@ class TaskManager:
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+
+# Import compatibility for persisted clients. New composition code should use
+# ``LegacyTaskManager`` only as the private backend of ``TaskService``.
+TaskManager = LegacyTaskManager

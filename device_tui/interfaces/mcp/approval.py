@@ -147,7 +147,7 @@ class ApprovalStore:
         if not approval_token:
             raise AppControlError(
                 "approval_required",
-                "该动作需要用户在 Device TUI 中确认。",
+                "该动作需要用户在 OdyTerm 中确认。",
                 status=409,
             )
         with self._lock:

@@ -5,6 +5,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import {
   Box,
+  Cable,
+  ChevronDown,
   CircleAlert,
   Clipboard,
   ExternalLink,
@@ -12,8 +14,9 @@ import {
   FileText,
   FileUp,
   FolderOpen,
+  KeyRound,
   Minus,
-  MoreHorizontal,
+  Network,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -37,13 +40,25 @@ import {
   subscribeContextMenuOpen
 } from '../contextMenu'
 
-const props = defineProps<{ session: SessionSummary; active: boolean }>()
+type DeviceProtocolKind = 'ssh' | 'telnet' | 'serial'
+
+interface DeviceProtocolAction {
+  kind: DeviceProtocolKind
+  label: string
+  opened: boolean
+}
+
+const props = defineProps<{
+  session: SessionSummary
+  active: boolean
+  protocolActions: DeviceProtocolAction[]
+}>()
 const emit = defineEmits<{
   status: [sessionId: string, status: string, sequence: number]
   automation: [sessionId: string]
   transfer: [sessionId: string]
   upgrade: [sessionId: string]
-  context: [sessionId: string, event: MouseEvent]
+  openProtocol: [kind: DeviceProtocolKind]
 }>()
 
 const pane = ref<HTMLElement | null>(null)
@@ -96,7 +111,7 @@ const recoveryMessage = computed(() => ({
 })[connectionStatus.value] || '')
 
 function readFontSize(): number {
-  const value = Number(localStorage.getItem('device-tui.desktop-v2.terminal-font-size') || 13)
+  const value = Number(localStorage.getItem('odyterm.desktop-v2.terminal-font-size') || 13)
   return Math.max(9, Math.min(28, Number.isFinite(value) ? value : 13))
 }
 
@@ -353,6 +368,12 @@ function openContextMenu(event: MouseEvent): void {
   }
 }
 
+function openDeviceProtocol(event: MouseEvent, kind: DeviceProtocolKind): void {
+  emit('openProtocol', kind)
+  const menu = (event.currentTarget as HTMLElement | null)?.closest('details')
+  menu?.removeAttribute('open')
+}
+
 function closeContextMenu(): void {
   contextMenu.value = null
 }
@@ -426,8 +447,8 @@ function findPrevious(): void {
 
 function changeFontSize(delta: number): void {
   const nextSize = Math.max(9, Math.min(28, fontSize.value + delta))
-  localStorage.setItem('device-tui.desktop-v2.terminal-font-size', String(nextSize))
-  window.dispatchEvent(new CustomEvent('device-tui:terminal-font-size', { detail: nextSize }))
+  localStorage.setItem('odyterm.desktop-v2.terminal-font-size', String(nextSize))
+  window.dispatchEvent(new CustomEvent('odyterm:terminal-font-size', { detail: nextSize }))
 }
 
 function handleSharedFontSize(event: Event): void {
@@ -569,7 +590,6 @@ onMounted(async () => {
     fontSize: fontSize.value,
     lineHeight: 1.25,
     scrollback: 10_000,
-    overviewRuler: { width: 9 },
     theme: terminalThemeFor(readThemeMode())
   })
   terminal.loadAddon(fitAddon)
@@ -595,8 +615,8 @@ onMounted(async () => {
   themeObserver = new MutationObserver(applyTerminalTheme)
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   window.addEventListener('keydown', handleShortcut, true)
-  window.addEventListener('device-tui:terminal-font-size', handleSharedFontSize)
-  window.addEventListener('device-tui:focus-terminal', handleTerminalFocusRequest)
+  window.addEventListener('odyterm:terminal-font-size', handleSharedFontSize)
+  window.addEventListener('odyterm:focus-terminal', handleTerminalFocusRequest)
   await connect()
   if (props.active) terminal.focus()
 })
@@ -606,8 +626,8 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   themeObserver?.disconnect()
   window.removeEventListener('keydown', handleShortcut, true)
-  window.removeEventListener('device-tui:terminal-font-size', handleSharedFontSize)
-  window.removeEventListener('device-tui:focus-terminal', handleTerminalFocusRequest)
+  window.removeEventListener('odyterm:terminal-font-size', handleSharedFontSize)
+  window.removeEventListener('odyterm:focus-terminal', handleTerminalFocusRequest)
   flushTerminalOutput()
   socket?.close()
   terminal?.dispose()
@@ -678,7 +698,40 @@ onBeforeUnmount(() => {
       </button>
       <span class="terminal-bottom-divider" aria-hidden="true"></span>
       <div class="terminal-actions" :aria-label="`${session.title} 会话控制`">
+        <details v-if="protocolActions.length" class="terminal-device-connect-menu">
+          <summary
+            class="connection-state terminal-device-connect-toggle"
+            :data-state="connectionStatus"
+            :title="`当前会话${connectionStatusLabel}；打开当前设备的快速连接`"
+            :aria-label="`当前会话连接状态：${connectionStatusLabel}；打开当前设备快速连接菜单`"
+          >
+            <i aria-hidden="true"></i>
+            <span>{{ connectionStatusLabel }}</span>
+            <ChevronDown :size="12" aria-hidden="true" />
+          </summary>
+          <div class="terminal-device-connect-popover" role="menu" aria-label="当前设备快速连接">
+            <button
+              v-for="action in protocolActions"
+              :key="action.kind"
+              class="terminal-device-connect-menu-item"
+              :class="{ 'is-open': action.opened }"
+              :data-protocol="action.kind"
+              type="button"
+              role="menuitem"
+              :title="action.opened ? `切换到 ${action.label} 会话` : `打开 ${action.label} 会话`"
+              :aria-label="action.opened ? `切换到 ${action.label} 会话，已打开` : `打开 ${action.label} 会话`"
+              @click="openDeviceProtocol($event, action.kind)"
+            >
+              <KeyRound v-if="action.kind === 'ssh'" :size="14" aria-hidden="true" />
+              <Network v-else-if="action.kind === 'telnet'" :size="14" aria-hidden="true" />
+              <Cable v-else :size="14" aria-hidden="true" />
+              <span>{{ action.label }}</span>
+              <small>{{ action.opened ? '已打开' : '连接' }}</small>
+            </button>
+          </div>
+        </details>
         <span
+          v-else
           class="connection-state"
           :data-state="connectionStatus"
           :title="connectionStatusLabel"
@@ -686,10 +739,6 @@ onBeforeUnmount(() => {
         >
           <i aria-hidden="true"></i>{{ connectionStatusLabel }}
         </span>
-        <button class="icon-button" type="button" title="当前会话操作" @click.stop="emit('context', session.id, $event)">
-          <MoreHorizontal :size="15" aria-hidden="true" />
-          <span class="sr-only">当前会话操作</span>
-        </button>
         <button
           class="icon-button"
           type="button"

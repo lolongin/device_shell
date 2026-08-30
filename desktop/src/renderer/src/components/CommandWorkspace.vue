@@ -52,11 +52,18 @@ const draggedGroupId = ref('')
 const dragOverGroupId = ref('')
 const dragOverPosition = ref<'before' | 'after'>('before')
 const commandGroupDragBusy = ref(false)
-const commandGroupScrollTops = new Map<string, number>()
+interface CommandEditorViewState {
+  selectionStart: number
+  selectionEnd: number
+  selectionDirection: 'forward' | 'backward' | 'none'
+  scrollTop: number
+}
+
+const commandGroupViewStates = new Map<string, CommandEditorViewState>()
 const editorContextMenu = ref<{ x: number; y: number; hasSelection: boolean; hasCommand: boolean } | null>(null)
 const editorContextMenuElement = ref<HTMLElement | null>(null)
 const editorContextMenuReturnFocus = ref<HTMLElement | null>(null)
-const COMMAND_PANEL_HEIGHT_KEY = 'device-tui.desktop-v2.command-panel-height'
+const COMMAND_PANEL_HEIGHT_KEY = 'odyterm.desktop-v2.command-panel-height'
 const COMMAND_PANEL_MIN_HEIGHT = 180
 const COMMAND_PANEL_DEFAULT_HEIGHT = 300
 const commandPanelMaxHeight = ref(680)
@@ -190,25 +197,59 @@ function resetCommandPanelHeight(): void {
   setCommandPanelHeight(COMMAND_PANEL_DEFAULT_HEIGHT)
 }
 
+function rememberEditorViewState(groupId = editorGroupId): void {
+  const element = editor.value
+  if (!groupId || !element) return
+  commandGroupViewStates.set(groupId, {
+    selectionStart: element.selectionStart,
+    selectionEnd: element.selectionEnd,
+    selectionDirection: element.selectionDirection,
+    scrollTop: element.scrollTop
+  })
+}
+
+function restoreEditorViewState(groupId: string, focus = false): void {
+  const element = editor.value
+  if (!element) return
+  const state = commandGroupViewStates.get(groupId) || {
+    selectionStart: 0,
+    selectionEnd: 0,
+    selectionDirection: 'none' as const,
+    scrollTop: 0
+  }
+  const start = Math.min(state.selectionStart, content.value.length)
+  const end = Math.min(state.selectionEnd, content.value.length)
+  element.setSelectionRange(start, end, state.selectionDirection)
+  if (focus) element.focus({ preventScroll: true })
+  element.scrollTop = state.scrollTop
+  if (lineNumberGutter.value) lineNumberGutter.value.scrollTop = state.scrollTop
+  updateSelectionState()
+}
+
 watch(
   () => [currentGroup.value?.id, currentGroup.value?.content] as const,
   async ([nextGroupId, nextContent]) => {
     const groupChanged = editorGroupId !== (nextGroupId || '')
-    if (groupChanged && editorGroupId && editor.value) {
-      commandGroupScrollTops.set(editorGroupId, editor.value.scrollTop)
-    }
+    if (groupChanged) rememberEditorViewState()
     editorGroupId = nextGroupId || ''
     content.value = nextContent || ''
     saveState.value = 'saved'
     if (groupChanged) {
       await nextTick()
-      const scrollTop = commandGroupScrollTops.get(editorGroupId) || 0
-      if (editor.value) editor.value.scrollTop = scrollTop
-      if (lineNumberGutter.value) lineNumberGutter.value.scrollTop = scrollTop
+      restoreEditorViewState(editorGroupId)
     }
   },
   { immediate: true }
 )
+
+watch(() => workspace.commandPanelOpen, async (open) => {
+  if (!open) {
+    rememberEditorViewState()
+    return
+  }
+  await nextTick()
+  restoreEditorViewState(editorGroupId)
+})
 
 watch(content, () => {
   if (!currentGroup.value || content.value === currentGroup.value.content) {
@@ -237,7 +278,7 @@ async function selectGroup(groupId: string): Promise<void> {
   await saveContent()
   await workspace.selectCommandGroup(groupId)
   await nextTick()
-  editor.value?.focus()
+  restoreEditorViewState(groupId, true)
 }
 
 async function beginRename(group = currentGroup.value): Promise<void> {
@@ -383,6 +424,7 @@ function updateSelectionState(): void {
   if (!element) return
   selectionStart.value = element.selectionStart
   selectionEnd.value = element.selectionEnd
+  rememberEditorViewState()
 }
 
 function selectCurrentCommandLine(): void {
@@ -549,7 +591,7 @@ function handleEditorActivity(): void {
 function syncEditorScroll(): void {
   if (!editor.value || !lineNumberGutter.value) return
   lineNumberGutter.value.scrollTop = editor.value.scrollTop
-  if (editorGroupId) commandGroupScrollTops.set(editorGroupId, editor.value.scrollTop)
+  rememberEditorViewState()
 }
 
 function findNext(): void {

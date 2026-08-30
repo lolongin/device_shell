@@ -19,7 +19,7 @@ _DEVICE_STORAGE_RE = re.compile(
     r"^[A-Za-z0-9_.-]+(?:#[A-Za-z0-9_.-]+)?:/(?:[^/\\\x00-\x1f]+/)*[^/\\\x00-\x1f]+$"
 )
 TERMINAL_ENVIRONMENTS = frozenset({"auto", "linux", "vrp"})
-_LINUX_MARKER_PREFIX = "__DEVICE_TUI_TRANSFER_"
+_LINUX_MARKER_PREFIX = "__ODYTERM_TRANSFER_"
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,8 +9,8 @@ from pathlib import Path
 def default_runtime_directory() -> Path:
     root = os.getenv("LOCALAPPDATA")
     if root:
-        return Path(root) / "DeviceTUI"
-    return Path.home() / ".device_tui"
+        return Path(root) / "OdyTerm"
+    return Path.home() / ".odyterm"
 
 
 def default_state_path() -> Path:

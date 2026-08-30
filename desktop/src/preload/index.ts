@@ -102,6 +102,10 @@ const desktopApi = {
     ipcRenderer.invoke('clipboard:write-text', value),
   setAlwaysOnTop: (enabled: boolean): Promise<boolean> =>
     ipcRenderer.invoke('window:set-always-on-top', enabled),
+  setNativeTheme: (mode: 'dark' | 'light'): Promise<'dark' | 'light'> =>
+    ipcRenderer.invoke('window:set-native-theme', mode),
+  showApplicationMenu: (key: 'file' | 'edit' | 'view' | 'window', x: number, y: number): Promise<void> =>
+    ipcRenderer.invoke('window:show-application-menu', key, x, y),
   onBackendExit: (callback: (details: string) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, details: string): void => callback(details)
     ipcRenderer.on('backend:exit', listener)

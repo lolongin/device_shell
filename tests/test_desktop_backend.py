@@ -287,7 +287,7 @@ def test_device_api_includes_one_safe_simulated_terminal_row() -> None:
     devices = response.json()["devices"]
     owned_device_ids = response.json()["owned_device_ids"]
     simulated = [device for device in devices if device["id"] == "SIM-TERMINAL"]
-    assert len(devices) == 21
+    assert len(devices) == 22
     assert len(simulated) == 1
     assert devices[-1] == simulated[0]
     assert simulated[0]["row_id"] == "SIM-TERMINAL::0000"

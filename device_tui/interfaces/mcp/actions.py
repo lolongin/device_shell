@@ -27,7 +27,7 @@ class ActionBuilderMixin:
         if tool == "system_status":
             return AiDeviceAction(
                 "system_status",
-                "读取 Device TUI 运行状态",
+                "读取 OdyTerm 运行状态",
                 RiskLevel.OBSERVE,
             )
         if tool == "device_list":
