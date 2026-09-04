@@ -11,6 +11,7 @@ import {
   Database,
   FileUp,
   FileSpreadsheet,
+  FileArchive,
   FolderPlus,
   Globe2,
   Plug,
@@ -74,6 +75,7 @@ import type {
 const AutomationWorkspace = defineAsyncComponent(() => import('./components/AutomationWorkspace.vue'))
 const TransferWorkspace = defineAsyncComponent(() => import('./components/TransferWorkspace.vue'))
 const UpgradeWorkspace = defineAsyncComponent(() => import('./components/UpgradeWorkspace.vue'))
+const PackageBuildWorkspace = defineAsyncComponent(() => import('./components/PackageBuildWorkspace.vue'))
 
 const workspace = useWorkspaceStore()
 const deviceDomainFilterOptions = computed(() => [
@@ -138,7 +140,7 @@ const navigatorVisible = ref(localStorage.getItem(NAVIGATOR_VISIBLE_KEY) !== '0'
 const navigatorWidth = ref(readStoredNavigatorWidth())
 const navigatorResizing = ref(false)
 const operationPanelOpen = computed(() =>
-  workspace.automationPanelOpen || workspace.transferPanelOpen || workspace.upgradePanelOpen
+  workspace.automationPanelOpen || workspace.transferPanelOpen || workspace.upgradePanelOpen || workspace.packageBuildPanelOpen
 )
 const showSessionSidebar = computed(() =>
   workspace.sessions.length > 0 && sessionTabLayout.value === 'side'
@@ -1421,6 +1423,7 @@ function setSection(section: 'devices' | 'temporary' | 'server'): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
+  workspace.packageBuildPanelOpen = false
   if (hideCurrentSection) {
     setNavigatorVisible(false)
     return
@@ -1440,6 +1443,7 @@ function toggleAutomationPanel(): void {
     workspace.automationPanelOpen = true
     workspace.transferPanelOpen = false
     workspace.upgradePanelOpen = false
+    workspace.packageBuildPanelOpen = false
     workspace.aiPanelOpen = false
   }
 }
@@ -1449,6 +1453,7 @@ function openSessionAutomation(sessionId: string): void {
   workspace.automationPanelOpen = true
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
+  workspace.packageBuildPanelOpen = false
   workspace.aiPanelOpen = false
 }
 
@@ -1457,6 +1462,7 @@ function openSessionTransfer(sessionId: string): void {
   workspace.activeSessionId = sessionId
   workspace.transferPanelOpen = true
   workspace.upgradePanelOpen = false
+  workspace.packageBuildPanelOpen = false
   workspace.aiPanelOpen = false
 }
 
@@ -1465,6 +1471,7 @@ function openSessionUpgrade(sessionId: string): void {
   workspace.activeSessionId = sessionId
   workspace.upgradePanelOpen = true
   workspace.transferPanelOpen = false
+  workspace.packageBuildPanelOpen = false
   workspace.aiPanelOpen = false
 }
 
@@ -1474,6 +1481,7 @@ function toggleTransferPanel(): void {
   workspace.transferPanelOpen = open
   if (open) {
     workspace.upgradePanelOpen = false
+    workspace.packageBuildPanelOpen = false
   }
 }
 
@@ -1483,6 +1491,17 @@ function toggleUpgradePanel(): void {
   workspace.upgradePanelOpen = open
   if (open) {
     workspace.transferPanelOpen = false
+    workspace.packageBuildPanelOpen = false
+  }
+}
+
+function togglePackageBuildPanel(): void {
+  const open = !workspace.packageBuildPanelOpen
+  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  workspace.packageBuildPanelOpen = open
+  if (open) {
+    workspace.transferPanelOpen = false
+    workspace.upgradePanelOpen = false
   }
 }
 
@@ -1776,6 +1795,16 @@ onBeforeUnmount(() => {
         @click="toggleUpgradePanel"
       >
         <Box :size="19" /><span class="sr-only">升级任务</span>
+      </button>
+      <button
+        class="rail-button"
+        :class="{ active: workspace.packageBuildPanelOpen }"
+        type="button"
+        title="VRP 编包"
+        :aria-pressed="workspace.packageBuildPanelOpen"
+        @click="togglePackageBuildPanel"
+      >
+        <FileArchive :size="19" /><span class="sr-only">VRP 编包</span>
       </button>
       <div class="rail-spacer"></div>
       <button
@@ -2639,6 +2668,7 @@ onBeforeUnmount(() => {
     <AutomationWorkspace v-if="workspace.automationPanelOpen" />
     <TransferWorkspace v-if="workspace.transferPanelOpen" />
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" />
+    <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
     <div
       v-if="operationPanelOpen"
       class="navigator-resize-handle operation-panel-resize-handle"

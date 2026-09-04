@@ -167,11 +167,13 @@ def profile_summary(
     profile: ConnectionProfile,
 ) -> ConnectionProfileSummary:
     def endpoint(protocol: str, value: ProfileEndpoint) -> ProfileEndpointModel:
+        password = desktop.profiles.password(profile.id, protocol)
         return ProfileEndpointModel(
             host=value.host,
             port=value.port,
             username=value.username,
-            has_password=desktop.profiles.has_password(profile.id, protocol),
+            password=password,
+            has_password=bool(password),
         )
 
     return ConnectionProfileSummary(

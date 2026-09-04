@@ -27,6 +27,7 @@ import type {
   SharedFileListResponse,
   OperationListResponse,
   OperationResponse,
+  PackageBuilderListResponse,
   PackageUpgradeManualPlanResponse,
   PackageUpgradeManualScriptSendResponse,
   SessionKind,
@@ -45,7 +46,10 @@ import type {
   AiApprovalListResponse,
   AiApproval,
   McpResponse,
-  WorkflowPlanValidation
+  WorkflowPlanValidation,
+  AiResultResponse,
+  AiTerminalTarget,
+  AiChatResponse
 } from '../types'
 
 let runtimePromise: Promise<BackendRuntime> | null = null
@@ -371,8 +375,46 @@ export const desktopApi = {
     const query = kind ? `?kind=${encodeURIComponent(kind)}` : ''
     return request(`/api/v1/operations${query}`)
   },
+  packageBuilders: (): Promise<PackageBuilderListResponse> =>
+    request('/api/v1/package-builders'),
+  startPackageBuild: (payload: {
+    builder_id?: string
+    mrid: string
+    package_type?: string
+    model?: string
+    vrp_version?: string
+    source_revision?: string
+    output_name?: string
+    options?: Record<string, unknown>
+  }): Promise<OperationResponse> =>
+    request('/api/v1/package-builds', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  packageBuild: (operationId: string): Promise<OperationResponse> =>
+    request(`/api/v1/package-builds/${encodeURIComponent(operationId)}`),
+  cancelPackageBuild: (operationId: string): Promise<OperationResponse> =>
+    request(`/api/v1/package-builds/${encodeURIComponent(operationId)}/cancel`, { method: 'POST' }),
   aiPlan: (objective: string, selectedDeviceId = ''): Promise<AiPlanResponse> =>
     request('/api/v1/ai/plan', { method: 'POST', body: JSON.stringify({ objective, selected_device_id: selectedDeviceId }) }),
+  aiExecuteCommand: (command: string, target: AiTerminalTarget = {}): Promise<AiResultResponse> =>
+    request('/api/v1/ai/execute-command', {
+      method: 'POST',
+      body: JSON.stringify({ command, ...target })
+    }),
+  aiExecuteBatch: (commands: string[], target: AiTerminalTarget = {}): Promise<AiResultResponse> =>
+    request('/api/v1/ai/execute-batch', {
+      method: 'POST',
+      body: JSON.stringify({ commands, ...target })
+    }),
+  aiChat: (payload: {
+    conversation_id: string
+    message: string
+    device_id?: string
+    session_id?: string
+    protocol?: 'auto' | SessionKind
+  }): Promise<AiChatResponse> =>
+    request('/api/v1/ai/chat', { method: 'POST', body: JSON.stringify(payload) }),
   aiApprovals: (): Promise<AiApprovalListResponse> => request('/api/v1/ai/approvals'),
   aiApprove: (approvalId: string): Promise<{ approval: AiApproval }> =>
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/approve`, { method: 'POST' }),

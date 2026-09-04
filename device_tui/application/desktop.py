@@ -30,6 +30,8 @@ from .transfers import (
     UnavailableTerminalPlanExecutor,
 )
 from .workflow_plugins.package_upgrade.service import PackageUpgradeService
+from device_tui.infrastructure.packaging import PackageBuildService
+from device_tui.package_builders import build_package_builder_registry
 from .tasking import (
     DeviceExecutionTool,
     MemoryTaskStore,
@@ -80,6 +82,7 @@ class DesktopApplication:
     workflow_runtime: WorkflowRuntime
     activity_executor: ActivityExecutor
     task_orchestrator: TaskOrchestrator
+    package_builds: PackageBuildService
 
     @property
     def tasks(self) -> TaskService:
@@ -131,7 +134,7 @@ def build_desktop_application(
     operations = OperationManager(
         events,
         operation_store or MemoryOperationStore(),
-        persistent_kinds={"managed_file_transfer"},
+        persistent_kinds={"managed_file_transfer", PackageBuildService.KIND},
         history_limit=200,
     )
     executor = terminal_executor or UnavailableTerminalPlanExecutor()
@@ -169,6 +172,14 @@ def build_desktop_application(
         execution,
         adapters=framework_adapters,
         transfers=transfers,
+    )
+    package_builders = build_package_builder_registry()
+    package_builds = PackageBuildService(
+        operations,
+        events,
+        package_builders,
+        data_root=(transfer_root.parent if transfer_root is not None else Path.cwd()),
+        output_root=transfer_root,
     )
     runtime = workflow_runtime or WorkflowRuntime(
         actions=build_device_action_registry(
@@ -227,4 +238,5 @@ def build_desktop_application(
         workflow_runtime=runtime,
         activity_executor=activity_executor,
         task_orchestrator=task_orchestrator,
+        package_builds=package_builds,
     )

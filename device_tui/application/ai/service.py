@@ -24,6 +24,7 @@ from device_tui.application.terminal.orchestration import (
     parse_terminal_plan,
 )
 from device_tui.application.device_control import CommandRequest, ControlContext, DeviceTarget
+from device_tui.application.sessions import SessionRecord
 from device_tui.application.transfers import TerminalPlanExecutor
 from device_tui.infrastructure.audit import AuditLogger, redact_text
 
@@ -112,7 +113,9 @@ class AiApplicationService:
         self,
         command: str,
         *,
-        session_id: str,
+        session_id: str | None = None,
+        device_id: str | None = None,
+        protocol: str = "auto",
         approval_token: str | None = None,
         source: str = "desktop-ui",
         idempotency_key: str | None = None,
@@ -120,7 +123,13 @@ class AiApplicationService:
         normalized = command.strip()
         if not normalized:
             raise UnsupportedOperationError("A command is required.")
-        session = self._session(session_id)
+        session = await self.resolve_session(
+            session_id=session_id,
+            device_id=device_id,
+            protocol=protocol,
+            source=source,
+        )
+        session_id = session.id
         action = self._action(
             "command",
             "Execute terminal command",
@@ -161,8 +170,12 @@ class AiApplicationService:
         self,
         commands: list[str],
         *,
-        session_id: str,
+        session_id: str | None = None,
+        device_id: str | None = None,
+        protocol: str = "auto",
         command_timeout_seconds: int = 30,
+        total_timeout_seconds: int | float | None = None,
+        max_output_chars_per_step: int = 32_768,
         approval_token: str | None = None,
         source: str = "desktop-ui",
         idempotency_key: str | None = None,
@@ -172,7 +185,13 @@ class AiApplicationService:
         cached = self._cached(source, "batch", idempotency_key)
         if cached is not None:
             return cached
-        session = self._session(session_id)
+        session = await self.resolve_session(
+            session_id=session_id,
+            device_id=device_id,
+            protocol=protocol,
+            source=source,
+        )
+        session_id = session.id
         normalized = [str(command).strip() for command in commands if str(command).strip()]
         action = self._action(
             "batch",
@@ -184,24 +203,68 @@ class AiApplicationService:
             command_count=len(normalized),
         )
         del approval_token
+        # Route legacy AI batch calls through the same event-driven execution
+        # engine used by MCP.  This preserves prompt ordering, pagination
+        # handling, per-step output, and connection state across all callers.
+        execution = await self.run_terminal_batch(
+            normalized,
+            session_id=session_id,
+            command_timeout_seconds=command_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds or max(
+                60,
+                command_timeout_seconds * max(1, len(normalized)) + 5,
+            ),
+            max_output_chars=max_output_chars_per_step,
+            source=source,
+            kind="ai_execute_batch",
+        )
+        execution_status = str(execution.get("status") or "failed")
+        step_results = execution.get("steps")
         results: list[dict[str, Any]] = []
-        for command in normalized:
-            await self.desktop.control.send_raw(
-                DeviceTarget(device_id=session.device_id, session_id=session_id),
-                command,
-                context=ControlContext(source=source),
-            )
-            self.desktop.commands.record_for_session(session_id, command)
-            await asyncio.sleep(0)
-            log = self.desktop.sessions.read_log(session_id, 32_768)
-            results.append(self._store_result("command", {
-                "status": "success",
+        if isinstance(step_results, list):
+            for index, command in enumerate(normalized):
+                expect_index = index * 2 + 1
+                step = (
+                    step_results[expect_index]
+                    if expect_index < len(step_results)
+                    and isinstance(step_results[expect_index], dict)
+                    else {}
+                )
+                results.append(
+                    self._store_result(
+                        "command",
+                        {
+                            "status": "success"
+                            if step.get("status") == "completed"
+                            else str(step.get("status") or execution_status),
+                            "session_id": session_id,
+                            "device_id": session.device_id,
+                            "command": redact_text(command),
+                            "output": redact_text(str(step.get("output") or "")),
+                            "step_index": index,
+                            "error_code": str(step.get("error_code") or ""),
+                        },
+                    )
+                )
+        payload = self._store_result(
+            "batch",
+            {
+                "status": "success"
+                if execution_status == "completed"
+                else execution_status,
                 "session_id": session_id,
                 "device_id": session.device_id,
-                "command": redact_text(command),
-                "output": redact_text(log.content[-32_768:]),
-            }))
-        payload = self._store_result("batch", {"status": "success", "session_id": session_id, "results": results, "command_count": len(results), "timeout_seconds": command_timeout_seconds})
+                "execution_id": str(execution.get("execution_id") or ""),
+                "results": results,
+                "steps": step_results if isinstance(step_results, list) else [],
+                "output": str(execution.get("output") or ""),
+                "command_count": len(normalized),
+                "timeout_seconds": command_timeout_seconds,
+                "duration_ms": float(execution.get("duration_ms") or 0),
+                "error_code": str(execution.get("error_code") or ""),
+                "message": str(execution.get("message") or ""),
+            },
+        )
         self._record_audit(tool="ai_execute_batch", source=source, action=action, status=200)
         self._cache(source, "batch", idempotency_key, payload)
         return payload
@@ -223,6 +286,117 @@ class AiApplicationService:
             source=source,
             idempotency_key=idempotency_key,
         )
+
+    async def execute_parallel_batches(
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        max_concurrency: int = 8,
+        source: str = "desktop-api",
+    ) -> dict[str, Any]:
+        """Execute independent device batches concurrently.
+
+        Requests targeting the same device/session are serialized locally,
+        while different targets can make progress in parallel.  Each child
+        result retains the normal batch execution payload so callers do not
+        need a second result model for fan-out operations.
+        """
+        if not isinstance(requests, list) or not requests:
+            raise UnsupportedOperationError("At least one parallel request is required.")
+        limit = max(1, min(int(max_concurrency), 32))
+        semaphore = asyncio.Semaphore(limit)
+        target_locks: dict[str, asyncio.Lock] = {}
+        target_locks_guard = asyncio.Lock()
+
+        async def lock_for(target: str) -> asyncio.Lock:
+            async with target_locks_guard:
+                return target_locks.setdefault(target, asyncio.Lock())
+
+        async def run_one(index: int, request: dict[str, Any]) -> dict[str, Any]:
+            if not isinstance(request, dict):
+                return {"index": index, "status": "failed", "error": "request must be an object"}
+            commands = request.get("commands")
+            if not isinstance(commands, list) or not commands:
+                return {"index": index, "status": "failed", "error": "commands must be a non-empty list"}
+            device_id = str(request.get("device_id") or "").strip()
+            session_id = str(request.get("session_id") or "").strip()
+            target = session_id or device_id
+            if not target:
+                return {"index": index, "status": "failed", "error": "device_id or session_id is required"}
+            lock = await lock_for(target)
+            async with semaphore, lock:
+                try:
+                    result = await self.execute_batch(
+                        [str(command) for command in commands],
+                        device_id=device_id or None,
+                        session_id=session_id or None,
+                        protocol=str(request.get("protocol") or "auto"),
+                        command_timeout_seconds=int(request.get("command_timeout_seconds") or 30),
+                        max_output_chars_per_step=int(request.get("max_output_chars_per_step") or 16_384),
+                        total_timeout_seconds=(
+                            int(request["total_timeout_seconds"])
+                            if request.get("total_timeout_seconds") is not None
+                            else None
+                        ),
+                        source=source,
+                        idempotency_key=str(request.get("idempotency_key") or "") or None,
+                    )
+                    return {"index": index, "status": result.get("status", "failed"), "result": result}
+                except Exception as exc:
+                    return {"index": index, "status": "failed", "error": str(exc)}
+
+        results = list(
+            await asyncio.gather(
+                *(run_one(index, request) for index, request in enumerate(requests))
+            )
+        )
+        results.sort(key=lambda item: int(item.get("index", 0)))
+        completed = sum(item.get("status") == "success" for item in results)
+        status = "success" if completed == len(results) else "partial" if completed else "failed"
+        return self._store_result(
+            "parallel_batch",
+            {
+                "status": status,
+                "request_count": len(results),
+                "completed_count": completed,
+                "failed_count": len(results) - completed,
+                "results": results,
+            },
+        )
+
+    async def resolve_session(
+        self,
+        *,
+        session_id: str | None = None,
+        device_id: str | None = None,
+        protocol: str = "auto",
+        source: str = "desktop-api",
+    ) -> SessionRecord:
+        """Resolve an explicit session or open/reuse one for a device.
+
+        A session id is authoritative and is validated against an optional
+        device id and protocol by ``DeviceControlService``.  When only a
+        device id is supplied, the control facade selects the preferred
+        protocol and reuses a unique connected session or creates one.
+        """
+        normalized_session_id = str(session_id or "").strip()
+        normalized_device_id = str(device_id or "").strip()
+        if not normalized_session_id and not normalized_device_id:
+            raise UnsupportedOperationError(
+                "A session_id or device_id is required.",
+                details={"resource": "terminal_target"},
+            )
+        target = DeviceTarget(
+            device_id=normalized_device_id,
+            session_id=normalized_session_id,
+            protocol=str(protocol or "auto").strip().casefold() or "auto",
+        )
+        view = await self.desktop.control.open_session(
+            target,
+            reuse=True,
+            context=ControlContext(source=source),
+        )
+        return self._session(view.session_id)
 
     def list_skills(self) -> list[dict[str, Any]]:
         return self._skills.list_skills()

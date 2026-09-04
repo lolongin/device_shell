@@ -72,6 +72,9 @@ class DesktopApiClient:
     def terminal_execute_batch(self, commands: list[str], *, session_id: str | None = None, device_id: str | None = None, command_timeout_seconds: int = 30, total_timeout_seconds: int | None = None, max_output_chars_per_step: int = 16_384, mode: str = "auto", approval_token: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         return self._tool("terminal_execute_batch", commands=commands, session_id=session_id or "", device_id=device_id or "", command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds, max_output_chars_per_step=max_output_chars_per_step, mode=mode, approval_token=approval_token, idempotency_key=idempotency_key)
 
+    def terminal_execute_parallel(self, requests: list[dict[str, Any]], *, max_concurrency: int = 8, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._tool("terminal_execute_parallel", requests=requests, max_concurrency=max_concurrency, idempotency_key=idempotency_key, timeout_seconds_override=120)
+
     def terminal_interact(self, steps: list[dict[str, Any]], *, session_id: str | None = None, device_id: str | None = None, total_timeout_seconds: int = 60, mode: str = "auto", approval_token: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         return self._tool("terminal_interact", steps=steps, session_id=session_id or "", device_id=device_id or "", total_timeout_seconds=total_timeout_seconds, mode=mode, approval_token=approval_token, idempotency_key=idempotency_key)
 

@@ -34,7 +34,7 @@ class CredentialResolver(Protocol):
 
 
 class RepositoryCredentialResolver:
-    """Resolve repository credentials inside Python without exposing them to a UI."""
+    """Resolve repository credentials for backend-owned connection workflows."""
 
     def __init__(self, repository: DeviceRepository) -> None:
         self._repository = repository

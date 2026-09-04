@@ -76,6 +76,47 @@ def test_batch_plan_arms_prompt_before_sending() -> None:
     assert coordinator.active_execution_id("tab-1") == ""
 
 
+def test_batch_plan_auto_responds_to_pagination() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(["display current-configuration"]),
+    )
+
+    coordinator.on_output("tab-1", "line 1\n---- More ----")
+    assert harness.sent[-1][1].text == " "
+
+    coordinator.on_output("tab-1", "line 2\n<HUAWEI>")
+    result = runner.public_dict()
+    assert result["status"] == "completed"
+    assert result["steps"][1]["response_count"] == 1
+    assert result["steps"][1]["responses_sent"] == ["pagination_prompt"]
+
+
+def test_batch_plan_does_not_advance_while_paginated_output_is_idle() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(["dir flash:/", "display version"]),
+    )
+
+    coordinator.on_output("tab-1", "page 1\n---- More ----")
+    harness.scheduler.advance(1.0)
+
+    assert runner.public_dict()["status"] == "running"
+    assert [item[1].text for item in harness.sent] == ["dir flash:/\r", " "]
+
+    coordinator.on_output("tab-1", "page 2\n<HUAWEI>")
+    assert [item[1].text for item in harness.sent][-1] == "display version\r"
+    coordinator.on_output("tab-1", "VRP version\n<HUAWEI>")
+
+    assert runner.public_dict()["status"] == "completed"
+
+
 def test_vrp_bracket_ftp_prompt_completes_login_step() -> None:
     harness = Harness()
     coordinator = harness.coordinator()

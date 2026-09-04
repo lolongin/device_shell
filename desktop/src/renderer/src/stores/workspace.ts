@@ -93,6 +93,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const upgradePanelOpen = ref(
     localStorage.getItem('odyterm.desktop-v2.upgrade-open') === '1'
   )
+  const packageBuildPanelOpen = ref(
+    localStorage.getItem('odyterm.desktop-v2.package-build-open') === '1'
+  )
   const tasks = ref<TaskRecord[]>([])
   const workflows = ref<WorkflowDescriptor[]>([])
   const activeTaskId = ref('')
@@ -777,7 +780,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     error.value = ''
     errorCode.value = ''
     try {
-      const saved = payload.profile_type === 'temporary'
+      const saveWithSecrets = payload.profile_type === 'temporary'
+        || (payload.profile_type === 'server' && secrets.ssh !== undefined)
+      const saved = saveWithSecrets
         ? await desktopApi.saveTemporaryProfileWithSecrets(profileId, payload, secrets)
         : profileId
           ? await desktopApi.updateConnectionProfile(profileId, payload)
@@ -1588,15 +1593,38 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  function removeSessionLocally(sessionId: string, closingDeviceId = ''): void {
+    sessions.value = sessions.value.filter((session) => session.id !== sessionId)
+    if (activeSessionId.value !== sessionId) return
+    activeSessionId.value = sessions.value.find(
+      (session) => session.device_id === closingDeviceId
+    )?.id || sessions.value[0]?.id || ''
+  }
+
+  function sessionCloseError(cause: unknown): string {
+    return cause instanceof Error ? cause.message : String(cause)
+  }
+
+  function isUnknownSessionError(message: string): boolean {
+    return message.toLocaleLowerCase().includes('unknown session')
+  }
+
+  async function closeSessionOnBackend(sessionId: string): Promise<void> {
+    try {
+      await desktopApi.closeSession(sessionId)
+    } catch (cause) {
+      const message = sessionCloseError(cause)
+      // A stale renderer tab is already closed from the user's perspective.
+      // Keep that cleanup idempotent while still surfacing actionable failures.
+      if (!isUnknownSessionError(message)) error.value = message
+    }
+  }
+
   async function closeSession(sessionId: string): Promise<void> {
     const closingDeviceId = sessions.value.find((session) => session.id === sessionId)?.device_id || ''
-    await desktopApi.closeSession(sessionId)
-    sessions.value = sessions.value.filter((session) => session.id !== sessionId)
-    if (activeSessionId.value === sessionId) {
-      activeSessionId.value = sessions.value.find(
-        (session) => session.device_id === closingDeviceId
-      )?.id || sessions.value[0]?.id || ''
-    }
+    error.value = ''
+    await closeSessionOnBackend(sessionId)
+    removeSessionLocally(sessionId, closingDeviceId)
   }
 
   async function reconnectSession(sessionId: string): Promise<boolean> {
@@ -1657,12 +1685,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       notice.value = '没有符合条件的会话可关闭。'
       return
     }
+    error.value = ''
     if (mode === 'left' || mode === 'right' || mode === 'others') {
       activeSessionId.value = referenceSessionId
     }
     const closingIds = targets.map((session) => session.id)
-    await Promise.all(closingIds.map((sessionId) => desktopApi.closeSession(sessionId)))
-    sessions.value = sessions.value.filter((session) => !closingIds.includes(session.id))
+    await Promise.all(closingIds.map((sessionId) => closeSessionOnBackend(sessionId)))
+    for (const session of targets) removeSessionLocally(session.id, session.device_id)
     if (!sessions.value.some((session) => session.id === activeSessionId.value)) {
       activeSessionId.value =
         sessions.value.find((session) => session.id === referenceSessionId)?.id
@@ -1699,13 +1728,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       notice.value = '没有符合条件的设备会话可关闭。'
       return
     }
+    error.value = ''
     if (mode === 'left' || mode === 'right' || mode === 'others') {
       activeSessionId.value = snapshot.find(
         (session) => session.device_id === referenceDeviceId
       )?.id || activeSessionId.value
     }
-    await Promise.all(closingIds.map((sessionId) => desktopApi.closeSession(sessionId)))
-    sessions.value = sessions.value.filter((session) => !closingIds.includes(session.id))
+    await Promise.all(closingIds.map((sessionId) => closeSessionOnBackend(sessionId)))
+    for (const session of snapshot) {
+      if (closingIds.includes(session.id)) removeSessionLocally(session.id, session.device_id)
+    }
     if (!sessions.value.some((session) => session.id === activeSessionId.value)) {
       activeSessionId.value = sessions.value[0]?.id || ''
     }
@@ -1785,6 +1817,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   watch(upgradePanelOpen, (open) => {
     localStorage.setItem('odyterm.desktop-v2.upgrade-open', open ? '1' : '0')
   })
+  watch(packageBuildPanelOpen, (open) => {
+    localStorage.setItem('odyterm.desktop-v2.package-build-open', open ? '1' : '0')
+  })
   watch(aiPanelOpen, (open) => {
     localStorage.setItem('odyterm.desktop-v2.ai-open', open ? '1' : '0')
   })
@@ -1823,6 +1858,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     resumeTransferQueue,
     clearTransferHistory,
     upgradePanelOpen,
+    packageBuildPanelOpen,
     tasks,
     workflows,
     activeTaskId,

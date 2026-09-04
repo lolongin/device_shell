@@ -1961,7 +1961,10 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .service-state i { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
 .service-state[data-running="true"] { color: #86efac; border-color: rgba(34, 197, 94, 0.32); background: rgba(34, 197, 94, 0.08); }
 .service-state[data-running="true"] i { background: #22c55e; box-shadow: 0 0 10px rgba(34, 197, 94, 0.66); }
-.transfer-settings-grid { padding: 11px 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.transfer-settings-grid {
+  padding: 11px 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: max-content; align-items: start; gap: 10px;
+}
 .transfer-root-field { grid-column: 1 / -1; }
 .transfer-root-input { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 36px; gap: 6px; }
 .transfer-root-input .icon-button { width: 36px; height: 36px; }
@@ -2584,20 +2587,27 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .form-field textarea { padding: 9px 10px; resize: vertical; line-height: 1.45; }
 .form-field-wide { grid-column: 1 / -1; }
 .protocol-form {
-  min-width: 0; margin: 0; padding: 12px; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(84px, 0.45fr);
+  min-width: 0; margin: 0; padding: 12px; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(120px, 0.45fr);
   gap: 8px; border: 1px solid var(--line); border-radius: 9px; background: rgba(15, 23, 42, 0.5);
 }
 .protocol-form legend { padding: 0 6px; color: var(--blue); font-size: 11px; font-weight: 750; }
 .protocol-form input { height: 34px; padding: 0 9px; }
 .protocol-field { min-width: 0; display: grid; gap: 4px; color: var(--soft); font-size: 9.5px; font-weight: 650; }
 .protocol-field input { width: 100%; }
-.protocol-user-field { grid-column: 1 / -1; }
-.protocol-secret-field { grid-column: 1 / -1; }
+.protocol-port-field { min-width: 0; }
+.protocol-credentials {
+  grid-column: 1 / -1; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+}
+.protocol-secret-input { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; }
+.protocol-secret-input .icon-button { width: 34px; min-height: 34px; padding: 0; }
+.protocol-secret-field { min-width: 0; }
 .protocol-secret-state {
-  grid-column: 1 / -1; min-height: 30px; margin: 0; padding: 0 9px; display: flex; align-items: center;
+  min-height: 30px; margin: 0; padding: 0 9px; display: flex; align-items: center;
   color: var(--soft); border: 1px dashed var(--line); border-radius: 7px; font-size: 10.5px;
 }
+.server-dialog .protocol-credentials { grid-template-columns: 1fr; }
 .server-dialog .protocol-form { grid-column: 1 / -1; }
+.temporary-dialog .protocol-form { grid-column: 1 / -1; }
 .secret-hint {
   grid-column: 1 / -1; margin: 0; padding: 9px 10px; color: var(--muted); line-height: 1.5;
   border: 1px solid rgba(96, 165, 250, 0.22); border-radius: 8px; background: rgba(96, 165, 250, 0.06);
@@ -2698,6 +2708,7 @@ h3 { margin-bottom: 8px; font-size: 16px; }
   .task-ui-create { grid-template-columns: 1fr; }
   .task-upgrade-options { grid-template-columns: 1fr; }
   .task-ui-create .primary-button { width: 100%; justify-content: center; }
+  .protocol-form, .protocol-credentials { grid-template-columns: 1fr; }
   .profile-dialog > footer { flex-wrap: wrap; }
   .profile-readiness { flex-basis: 100%; }
   .transfer-header { min-height: 60px; padding: 9px 12px; }

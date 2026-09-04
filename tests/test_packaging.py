@@ -73,6 +73,8 @@ def test_electron_builder_includes_pyinstaller_backend_resource() -> None:
     assert "to: credential-dialog.html" in builder_config
     assert "from: resources/backend" in builder_config
     assert "to: backend" in builder_config
+    assert "from: resources/vrp-builder" in builder_config
+    assert "to: vrp-builder" in builder_config
     assert "target:\n    - nsis" in builder_config
 
 

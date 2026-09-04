@@ -125,6 +125,36 @@ def test_hub_connects_writes_resizes_and_reconnects_through_adapter() -> None:
     asyncio.run(scenario())
 
 
+def test_hub_serializes_concurrent_writes_for_one_session() -> None:
+    class SlowFirstWriteAdapter(FakeAdapter):
+        async def send_text(self, text: str) -> None:
+            if text == " ":
+                await asyncio.sleep(0.02)
+            self.sent.append(text)
+
+    class SlowFirstWriteFactory(FakeAdapterFactory):
+        def create(self, target, callbacks):
+            del target
+            adapter = SlowFirstWriteAdapter(callbacks)
+            self.adapters.append(adapter)
+            return adapter
+
+    async def scenario() -> None:
+        factory = SlowFirstWriteFactory()
+        hub = SessionHub(factory)  # type: ignore[arg-type]
+        created = await hub.create(_target())
+        adapter = factory.adapters[0]
+
+        pager_write = asyncio.create_task(hub.write(created.id, " "))
+        command_write = asyncio.create_task(hub.write(created.id, "display version\r"))
+        await asyncio.gather(pager_write, command_write)
+
+        assert adapter.sent == [" ", "display version\r"]
+        await hub.close_all()
+
+    asyncio.run(scenario())
+
+
 def test_failed_connection_remains_available_for_reconnect() -> None:
     async def scenario() -> None:
         factory = FakeAdapterFactory(fail=True)

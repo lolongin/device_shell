@@ -416,7 +416,11 @@ class TaskService:
         request = self._framework_requests[task_id]
         run = self._orchestrator.get(task_id)  # type: ignore[union-attr]
         metadata = dict(request.workflow.metadata)
-        workflow_view = self._framework_workflow_view(metadata)
+        workflow_view = self._framework_workflow_view(
+            metadata,
+            workflow=request.workflow,
+            plan=self._framework_plans.get(task_id),
+        )
         record = self.project_run(
             run,
             workflow_id=request.workflow.id,
@@ -459,38 +463,77 @@ class TaskService:
             )
         return record
 
-    def _framework_workflow_view(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    def _framework_workflow_view(
+        self,
+        metadata: Mapping[str, Any],
+        *,
+        workflow: Any | None = None,
+        plan: TaskPlan | None = None,
+    ) -> dict[str, Any]:
         canonical_id = str(metadata.get("canonical_workflow_id") or "").strip()
         raw_inputs = metadata.get("framework_inputs")
-        if not canonical_id or not isinstance(raw_inputs, dict) or self._framework_workflows is None:
-            return {}
-        try:
-            definition = self._framework_workflows.build(canonical_id, dict(raw_inputs))
-        except (KeyError, ValueError):
-            return {}
-        return {
-            "id": definition.id,
-            "version": definition.version,
-            "states": [
-                {
-                    "id": state.id,
-                    "label": state.label or state.id,
-                    "description": state.description,
-                    "terminal": state.terminal,
-                    "action_id": state.action.id if state.action is not None else "",
-                    "operation": state.action.operation if state.action is not None else "",
-                    "expectations": [
+        if canonical_id and isinstance(raw_inputs, dict) and self._framework_workflows is not None:
+            try:
+                definition = self._framework_workflows.build(canonical_id, dict(raw_inputs))
+            except (KeyError, ValueError):
+                definition = None
+            if definition is not None:
+                return {
+                    "id": definition.id,
+                    "version": definition.version,
+                    "states": [
                         {
-                            "event_type": expectation.event_type,
-                            "timeout_seconds": expectation.timeout_seconds,
-                            "idle_timeout_seconds": expectation.idle_timeout_seconds,
-                            "progress": expectation.progress,
+                            "id": state.id,
+                            "label": state.label or state.id,
+                            "description": state.description,
+                            "terminal": state.terminal,
+                            "action_id": state.action.id if state.action is not None else "",
+                            "operation": state.action.operation if state.action is not None else "",
+                            "expectations": [
+                                {
+                                    "event_type": expectation.event_type,
+                                    "timeout_seconds": expectation.timeout_seconds,
+                                    "idle_timeout_seconds": expectation.idle_timeout_seconds,
+                                    "progress": expectation.progress,
+                                }
+                                for expectation in (state.action.expectations if state.action is not None else ())
+                            ],
                         }
-                        for expectation in (state.action.expectations if state.action is not None else ())
+                        for state in definition.states
                     ],
                 }
-                for state in definition.states
-            ],
+
+        # Generic TaskPlans carry a compiled WorkflowDefinition with ordinary
+        # steps rather than a canonical Framework workflow. Expose only safe
+        # labels and dependency-derived terminal flags to the renderer.
+        steps = tuple(getattr(workflow, "steps", ()) or ())
+        if not steps and plan is not None:
+            return {
+                "id": plan.id,
+                "version": plan.version,
+                "states": [
+                    {"id": node.id, "label": node.workflow_id, "terminal": True, "action_id": node.workflow_id, "operation": node.workflow_id}
+                    for node in plan.nodes
+                ],
+            }
+        if not steps:
+            return {}
+        depended_on = {dependency for step in steps for dependency in getattr(step, "depends_on", ())}
+        states: list[dict[str, Any]] = []
+        for step in steps:
+            action = getattr(step, "action", "")
+            action_name = str(getattr(action, "name", action) or "").strip()
+            states.append({
+                "id": str(getattr(step, "id", "") or ""),
+                "label": action_name or str(getattr(step, "id", "") or "step"),
+                "terminal": str(getattr(step, "id", "")) not in depended_on,
+                "action_id": action_name,
+                "operation": action_name,
+            })
+        return {
+            "id": str(getattr(workflow, "id", "") or (plan.id if plan is not None else "workflow")),
+            "version": str(getattr(workflow, "version", "") or (plan.version if plan is not None else "1")),
+            "states": states,
         }
 
     def _framework_child_run(self, task_id: str) -> Any | None:

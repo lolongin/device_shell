@@ -56,6 +56,7 @@ def test_mcp_server_exposes_canonical_agent_workflow_tools() -> None:
         "operation.cancel",
         "terminal.execute",
         "terminal.batch",
+        "terminal.parallel",
         "terminal.interact",
         "terminal.read",
         "task.create",

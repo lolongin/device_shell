@@ -64,6 +64,7 @@ export interface ProfileEndpoint {
   host: string
   port: number
   username: string
+  password: string
   has_password: boolean
 }
 
@@ -98,9 +99,9 @@ export interface ConnectionProfilePayload {
   group: string
   notes: string
   preferred_protocol: Exclude<SessionKind, 'simulated'>
-  telnet: Omit<ProfileEndpoint, 'has_password'>
-  ssh: Omit<ProfileEndpoint, 'has_password'>
-  serial: Omit<ProfileEndpoint, 'has_password'>
+  telnet: Omit<ProfileEndpoint, 'has_password' | 'password'>
+  ssh: Omit<ProfileEndpoint, 'has_password' | 'password'>
+  serial: Omit<ProfileEndpoint, 'has_password' | 'password'>
   allow_duplicate?: boolean
 }
 
@@ -352,6 +353,19 @@ export interface OperationListResponse {
   operations: OperationRecord[]
 }
 
+export interface PackageBuilder {
+  id: string
+  label: string
+  version: string
+  publisher: string
+  package_types: string[]
+}
+
+export interface PackageBuilderListResponse {
+  api_version: number
+  builders: PackageBuilder[]
+}
+
 export type TaskStatus = 'pending' | 'running' | 'waiting_for_decision' | 'waiting_for_user' | 'paused' | 'resumed' | 'completed' | 'success' | 'failed' | 'cancelled'
 export type TaskStepStatus = 'pending' | 'running' | 'waiting_for_decision' | 'waiting_for_user' | 'paused' | 'resumed' | 'completed' | 'success' | 'failed' | 'skipped' | 'cancelled'
 
@@ -571,6 +585,25 @@ export interface AiPlanResponse {
   summary: string
   actions: Array<Record<string, unknown>>
   warnings: string[]
+}
+
+export interface AiResultResponse {
+  api_version: number
+  result: Record<string, unknown>
+}
+
+export interface AiChatResponse {
+  api_version: number
+  conversation_id: string
+  message: string
+  device_id: string
+  session_id: string
+}
+
+export interface AiTerminalTarget {
+  device_id?: string
+  session_id?: string
+  protocol?: 'auto' | SessionKind
 }
 
 export interface AiApproval {

@@ -85,6 +85,20 @@ def register_terminal_tools(mcp: Any, gateway: McpGateway) -> None:
         )
 
     @mcp.tool()
+    def terminal_execute_parallel(
+        requests: list[dict[str, Any]],
+        max_concurrency: int = 8,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute independent command batches concurrently across targets."""
+        return gateway.call(
+            "terminal_execute_parallel",
+            requests,
+            max_concurrency=max_concurrency,
+            idempotency_key=idempotency_key,
+        )
+
+    @mcp.tool()
     def terminal_interact(
         steps: list[dict[str, Any]],
         session_id: str | None = None,

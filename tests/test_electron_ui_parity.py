@@ -439,6 +439,8 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     assert "loadTransferServiceLog" in store
     assert "clearTransferServiceLog" in store
     assert "/api/v1/file-transfer/service/log" in transport
+    assert "grid-auto-rows: max-content" in styles
+    assert "align-items: start" in styles
     assert ".transfer-service-log-card" in styles
     assert ".transfer-client-hint" in styles
     smoke = MAIN_TS.read_text(encoding="utf-8")
@@ -1021,6 +1023,9 @@ def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() 
     assert "function closeActiveSession" in store
     assert "function closeOtherSessions" in store
     assert "function closeAllSessions" in store
+    assert "function removeSessionLocally" in store
+    assert "function closeSessionOnBackend" in store
+    assert "isUnknownSessionError(message)" in store
     assert "Promise.all(closingIds.map" in store
 
     assert "const sessionContextMenu = ref" in app
@@ -1628,17 +1633,23 @@ def test_connection_profile_dialog_explains_and_enforces_readiness() -> None:
     assert ':disabled="saving || !formReady"' in dialog
     assert '@keydown.esc.prevent="emit(\'close\')"' in dialog
     assert "protocol-host-field" in dialog
+    assert dialog.count("protocol-port-field") == 3
     assert "protocol-user-field" in dialog
     assert 'data-testid="temporary-ssh-password"' in dialog
     assert "saveTemporaryProfileWithSecrets" in WORKSPACE_STORE.read_text(encoding="utf-8")
+    assert "payload.profile_type === 'server' && secrets.ssh !== undefined" in WORKSPACE_STORE.read_text(encoding="utf-8")
     assert "留空保留原密码；输入新密码将替换" in dialog
-    assert 'v-if="profileType === \'temporary\'" class="protocol-field protocol-secret-field"' in dialog
+    assert 'class="protocol-field protocol-secret-field"' in dialog
     assert "credential:create-temporary-profile" in MAIN_TS.read_text(encoding="utf-8")
     assert "temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup" in MAIN_TS.read_text(encoding="utf-8")
     assert "temporaryProfileEditSavesInlinePasswordAndBlankPreservesIt" in MAIN_TS.read_text(encoding="utf-8")
     assert 'v-if="selectedProfile.profile_type === \'server\'" class="credential-actions"' in APP_VUE.read_text(encoding="utf-8")
     assert ".profile-readiness" in styles
     assert ".protocol-field" in styles
+    assert "grid-template-columns: minmax(0, 1.55fr) minmax(120px, 0.45fr)" in styles
+    assert ".protocol-port-field" in styles
+    assert 'class="protocol-credentials"' in dialog
+    assert ".protocol-credentials" in styles
     assert ".protocol-secret-field" in styles
 
 

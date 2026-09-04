@@ -71,6 +71,13 @@ export class PythonBackend {
     this.externalRuntime = false
     this.writeDiagnostic(`Starting Python backend: ${command} ${args.join(' ')}`)
     const backendEnvironment = this.backendEnvironment()
+    if (!backendEnvironment.DEVICE_TUI_VRP_BUILDER && app.isPackaged) {
+      backendEnvironment.DEVICE_TUI_VRP_BUILDER = path.join(
+        process.resourcesPath,
+        'vrp-builder',
+        process.platform === 'win32' ? 'vrp-builder.exe' : 'vrp-builder'
+      )
+    }
     const backendProcess = spawn(command, args, {
       cwd: projectRoot,
       windowsHide: true,

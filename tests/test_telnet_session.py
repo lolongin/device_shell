@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 from device_tui.infrastructure.transports.telnet_session import (
     DO,
@@ -26,6 +27,24 @@ class _FakeWriter:
 
     async def drain(self) -> None:
         return None
+
+    def close(self) -> None:
+        return None
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _FakeReader:
+    def __init__(self, *chunks: bytes) -> None:
+        self._chunks = list(chunks)
+        self._wait_for_more = asyncio.Event()
+
+    async def read(self, _size: int) -> bytes:
+        if self._chunks:
+            return self._chunks.pop(0)
+        await self._wait_for_more.wait()
+        return b""
 
 
 def test_huawei_telnet_negotiates_naws_with_current_terminal_size() -> None:
@@ -71,3 +90,34 @@ def test_huawei_telnet_reports_xterm_terminal_type() -> None:
         + TERM_TYPE.encode("ascii")
         + bytes([IAC, SE]),
     ]
+
+
+def test_huawei_telnet_keeps_connection_open_after_authentication_failure() -> None:
+    async def scenario() -> None:
+        reader = _FakeReader(
+            b"Username:",
+            b"Password:",
+            b"Authentication fail\r\nUsername:",
+        )
+        writer = _FakeWriter()
+        statuses: list[str] = []
+        session = HuaweiTelnetSession(
+            on_output=lambda _text: None,
+            on_status=statuses.append,
+        )
+
+        with patch(
+            "device_tui.infrastructure.transports.telnet_session.asyncio.open_connection",
+            return_value=(reader, writer),
+        ):
+            await session.connect("127.0.0.1", 23, "bad-user", "bad-password")
+
+        assert session.is_connected
+        assert writer.writes[:2] == [b"bad-user\r\n", b"bad-password\r\n"]
+        assert statuses[-1] == "Connected"
+
+        await session.send_text("retry-user\n")
+        assert writer.writes[-1] == b"retry-user\r\n"
+        await session.disconnect("")
+
+    asyncio.run(scenario())

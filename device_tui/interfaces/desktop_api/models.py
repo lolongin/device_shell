@@ -352,6 +352,7 @@ class ProfileEndpointModel(BaseModel):
     host: str = Field(default="", max_length=255)
     port: int = Field(default=0, ge=0, le=65535)
     username: str = Field(default="", max_length=255)
+    password: str = Field(default="", max_length=4_096, repr=False)
     has_password: bool = False
 
 
@@ -417,6 +418,24 @@ class DirectCredentialSessionRequest(BaseModel):
     title: str = Field(default="", max_length=120)
     cols: int = Field(default=160, ge=20, le=1_000)
     rows: int = Field(default=40, ge=5, le=500)
+
+
+class DeviceCredentialRequest(BaseModel):
+    """Request the default device credential for the isolated desktop prompt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, max_length=160)
+    kind: Literal["ssh", "telnet", "serial"]
+
+
+class DeviceCredentialResponse(BaseModel):
+    """Ephemeral credential payload consumed only by Electron's main process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(default="", max_length=255)
+    password: str = Field(default="", max_length=4_096, repr=False)
 
 
 class CommandGroupModel(BaseModel):
@@ -751,6 +770,32 @@ class OperationResponse(BaseModel):
     operation: OperationModel
 
 
+class PackageBuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    builder_id: str = Field(default="internal-vrp", min_length=1, max_length=64)
+    mrid: str = Field(min_length=1, max_length=255)
+    package_type: str = Field(default="system", min_length=1, max_length=64)
+    model: str = Field(default="", max_length=160)
+    vrp_version: str = Field(default="", max_length=160)
+    source_revision: str = Field(default="", max_length=255)
+    output_name: str = Field(default="", max_length=255)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class PackageBuilderModel(BaseModel):
+    id: str
+    label: str
+    version: str
+    publisher: str
+    package_types: list[str]
+
+
+class PackageBuilderListResponse(BaseModel):
+    api_version: int = API_VERSION
+    builders: list[PackageBuilderModel]
+
+
 class OperationListResponse(BaseModel):
     api_version: int = API_VERSION
     operations: list[OperationModel]
@@ -786,7 +831,9 @@ class AiCommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     command: str = Field(min_length=1, max_length=100_000)
-    session_id: str = Field(min_length=1, max_length=160)
+    device_id: str = Field(default="", max_length=160)
+    session_id: str = Field(default="", max_length=160)
+    protocol: Literal["auto", "simulated", "ssh", "telnet", "serial"] = "auto"
     approval_token: str | None = Field(default=None, max_length=512, repr=False)
     idempotency_key: str | None = Field(default=None, max_length=160)
 
@@ -795,7 +842,9 @@ class AiBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     commands: list[str] = Field(min_length=1, max_length=256)
-    session_id: str = Field(min_length=1, max_length=160)
+    device_id: str = Field(default="", max_length=160)
+    session_id: str = Field(default="", max_length=160)
+    protocol: Literal["auto", "simulated", "ssh", "telnet", "serial"] = "auto"
     command_timeout_seconds: int = Field(default=30, ge=1, le=600)
     approval_token: str | None = Field(default=None, max_length=512, repr=False)
     idempotency_key: str | None = Field(default=None, max_length=160)
@@ -804,6 +853,24 @@ class AiBatchRequest(BaseModel):
 class AiResultResponse(BaseModel):
     api_version: int = API_VERSION
     result: dict[str, object]
+
+
+class AiChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(min_length=1, max_length=160)
+    message: str = Field(min_length=1, max_length=20_000)
+    device_id: str = Field(default="", max_length=160)
+    session_id: str = Field(default="", max_length=160)
+    protocol: Literal["auto", "simulated", "ssh", "telnet", "serial"] = "auto"
+
+
+class AiChatResponse(BaseModel):
+    api_version: int = API_VERSION
+    conversation_id: str
+    message: str
+    device_id: str = ""
+    session_id: str = ""
 
 
 class AiApprovalResponse(BaseModel):

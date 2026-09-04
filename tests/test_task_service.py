@@ -6,7 +6,8 @@ import sys
 import pytest
 
 from device_tui.application import build_desktop_application
-from device_tui.application.tasking import TaskPlanLifecycle, TaskService
+from device_tui.application.tasking import Action, TaskCreate, TaskPlanLifecycle, TaskService, WorkflowDefinition, WorkflowStep
+from device_tui.application.device_control import DeviceTarget
 from device_tui.framework import TaskPlan, TaskRun, TaskRunStatus, WorkflowNode
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
@@ -17,7 +18,8 @@ class _Orchestrator:
         self.started: tuple[TaskPlan, str, dict[str, object] | None, dict[str, object] | None, str | None] | None = None
         self.executed: tuple[str, TaskPlan] | None = None
 
-    def start(self, plan: TaskPlan, *, device_id: str, inputs=None, context=None, task_run_id=None) -> TaskRun:
+    def start(self, plan: TaskPlan, *, device_id: str, inputs=None, context=None, task_run_id=None, child_run_id=None) -> TaskRun:
+        del child_run_id
         self.started = (plan, device_id, inputs, context, task_run_id)
         return TaskRun("run-1", plan.id, device_id, status=TaskRunStatus.RUNNING)
 
@@ -59,6 +61,29 @@ def test_task_service_delegates_generic_plan_lifecycle() -> None:
     assert executed.status == TaskRunStatus.SUCCEEDED
     assert orchestrator.started == (_plan(), "device-1", {"x": 1}, {"target": {"session_id": "sess-1"}}, "run-1")
     assert orchestrator.executed == ("run-1", _plan())
+
+
+def test_task_service_projects_generic_task_workflow_for_the_desktop() -> None:
+    service = TaskService(object(), _Orchestrator())  # type: ignore[arg-type]
+    workflow = WorkflowDefinition(
+        id="ui-plan",
+        name="检查设备",
+        steps=(WorkflowStep("command", action=Action("command")),),
+    )
+    record = service.create(TaskCreate(
+        workflow=workflow,
+        target=DeviceTarget(device_id="device-1"),
+        framework_plan=_plan(),
+    ))
+
+    assert record.workflow_view["id"] == "ui-plan"
+    assert record.workflow_view["states"] == [{
+        "id": "command",
+        "label": "command",
+        "terminal": True,
+        "action_id": "command",
+        "operation": "command",
+    }]
 
 
 def test_task_plan_lifecycle_is_structurally_separate_from_legacy_lifecycle() -> None:

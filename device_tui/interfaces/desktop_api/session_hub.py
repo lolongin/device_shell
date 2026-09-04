@@ -104,6 +104,7 @@ class ManagedSession:
     adapter: TerminalAdapter | None = None
     connect_task: asyncio.Task[None] | None = None
     lease_owner: str = ""
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     output_filter: SecretOutputFilter = field(
         default_factory=lambda: SecretOutputFilter(())
     )
@@ -205,41 +206,42 @@ class SessionHub:
         origin: str = "user",
     ) -> None:
         managed = self.get(session_id)
-        self._notify_listeners(TerminalEvent(
-            type="terminal.input",
-            session_id=managed.id,
-            sequence=managed.sequence,
-            generation=managed.generation,
-            metadata={"origin": origin},
-        ))
-        if managed.lease_owner and managed.lease_owner != lease_owner:
-            self._publish(
-                managed,
-                event_type="terminal.error",
-                data="Session is reserved by an active operation.",
-                metadata={
-                    "code": "session_busy",
-                    "leaseOwner": managed.lease_owner,
-                },
-            )
-            return
-        if managed.adapter is None or not managed.adapter.is_connected:
-            self._publish(
-                managed,
-                event_type="terminal.error",
-                data="Session is not connected.",
-                metadata={"code": "session_not_connected"},
-            )
-            return
-        try:
-            await managed.adapter.send_text(data)
-        except Exception as exc:
-            self._publish(
-                managed,
-                event_type="terminal.error",
-                data=str(exc),
-                metadata={"code": "terminal_write_failed"},
-            )
+        async with managed.write_lock:
+            self._notify_listeners(TerminalEvent(
+                type="terminal.input",
+                session_id=managed.id,
+                sequence=managed.sequence,
+                generation=managed.generation,
+                metadata={"origin": origin},
+            ))
+            if managed.lease_owner and managed.lease_owner != lease_owner:
+                self._publish(
+                    managed,
+                    event_type="terminal.error",
+                    data="Session is reserved by an active operation.",
+                    metadata={
+                        "code": "session_busy",
+                        "leaseOwner": managed.lease_owner,
+                    },
+                )
+                return
+            if managed.adapter is None or not managed.adapter.is_connected:
+                self._publish(
+                    managed,
+                    event_type="terminal.error",
+                    data="Session is not connected.",
+                    metadata={"code": "session_not_connected"},
+                )
+                return
+            try:
+                await managed.adapter.send_text(data)
+            except Exception as exc:
+                self._publish(
+                    managed,
+                    event_type="terminal.error",
+                    data=str(exc),
+                    metadata={"code": "terminal_write_failed"},
+                )
 
     async def resize(self, session_id: str, cols: int, rows: int) -> None:
         managed = self.get(session_id)

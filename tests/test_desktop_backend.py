@@ -276,6 +276,24 @@ def test_device_api_excludes_credentials() -> None:
     assert "username" not in encoded
 
 
+def test_isolated_device_credential_prompt_can_resolve_defaults() -> None:
+    with _client() as client:
+        unauthorized = client.post(
+            "/api/v1/session-credentials",
+            json={"device_id": "ENSP-AR-001", "kind": "telnet"},
+        )
+        response = client.post(
+            "/api/v1/session-credentials",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"device_id": "ENSP-AR-001", "kind": "telnet"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["username"] == "appadmin"
+    assert response.json()["password"]
+
+
 def test_device_api_includes_one_safe_simulated_terminal_row() -> None:
     with _client() as client:
         response = client.get(
@@ -778,7 +796,7 @@ def test_device_claim_and_release_are_exposed_through_application_service() -> N
     assert device["id"] not in released.json()["owned_device_ids"]
 
 
-def test_connection_profile_crud_never_returns_password_and_can_create_session() -> None:
+def test_connection_profile_crud_returns_password_for_local_editing_and_can_create_session() -> None:
     secret = "profile-api-secret"
     with _client() as client:
         headers = {"Authorization": f"Bearer {TOKEN}"}
@@ -808,8 +826,8 @@ def test_connection_profile_crud_never_returns_password_and_can_create_session()
         )
 
     assert created.json()["ssh"]["has_password"] is True
-    assert secret not in created.text
-    assert secret not in listed.text
+    assert created.json()["ssh"]["password"] == secret
+    assert listed.json()["profiles"][0]["ssh"]["password"] == secret
     assert listed.json()["groups"] == ["Lab"]
     assert session.status_code == 200
     assert session.json()["device_id"] == profile_id
@@ -891,7 +909,7 @@ def test_profile_credential_endpoints_support_vault_and_one_time_sessions() -> N
 
     assert saved.status_code == 200
     assert saved.json()["ssh"]["has_password"] is True
-    assert vault_secret not in saved.text
+    assert saved.json()["ssh"]["password"] == vault_secret
     assert removed.status_code == 200
     assert removed.json()["ssh"]["has_password"] is False
     assert session.status_code == 200

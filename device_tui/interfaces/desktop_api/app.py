@@ -27,6 +27,8 @@ from device_tui.application import (
     build_desktop_application,
 )
 from device_tui.application.settings import MemorySettingsStore, SettingsStore
+from device_tui.application.ai.agent import AgentToolExecutor, DeviceAgent
+from device_tui.application.ai.llm import OpenAiCompatibleClient
 from device_tui.device_sources.import_parser import ParsedDeviceImport
 from device_tui.device_sources.imported import ImportedDeviceStore, MemoryImportedDeviceStore
 from device_tui.device_sources.plugins import DeviceSourcePlugin
@@ -51,11 +53,13 @@ from .errors import install_exception_handlers
 from .lifespan import build_lifespan
 from .serializers import attempt_internal_auto_login as _attempt_internal_auto_login
 from .routers.health import router as health_router
+from .routers.ai import legacy_router as legacy_ai_router
 from .routers.ai import router as ai_router
 from .routers.tasks import router as tasks_router
 from .routers.device_sources import router as device_sources_router
 from .routers.mcp import router as mcp_router
 from .routers.operations import router as operations_router
+from .routers.package_builds import router as package_builds_router
 from .routers.devices import router as devices_router
 from .routers.profiles import router as profiles_router
 from .routers.sessions import router as sessions_router
@@ -349,6 +353,16 @@ def create_app(
         audit_max_bytes=audit_log_max_bytes,
         audit_backup_count=audit_log_backups,
     )
+    try:
+        agent_max_iterations = int(os.getenv("DEVICE_AI_MAX_ITERATIONS", "30"))
+    except ValueError:
+        agent_max_iterations = 30
+    ai_agent = DeviceAgent(
+        OpenAiCompatibleClient.from_env(),
+        AgentToolExecutor(ai_service),
+        max_iterations=agent_max_iterations,
+        event_callback=lambda event: desktop.events.publish(event.type, data=event.data),
+    )
     mcp_service = DesktopMcpService(
         desktop,
         terminal_executor,
@@ -390,6 +404,7 @@ def create_app(
         hub=hub,
         terminal_executor=terminal_executor,
         ai_service=ai_service,
+        ai_agent=ai_agent,
         mcp_service=mcp_service,
         ticket_store=ticket_store,
         access_token=access_token,
@@ -430,10 +445,12 @@ def create_app(
     )
     app.include_router(health_router)
     app.include_router(ai_router)
+    app.include_router(legacy_ai_router)
     app.include_router(tasks_router)
     app.include_router(device_sources_router)
     app.include_router(mcp_router)
     app.include_router(operations_router)
+    app.include_router(package_builds_router)
     app.include_router(devices_router)
     app.include_router(profiles_router)
     app.include_router(sessions_router)

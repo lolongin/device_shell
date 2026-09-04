@@ -109,7 +109,7 @@ class DesktopMcpService:
                 "sessions": {"read": ["list", "status"], "write": ["open", "reconnect", "disconnect", "close"]},
                 "workflows": {"read": ["list", "plan.get"], "write": ["run", "plan.validate", "plan.approve", "replan"]},
                 "tasks": {"read": ["list", "get", "decision.get", "framework.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply", "framework.start", "framework.execute"]},
-                "terminal": {"read": ["read", "execution.get"], "write": ["execute", "batch", "interact", "execution.cancel"]},
+                "terminal": {"read": ["read", "execution.get"], "write": ["execute", "batch", "parallel", "interact", "execution.cancel"]},
                 "profiles": {"read": ["list"], "write": ["save", "delete"]},
                 "connections": {"write": ["open"]},
                 "commands": {"read": ["workspace"], "write": ["group.save", "group.delete", "group.reorder", "preferences"]},
@@ -750,7 +750,7 @@ class DesktopMcpService:
     async def _tool_tool_execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute an existing diagnostic backend tool, without workflow access."""
         tool_name = str(params.get("name") or params.get("tool") or "").strip().replace(".", "_")
-        allowed = {"terminal_run", "terminal_execute", "terminal_execute_batch", "terminal_interact", "terminal_read", "file_transfer_list", "execution_get"}
+        allowed = {"terminal_run", "terminal_execute", "terminal_execute_batch", "terminal_execute_parallel", "terminal_interact", "terminal_read", "file_transfer_list", "execution_get"}
         if tool_name not in allowed:
             raise UnsupportedOperationError(f"tool.execute only allows diagnostic tools: {', '.join(sorted(allowed))}")
         handler = getattr(self, f"_tool_{tool_name}", None)
@@ -850,6 +850,17 @@ class DesktopMcpService:
             kind="terminal_execute_batch",
         )
         return self._execution_payload(result)
+
+    async def _tool_terminal_execute_parallel(self, params: dict[str, Any]) -> dict[str, Any]:
+        requests = params.get("requests")
+        if not isinstance(requests, list) or not requests:
+            raise UnsupportedOperationError("requests must contain at least one entry.")
+        result = await self.ai.execute_parallel_batches(
+            requests,
+            max_concurrency=int(params.get("max_concurrency") or 8),
+            source="mcp",
+        )
+        return result
 
     async def _tool_terminal_interact(self, params: dict[str, Any]) -> dict[str, Any]:
         session = await self._terminal_target(params, ensure=True)

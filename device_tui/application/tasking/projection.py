@@ -61,6 +61,7 @@ class TaskRunProjector:
             created_at=created_at,
             updated_at=updated_at,
             progress_percent=100 if status == TaskRunStatus.SUCCEEDED.value else 0,
+            current_step_id=next(reversed(run.node_runs), "") if run.node_runs else "",
             error_code=str(error.get("code") or ""),
             message=message,
             result=result,

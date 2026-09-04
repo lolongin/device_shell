@@ -98,6 +98,7 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             "/v1/terminal/run": "terminal_run",
             "/v1/terminal/execute": "terminal_execute",
             "/v1/terminal/execute-batch": "terminal_execute_batch",
+            "/v1/terminal/execute-parallel": "terminal_execute_parallel",
             "/v1/terminal/interact": "terminal_interact",
             "/v1/executions/cancel": "execution_cancel",
             "/v1/operations/wait": "operation_wait",

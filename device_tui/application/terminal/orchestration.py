@@ -39,6 +39,7 @@ PROMPT_ALIASES = {
     "confirmation_prompt",
 }
 RESPONSE_RETRY_DELAY_MS = 120
+DEFAULT_PAGINATION_MAX_MATCHES = 100
 
 
 class TerminalPlanError(ValueError):
@@ -225,6 +226,14 @@ def build_batch_plan(
                 SendStep(text=command, append_enter=True, label=command),
                 ExpectStep(
                     success=("device_prompt",),
+                    responses=(
+                        ResponseRule(
+                            match="pagination_prompt",
+                            control="space",
+                            append_enter=False,
+                            max_matches=DEFAULT_PAGINATION_MAX_MATCHES,
+                        ),
+                    ),
                     failures=(
                         "Error:",
                         "Unrecognized command",
@@ -858,6 +867,12 @@ class TerminalExecutionRunner:
                 return
             step = self._current_plan_step()
             if not isinstance(step, ExpectStep) or step.idle_seconds <= 0:
+                return
+            # Once an interactive response has been sent (most importantly a
+            # Huawei pager space), idle output is not proof of completion. The
+            # device may still be switching pages. Advancing here lets the
+            # first byte of the next command get consumed by the pager.
+            if self._response_counts:
                 return
             if self.clock() - self._last_output_monotonic < step.idle_seconds:
                 return

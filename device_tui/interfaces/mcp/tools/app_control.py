@@ -232,6 +232,11 @@ def register_app_control_tools(mcp: Any, gateway: McpGateway) -> None:
         """Execute a policy-checked terminal command batch."""
         return _call(gateway, "terminal.execute_batch", commands=commands, session_id=session_id, device_id=device_id, command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds)
 
+    @mcp.tool(name="terminal.parallel")
+    def terminal_parallel(requests: list[dict[str, Any]], max_concurrency: int = 8) -> dict[str, Any]:
+        """Execute batches concurrently across independent device sessions."""
+        return _call(gateway, "terminal.execute_parallel", requests=requests, max_concurrency=max_concurrency)
+
     @mcp.tool(name="terminal.interact")
     def terminal_interact(steps: list[dict[str, Any]], session_id: str = "", device_id: str = "", total_timeout_seconds: int = 60) -> dict[str, Any]:
         """Run a policy-checked terminal interaction plan."""

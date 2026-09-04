@@ -14,7 +14,7 @@ from device_tui.interfaces.desktop_api.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_temporary_profile_create_and_edit_accept_passwords_without_exposing_saved_values() -> None:
+def test_temporary_profile_create_and_edit_supports_visible_passwords() -> None:
     profile_dialog = (
         ROOT / "desktop" / "src" / "renderer" / "src" / "components"
         / "ConnectionProfileDialog.vue"
@@ -26,19 +26,21 @@ def test_temporary_profile_create_and_edit_accept_passwords_without_exposing_sav
         ROOT / "desktop" / "src" / "renderer" / "src" / "types.ts"
     ).read_text(encoding="utf-8")
 
-    assert profile_dialog.count('type="password"') == 3
+    assert profile_dialog.count(":type=\"passwordVisible.") == 3
     assert 'data-testid="temporary-telnet-password"' in profile_dialog
     assert 'data-testid="temporary-ssh-password"' in profile_dialog
     assert 'data-testid="temporary-serial-password"' in profile_dialog
     assert "props.profileType === 'temporary'" in profile_dialog
     assert "留空保留原密码；输入新密码将替换" in profile_dialog
-    assert "编辑时留空保留原密码" in profile_dialog
+    assert "可直接查看、修改或清空" in profile_dialog
     assert 'autocomplete="new-password"' in profile_dialog
     assert "profile?.ssh.has_password" in profile_dialog
+    assert "togglePassword" in profile_dialog
+    assert "passwordVisible.telnet" in profile_dialog
+    assert "passwordVisible.ssh" in profile_dialog
+    assert "passwordVisible.serial" in profile_dialog
     assert ".password" not in workspace_store.casefold()
-    assert "telnet_password" not in renderer_types.casefold()
-    assert "ssh_password" not in renderer_types.casefold()
-    assert "serial_password" not in renderer_types.casefold()
+    assert "password: string" in renderer_types
 
 
 def test_generic_renderer_bridge_rejects_sensitive_body_keys() -> None:
@@ -56,7 +58,7 @@ def test_generic_renderer_bridge_rejects_sensitive_body_keys() -> None:
     assert "credential:create-temporary-profile" in electron_main
     assert "profileId ? 'PUT' : 'POST'" in electron_main
     assert "encodeURIComponent(profileId)" in electron_main
-    assert "payload.profile_type !== 'temporary'" in electron_main
+    assert "['temporary', 'server'].includes(payload.profile_type as string)" in electron_main
     assert "Untrusted temporary-profile caller" in electron_main
     assert "ipcRenderer.invoke('credential:create-temporary-profile', request)" in preload
 
@@ -217,6 +219,7 @@ def test_custom_device_connection_uses_isolated_credential_bridge() -> None:
 
     assert "credential:open-device-session" in electron_main
     assert "request.path === '/api/v1/sessions/direct'" in electron_main
+    assert "request.path === '/api/v1/session-credentials'" in electron_main
     assert "ipcRenderer.invoke('credential:open-device-session', request)" in preload
     assert "window.desktopApi.openDeviceSession" in workspace_store
     assert 'type="password"' not in workspace_store

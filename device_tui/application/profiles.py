@@ -202,6 +202,16 @@ class ConnectionProfileService:
     def has_password(self, profile_id: str, protocol: str) -> bool:
         return self._secrets.get(self.secret_id(profile_id, protocol)) is not None
 
+    def password(self, profile_id: str, protocol: str) -> str:
+        """Return the saved profile password for local configuration editing."""
+        self.get_profile(profile_id)
+        if protocol not in {"telnet", "ssh", "serial"}:
+            raise UnsupportedOperationError(
+                f"Unsupported profile protocol: {protocol}",
+                details={"profile_id": profile_id, "protocol": protocol},
+            )
+        return self._secrets.get(self.secret_id(profile_id, protocol)) or ""
+
     def set_password(self, profile_id: str, protocol: str, password: str) -> None:
         profile = self.get_profile(profile_id)
         if protocol not in {"telnet", "ssh", "serial"}:

@@ -30,7 +30,7 @@ ENSP_AR_TELNET_IP = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_IP", "192.168.40.20").s
 ENSP_AR_TELNET_USER = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_USER", "appadmin").strip()
 # Keep the lab credential out of source control. The custom connection dialog
 # can supply it for a one-time session when this is empty.
-ENSP_AR_TELNET_PASSWORD = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_PASSWORD", "").strip()
+ENSP_AR_TELNET_PASSWORD = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_PASSWORD", "Huawei@123").strip()
 SAMPLE_NOW = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
 
 def sample_devices() -> list[Device]:

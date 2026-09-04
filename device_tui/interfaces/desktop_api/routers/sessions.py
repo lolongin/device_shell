@@ -7,7 +7,15 @@ from fastapi import APIRouter, Depends
 from device_tui.application import ConnectionTarget, ControlContext, DeviceTarget, ResourceNotFoundError, SessionCredential
 
 from ..dependencies import authorize, get_context
-from ..models import DirectCredentialSessionRequest, OneTimeCredentialSessionRequest, SessionCreateRequest, SessionListResponse, SessionSummary
+from ..models import (
+    DeviceCredentialRequest,
+    DeviceCredentialResponse,
+    DirectCredentialSessionRequest,
+    OneTimeCredentialSessionRequest,
+    SessionCreateRequest,
+    SessionListResponse,
+    SessionSummary,
+)
 from ..serializers import session_summary
 
 router = APIRouter(prefix="/api/v1", tags=["sessions"], dependencies=[Depends(authorize)])
@@ -42,6 +50,24 @@ async def create_direct_credential_session(request: DirectCredentialSessionReque
     target = ConnectionTarget(device_id=request.device_id, protocol=request.kind, host=request.host.strip(), port=request.port, credentials=credentials)
     view = await desktop.control.open_connection(target, reuse=False, title=request.title, term_size=(request.cols, request.rows), context=ControlContext(source="electron"))
     return session_summary(next(item for item in desktop.sessions.list_sessions() if item.id == view.session_id))
+
+
+@router.post("/session-credentials", response_model=DeviceCredentialResponse)
+async def device_session_credentials(
+    request: DeviceCredentialRequest,
+    ctx=Depends(get_context),
+) -> DeviceCredentialResponse:
+    """Supply defaults to the isolated Electron credential prompt only."""
+    target = ctx.desktop.credentials.resolve(request.device_id, request.kind)
+    if not target.credentials:
+        return DeviceCredentialResponse()
+    # SSH may have fallback candidates (root/root and root/huawei).  The
+    # device-specific candidate is last; Telnet and serial have one default.
+    credential = target.credentials[-1] if request.kind == "ssh" else target.credentials[0]
+    return DeviceCredentialResponse(
+        username=credential.username,
+        password=credential.password,
+    )
 
 
 async def _session_action(session_id: str, ctx, action: str) -> SessionSummary:

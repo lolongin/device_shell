@@ -56,6 +56,23 @@ def test_qt_free_mcp_facade_runs_device_session_and_terminal_tools() -> None:
     assert status["data"]["approval_mode"] == "disabled"
 
 
+def test_qt_free_mcp_facade_runs_parallel_terminal_batches() -> None:
+    with _client() as client:
+        devices = _call(client, "device_list")["data"]["devices"]
+        device_id = devices[0]["id"]
+        result = _call(client, "terminal_execute_parallel", {
+            "requests": [
+                {"device_id": device_id, "commands": ["display version"]},
+                {"device_id": device_id, "commands": ["display version"]},
+            ],
+            "max_concurrency": 2,
+        })
+
+    assert result["data"]["status"] == "success"
+    assert result["data"]["request_count"] == 2
+    assert result["data"]["completed_count"] == 2
+
+
 def test_qt_free_mcp_facade_exposes_skills_and_direct_ai_execution() -> None:
     with _client() as client:
         device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
@@ -87,7 +104,7 @@ def test_qt_free_mcp_facade_covers_registered_tool_surface() -> None:
     expected = {
         "system_status", "device_list", "device_get", "device_select",
         "session_open", "session_list", "session_manage",
-        "terminal_run", "terminal_execute", "terminal_execute_batch",
+        "terminal_run", "terminal_execute", "terminal_execute_batch", "terminal_execute_parallel",
         "terminal_interact", "terminal_send_command", "terminal_read",
         "execution_get", "execution_cancel", "file_transfer_list",
         "file_transfer_start", "package_upgrade_start", "operation_get",

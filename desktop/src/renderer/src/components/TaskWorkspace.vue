@@ -28,7 +28,7 @@ const taskSteps = computed<TaskStepState[]>(() => {
   const task = selectedTask.value
   if (!task) return []
   if (task.checkpoint?.step_states?.length) return task.checkpoint.step_states
-  return (task.result?.steps || []).map((step) => ({
+  const resultSteps = (task.result?.steps || []).map((step) => ({
     step_id: step.step_id,
     status: step.status,
     attempt: 1,
@@ -45,6 +45,27 @@ const taskSteps = computed<TaskStepState[]>(() => {
       ? { code: step.error_code, message: step.message || step.error_code }
       : null
   }))
+  if (resultSteps.length) return resultSteps
+
+  // Generic TaskPlan projections expose their declared states without a
+  // legacy checkpoint. Keep the workflow visible and infer lightweight state
+  // from the current task boundary until child details are available.
+  const states = task.workflow_view?.states || []
+  if (!states.length) return []
+  const currentIndex = states.findIndex((state) => state.id === task.current_step_id)
+  const terminal = ['completed', 'failed', 'cancelled'].includes(task.status)
+  return states.map((state, index) => {
+    const status = terminal && task.status === 'completed'
+      ? 'completed'
+      : task.status === 'failed' && state.id === task.current_step_id
+        ? 'failed'
+        : currentIndex >= 0 && index < currentIndex
+          ? 'completed'
+          : state.id === task.current_step_id
+            ? 'running'
+            : 'pending'
+    return { step_id: state.id, status, attempt: 1, result: null, error: null }
+  })
 })
 const decisionActions = computed(() => workspace.taskDecision?.available_actions || [])
 const workflowStateById = computed(() => new Map(
@@ -64,6 +85,12 @@ const previousStepId = computed(() => {
 
 function stepLabel(stepId: string): string {
   return workflowStateById.value.get(stepId)?.label || stepId
+}
+function taskWorkflowLabel(task: TaskRecord): string {
+  return workspace.workflows.find((workflow) => workflow.id === task.workflow_id)?.name
+    || task.workflow_view?.id
+    || task.workflow_id
+    || '未命名 Workflow'
 }
 function stepDescription(stepId: string): string {
   return workflowStateById.value.get(stepId)?.description || ''
@@ -423,7 +450,7 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
     <div class="task-ui-list" aria-label="Task 列表">
       <div class="task-ui-list-heading"><strong>Task 记录</strong><div class="task-ui-list-actions"><small>{{ workspace.tasks.length }} 条</small><label v-if="terminalTasks.length" class="task-select-all" title="选择全部已结束任务"><input type="checkbox" :checked="allTerminalTasksSelected" :indeterminate="someTerminalTasksSelected" :disabled="workspace.taskBusy" @change="toggleAllTerminalTasks" /><span>已结束</span></label><button v-if="selectedTerminalTaskCount" class="task-bulk-delete" type="button" :disabled="workspace.taskBusy" title="删除选中的任务记录" @click="deleteSelectedTasks"><Trash2 :size="13" />删除选中 ({{ selectedTerminalTaskCount }})</button></div></div>
       <div v-for="task in workspace.tasks" :key="task.id" class="task-row" :data-active="task.id === workspace.activeTaskId" role="button" tabindex="0" @click="chooseTask(task)" @keydown.enter="chooseTask(task)">
-        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ task.workflow_id }}</strong><small>{{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
+        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ taskWorkflowLabel(task) }}</strong><small>{{ task.workflow_id }} · {{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
       </div>
       <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择 Workflow 或“制定任务”开始。</p>
     </div>

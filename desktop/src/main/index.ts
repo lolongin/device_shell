@@ -116,6 +116,11 @@ interface DeviceConnectionRequest {
   username: string
 }
 
+interface DeviceCredentialDefaults {
+  username: string
+  password: string
+}
+
 interface TemporaryProfileSaveRequest {
   profileId?: string
   payload: Record<string, unknown>
@@ -227,6 +232,7 @@ function validateBackendRequest(request: BackendRequest): void {
     request.path.includes('/credentials/')
     || request.path === '/api/v1/sessions/with-credential'
     || request.path === '/api/v1/sessions/direct'
+    || request.path === '/api/v1/session-credentials'
     || request.path === '/api/v1/internal-auth/password'
     || request.path === '/api/v1/internal-auth/login'
     || request.path === '/api/v1/device-source/import/preview'
@@ -281,19 +287,43 @@ function backendError(response: BackendResponse): Error {
   return new Error(message)
 }
 
+async function resolveDeviceCredentialDefaults(
+  request: DeviceConnectionRequest,
+): Promise<DeviceCredentialDefaults> {
+  try {
+    const response = await fetchBackend(
+      backend.config,
+      '/api/v1/session-credentials',
+      'POST',
+      JSON.stringify({ device_id: request.deviceId, kind: request.protocol }),
+    )
+    if (response.status < 200 || response.status >= 300) return { username: '', password: '' }
+    const payload = JSON.parse(response.body) as { username?: unknown; password?: unknown }
+    return {
+      username: typeof payload.username === 'string' ? payload.username : '',
+      password: typeof payload.password === 'string' ? payload.password : '',
+    }
+  } catch {
+    // Opening the prompt must remain possible when a source cannot resolve a
+    // default credential. The user can still enter values manually.
+    return { username: '', password: '' }
+  }
+}
+
 async function promptForCredential(
   request: ProfileCredentialRequest | DeviceConnectionRequest | InternalLoginPromptRequest,
-  mode: 'connect' | 'manage' | 'custom' | 'internal'
+  mode: 'connect' | 'manage' | 'custom' | 'internal',
+  initialPassword = ''
 ): Promise<CredentialDialogResult> {
   if (!mainWindow) return { action: 'cancel', password: '', save: false }
   let credentialTheme: 'dark' | 'light' = 'dark'
-  let savedInternalPassword = ''
+  let dialogPassword = initialPassword
   if (mode === 'internal' && 'remembered' in request && request.remembered) {
     try {
       const response = await fetchBackend(backend.config, '/api/v1/internal-auth/password', 'GET')
       if (response.status >= 200 && response.status < 300) {
         const payload = JSON.parse(response.body) as { password?: unknown }
-        savedInternalPassword = typeof payload.password === 'string' ? payload.password : ''
+        dialogPassword = typeof payload.password === 'string' ? payload.password : ''
       }
     } catch {
       // The dialog still opens and can accept a newly entered password.
@@ -417,8 +447,8 @@ async function promptForCredential(
         }
       }
     ).then(() => {
-      if (savedInternalPassword) {
-        credentialWindow.webContents.send('credential-dialog:init', { password: savedInternalPassword })
+      if (dialogPassword) {
+        credentialWindow.webContents.send('credential-dialog:init', { password: dialogPassword })
       }
       credentialWindow.show()
     }).catch(() => {
@@ -598,7 +628,7 @@ async function createWindow(): Promise<void> {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         throw new Error('Invalid temporary-profile payload')
       }
-      if (payload.profile_type !== 'temporary' || hasSensitiveKey(payload)) {
+      if (!['temporary', 'server'].includes(payload.profile_type as string) || hasSensitiveKey(payload)) {
         throw new Error('Invalid temporary-profile payload')
       }
       const profileId = request?.profileId
@@ -928,7 +958,12 @@ async function createWindow(): Promise<void> {
       ) {
         throw new Error('Invalid device connection target')
       }
-      let result = await promptForCredential(request, 'custom')
+      const defaults = await resolveDeviceCredentialDefaults(request)
+      const promptRequest: DeviceConnectionRequest = {
+        ...request,
+        username: defaults.username || request.username,
+      }
+      let result = await promptForCredential(promptRequest, 'custom', defaults.password)
       if (result.action !== 'submit') return null
       let response: BackendResponse
       try {

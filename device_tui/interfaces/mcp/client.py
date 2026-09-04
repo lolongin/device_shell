@@ -255,6 +255,24 @@ class AppControlClient:
             request_timeout_seconds=min(total_timeout_seconds or 60, 60) + 5,
         )
 
+    def terminal_execute_parallel(
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        max_concurrency: int = 8,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/terminal/execute-parallel",
+            {
+                "requests": requests,
+                "max_concurrency": max_concurrency,
+                "idempotency_key": idempotency_key,
+            },
+            request_timeout_seconds=60,
+        )
+
     def terminal_interact(
         self,
         steps: list[dict[str, Any]],

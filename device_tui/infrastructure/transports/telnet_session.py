@@ -24,6 +24,18 @@ TERM_TYPE = "xterm-256color"
 
 USERNAME_PATTERNS = ("username:", "login:")
 PASSWORD_PATTERNS = ("password:",)
+# Huawei devices commonly keep a Telnet socket open after rejecting a
+# password and show the username prompt again.  Treat these messages as an
+# authentication state, rather than a transport failure, so the user can
+# retry credentials in the same terminal.
+AUTHENTICATION_FAILURE_PATTERNS = (
+    "authentication fail",
+    "authentication failed",
+    "login failed",
+    "invalid password",
+    "incorrect password",
+    "access denied",
+)
 READ_CHUNK_SIZE = 16384
 PROMPT_PATTERN = re.compile(r"(<[^<>\r\n]+>|\[[^\[\]\r\n]+\]|[^\r\n]+[>#])\s*$")
 
@@ -166,6 +178,10 @@ class HuaweiTelnetSession:
             self._on_status("Connected")
             return
 
+        if stage == "authentication_failed":
+            self._on_status("Connected")
+            return
+
         if stage == "username" and username:
             await self._write_line(username)
             try:
@@ -176,6 +192,10 @@ class HuaweiTelnetSession:
                 self._on_status("Connected")
                 return
 
+            if stage == "authentication_failed":
+                self._on_status("Connected")
+                return
+
         if stage == "password" and password:
             await self._write_line(password)
             try:
@@ -183,6 +203,14 @@ class HuaweiTelnetSession:
             except TelnetSessionError as exc:
                 if require_prompt or not self._is_login_timeout(exc):
                     raise
+                self._on_status("Connected")
+                return
+
+            # A rejected password is not a disconnected Telnet session.  The
+            # server normally leaves the socket open and prompts for a new
+            # username.  Return successfully so connect() starts the reader
+            # loop and forwards subsequent user input to that prompt.
+            if stage in {"authentication_failed", "username"}:
                 self._on_status("Connected")
                 return
 
@@ -227,6 +255,8 @@ class HuaweiTelnetSession:
                     buffer = (buffer + text)[-4096:]
 
                 lowered = buffer.lower()
+                if any(pattern in lowered for pattern in AUTHENTICATION_FAILURE_PATTERNS):
+                    return "authentication_failed"
                 if any(pattern in lowered for pattern in USERNAME_PATTERNS):
                     return "username"
                 if any(pattern in lowered for pattern in PASSWORD_PATTERNS):

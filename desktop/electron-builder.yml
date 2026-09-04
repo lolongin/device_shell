@@ -18,6 +18,10 @@ extraResources:
     to: backend
     filter:
       - '**/*'
+  - from: resources/vrp-builder
+    to: vrp-builder
+    filter:
+      - '**/*'
   - from: resources/product-profile.json
     to: product-profile.json
 win:
