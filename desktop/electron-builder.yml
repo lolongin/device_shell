@@ -3,6 +3,7 @@ productName: OdyTerm
 electronVersion: 43.3.0
 electronDist: node_modules/electron/dist
 compression: store
+npmRebuild: false
 directories:
   output: release
 files:

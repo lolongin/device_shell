@@ -63,9 +63,31 @@ interface TransferSettingsSaveRequest {
   writable: boolean
 }
 
+interface LocalTerminalSummary {
+  id: string
+  device_id: string
+  kind: 'local'
+  title: string
+  status: string
+  sequence: number
+  generation: number
+  shell: string
+  cwd: string
+}
+
 interface DesktopApi {
   getRuntimeConfig(): Promise<BackendRuntime>
   request(request: BackendRequest): Promise<BackendResponse>
+  listLocalTerminals(): Promise<LocalTerminalSummary[]>
+  openLocalTerminal(request?: { shell?: string; cwd?: string }): Promise<LocalTerminalSummary>
+  subscribeLocalTerminal(sessionId: string): Promise<{ session: LocalTerminalSummary; output: string }>
+  writeLocalTerminal(sessionId: string, data: string): Promise<boolean>
+  resizeLocalTerminal(sessionId: string, cols: number, rows: number): Promise<boolean>
+  closeLocalTerminal(sessionId: string): Promise<boolean>
+  disconnectLocalTerminal(sessionId: string): Promise<boolean>
+  reconnectLocalTerminal(sessionId: string): Promise<LocalTerminalSummary>
+  onLocalTerminalData(callback: (event: { sessionId: string; sequence: number; data: string }) => void): () => void
+  onLocalTerminalStatus(callback: (event: { sessionId: string; sequence: number; status: string; error?: string }) => void): () => void
   openProfileSession(request: ProfileCredentialRequest): Promise<import('./types').SessionSummary | null>
   openDeviceSession(request: DeviceConnectionRequest): Promise<import('./types').SessionSummary | null>
   manageProfileCredential(request: ProfileCredentialRequest): Promise<boolean>

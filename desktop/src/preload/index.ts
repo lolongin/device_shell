@@ -62,10 +62,55 @@ interface TransferSettingsSaveRequest {
   writable: boolean
 }
 
+interface LocalTerminalSummary {
+  id: string
+  device_id: string
+  kind: 'local'
+  title: string
+  status: string
+  sequence: number
+  generation: number
+  shell: string
+  cwd: string
+}
+
 const desktopApi = {
   getRuntimeConfig: (): Promise<RendererRuntime> => ipcRenderer.invoke('runtime:get'),
   request: (request: BackendRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('backend:request', request),
+  listLocalTerminals: (): Promise<LocalTerminalSummary[]> => ipcRenderer.invoke('local-terminal:list'),
+  openLocalTerminal: (request?: { shell?: string; cwd?: string }): Promise<LocalTerminalSummary> =>
+    ipcRenderer.invoke('local-terminal:open', request),
+  subscribeLocalTerminal: (sessionId: string): Promise<{ session: LocalTerminalSummary; output: string }> =>
+    ipcRenderer.invoke('local-terminal:subscribe', sessionId),
+  writeLocalTerminal: (sessionId: string, data: string): Promise<boolean> =>
+    ipcRenderer.invoke('local-terminal:write', sessionId, data),
+  resizeLocalTerminal: (sessionId: string, cols: number, rows: number): Promise<boolean> =>
+    ipcRenderer.invoke('local-terminal:resize', sessionId, cols, rows),
+  closeLocalTerminal: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('local-terminal:close', sessionId),
+  disconnectLocalTerminal: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('local-terminal:disconnect', sessionId),
+  reconnectLocalTerminal: (sessionId: string): Promise<LocalTerminalSummary> =>
+    ipcRenderer.invoke('local-terminal:reconnect', sessionId),
+  onLocalTerminalData: (callback: (event: { sessionId: string; sequence: number; data: string }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (!value || typeof value !== 'object') return
+      const payload = value as { sessionId?: unknown; sequence?: unknown; data?: unknown }
+      if (typeof payload.sessionId !== 'string' || typeof payload.sequence !== 'number' || typeof payload.data !== 'string') return
+      callback({ sessionId: payload.sessionId, sequence: payload.sequence, data: payload.data })
+    }
+    ipcRenderer.on('local-terminal:data', listener)
+    return () => ipcRenderer.removeListener('local-terminal:data', listener)
+  },
+  onLocalTerminalStatus: (callback: (event: { sessionId: string; sequence: number; status: string; error?: string }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (!value || typeof value !== 'object') return
+      const payload = value as { sessionId?: unknown; sequence?: unknown; status?: unknown; error?: unknown }
+      if (typeof payload.sessionId !== 'string' || typeof payload.sequence !== 'number' || typeof payload.status !== 'string') return
+      callback({ sessionId: payload.sessionId, sequence: payload.sequence, status: payload.status, ...(typeof payload.error === 'string' ? { error: payload.error } : {}) })
+    }
+    ipcRenderer.on('local-terminal:status', listener)
+    return () => ipcRenderer.removeListener('local-terminal:status', listener)
+  },
   openProfileSession: (request: ProfileCredentialRequest): Promise<unknown | null> =>
     ipcRenderer.invoke('credential:open-profile-session', request),
   openDeviceSession: (request: DeviceConnectionRequest): Promise<unknown | null> =>

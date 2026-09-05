@@ -3,9 +3,30 @@ import { existsSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
+import { spawn as spawnPty } from 'node-pty'
+import type { IPty } from 'node-pty'
 import { PythonBackend } from './python-backend.js'
 
 let mainWindow: BrowserWindow | null = null
+
+interface LocalTerminalSummary {
+  id: string
+  device_id: string
+  kind: 'local'
+  title: string
+  status: 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed'
+  sequence: number
+  generation: number
+  shell: string
+  cwd: string
+}
+
+interface LocalTerminalProcess extends LocalTerminalSummary {
+  process: IPty | null
+  output: string
+}
+
+const localTerminals = new Map<string, LocalTerminalProcess>()
 
 type NativeThemeMode = 'dark' | 'light'
 type ApplicationMenuKey = 'file' | 'edit' | 'view' | 'window'
@@ -457,10 +478,91 @@ async function promptForCredential(
   })
 }
 
+function localTerminalPayload(session: LocalTerminalProcess): LocalTerminalSummary {
+  const { process: _process, output: _output, ...summary } = session
+  return summary
+}
+
+function localShellCommand(shellName: string): { command: string; args: string[]; label: string } {
+  const requested = shellName.trim().toLowerCase()
+  if (process.platform === 'win32') {
+    if (requested === 'cmd' || requested === 'cmd.exe') {
+      return { command: process.env.ComSpec || 'cmd.exe', args: [], label: '命令提示符' }
+    }
+    if (requested === 'pwsh' || requested === 'pwsh.exe') {
+      return { command: 'pwsh.exe', args: ['-NoLogo', '-NoProfile'], label: 'PowerShell 7' }
+    }
+    return { command: 'powershell.exe', args: ['-NoLogo', '-NoProfile'], label: 'PowerShell' }
+  }
+  if (requested === 'bash') return { command: 'bash', args: [], label: 'Bash' }
+  if (requested === 'zsh') return { command: 'zsh', args: [], label: 'Zsh' }
+  return { command: process.env.SHELL || 'sh', args: [], label: 'Shell' }
+}
+
+function attachLocalTerminalProcess(session: LocalTerminalProcess): void {
+  const pty = session.process
+  if (!pty) return
+  const generation = session.generation
+  pty.onData((data) => {
+    if (session.process !== pty || session.generation !== generation) return
+    session.output = `${session.output}${data}`.slice(-256 * 1024)
+    session.sequence += 1
+    mainWindow?.webContents.send('local-terminal:data', {
+      sessionId: session.id,
+      sequence: session.sequence,
+      data
+    })
+  })
+  pty.onExit(({ exitCode }) => {
+    if (session.process !== pty || session.generation !== generation) return
+    session.process = null
+    session.status = session.status === 'failed' ? 'failed' : 'disconnected'
+    session.sequence += 1
+    mainWindow?.webContents.send('local-terminal:status', {
+      sessionId: session.id,
+      sequence: session.sequence,
+      status: session.status,
+      code: exitCode
+    })
+  })
+}
+
+function startLocalTerminal(session: LocalTerminalProcess): void {
+  const shell = localShellCommand(session.shell)
+  session.title = shell.label
+  session.status = 'connecting'
+  session.process = spawnPty(shell.command, shell.args, {
+    cwd: session.cwd,
+    env: { ...process.env, TERM: 'xterm-256color' },
+    cols: 120,
+    rows: 32,
+    name: 'xterm-256color',
+    // Winpty works in Electron's GUI process where ConPTY's console attachment helper
+    // can fail because the app has no attached Windows console.
+    useConpty: false
+  })
+  attachLocalTerminalProcess(session)
+  session.status = 'connected'
+  session.sequence += 1
+  mainWindow?.webContents.send('local-terminal:status', {
+    sessionId: session.id,
+    sequence: session.sequence,
+    status: session.status
+  })
+}
+
 async function createWindow(): Promise<void> {
   await backend.start()
   ipcMain.removeHandler('runtime:get')
   ipcMain.removeHandler('backend:request')
+  ipcMain.removeHandler('local-terminal:list')
+  ipcMain.removeHandler('local-terminal:open')
+  ipcMain.removeHandler('local-terminal:subscribe')
+  ipcMain.removeHandler('local-terminal:write')
+  ipcMain.removeHandler('local-terminal:resize')
+  ipcMain.removeHandler('local-terminal:close')
+  ipcMain.removeHandler('local-terminal:disconnect')
+  ipcMain.removeHandler('local-terminal:reconnect')
   ipcMain.removeHandler('credential:open-profile-session')
   ipcMain.removeHandler('credential:open-device-session')
   ipcMain.removeHandler('credential:manage-profile')
@@ -510,6 +612,118 @@ async function createWindow(): Promise<void> {
     validateBackendRequest(request)
     const method = String(request.method || 'GET').toUpperCase()
     return await fetchBackend(backend.config, request.path, method, request.body)
+  })
+  ipcMain.handle('local-terminal:list', (event): LocalTerminalSummary[] => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted local-terminal caller')
+    return [...localTerminals.values()].map(localTerminalPayload)
+  })
+  ipcMain.handle('local-terminal:open', (event, request?: unknown): LocalTerminalSummary => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted local-terminal caller')
+    const payload = request && typeof request === 'object' ? request as Record<string, unknown> : {}
+    const shellName = typeof payload.shell === 'string' ? payload.shell.trim() : ''
+    if (shellName && !['powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'cmd', 'cmd.exe', 'bash', 'zsh'].includes(shellName.toLowerCase())) {
+      throw new Error('Unsupported local shell')
+    }
+    const requestedCwd = typeof payload.cwd === 'string' ? payload.cwd.trim() : ''
+    const cwd = requestedCwd ? path.resolve(requestedCwd) : process.cwd()
+    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error('Invalid local terminal directory')
+    const id = `local-${randomBytes(8).toString('hex')}`
+    const shell = shellName || (process.platform === 'win32' ? 'powershell' : (process.env.SHELL || 'sh'))
+    const session: LocalTerminalProcess = {
+      id,
+      device_id: `local:${id}`,
+      kind: 'local',
+      title: '本地终端',
+      status: 'connecting',
+      sequence: 0,
+      generation: 0,
+      shell,
+      cwd,
+      process: null,
+      output: ''
+    }
+    localTerminals.set(id, session)
+    try {
+      startLocalTerminal(session)
+    } catch (error) {
+      localTerminals.delete(id)
+      throw error
+    }
+    return localTerminalPayload(session)
+  })
+  ipcMain.handle('local-terminal:subscribe', (event, sessionId: unknown): { session: LocalTerminalSummary; output: string } => {
+    if (event.sender !== mainWindow?.webContents || typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('Invalid local terminal session')
+    }
+    const session = localTerminals.get(sessionId)
+    if (!session) throw new Error('Unknown local terminal session')
+    return { session: localTerminalPayload(session), output: session.output }
+  })
+  ipcMain.handle('local-terminal:write', (event, sessionId: unknown, data: unknown): boolean => {
+    if (event.sender !== mainWindow?.webContents || typeof sessionId !== 'string' || typeof data !== 'string' || data.length > 1_000_000) {
+      throw new Error('Invalid local terminal input')
+    }
+    const session = localTerminals.get(sessionId)
+    if (!session?.process) return false
+    session.process.write(data)
+    return true
+  })
+  ipcMain.handle('local-terminal:resize', (event, sessionId: unknown, cols: unknown, rows: unknown): boolean => {
+    if (event.sender !== mainWindow?.webContents || typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('Invalid local terminal session')
+    }
+    if (typeof cols !== 'number' || typeof rows !== 'number' || !Number.isFinite(cols) || !Number.isFinite(rows)) {
+      throw new Error('Invalid local terminal size')
+    }
+    const session = localTerminals.get(sessionId)
+    if (!session?.process) return false
+    session.process.resize(Math.max(2, Math.floor(cols)), Math.max(2, Math.floor(rows)))
+    return true
+  })
+  ipcMain.handle('local-terminal:close', (event, sessionId: unknown): boolean => {
+    if (event.sender !== mainWindow?.webContents || typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('Invalid local terminal session')
+    }
+    const session = localTerminals.get(sessionId)
+    if (!session) return false
+    session.status = 'closed'
+    const process = session.process
+    session.process = null
+    session.generation += 1
+    process?.kill()
+    localTerminals.delete(sessionId)
+    return true
+  })
+  ipcMain.handle('local-terminal:disconnect', (event, sessionId: unknown): boolean => {
+    if (event.sender !== mainWindow?.webContents || typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('Invalid local terminal session')
+    }
+    const session = localTerminals.get(sessionId)
+    if (!session) return false
+    session.status = 'disconnected'
+    session.process?.kill()
+    session.process = null
+    session.sequence += 1
+    mainWindow?.webContents.send('local-terminal:status', {
+      sessionId,
+      sequence: session.sequence,
+      status: session.status
+    })
+    return true
+  })
+  ipcMain.handle('local-terminal:reconnect', (event, sessionId: unknown): LocalTerminalSummary => {
+    if (event.sender !== mainWindow?.webContents || typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('Invalid local terminal session')
+    }
+    const session = localTerminals.get(sessionId)
+    if (!session) throw new Error('Unknown local terminal session')
+    const previous = session.process
+    session.process = null
+    previous?.kill()
+    session.output = ''
+    session.generation += 1
+    startLocalTerminal(session)
+    return localTerminalPayload(session)
   })
   ipcMain.handle('clipboard:read-text', (event): string => {
     if (event.sender !== mainWindow?.webContents) throw new Error('Untrusted clipboard caller')
@@ -4763,5 +4977,9 @@ if (!instanceLock) {
     if (process.platform !== 'darwin') app.quit()
   })
 
-  app.on('before-quit', () => backend.stop())
+  app.on('before-quit', () => {
+    for (const session of localTerminals.values()) session.process?.kill()
+    localTerminals.clear()
+    backend.stop()
+  })
 }

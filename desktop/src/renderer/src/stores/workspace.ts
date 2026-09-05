@@ -310,6 +310,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const [
         deviceResponse,
         sessionResponse,
+        localSessionResponse,
         profileResponse,
         commandResponse,
         automationResponse,
@@ -321,6 +322,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ] = await Promise.all([
         desktopApi.devices(),
         desktopApi.sessions(),
+        window.desktopApi.listLocalTerminals(),
         desktopApi.connectionProfiles(),
         desktopApi.commandWorkspace(),
         desktopApi.automationWorkspace(),
@@ -336,6 +338,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       applyDeviceInventory(deviceResponse)
       sessions.value = []
       for (const session of sessionResponse) upsertSession(session)
+      for (const session of localSessionResponse) upsertSession(session)
       profiles.value = profileResponse.profiles
       profileGroups.value = profileResponse.groups
       applyCommandWorkspace(commandResponse)
@@ -666,6 +669,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const openSimulatedSession = (): Promise<void> => openSession('simulated')
 
+  async function openLocalTerminal(shell = ''): Promise<void> {
+    openingKind.value = 'local'
+    error.value = ''
+    try {
+      const session = await window.desktopApi.openLocalTerminal(shell ? { shell } : undefined)
+      upsertSession(session)
+      activeSessionId.value = session.id
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      error.value = message.includes('No handler registered for')
+        ? '当前应用主进程版本较旧，请完全退出应用后重新启动。'
+        : message
+    } finally {
+      openingKind.value = ''
+    }
+  }
+
   function splitEndpoint(endpoint: string | null, defaultPort: number): { host: string; port: number } {
     const value = String(endpoint || '').trim()
     if (!value) return { host: '', port: defaultPort }
@@ -685,7 +705,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function openCustomDeviceSession(
     device: DeviceSummary,
-    kind: Exclude<SessionKind, 'simulated'>
+    kind: Exclude<SessionKind, 'simulated' | 'local'>
   ): Promise<void> {
     const endpoint = splitEndpoint(
       kind === 'ssh'
@@ -718,7 +738,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function openProfileSession(
     profile: ConnectionProfileSummary,
-    kind: Exclude<SessionKind, 'simulated'> = profile.preferred_protocol
+    kind: Exclude<SessionKind, 'simulated' | 'local'> = profile.preferred_protocol
   ): Promise<void> {
     openingKind.value = kind
     error.value = ''
@@ -748,7 +768,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function manageProfileCredential(
     profile: ConnectionProfileSummary,
-    kind: Exclude<SessionKind, 'simulated'> = profile.preferred_protocol
+    kind: Exclude<SessionKind, 'simulated' | 'local'> = profile.preferred_protocol
   ): Promise<boolean> {
     error.value = ''
     try {
@@ -1610,6 +1630,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function closeSessionOnBackend(sessionId: string): Promise<void> {
+    const session = sessions.value.find((item) => item.id === sessionId)
+    if (session?.kind === 'local') {
+      try {
+        await window.desktopApi.closeLocalTerminal(sessionId)
+      } catch (cause) {
+        error.value = sessionCloseError(cause)
+      }
+      return
+    }
     try {
       await desktopApi.closeSession(sessionId)
     } catch (cause) {
@@ -1631,7 +1660,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     sessionActionId.value = sessionId
     error.value = ''
     try {
-      upsertSession(await desktopApi.reconnectSession(sessionId))
+      const session = sessions.value.find((item) => item.id === sessionId)
+      upsertSession(session?.kind === 'local'
+        ? await window.desktopApi.reconnectLocalTerminal(sessionId)
+        : await desktopApi.reconnectSession(sessionId))
       notice.value = '会话正在重新连接。'
       return true
     } catch (cause) {
@@ -1646,7 +1678,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     sessionActionId.value = sessionId
     error.value = ''
     try {
-      upsertSession(await desktopApi.disconnectSession(sessionId))
+      const session = sessions.value.find((item) => item.id === sessionId)
+      if (session?.kind === 'local') {
+        await window.desktopApi.closeLocalTerminal(sessionId)
+        upsertSession({ ...session, status: 'disconnected' })
+      } else {
+        upsertSession(await desktopApi.disconnectSession(sessionId))
+      }
       notice.value = '会话已断开。'
       return true
     } catch (cause) {
@@ -1923,6 +1961,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     logoutInternalService,
     startApplicationEvents,
     openSimulatedSession,
+    openLocalTerminal,
     openCustomDeviceSession,
     openSessionForDevice,
     openSession,

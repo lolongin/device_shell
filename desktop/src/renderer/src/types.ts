@@ -8,7 +8,6 @@ export interface DeviceFieldDescriptor {
   filterable: boolean
   default_visible: boolean
 }
-
 export interface DeviceSummary {
   id: string
   row_id: string
@@ -74,7 +73,7 @@ export interface ConnectionProfileSummary {
   name: string
   group: string
   notes: string
-  preferred_protocol: Exclude<SessionKind, 'simulated'>
+  preferred_protocol: Exclude<SessionKind, 'simulated' | 'local'>
   telnet: ProfileEndpoint
   ssh: ProfileEndpoint
   serial: ProfileEndpoint
@@ -98,7 +97,7 @@ export interface ConnectionProfilePayload {
   name: string
   group: string
   notes: string
-  preferred_protocol: Exclude<SessionKind, 'simulated'>
+  preferred_protocol: Exclude<SessionKind, 'simulated' | 'local'>
   telnet: Omit<ProfileEndpoint, 'has_password' | 'password'>
   ssh: Omit<ProfileEndpoint, 'has_password' | 'password'>
   serial: Omit<ProfileEndpoint, 'has_password' | 'password'>
@@ -767,7 +766,7 @@ export interface SessionSummary {
   generation: number
 }
 
-export type SessionKind = 'simulated' | 'ssh' | 'telnet' | 'serial'
+export type SessionKind = 'local' | 'simulated' | 'ssh' | 'telnet' | 'serial'
 
 export interface SessionLogResponse {
   api_version: number

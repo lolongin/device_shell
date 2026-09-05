@@ -232,7 +232,8 @@ function handleResizeKeydown(event: KeyboardEvent): void {
 }
 
 function kindLabel(kind: string): string {
-  return kind === 'ssh' ? 'SSH'
+  return kind === 'local' ? '本地终端'
+    : kind === 'ssh' ? 'SSH'
     : kind === 'telnet' ? 'Telnet'
       : kind === 'serial' ? '串口'
         : kind === 'simulated' ? '模拟'

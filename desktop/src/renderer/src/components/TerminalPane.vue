@@ -64,6 +64,7 @@ const emit = defineEmits<{
 const pane = ref<HTMLElement | null>(null)
 const container = ref<HTMLElement | null>(null)
 const connectionStatus = ref(props.session.status || 'connecting')
+const isLocal = computed(() => props.session.kind === 'local')
 const logOpen = ref(false)
 const logLoading = ref(false)
 const logContent = ref('')
@@ -82,6 +83,8 @@ let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let searchAddon: SearchAddon | null = null
 let socket: WebSocket | null = null
+let unsubscribeLocalData: (() => void) | null = null
+let unsubscribeLocalStatus: (() => void) | null = null
 let resizeObserver: ResizeObserver | null = null
 let themeObserver: MutationObserver | null = null
 let unsubscribeContextMenuOpen: (() => void) | null = null
@@ -99,7 +102,9 @@ const canReconnect = computed(() =>
 const canDisconnect = computed(() =>
   !disconnecting.value && ['connected', 'connecting'].includes(connectionStatus.value)
 )
-const canPaste = computed(() => socket?.readyState === WebSocket.OPEN)
+const canPaste = computed(() => isLocal.value
+  ? ['connected', 'connecting'].includes(connectionStatus.value)
+  : socket?.readyState === WebSocket.OPEN)
 const connectionStatusLabel = computed(() =>
   connectionStatus.value === 'connecting' ? '正在连接' : sessionStatusLabel(connectionStatus.value)
 )
@@ -137,6 +142,35 @@ function queueTerminalOutput(output: string): void {
 }
 
 async function connect(): Promise<void> {
+  if (isLocal.value) {
+    try {
+      unsubscribeLocalData?.()
+      unsubscribeLocalStatus?.()
+      unsubscribeLocalData = window.desktopApi.onLocalTerminalData((event) => {
+        if (event.sessionId !== props.session.id || event.sequence <= lastSequence) return
+        lastSequence = event.sequence
+        queueTerminalOutput(event.data)
+      })
+      unsubscribeLocalStatus = window.desktopApi.onLocalTerminalStatus((event) => {
+        if (event.sessionId !== props.session.id || event.sequence <= lastSequence) return
+        lastSequence = event.sequence
+        flushTerminalOutput()
+        connectionStatus.value = event.status
+        if (event.error) terminal?.writeln(`\r\n\x1b[31m[本地终端] ${event.error}\x1b[0m`)
+        emit('status', props.session.id, event.status, event.sequence)
+      })
+      const snapshot = await window.desktopApi.subscribeLocalTerminal(props.session.id)
+      if (snapshot.session.sequence > lastSequence) {
+        lastSequence = snapshot.session.sequence
+        queueTerminalOutput(snapshot.output)
+      }
+      connectionStatus.value = snapshot.session.status
+    } catch (cause) {
+      connectionStatus.value = 'error'
+      terminal?.writeln(`\r\n\x1b[31m[本地终端连接失败] ${cause instanceof Error ? cause.message : String(cause)}\x1b[0m`)
+    }
+    return
+  }
   try {
     socket?.close()
     const url = await terminalSocketUrl(props.session.id, lastSequence)
@@ -184,7 +218,14 @@ async function connect(): Promise<void> {
 }
 
 function sendResize(): void {
-  if (!terminal || socket?.readyState !== WebSocket.OPEN) return
+  if (!terminal) return
+  if (isLocal.value) {
+    if (['connected', 'connecting'].includes(connectionStatus.value)) {
+      void window.desktopApi.resizeLocalTerminal(props.session.id, terminal.cols, terminal.rows).catch(() => false)
+    }
+    return
+  }
+  if (socket?.readyState !== WebSocket.OPEN) return
   socket.send(
     JSON.stringify({
       type: 'terminal.resize',
@@ -199,7 +240,9 @@ async function reconnect(): Promise<void> {
   reconnecting.value = true
   terminal?.writeln('\r\n\x1b[36m[正在重新连接]\x1b[0m')
   try {
-    const session = await desktopApi.reconnectSession(props.session.id)
+    const session = isLocal.value
+      ? await window.desktopApi.reconnectLocalTerminal(props.session.id)
+      : await desktopApi.reconnectSession(props.session.id)
     connectionStatus.value = session.status
     emit('status', props.session.id, session.status, session.sequence)
     if (socket?.readyState !== WebSocket.OPEN) await connect()
@@ -216,7 +259,10 @@ async function disconnect(): Promise<void> {
   if (!canDisconnect.value) return
   disconnecting.value = true
   try {
-    const session = await desktopApi.disconnectSession(props.session.id)
+    const session = isLocal.value
+      ? { ...props.session, status: 'disconnected' }
+      : await desktopApi.disconnectSession(props.session.id)
+    if (isLocal.value) await window.desktopApi.disconnectLocalTerminal(props.session.id)
     connectionStatus.value = session.status
     emit('status', props.session.id, session.status, session.sequence)
     terminal?.writeln('\r\n\x1b[33m[会话已断开，按 Enter 可重连]\x1b[0m')
@@ -336,7 +382,8 @@ async function pasteFromClipboard(): Promise<void> {
   const text = await window.desktopApi.readClipboardText()
   if (!text) return
   recordTerminalInput(text)
-  socket?.send(JSON.stringify({ type: 'terminal.input', data: text }))
+  if (isLocal.value) await window.desktopApi.writeLocalTerminal(props.session.id, text).catch(() => false)
+  else socket?.send(JSON.stringify({ type: 'terminal.input', data: text }))
   contextMenu.value = null
 }
 
@@ -494,21 +541,30 @@ function terminalThemeFor(mode: 'dark' | 'light') {
     }
   }
   return {
-    background: '#020617',
-    foreground: '#f8fafc',
+    background: '#050b15',
+    foreground: '#e6edf5',
     cursor: '#22c55e',
-    selectionBackground: '#315f9f',
-    scrollbarSliderBackground: '#334155',
-    scrollbarSliderHoverBackground: '#475569',
-    scrollbarSliderActiveBackground: '#64748b',
-    black: '#020617',
-    red: '#f87171',
-    green: '#22c55e',
-    yellow: '#fbbf24',
-    blue: '#60a5fa',
-    magenta: '#c4b5fd',
-    cyan: '#91d7e3',
-    white: '#f8fafc'
+    selectionBackground: '#284d73',
+    selectionInactiveBackground: '#1b334e',
+    scrollbarSliderBackground: '#31445b',
+    scrollbarSliderHoverBackground: '#4a6380',
+    scrollbarSliderActiveBackground: '#6382a3',
+    black: '#0b1524',
+    red: '#ff7b72',
+    green: '#56d364',
+    yellow: '#e3b341',
+    blue: '#79c0ff',
+    magenta: '#d2a8ff',
+    cyan: '#76e3ea',
+    white: '#e6edf5',
+    brightBlack: '#6e7681',
+    brightRed: '#ffa198',
+    brightGreen: '#7ee787',
+    brightYellow: '#f2cc60',
+    brightBlue: '#a5d6ff',
+    brightMagenta: '#d8b9ff',
+    brightCyan: '#b3f0ff',
+    brightWhite: '#ffffff'
   }
 }
 
@@ -517,6 +573,7 @@ function applyTerminalTheme(): void {
 }
 
 function recordTerminalInput(data: string): void {
+  if (isLocal.value) return
   if (data.includes('\x1b')) return
   for (const character of data) {
     if (character === '\r' || character === '\n') {
@@ -583,12 +640,17 @@ onMounted(async () => {
   fitAddon = new FitAddon()
   searchAddon = new SearchAddon()
   terminal = new Terminal({
-    convertEol: true,
+    // PTY streams already contain Windows CRLF; converting again creates blank lines.
+    convertEol: !isLocal.value,
     cursorBlink: true,
     cursorStyle: 'bar',
-    fontFamily: '"Cascadia Mono", "JetBrains Mono", Consolas, monospace',
+    cursorWidth: 2,
+    cursorInactiveStyle: 'outline',
+    drawBoldTextInBrightColors: true,
+    fontFamily: '"Cascadia Mono", "JetBrains Mono", Consolas, "Microsoft YaHei UI", monospace',
     fontSize: fontSize.value,
-    lineHeight: 1.25,
+    lineHeight: 1.3,
+    minimumContrastRatio: 4.5,
     scrollback: 10_000,
     theme: terminalThemeFor(readThemeMode())
   })
@@ -603,7 +665,9 @@ onMounted(async () => {
       return
     }
     recordTerminalInput(data)
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (isLocal.value) {
+      void window.desktopApi.writeLocalTerminal(props.session.id, data).catch(() => false)
+    } else if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'terminal.input', data }))
     }
   })
@@ -630,6 +694,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('odyterm:focus-terminal', handleTerminalFocusRequest)
   flushTerminalOutput()
   socket?.close()
+  unsubscribeLocalData?.()
+  unsubscribeLocalStatus?.()
   terminal?.dispose()
 })
 </script>
@@ -667,19 +733,19 @@ onBeforeUnmount(() => {
     </div>
     <footer class="terminal-bottom-toolbar" role="toolbar" aria-label="终端辅助操作">
       <span class="terminal-bottom-spacer" aria-hidden="true"></span>
-      <button class="icon-button" type="button" title="查看会话日志" @click="loadLog">
+      <button v-if="!isLocal" class="icon-button" type="button" title="查看会话日志" @click="loadLog">
         <FileText :size="15" aria-hidden="true" />
         <span class="sr-only">查看会话日志</span>
       </button>
-      <button class="icon-button" type="button" title="打开当前会话自动响应" @click="openAutomation">
+      <button v-if="!isLocal" class="icon-button" type="button" title="打开当前会话自动响应" @click="openAutomation">
         <Workflow :size="15" aria-hidden="true" />
         <span class="sr-only">打开当前会话自动响应</span>
       </button>
-      <button class="icon-button terminal-operation-button" type="button" title="托管传输当前设备" @click="emit('transfer', session.id)">
+      <button v-if="!isLocal" class="icon-button terminal-operation-button" type="button" title="托管传输当前设备" @click="emit('transfer', session.id)">
         <FileUp :size="15" aria-hidden="true" />
         <span class="sr-only">托管传输当前设备</span>
       </button>
-      <button class="icon-button terminal-operation-button" type="button" title="升级当前设备系统包" @click="emit('upgrade', session.id)">
+      <button v-if="!isLocal" class="icon-button terminal-operation-button" type="button" title="升级当前设备系统包" @click="emit('upgrade', session.id)">
         <Box :size="15" aria-hidden="true" />
         <span class="sr-only">升级当前设备系统包</span>
       </button>
@@ -789,10 +855,12 @@ onBeforeUnmount(() => {
       <button type="button" role="menuitem" @click="clearTerminal">清空终端显示</button>
       <button type="button" role="menuitem" @click="openAutomation">管理自动响应</button>
       <hr />
-      <button type="button" role="menuitem" @click="loadLogFromContext">查看会话日志</button>
-      <button type="button" role="menuitem" @click="openCurrentLog">在系统中打开日志文件</button>
-      <button type="button" role="menuitem" @click="openLogDirectory">打开日志目录</button>
-      <button type="button" role="menuitem" @click="createNewLog">开始新的日志文件</button>
+      <template v-if="!isLocal">
+        <button type="button" role="menuitem" @click="loadLogFromContext">查看会话日志</button>
+        <button type="button" role="menuitem" @click="openCurrentLog">在系统中打开日志文件</button>
+        <button type="button" role="menuitem" @click="openLogDirectory">打开日志目录</button>
+        <button type="button" role="menuitem" @click="createNewLog">开始新的日志文件</button>
+      </template>
       <button v-if="logContent" type="button" role="menuitem" @click="saveLogCopy">保存已查看日志的副本</button>
       <template v-if="canDisconnect || canReconnect">
         <hr />

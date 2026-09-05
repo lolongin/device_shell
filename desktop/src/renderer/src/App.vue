@@ -27,6 +27,7 @@ import {
   Search,
   SearchX,
   ServerCog,
+  SquareTerminal,
   Settings,
   Moon,
   Sun,
@@ -417,7 +418,9 @@ const sessionDeviceGroups = computed(() => {
     const device = deviceById.value.get(deviceId) || null
     return {
       id: deviceId,
-      label: device?.name || sessions[0]?.title.split(' · ').slice(1).join(' · ') || deviceId,
+      label: device?.name
+        || (sessions[0]?.kind === 'local' ? sessions[0]?.title : sessions[0]?.title.split(' · ').slice(1).join(' · '))
+        || deviceId,
       health: aggregateSessionHealth(sessions),
       sessions
     }
@@ -506,7 +509,7 @@ watch(
 )
 
 function sessionKindLabel(kind: string): string {
-  return ({ ssh: 'SSH', telnet: 'Telnet', serial: '串口', simulated: '模拟终端' } as Record<string, string>)[kind]
+  return ({ local: '本地终端', ssh: 'SSH', telnet: 'Telnet', serial: '串口', simulated: '模拟终端' } as Record<string, string>)[kind]
     || kind.toLocaleUpperCase()
 }
 
@@ -1485,6 +1488,10 @@ function toggleTransferPanel(): void {
   }
 }
 
+function openLocalTerminal(): void {
+  void workspace.openLocalTerminal()
+}
+
 function toggleUpgradePanel(): void {
   const open = !workspace.upgradePanelOpen
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
@@ -1759,6 +1766,16 @@ onBeforeUnmount(() => {
     <nav class="activity-rail" aria-label="主功能">
       <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'devices' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'devices' ? '隐藏设备列表' : '显示设备列表'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'devices'" @click="setSection('devices')">
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
+      </button>
+      <button
+        class="rail-button"
+        type="button"
+        title="打开本地终端"
+        aria-label="打开本地终端"
+        :disabled="Boolean(workspace.openingKind)"
+        @click="openLocalTerminal"
+      >
+        <SquareTerminal :size="19" /><span class="sr-only">本地终端</span>
       </button>
       <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'temporary' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'temporary' ? '隐藏临时连接' : '显示临时连接'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'temporary'" @click="setSection('temporary')">
         <Cable :size="19" /><span class="sr-only">临时连接</span>
