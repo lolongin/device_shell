@@ -319,6 +319,7 @@ class SessionHub:
         if adapter is not None:
             await adapter.disconnect("Disconnected by user.")
         managed.status = "disconnected"
+        self._publish(managed, event_type="terminal.status", status="disconnected")
         return managed.summary()
 
     async def close(self, session_id: str) -> bool:
@@ -333,6 +334,7 @@ class SessionHub:
         if adapter is not None:
             await adapter.disconnect("Session closed.")
         managed.status = "closed"
+        self._publish(managed, event_type="terminal.status", status="closed")
         self._log_sink.record(managed.id, managed.target.device_id, "SYS", "Session closed.")
         self._log_sink.close_session(managed.id)
         managed.subscribers.clear()
@@ -352,6 +354,32 @@ class SessionHub:
             managed.target.device_id,
             max_chars,
         )
+
+    def terminal_snapshot(
+        self,
+        session_id: str,
+        max_chars: int = 32_768,
+    ) -> dict[str, object]:
+        """Return a generation-bound tail suitable for MCP attachment."""
+        managed = self.get(session_id)
+        output = "".join(
+            event.data
+            for event in managed.replay.after(0)
+            if event.type == "terminal.output"
+            and event.generation == managed.generation
+        )
+        limit = max(1, int(max_chars))
+        truncated = len(output) > limit
+        if truncated:
+            output = output[-limit:]
+        return {
+            "session_id": managed.id,
+            "device_id": managed.target.device_id,
+            "generation": managed.generation,
+            "output_cursor": managed.sequence,
+            "output": output,
+            "truncated": truncated,
+        }
 
     def log_configuration(self) -> dict[str, object] | None:
         if not isinstance(self._log_sink, FileSessionLogSink):

@@ -237,6 +237,8 @@ class DeviceControlService:
                     command_timeout_seconds=request.timeout_seconds,
                     total_timeout_seconds=request.total_timeout_seconds,
                     max_output_chars=request.max_output_chars,
+                    terminal_prompt=request.terminal_prompt,
+                    failure_patterns=request.failure_patterns,
                 )
             except TerminalPlanError as exc:
                 raise UnsupportedOperationError(str(exc), details={"code": exc.code}) from exc
@@ -255,6 +257,8 @@ class DeviceControlService:
         # to address the terminal run before it has completed.
         if "execution_id" in inspect.signature(self._executor.run).parameters:
             run_args["execution_id"] = execution_id
+        if "return_on_interaction" in inspect.signature(self._executor.run).parameters:
+            run_args["return_on_interaction"] = request.return_on_interaction
         result = await self._executor.run(**run_args)
         data = dict(result)
         status = str(data.get("status") or "failed")
@@ -399,8 +403,8 @@ class DeviceControlService:
     def cancel_operation(self, operation_id: str) -> OperationView:
         return self._operation_view(self._operations.cancel(operation_id))
 
-    def get_execution(self, execution_id: str) -> dict[str, object]:
-        return dict(self._executor.get_execution(execution_id))
+    def get_execution(self, execution_id: str, *, since_cursor: int = 0, wait_seconds: float = 0.0) -> dict[str, object]:
+        return dict(self._executor.get_execution(execution_id, since_cursor=since_cursor, wait_seconds=wait_seconds))
 
     def cancel_execution(self, execution_id: str) -> dict[str, object]:
         return dict(self._executor.cancel_execution(execution_id))

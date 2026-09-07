@@ -821,6 +821,7 @@ def test_electron_device_table_context_menu_only_shows_applicable_actions() -> N
 
     assert "deviceRowCopyText" in app
     assert "deviceConnectionCopyText" in app
+    assert "`设备序号: ${device.board_id || device.id}`" in app
     assert "function endpointHost" in app
     assert "endpointHost(deviceContextMenu.device.ssh_endpoint)" in app
     assert "endpointHost(deviceContextMenu.device.telnet_endpoint)" in app
@@ -1010,6 +1011,37 @@ def test_electron_terminal_context_menu_uses_clear_scoped_actions() -> None:
     assert ".terminal-context-menu" in styles
     assert ".terminal-context-menu button:disabled" in styles
     assert ".terminal-context-menu button:focus-visible" in styles
+
+
+def test_electron_terminal_completion_keeps_acceptance_explicit() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "const inputLine = ref('')" in terminal
+    assert "const completionVisible = computed" in terminal
+    assert "const socketReady = ref(false)" in terminal
+    assert "let completionRequestId = 0" in terminal
+    assert "const completionCandidate = computed" in terminal
+    assert "suggestions.filter(completionMatchesInput).slice(0, 1)" in terminal
+    assert "function inferCompletedCommandFromTerminalLine" in terminal
+    assert "function syncPendingCommandFromTerminalLine" in terminal
+    assert "function syncInputModelFromTerminalLine" in terminal
+    assert "let nativeCompletionPending = false" in terminal
+    assert "syncPendingCommandFromTerminalLine()" in terminal
+    assert "terminal.buffer.active" in terminal
+    assert "event.key === 'ArrowRight' && inputCursor.value === inputLine.value.length" in terminal
+    assert "if (event.key === 'ArrowLeft')" in terminal
+    assert "clearCompletions()" in terminal
+    assert "const sendPromise = sendTerminalInput(suffix)" in terminal
+    assert "aria-label=\"命令补齐建议，按右方向键接受\"" in terminal
+    assert 'class="terminal-completion-hint"' in terminal
+    assert 'class="terminal-completion-action"' in terminal
+    assert 'aria-label="按右方向键补全命令"' in terminal
+    assert ".terminal-completion-hint" in styles
+    assert ".terminal-completion-action" in styles
+    assert "text-overflow: ellipsis" in styles
+    assert "commandSuggestions: (query: string, sessionId = '', limit = 8, historyOnly = false)" in api
 
 
 def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() -> None:

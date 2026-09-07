@@ -108,6 +108,7 @@ type SessionTabLayout = 'top' | 'side'
 type SplitDirection = 'left' | 'right' | 'top' | 'bottom'
 type SessionContextSource = 'tab' | 'manager' | 'terminal'
 type DeviceProtocolKind = 'ssh' | 'telnet' | 'serial'
+type SessionSourceKind = 'device' | 'temporary' | 'server' | 'local'
 type ApplicationMenuKey = 'file' | 'edit' | 'view' | 'window'
 const THEME_KEY = 'odyterm.desktop-v2.theme'
 const ALWAYS_ON_TOP_KEY = 'odyterm.desktop-v2.always-on-top'
@@ -176,8 +177,7 @@ const sessionManagerDeviceContextMenu = ref<{ deviceId: string; x: number; y: nu
 const sessionManagerDeviceContextMenuElement = ref<HTMLElement | null>(null)
 const sessionManagerDeviceContextMenuReturnFocus = ref<HTMLElement | null>(null)
 type TerminalSplitWorkspaceInstance = InstanceType<typeof TerminalSplitWorkspace>
-const terminalSplitWorkspaces = new Map<string, TerminalSplitWorkspaceInstance>()
-const terminalSplitStates = ref<Record<string, boolean>>({})
+const terminalSplitWorkspace = ref<TerminalSplitWorkspaceInstance | null>(null)
 const terminalSplitActive = ref(false)
 const profileContextMenu = ref<{ profile: ConnectionProfileSummary; x: number; y: number } | null>(null)
 const profileContextMenuElement = ref<HTMLElement | null>(null)
@@ -366,6 +366,13 @@ const visibleProfiles = computed(() => {
     ].join(' ').toLocaleLowerCase().includes(needle)
   })
 })
+function deviceSourceLabel(device: DeviceSummary): string {
+  if (device.is_temporary) return '临时连接'
+  if (device.is_saved_server) return '手动添加'
+  return workspace.deviceSourceStatus.sources.find((source) => source.id === device.source)?.label
+    || device.source || activeDeviceSource.value?.label || '未知来源'
+}
+
 const groupedServerProfiles = computed(() => {
   const groups = new Map<string, ConnectionProfileSummary[]>()
   if (!workspace.profileQuery.trim()) {
@@ -393,6 +400,9 @@ const selectedProfile = computed(
 const deviceById = computed(() => new Map(
   workspace.devices.map((device) => [device.id, device])
 ))
+const profileById = computed(() => new Map(
+  workspace.profiles.map((profile) => [profile.id, profile])
+))
 const sessionsByDevice = computed(() => {
   const groups = new Map<string, SessionSummary[]>()
   for (const session of workspace.sessions) {
@@ -402,10 +412,25 @@ const sessionsByDevice = computed(() => {
   }
   return groups
 })
+function sessionSource(deviceId: string, sessions: SessionSummary[]): {
+  kind: SessionSourceKind
+  label: string
+} {
+  const profile = profileById.value.get(deviceId)
+  if (profile?.profile_type === 'temporary') return { kind: 'temporary', label: '临时' }
+  if (profile?.profile_type === 'server') return { kind: 'server', label: '服务器' }
+
+  const device = deviceById.value.get(deviceId)
+  if (device?.is_temporary) return { kind: 'temporary', label: '临时' }
+  if (device?.is_saved_server) return { kind: 'server', label: '服务器' }
+  if (sessions.some((session) => session.kind === 'local')) return { kind: 'local', label: '本地' }
+  return { kind: 'device', label: '设备' }
+}
 const liveWorkspaceTitle = computed(() => {
   const session = workspace.activeSession
   if (session) {
-    return deviceById.value.get(session.device_id)?.name
+    return profileById.value.get(session.device_id)?.name
+      || deviceById.value.get(session.device_id)?.name
       || session.title
       || session.device_id
   }
@@ -416,13 +441,17 @@ const liveWorkspaceTitle = computed(() => {
 const sessionDeviceGroups = computed(() => {
   return [...sessionsByDevice.value.entries()].map(([deviceId, sessions]) => {
     const device = deviceById.value.get(deviceId) || null
+    const source = sessionSource(deviceId, sessions)
     return {
       id: deviceId,
-      label: device?.name
+      label: profileById.value.get(deviceId)?.name
+        || device?.name
         || (sessions[0]?.kind === 'local' ? sessions[0]?.title : sessions[0]?.title.split(' · ').slice(1).join(' · '))
         || deviceId,
       health: aggregateSessionHealth(sessions),
-      sessions
+      sessions,
+      sourceKind: source.kind,
+      sourceLabel: source.label
     }
   })
 })
@@ -465,16 +494,16 @@ const activeProtocolLabels = computed<Record<string, string>>(() => {
     return [session.id, (totals.get(label) || 0) > 1 ? `${label} #${index}` : label]
   }))
 })
+const protocolActionsBySession = computed<Record<string, Array<{
+  kind: DeviceProtocolKind
+  label: string
+  opened: boolean
+}>>>(() => Object.fromEntries(
+  workspace.sessions.map((session) => [session.id, deviceProtocolActions(session.device_id)])
+))
 
-function setTerminalSplitWorkspace(deviceId: string, instance: unknown): void {
-  if (instance) {
-    terminalSplitWorkspaces.set(deviceId, instance as TerminalSplitWorkspaceInstance)
-  } else {
-    terminalSplitWorkspaces.delete(deviceId)
-    const nextStates = { ...terminalSplitStates.value }
-    delete nextStates[deviceId]
-    terminalSplitStates.value = nextStates
-  }
+function setTerminalSplitWorkspace(instance: unknown): void {
+  terminalSplitWorkspace.value = instance as TerminalSplitWorkspaceInstance | null
 }
 
 function touchWarmDeviceWorkspace(deviceId: string): void {
@@ -494,16 +523,14 @@ function activeSessionIdForDevice(deviceId: string, sessions: SessionSummary[]):
     : sessions[0]?.id || ''
 }
 
-function updateTerminalSplitState(deviceId: string, active: boolean): void {
-  terminalSplitStates.value = { ...terminalSplitStates.value, [deviceId]: active }
-  if (deviceId === activeSessionDeviceId.value) terminalSplitActive.value = active
+function updateTerminalSplitState(active: boolean): void {
+  terminalSplitActive.value = active
 }
 
 watch(
   activeSessionDeviceId,
   (deviceId) => {
     touchWarmDeviceWorkspace(deviceId)
-    terminalSplitActive.value = Boolean(deviceId && terminalSplitStates.value[deviceId])
   },
   { immediate: true }
 )
@@ -715,7 +742,7 @@ function recommendedSessionKind(device: DeviceSummary | null): SessionKind | '' 
 
 function openRecommendedDeviceSession(device = workspace.selectedDevice): void {
   const kind = recommendedSessionKind(device)
-  if (!device || !kind) return
+  if (!device || !kind || workspace.openingKind) return
   void workspace.openSessionForDevice(device, kind)
 }
 
@@ -733,6 +760,7 @@ function deviceRowCopyText(device: DeviceSummary): string {
 function deviceConnectionCopyText(device: DeviceSummary): string {
   return [
     `设备: ${device.name}`,
+    `设备序号: ${device.board_id || device.id}`,
     `Telnet: ${device.telnet_endpoint || '—'}`,
     `串口: ${device.serial_display || device.serial_endpoint || '—'}`,
     `SSH: ${device.ssh_endpoint || '—'}`
@@ -1005,8 +1033,12 @@ function openSessionManagerDeviceContextMenu(event: MouseEvent, deviceId: string
   }
 }
 
-function openDeviceSessionTabContextMenu(event: MouseEvent, deviceId: string): void {
-  activateSessionDevice(deviceId)
+function openDeviceSessionTabContextMenu(
+  event: MouseEvent,
+  deviceId: string,
+  preserveActive = false
+): void {
+  if (!preserveActive) activateSessionDevice(deviceId)
   openSessionManagerDeviceContextMenu(event, deviceId)
 }
 
@@ -1037,9 +1069,9 @@ function sessionManagerContextDevice(): DeviceSummary | null {
   return deviceById.value.get(deviceId) || null
 }
 
-function sessionManagerDeviceHasSession(kind: SessionKind): boolean {
+function sessionManagerContextProfile(): ConnectionProfileSummary | null {
   const deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''
-  return workspace.sessions.some((session) => session.device_id === deviceId && session.kind === kind)
+  return profileById.value.get(deviceId) || null
 }
 
 function sessionManagerDeviceIds(): string[] {
@@ -1084,6 +1116,16 @@ function runSessionManagerDeviceClose(
 
 function locateSessionManagerDevice(deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''): void {
   if (!deviceId) return
+  const profile = profileById.value.get(deviceId)
+  if (profile) {
+    activeSection.value = profile.profile_type
+    workspace.profileQuery = ''
+    selectedProfileId.value = profile.id
+    if (profile.profile_type === 'server' && profile.group) expandProfileGroup(profile.group)
+    workspace.notice = `已定位到${profile.profile_type === 'server' ? '服务器' : '临时连接'}: ${profile.name}`
+    closeSessionManagerDeviceContextMenu()
+    return
+  }
   activeSection.value = 'devices'
   if (!workspace.filteredDevices.some((device) => device.id === deviceId)) {
     workspace.clearDeviceFilters()
@@ -1095,9 +1137,16 @@ function locateSessionManagerDevice(deviceId = sessionManagerDeviceContextMenu.v
 }
 
 function openSessionManagerDeviceSession(kind: 'ssh' | 'telnet' | 'serial'): void {
+  const profile = sessionManagerContextProfile()
+  if (profile) {
+    if (!profileCanConnect(profile, kind)) return
+    void workspace.openProfileSession(profile, kind)
+    closeSessionManagerDeviceContextMenu()
+    return
+  }
   const device = sessionManagerContextDevice()
   if (!device) return
-  openOrActivateDeviceSession(device, kind)
+  void workspace.openSessionForDevice(device, kind)
   closeSessionManagerDeviceContextMenu()
 }
 
@@ -1116,14 +1165,19 @@ function openOrActivateDeviceSession(
   void workspace.openSessionForDevice(device, kind)
 }
 
-function openOrActivateDeviceProtocol(deviceId: string, kind: DeviceProtocolKind): void {
-  const device = deviceById.value.get(deviceId)
+function openOrActivateDeviceProtocol(sessionId: string, kind: DeviceProtocolKind): void {
+  const session = workspace.sessions.find((candidate) => candidate.id === sessionId)
+  if (!session) return
+  const device = deviceById.value.get(session.device_id)
   if (device) openOrActivateDeviceSession(device, kind)
+  else {
+    const profile = profileById.value.get(session.device_id)
+    if (profile && profileCanConnect(profile, kind)) void workspace.openProfileSession(profile, kind)
+  }
 }
 
 function startSessionTabDrag(event: DragEvent, session: SessionSummary): void {
   if (!event.dataTransfer) return
-  workspace.activeSessionId = session.id
   event.dataTransfer.effectAllowed = 'move'
   event.dataTransfer.setData('application/x-odyterm-session', session.id)
   event.dataTransfer.setData('text/plain', session.id)
@@ -1132,22 +1186,39 @@ function startSessionTabDrag(event: DragEvent, session: SessionSummary): void {
 function splitSessionFromContext(direction: SplitDirection): void {
   const session = sessionContextMenu.value?.session
   if (!session) return
-  const splitWorkspace = terminalSplitWorkspaces.get(session.device_id)
-  if (splitWorkspace) {
-    splitWorkspace.splitSession(session.id, direction)
-  } else {
-    activateSession(session.id)
-    void nextTick(() => {
-      terminalSplitWorkspaces.get(session.device_id)?.splitSession(session.id, direction)
-    })
-  }
+  activateSession(session.id)
+  void nextTick(() => terminalSplitWorkspace.value?.splitSession(session.id, direction))
   closeSessionContextMenu()
 }
 
+function startDeviceTabDrag(event: DragEvent, deviceId: string): void {
+  const sessions = sessionsByDevice.value.get(deviceId) || []
+  const sessionId = activeSessionIdForDevice(deviceId, sessions) || sessions[0]?.id || ''
+  if (!sessionId || !event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('application/x-odyterm-device-group', deviceId)
+  event.dataTransfer.setData('application/x-odyterm-session', sessionId)
+  event.dataTransfer.setData('text/plain', sessionId)
+}
+
+function splitDeviceFromContext(direction: SplitDirection): void {
+  const deviceId = sessionManagerDeviceContextMenu.value?.deviceId || ''
+  splitDeviceById(deviceId, direction)
+  closeSessionManagerDeviceContextMenu()
+}
+
+function splitDeviceById(deviceId: string, direction: SplitDirection): void {
+  const sessions = sessionsByDevice.value.get(deviceId) || []
+  const sessionId = activeSessionIdForDevice(deviceId, sessions) || sessions[0]?.id || ''
+  if (!sessionId) return
+  activateSession(sessionId)
+  void nextTick(() => terminalSplitWorkspace.value?.splitDeviceGroup(deviceId, direction))
+}
+
 function resetTerminalSplit(): void {
-  const session = sessionContextMenu.value?.session || workspace.activeSession
-  if (session) terminalSplitWorkspaces.get(session.device_id)?.resetSplit()
+  terminalSplitWorkspace.value?.resetSplit()
   closeSessionContextMenu()
+  closeSessionManagerDeviceContextMenu()
 }
 
 function handleSessionTabKeydown(event: KeyboardEvent, session: SessionSummary): void {
@@ -1214,7 +1285,11 @@ function sessionCloseCount(
 }
 
 function canSplitSession(session: SessionSummary): boolean {
-  return (sessionsByDevice.value.get(session.device_id) || []).length > 1
+  return workspace.sessions.length > 1
+}
+
+function canSplitDevice(deviceId: string): boolean {
+  return workspace.sessions.length > 1 && Boolean(sessionsByDevice.value.get(deviceId)?.length)
 }
 
 function canReconnectSession(session: SessionSummary): boolean {
@@ -1230,6 +1305,14 @@ function runSessionConnectionAction(action: 'reconnect' | 'disconnect'): void {
   if (!session) return
   if (action === 'reconnect') void workspace.reconnectSession(session.id)
   else void workspace.disconnectSession(session.id)
+  closeSessionContextMenu()
+}
+
+function openDuplicateProfileSessionFromContext(kind: 'ssh' | 'telnet' | 'serial'): void {
+  const session = sessionContextMenu.value?.session
+  const profile = session ? profileById.value.get(session.device_id) : null
+  if (!profile || !profileCanConnect(profile, kind)) return
+  void workspace.openProfileSession(profile, kind)
   closeSessionContextMenu()
 }
 
@@ -1249,6 +1332,16 @@ async function copySessionInfoFromContext(): Promise<void> {
 }
 
 function locateSessionDevice(session: SessionSummary): void {
+  const profile = profileById.value.get(session.device_id)
+  if (profile) {
+    activeSection.value = profile.profile_type
+    workspace.profileQuery = ''
+    selectedProfileId.value = profile.id
+    if (profile.profile_type === 'server' && profile.group) expandProfileGroup(profile.group)
+    workspace.notice = `已定位到${profile.profile_type === 'server' ? '服务器' : '临时连接'}: ${profile.name}`
+    closeSessionContextMenu()
+    return
+  }
   activeSection.value = 'devices'
   if (!workspace.filteredDevices.some((device) => device.id === session.device_id)) {
     workspace.clearDeviceFilters()
@@ -1420,20 +1513,13 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 }
 
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
-  const hideCurrentSection = navigatorVisible.value
-    && !operationPanelOpen.value
-    && activeSection.value === section
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
   workspace.packageBuildPanelOpen = false
-  if (hideCurrentSection) {
-    setNavigatorVisible(false)
-    return
-  }
   activeSection.value = section
   setNavigatorVisible(true)
-  if (section !== 'devices') {
+  if (section === 'temporary' || section === 'server') {
     selectedProfileId.value =
       workspace.profiles.find((profile) => profile.profile_type === section)?.id || ''
   }
@@ -1486,6 +1572,11 @@ function toggleTransferPanel(): void {
     workspace.upgradePanelOpen = false
     workspace.packageBuildPanelOpen = false
   }
+}
+
+function toggleResourceNavigator(): void {
+  if (navigatorVisible.value && !operationPanelOpen.value) setNavigatorVisible(false)
+  else setSection(activeSection.value)
 }
 
 function openLocalTerminal(): void {
@@ -1669,7 +1760,7 @@ function profileCanConnect(
 }
 
 function openProfileIfReady(profile: ConnectionProfileSummary): void {
-  if (profileCanConnect(profile)) void workspace.openProfileSession(profile)
+  if (!workspace.openingKind && profileCanConnect(profile)) void workspace.openProfileSession(profile)
 }
 
 async function deleteSelectedProfile(): Promise<void> {
@@ -1764,24 +1855,8 @@ onBeforeUnmount(() => {
     @click="closeAppContextMenus"
   >
     <nav class="activity-rail" aria-label="主功能">
-      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'devices' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'devices' ? '隐藏设备列表' : '显示设备列表'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'devices'" @click="setSection('devices')">
+      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen }" type="button" :title="navigatorVisible && !operationPanelOpen ? '隐藏资源列表' : '显示资源列表'" :aria-pressed="navigatorVisible && !operationPanelOpen" @click="toggleResourceNavigator">
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
-      </button>
-      <button
-        class="rail-button"
-        type="button"
-        title="打开本地终端"
-        aria-label="打开本地终端"
-        :disabled="Boolean(workspace.openingKind)"
-        @click="openLocalTerminal"
-      >
-        <SquareTerminal :size="19" /><span class="sr-only">本地终端</span>
-      </button>
-      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'temporary' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'temporary' ? '隐藏临时连接' : '显示临时连接'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'temporary'" @click="setSection('temporary')">
-        <Cable :size="19" /><span class="sr-only">临时连接</span>
-      </button>
-      <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen && activeSection === 'server' }" type="button" :title="navigatorVisible && !operationPanelOpen && activeSection === 'server' ? '隐藏服务器列表' : '显示服务器列表'" :aria-pressed="navigatorVisible && !operationPanelOpen && activeSection === 'server'" @click="setSection('server')">
-        <ServerCog :size="19" /><span class="sr-only">服务器</span>
       </button>
       <button
         class="rail-button"
@@ -1886,14 +1961,14 @@ onBeforeUnmount(() => {
     <aside v-show="navigatorVisible && !operationPanelOpen" class="navigator">
       <header class="navigator-header">
         <div>
-          <p v-if="activeSection !== 'devices'" class="eyebrow">DEVICE OPERATIONS</p>
-          <h1>{{ activeSection === 'devices' ? '设备' : activeSection === 'temporary' ? '临时连接' : '服务器' }}</h1>
+          <h1>资源</h1>
         </div>
         <div class="navigator-actions">
-          <button v-if="activeSection === 'devices'" class="icon-button" type="button" title="刷新" @click="workspace.initialize">
+          <button class="icon-button" type="button" title="打开本地终端" aria-label="打开本地终端" :disabled="Boolean(workspace.openingKind)" @click="openLocalTerminal"><SquareTerminal :size="16" /></button>
+          <button v-if="activeSection === 'devices'" class="icon-button" type="button" title="刷新" :disabled="workspace.loading" @click="workspace.initialize">
             <RefreshCw :size="15" /><span class="sr-only">刷新设备</span>
           </button>
-          <template v-else>
+          <template v-else-if="activeSection === 'temporary' || activeSection === 'server'">
             <button v-if="activeSection === 'server'" class="icon-button" type="button" title="新建分组" @click="showGroupDialog($event)">
               <FolderPlus :size="16" /><span class="sr-only">新建服务器分组</span>
             </button>
@@ -1906,6 +1981,18 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </header>
+
+      <nav class="resource-tabs" aria-label="资源类型">
+        <button type="button" :class="{ active: activeSection === 'devices' }" :aria-pressed="activeSection === 'devices'" @click="setSection('devices')">
+          <MonitorDot :size="14" />设备
+        </button>
+        <button type="button" :class="{ active: activeSection === 'temporary' }" :aria-pressed="activeSection === 'temporary'" @click="setSection('temporary')">
+          <Cable :size="14" />临时连接
+        </button>
+        <button type="button" :class="{ active: activeSection === 'server' }" :aria-pressed="activeSection === 'server'" @click="setSection('server')">
+          <ServerCog :size="14" />服务器
+        </button>
+      </nav>
 
       <section
         v-if="activeSection === 'devices' && workspace.deviceSourceStatus.allow_source_switch"
@@ -2039,8 +2126,7 @@ onBeforeUnmount(() => {
         <input
           v-if="activeSection === 'devices'"
           v-model="workspace.query"
-          type="search"
-          placeholder="搜索名称、ID、站点或型号"
+          type="search" aria-label="搜索设备" placeholder="搜索名称、ID、站点或型号"
         />
         <input
           v-else
@@ -2050,7 +2136,7 @@ onBeforeUnmount(() => {
         />
       </label>
 
-      <div v-if="activeSection !== 'devices'" class="profile-summary-row" aria-label="连接配置统计">
+      <div v-if="activeSection === 'temporary' || activeSection === 'server'" class="profile-summary-row" aria-label="连接配置统计">
         <span><b>{{ visibleProfiles.length }}</b> 个配置</span>
         <span v-if="activeSection === 'server'"><b>{{ visibleProfileGroupCount }}</b> 个分组</span>
         <span :class="visibleProfileCredentialCount ? 'ready' : 'attention'"><b>{{ visibleProfileCredentialCount }}</b> 凭据就绪</span>
@@ -2098,6 +2184,7 @@ onBeforeUnmount(() => {
           <span>CPU</span>
           <span>Slot</span>
           <span>状态</span>
+          <span>来源</span>
         </div>
         <div class="device-loading-rows" aria-hidden="true">
           <div v-for="index in 7" :key="index" class="device-loading-row">
@@ -2128,6 +2215,7 @@ onBeforeUnmount(() => {
           <span role="columnheader">CPU</span>
           <span role="columnheader">Slot</span>
           <span role="columnheader">状态</span>
+          <span role="columnheader">来源</span>
         </div>
         <div
           v-if="virtualDeviceTopHeight"
@@ -2135,12 +2223,12 @@ onBeforeUnmount(() => {
           :style="{ height: `${virtualDeviceTopHeight}px` }"
           aria-hidden="true"
         ></div>
-        <button
+        <div
           v-for="(device, index) in renderedDevices"
           :key="device.row_id"
           class="device-row device-table-row"
           :class="{ selected: device.row_id === workspace.selectedDeviceRowId }"
-          type="button"
+          tabindex="-1"
           role="row"
           :aria-selected="device.row_id === workspace.selectedDeviceRowId"
           :data-device-row-id="device.row_id"
@@ -2160,7 +2248,7 @@ onBeforeUnmount(() => {
             <i class="status-dot" :data-status="statusKind(device.status)" aria-hidden="true"></i>
             <span :title="device.tooltip || device.status_text">{{ device.status_text || device.status }}</span>
           </span>
-        </button>
+        </div>
         <div
           v-if="virtualDeviceBottomHeight"
           class="device-virtual-spacer"
@@ -2294,7 +2382,7 @@ onBeforeUnmount(() => {
               <div class="device-avatar"><ServerCog :size="21" /></div>
               <div>
                 <strong>{{ workspace.selectedDevice.name }}</strong>
-                <span>{{ workspace.selectedDevice.vendor }} {{ workspace.selectedDevice.model }}</span>
+                <span>{{ workspace.selectedDevice.vendor }} {{ workspace.selectedDevice.model }} · {{ deviceSourceLabel(workspace.selectedDevice) }}</span>
               </div>
               <button
                 v-if="!workspace.selectedDevice.can_release"
@@ -2435,12 +2523,12 @@ onBeforeUnmount(() => {
               >设备下电</button>
             </details>
           </template>
-          <template v-else-if="activeSection !== 'devices' && selectedProfile">
+          <template v-else-if="(activeSection === 'temporary' || activeSection === 'server') && selectedProfile">
             <section class="device-identity">
               <div class="device-avatar"><ServerCog :size="21" /></div>
               <div>
                 <strong>{{ selectedProfile.name }}</strong>
-                <span>{{ selectedProfile.profile_type === 'server' ? selectedProfile.group || '未分组' : '临时连接' }}</span>
+                <span>{{ selectedProfile.profile_type === 'server' ? selectedProfile.group || '未分组' : '临时连接' }} · 手动添加</span>
               </div>
             </section>
             <dl class="property-list">
@@ -2608,6 +2696,13 @@ onBeforeUnmount(() => {
           title="打开串口"
           @click="openDeviceContextSession('serial')"
         >打开串口</button>
+        <template v-if="canSplitDevice(deviceContextMenu.device.id)">
+          <hr />
+          <button type="button" role="menuitem" @click="splitDeviceById(deviceContextMenu.device.id, 'left'); closeDeviceContextMenu()">分屏到左侧</button>
+          <button type="button" role="menuitem" @click="splitDeviceById(deviceContextMenu.device.id, 'right'); closeDeviceContextMenu()">分屏到右侧</button>
+          <button type="button" role="menuitem" @click="splitDeviceById(deviceContextMenu.device.id, 'top'); closeDeviceContextMenu()">分屏到上方</button>
+          <button type="button" role="menuitem" @click="splitDeviceById(deviceContextMenu.device.id, 'bottom'); closeDeviceContextMenu()">分屏到下方</button>
+        </template>
         <hr />
         <button
           type="button"
@@ -2705,6 +2800,7 @@ onBeforeUnmount(() => {
 
     <main class="workspace-stage">
       <header
+        v-if="!terminalSplitActive"
         class="workspace-header"
         :class="{ 'has-device-tabs': workspace.sessions.length && sessionTabLayout === 'top' }"
       >
@@ -2716,7 +2812,7 @@ onBeforeUnmount(() => {
           <h2 data-testid="live-workspace-title">{{ liveWorkspaceTitle }}</h2>
         </div>
         <div
-          v-if="workspace.sessions.length && sessionTabLayout === 'top'"
+          v-if="workspace.sessions.length && sessionTabLayout === 'top' && !terminalSplitActive"
           class="device-session-tabs"
           role="tablist"
           aria-label="设备会话"
@@ -2727,23 +2823,32 @@ onBeforeUnmount(() => {
             class="device-session-tab"
             :class="{ active: group.id === activeSessionDeviceId }"
             :data-device-tab-id="group.id"
+            draggable="true"
+            @dragstart="startDeviceTabDrag($event, group.id)"
             @contextmenu.prevent="openDeviceSessionTabContextMenu($event, group.id)"
           >
             <button
               class="device-session-tab-select"
               type="button"
               role="tab"
-              :title="`${group.label} · ${group.sessions.length} 个终端 · ${sessionHealthLabel(group.health)}`"
-              :aria-label="`${group.label}，${group.sessions.length} 个终端，${sessionHealthLabel(group.health)}`"
+              :title="`${group.sourceLabel} · ${group.label} · ${group.sessions.length} 个终端 · ${sessionHealthLabel(group.health)}`"
+              :aria-label="`${group.sourceLabel}，${group.label}，${group.sessions.length} 个终端，${sessionHealthLabel(group.health)}`"
               :aria-selected="group.id === activeSessionDeviceId"
               @click="activateSessionDevice(group.id)"
               @keydown="handleDeviceSessionTabKeydown($event, group.id)"
             >
-              <span class="device-session-health" :data-state="group.health" aria-hidden="true">
-                <MonitorDot :size="13" />
-                <i></i>
+              <span
+                class="device-session-source"
+                :data-source="group.sourceKind"
+                :title="group.sourceLabel"
+                :aria-label="group.sourceLabel"
+              >
+                <MonitorDot v-if="group.sourceKind === 'device'" :size="11" />
+                <Cable v-else-if="group.sourceKind === 'temporary'" :size="11" />
+                <ServerCog v-else-if="group.sourceKind === 'server'" :size="11" />
+                <SquareTerminal v-else :size="11" />
               </span>
-              <span :data-testid="group.id === activeSessionDeviceId ? 'live-workspace-title' : undefined">{{ group.label }}</span>
+              <span class="device-session-label" :data-testid="group.id === activeSessionDeviceId ? 'live-workspace-title' : undefined">{{ group.label }}</span>
               <em class="device-session-health-label" :data-state="group.health">{{ sessionHealthShortLabel(group.health) }}</em>
               <small>{{ group.sessions.length }}</small>
             </button>
@@ -2754,38 +2859,6 @@ onBeforeUnmount(() => {
               @click.stop="closeSessionDevice(group.id)"
             ><X :size="13" /></button>
           </div>
-        </div>
-        <div v-if="activeSection !== 'devices'" class="connection-actions" aria-label="打开连接配置">
-          <button
-            v-if="selectedProfile?.ssh.host"
-            class="secondary-button"
-            type="button"
-            :title="selectedProfile.ssh.has_password ? '打开 SSH' : '连接时输入 SSH 密码'"
-            :disabled="!profileCanConnect(selectedProfile, 'ssh') || Boolean(workspace.openingKind)"
-            @click="workspace.openProfileSession(selectedProfile, 'ssh')"
-          >SSH</button>
-          <button
-            v-if="selectedProfile?.telnet.host"
-            class="secondary-button"
-            type="button"
-            :title="selectedProfile.telnet.has_password ? '打开 Telnet' : '连接时输入 Telnet 密码'"
-            :disabled="!profileCanConnect(selectedProfile, 'telnet') || Boolean(workspace.openingKind)"
-            @click="workspace.openProfileSession(selectedProfile, 'telnet')"
-          >Telnet</button>
-          <button
-            v-if="selectedProfile?.serial.host"
-            class="secondary-button"
-            type="button"
-            :title="selectedProfile.serial.has_password ? '打开串口' : '连接时输入串口密码'"
-            :disabled="!profileCanConnect(selectedProfile, 'serial') || Boolean(workspace.openingKind)"
-            @click="workspace.openProfileSession(selectedProfile, 'serial')"
-          >串口</button>
-          <button
-            class="primary-button"
-            type="button"
-            :disabled="!selectedProfile || !profileCanConnect(selectedProfile) || Boolean(workspace.openingKind)"
-            @click="selectedProfile && workspace.openProfileSession(selectedProfile)"
-          ><Plus :size="16" />连接</button>
         </div>
       </header>
 
@@ -2814,10 +2887,10 @@ onBeforeUnmount(() => {
       <div
         class="session-workspace"
         :class="{ empty: !workspace.sessions.length }"
-        :data-tab-layout="sessionTabLayout"
+        :data-tab-layout="terminalSplitActive ? 'split' : sessionTabLayout"
         :data-tab-collapsed="sessionTabLayout === 'side' && sessionTabRailCollapsed ? 'true' : 'false'"
       >
-      <template v-if="workspace.sessions.length && sessionTabLayout === 'top'">
+      <template v-if="workspace.sessions.length && sessionTabLayout === 'top' && !terminalSplitActive">
       <div class="session-tabs session-child-tabs" role="tablist" :aria-label="`${liveWorkspaceTitle} 的终端会话`">
         <div
           v-for="session in activeDeviceSessions"
@@ -2860,25 +2933,48 @@ onBeforeUnmount(() => {
         @click.stop
         @keydown="handleContextMenuKeydown($event, sessionManagerDeviceContextMenuElement, closeSessionManagerDeviceContextMenuAndRestoreFocus)"
       >
-        <p>{{ sessionManagerContextDevice()?.name || sessionManagerDeviceContextMenu.deviceId }}<small>设备会话组</small></p>
-        <button type="button" role="menuitem" @click="locateSessionManagerDevice()">定位到设备列表</button>
-        <template v-if="sessionManagerContextDevice()">
+        <p>{{ sessionManagerContextProfile()?.name || sessionManagerContextDevice()?.name || sessionManagerDeviceContextMenu.deviceId }}<small>{{ sessionManagerContextProfile() ? (sessionManagerContextProfile()?.profile_type === 'server' ? '服务器配置' : '临时连接') : '设备会话组' }}</small></p>
+        <button type="button" role="menuitem" @click="locateSessionManagerDevice()">{{ sessionManagerContextProfile() ? '定位到连接配置' : '定位到设备列表' }}</button>
+        <template v-if="sessionManagerContextProfile()">
           <button
-            v-if="sessionManagerContextDevice()?.can_connect_telnet && !sessionManagerDeviceHasSession('telnet')"
+            v-if="sessionManagerContextProfile()?.ssh.host"
+            type="button"
+            role="menuitem"
+            :disabled="!profileCanConnect(sessionManagerContextProfile()!, 'ssh') || Boolean(workspace.openingKind)"
+            @click="openSessionManagerDeviceSession('ssh')"
+          >新建 SSH 会话</button>
+          <button
+            v-if="sessionManagerContextProfile()?.telnet.host"
+            type="button"
+            role="menuitem"
+            :disabled="!profileCanConnect(sessionManagerContextProfile()!, 'telnet') || Boolean(workspace.openingKind)"
+            @click="openSessionManagerDeviceSession('telnet')"
+          >新建 Telnet 会话</button>
+          <button
+            v-if="sessionManagerContextProfile()?.serial.host"
+            type="button"
+            role="menuitem"
+            :disabled="!profileCanConnect(sessionManagerContextProfile()!, 'serial') || Boolean(workspace.openingKind)"
+            @click="openSessionManagerDeviceSession('serial')"
+          >新建串口会话</button>
+        </template>
+        <template v-else-if="sessionManagerContextDevice()">
+          <button
+            v-if="sessionManagerContextDevice()?.can_connect_telnet"
             type="button"
             role="menuitem"
             :disabled="Boolean(workspace.openingKind)"
             @click="openSessionManagerDeviceSession('telnet')"
           >新建设备管理口会话</button>
           <button
-            v-if="sessionManagerContextDevice()?.can_connect_ssh && !sessionManagerDeviceHasSession('ssh')"
+            v-if="sessionManagerContextDevice()?.can_connect_ssh"
             type="button"
             role="menuitem"
             :disabled="Boolean(workspace.openingKind)"
             @click="openSessionManagerDeviceSession('ssh')"
           >新建 Linux 后台会话</button>
           <button
-            v-if="sessionManagerContextDevice()?.can_connect_serial && !sessionManagerDeviceHasSession('serial')"
+            v-if="sessionManagerContextDevice()?.can_connect_serial"
             type="button"
             role="menuitem"
             :disabled="Boolean(workspace.openingKind)"
@@ -2904,6 +3000,19 @@ onBeforeUnmount(() => {
           role="menuitem"
           @click="runSessionManagerDeviceClose('all')"
         >关闭所有设备会话</button>
+        <template v-if="canSplitDevice(sessionManagerDeviceContextMenu.deviceId)">
+          <hr />
+          <button type="button" role="menuitem" @click="splitDeviceFromContext('left')">分屏到左侧</button>
+          <button type="button" role="menuitem" @click="splitDeviceFromContext('right')">分屏到右侧</button>
+          <button type="button" role="menuitem" @click="splitDeviceFromContext('top')">分屏到上方</button>
+          <button type="button" role="menuitem" @click="splitDeviceFromContext('bottom')">分屏到下方</button>
+        </template>
+        <button
+          v-if="terminalSplitActive"
+          type="button"
+          role="menuitem"
+          @click="resetTerminalSplit"
+        >退出分屏</button>
       </div>
       <div
         v-if="sessionContextMenu"
@@ -2930,12 +3039,35 @@ onBeforeUnmount(() => {
           @click="runSessionConnectionAction('disconnect')"
         >断开连接</button>
         <button type="button" role="menuitem" @click="copySessionInfoFromContext">复制会话信息</button>
+        <template v-if="profileById.get(sessionContextMenu.session.device_id)">
+          <button
+            v-if="profileById.get(sessionContextMenu.session.device_id)?.ssh.host"
+            type="button"
+            role="menuitem"
+            :disabled="Boolean(workspace.openingKind)"
+            @click="openDuplicateProfileSessionFromContext('ssh')"
+          >新建 SSH 页签</button>
+          <button
+            v-if="profileById.get(sessionContextMenu.session.device_id)?.telnet.host"
+            type="button"
+            role="menuitem"
+            :disabled="Boolean(workspace.openingKind)"
+            @click="openDuplicateProfileSessionFromContext('telnet')"
+          >新建 Telnet 页签</button>
+          <button
+            v-if="profileById.get(sessionContextMenu.session.device_id)?.serial.host"
+            type="button"
+            role="menuitem"
+            :disabled="Boolean(workspace.openingKind)"
+            @click="openDuplicateProfileSessionFromContext('serial')"
+          >新建串口页签</button>
+        </template>
         <button
-          v-if="sessionDevice(sessionContextMenu.session)"
+          v-if="sessionDevice(sessionContextMenu.session) || profileById.get(sessionContextMenu.session.device_id)"
           type="button"
           role="menuitem"
           @click="locateSessionDevice(sessionContextMenu.session)"
-        >定位到设备列表</button>
+        >{{ profileById.get(sessionContextMenu.session.device_id) ? '定位到连接配置' : '定位到设备列表' }}</button>
         <hr />
         <button
           type="button"
@@ -2982,22 +3114,22 @@ onBeforeUnmount(() => {
       </div>
 
       <TerminalSplitWorkspace
-        v-for="group in warmSessionDeviceGroups"
-        v-show="group.id === activeSessionDeviceId"
-        :key="group.id"
-        :ref="(instance) => setTerminalSplitWorkspace(group.id, instance)"
-        :active="group.id === activeSessionDeviceId"
-        :device-id="group.id"
-        :sessions="group.sessions"
-        :active-session-id="activeSessionIdForDevice(group.id, group.sessions)"
-        :protocol-actions="deviceProtocolActions(group.id)"
+        v-if="workspace.activeSession"
+        :ref="setTerminalSplitWorkspace"
+        :active="Boolean(workspace.activeSession)"
+        :sessions="workspace.sessions"
+        :active-session-id="workspace.activeSessionId"
+        :protocol-actions-by-session="protocolActionsBySession"
         @activate="activateSession"
-        @open-protocol="openOrActivateDeviceProtocol(group.id, $event)"
+        @open-protocol="openOrActivateDeviceProtocol"
         @status="workspace.updateSessionStatus"
         @automation="openSessionAutomation"
         @transfer="openSessionTransfer"
         @upgrade="openSessionUpgrade"
-        @split-change="updateTerminalSplitState(group.id, $event)"
+        @close="workspace.closeSession"
+        @session-context="openSessionContextMenu"
+        @device-context="openDeviceSessionTabContextMenu"
+        @split-change="updateTerminalSplitState"
       />
       <section v-if="!workspace.activeSession" class="empty-workspace">
         <div class="empty-icon">
@@ -3046,6 +3178,7 @@ onBeforeUnmount(() => {
     >
       <SessionManager
         :devices="workspace.devices"
+        :profiles="workspace.profiles"
         :sessions="workspace.sessions"
         :active-session-id="workspace.activeSessionId"
         :collapsed="sessionTabRailCollapsed"

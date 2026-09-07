@@ -10,6 +10,12 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .execution import detect_terminal_prompt, strip_terminal_ansi
+from .outcome import (
+    INTERACTION_PROMPT_TYPES,
+    PromptMatch,
+    classify_command_outcome,
+    classify_terminal_prompt,
+)
 
 
 MAX_PLAN_STEPS = 100
@@ -40,12 +46,19 @@ PROMPT_ALIASES = {
 }
 RESPONSE_RETRY_DELAY_MS = 120
 DEFAULT_PAGINATION_MAX_MATCHES = 100
+MAX_EXECUTION_EVENTS = 200
 
 
 class TerminalPlanError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = dict(details or {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +89,13 @@ class SendStep:
     append_enter: bool = True
     label: str = ""
     name: str = ""
+    next_step: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ExpectStep:
-    success: tuple[str, ...]
+    success: tuple[str, ...] = ()
+    pattern: str = ""
     responses: tuple[ResponseRule, ...] = ()
     failures: tuple[str, ...] = ()
     success_markers: tuple[str, ...] = ()
@@ -95,6 +110,7 @@ class ExpectStep:
     on_failure: str = ""
     max_retries: int = 0
     disconnect_is_success: bool = False
+    success_target: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +188,7 @@ def parse_terminal_plan(
         maximum=3600,
     )
     parsed: list[TerminalStep] = []
-    for index, raw in enumerate(steps):
+    for index, raw in enumerate(_normalize_compat_steps(steps)):
         if not isinstance(raw, dict):
             raise TerminalPlanError("invalid_plan", f"步骤 {index} 必须是对象。")
         kind = str(raw.get("type") or "").strip().casefold()
@@ -188,7 +204,46 @@ def parse_terminal_plan(
                 f"步骤 {index} 类型无效: {kind or '<empty>'}",
             )
     _validate_plan_branches(parsed)
+    _validate_numeric_transitions(parsed)
     return TerminalExecutionPlan(tuple(parsed), total_timeout)
+
+
+def _normalize_compat_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Accept the declarative interaction vocabulary as an input adapter."""
+    normalized: list[dict[str, Any]] = []
+    for raw in steps:
+        item = dict(raw)
+        action = str(item.get("action") or item.get("type") or "").strip().casefold()
+        if action == "done":
+            continue
+        if action == "send":
+            item["type"] = "send"
+            if "enter" in item and "append_enter" not in item:
+                item["append_enter"] = bool(item.pop("enter"))
+            expected = item.pop("expect_prompt", None)
+            normalized.append(item)
+            if expected:
+                normalized.append({
+                    "type": "expect",
+                    "pattern": str(expected),
+                    "success": [str(expected)],
+                    "label": f"expect {expected}",
+                })
+            continue
+        if action == "expect":
+            item["type"] = "expect"
+            match = item.pop("match", None)
+            if match is not None and "pattern" not in item and "success" not in item:
+                item["pattern"] = str(match)
+            response = item.pop("respond", None)
+            if response is not None and "responses" not in item:
+                if not isinstance(response, dict):
+                    raise TerminalPlanError("invalid_plan", "expect.respond 必须是对象。")
+                item["responses"] = [{"match": str(match or item.get("pattern") or ""), **response}]
+            normalized.append(item)
+            continue
+        normalized.append(item)
+    return normalized
 
 
 def build_batch_plan(
@@ -197,6 +252,8 @@ def build_batch_plan(
     command_timeout_seconds: float = 30.0,
     total_timeout_seconds: float | None = None,
     max_output_chars: int = 16_384,
+    terminal_prompt: str = "",
+    failure_patterns: list[str] | tuple[str, ...] = (),
 ) -> TerminalExecutionPlan:
     if not isinstance(commands, list) or not commands or len(commands) > 50:
         raise TerminalPlanError("invalid_plan", "批量命令数量必须在 1 到 50 之间。")
@@ -225,7 +282,7 @@ def build_batch_plan(
             (
                 SendStep(text=command, append_enter=True, label=command),
                 ExpectStep(
-                    success=("device_prompt",),
+                    success=(terminal_prompt or "device_prompt",),
                     responses=(
                         ResponseRule(
                             match="pagination_prompt",
@@ -234,14 +291,14 @@ def build_batch_plan(
                             max_matches=DEFAULT_PAGINATION_MAX_MATCHES,
                         ),
                     ),
-                    failures=(
+                    failures=tuple(failure_patterns) or (
                         "Error:",
                         "Unrecognized command",
                         "Unknown command",
                         "Incomplete command",
                     ),
                     timeout_seconds=timeout,
-                    idle_seconds=0.8,
+                    idle_seconds=0 if terminal_prompt or failure_patterns else 0.8,
                     max_output_chars=output_limit,
                     label=command,
                 ),
@@ -294,15 +351,28 @@ class TerminalExecutionRunner:
         self._response_counts: dict[int, int] = {}
         self._branch_counts: dict[tuple[int, int, str], int] = {}
         self._known_secrets: list[str] = []
+        self._events: list[dict[str, Any]] = []
+        self._event_cursor = 0
+        self._last_output = ""
+        self._matched_prompt = ""
+        self._interaction_prompt: PromptMatch | None = None
+        self._answered_interaction_prompt = ""
         self._step_token = 0
         self._last_output_monotonic = 0.0
         self._completion_event = threading.Event()
+        self._attention_event = threading.Event()
         self._done_callbacks: list[Callable[["TerminalExecutionRunner"], None]] = []
         self._lock = threading.RLock()
+        self._event_condition = threading.Condition(self._lock)
 
     @property
     def completion_event(self) -> threading.Event:
         return self._completion_event
+
+    @property
+    def attention_event(self) -> threading.Event:
+        """Signal completion or an unhandled prompt that needs caller input."""
+        return self._attention_event
 
     @property
     def is_terminal(self) -> bool:
@@ -314,6 +384,7 @@ class TerminalExecutionRunner:
                 return
             self.status = "running"
             self.started_monotonic = self.clock()
+            self._record_event_locked("started")
             total_token = self._step_token
             self.schedule(
                 int(self.plan.total_timeout_seconds * 1000),
@@ -334,6 +405,8 @@ class TerminalExecutionRunner:
             self._active_result.output = (
                 self._active_result.output + message
             )[-step.max_output_chars :]
+            self._last_output = self._active_result.output
+            self._record_event_locked("output", data=message[-4096:])
             self._scan_buffer = (
                 self._scan_buffer + strip_terminal_ansi(message)
             )[-step.max_output_chars :]
@@ -342,82 +415,8 @@ class TerminalExecutionRunner:
             # "error" mention on a "Continue? [Y/N]" line) must still be
             # answered, not aborted. Apply responses first; only when no
             # response was triggered do we treat a failure word as fatal.
-            response_counts_before = dict(self._response_counts)
-            self._apply_responses_locked(step)
-            if self.status != "running":
-                return
-            responded = self._response_counts != response_counts_before
-            # Explicit success markers take priority over failure words: if the
-            # output contains a marker that proves the step succeeded (e.g.
-            # "Transfer complete", "Succeeded in setting"), the step completes
-            # even if a benign failure-looking word also appears. Failure words
-            # only matter when no success marker matched and no interaction
-            # response was triggered.
-            success_marker = _first_match(
-                self._scan_buffer,
-                step.success_markers,
-                case_sensitive=step.case_sensitive,
-            )
-            # Reboot expect steps complete only on a real transport disconnect;
-            # a prompt echoed before shutdown is not proof that reboot started.
-            if success_marker is not None and not step.disconnect_is_success:
-                self._finish_active_step_locked(
-                    "completed",
-                    matched=success_marker[0],
-                )
-                if not self._take_branch_locked(step, step.on_match, reason="match"):
-                    self.current_step += 1
-                    self._advance_locked()
-                return
-            failure = None
-            # A step with explicit success markers is judged by those markers
-            # (and its timeout), not by failure words — a benign failure-looking
-            # word in partial output must not abort it before the success marker
-            # arrives.
-            if not responded and not step.success_markers:
-                failure = _first_match(
-                    self._scan_buffer,
-                    step.failures,
-                    case_sensitive=step.case_sensitive,
-                )
-            if failure is not None:
-                failed_step = step
-                self._finish_active_step_locked(
-                    "failed",
-                    matched=failure[0],
-                    error_code="terminal_failure",
-                    message=f"终端输出匹配失败条件: {failure[0]}",
-                )
-                if not self._take_branch_locked(
-                    failed_step,
-                    failed_step.on_failure,
-                    reason="failure",
-                ):
-                    self._finish_locked(
-                        "failed",
-                        error_code="terminal_failure",
-                        message=f"步骤 {self.current_step} 执行失败。",
-                    )
-                return
-            if self.status != "running":
-                return
-            success = _first_match(
-                self._scan_buffer,
-                step.success,
-                case_sensitive=step.case_sensitive,
-            )
-            if success is not None and not step.disconnect_is_success:
-                self._finish_active_step_locked("completed", matched=success[0])
-                if not self._take_branch_locked(step, step.on_match, reason="match"):
-                    self.current_step += 1
-                    self._advance_locked()
-                return
-            if step.idle_seconds > 0:
-                token = self._step_token
-                self.schedule(
-                    int(step.idle_seconds * 1000),
-                    lambda token=token: self._on_idle_timeout(token),
-                )
+            self._interaction_prompt = None
+            self._evaluate_expect_locked(step)
 
     def on_session_state(self, state: str) -> None:
         normalized = str(state).strip().casefold()
@@ -431,25 +430,25 @@ class TerminalExecutionRunner:
                     self.current_step += 1
                     self._advance_locked()
                 return
-            if normalized == "disconnected" and isinstance(step, ExpectStep) and step.disconnect_is_success:
+            if normalized in {"disconnected", "closed", "failed"} and isinstance(step, ExpectStep) and step.disconnect_is_success:
                 self._finish_active_step_locked("completed", matched="disconnected")
                 if not self._take_branch_locked(step, step.on_match, reason="disconnect"):
                     self.current_step += 1
                     self._advance_locked()
                 return
-            if normalized == "disconnected" and not (
-                isinstance(step, WaitStateStep) and step.state == "disconnected"
+            if normalized in {"disconnected", "closed", "failed"} and not (
+                isinstance(step, WaitStateStep) and step.state == normalized
             ):
                 if self._active_result is not None:
                     self._finish_active_step_locked(
                         "disconnected",
                         error_code="session_disconnected",
-                        message="终端会话已断开。",
+                        message=f"终端会话状态变为 {normalized}。",
                     )
                 self._finish_locked(
                     "disconnected",
                     error_code="session_disconnected",
-                    message="终端会话已断开。",
+                    message=f"终端会话状态变为 {normalized}。",
                 )
 
     def cancel(self, *, by_user: bool = False) -> None:
@@ -467,6 +466,112 @@ class TerminalExecutionRunner:
                 )
             self._finish_locked(status, error_code=code, message=message)
 
+    def send_manual_input(
+        self,
+        *,
+        text: str = "",
+        control: str = "",
+        secret_ref: str = "",
+        append_enter: bool = True,
+    ) -> None:
+        with self._lock:
+            if self.status != "running":
+                raise TerminalPlanError(
+                    "execution_not_running",
+                    "终端执行当前不可接收输入。",
+                )
+            step = self._current_plan_step()
+            if not isinstance(step, ExpectStep):
+                raise TerminalPlanError(
+                    "input_not_expected",
+                    "当前步骤不是等待输入的交互步骤。",
+                )
+            if self._answered_interaction_prompt:
+                raise TerminalPlanError(
+                    "duplicate_response",
+                    "当前交互点已经收到应答。",
+                    details={"prompt": self._answered_interaction_prompt},
+                )
+            normalized_control = str(control or "").strip().casefold()
+            values = [bool(str(text or "")), bool(normalized_control), bool(str(secret_ref or ""))]
+            if sum(values) != 1:
+                raise TerminalPlanError(
+                    "invalid_input",
+                    "输入必须且只能提供 text、control 或 secret_ref 之一。",
+                )
+            if normalized_control and normalized_control not in CONTROL_TEXT:
+                raise TerminalPlanError(
+                    "invalid_input",
+                    f"不支持的控制键: {normalized_control}",
+                )
+            payload = self._input_for(
+                text=str(text or ""),
+                control=normalized_control,
+                secret_ref=str(secret_ref or ""),
+                append_enter=append_enter,
+            )
+            if (
+                self._interaction_prompt is not None
+                and re.search(r"password|passphrase", self._interaction_prompt.text, re.IGNORECASE)
+                and not payload.sensitive
+            ):
+                raise TerminalPlanError(
+                    "secret_required",
+                    "密码提示只能使用 secret_ref。",
+                )
+            self._matched_prompt = ""
+            self._record_event_locked(
+                "manual_input",
+                data="[redacted]" if payload.sensitive else payload.text,
+                control=normalized_control,
+            )
+            self.send_input(self.session_id, payload, self.execution_id)
+            prompt = self._interaction_prompt
+            self._interaction_prompt = None
+            if prompt is not None:
+                self._answered_interaction_prompt = prompt.text
+            self._attention_event.clear()
+            # A plan using indexed success targets treats the answered prompt
+            # as the completed expect transition. Legacy plans that wait for
+            # ``device_prompt`` remain on the same expect until the device
+            # emits its final prompt after the answer.
+            if prompt is not None and step.success_target is not None:
+                self._complete_expect_locked(step, prompt.text)
+                return
+            # The prompt that caused the pause has already been consumed by
+            # the caller's answer. Do not match that same prompt again.
+            self._scan_buffer = ""
+
+    def resume(self) -> None:
+        with self._lock:
+            if self.status != "cancelled_by_user":
+                raise TerminalPlanError(
+                    "execution_not_resumable",
+                    "只有被用户接管的终端执行可以恢复。",
+                )
+            if self.step_results and self.step_results[-1].index == self.current_step:
+                self.step_results.pop()
+            self.status = "running"
+            self.error_code = ""
+            self.message = ""
+            self.completed_monotonic = 0.0
+            self._completion_event.clear()
+            self.started_monotonic = self.clock()
+            self._active_result = None
+            self._scan_buffer = ""
+            self._response_counts = {}
+            self._interaction_prompt = None
+            self._answered_interaction_prompt = ""
+            self._attention_event.clear()
+            self._step_token += 1
+            self._record_event_locked("resumed")
+            total_token = self._step_token
+            self.schedule(
+                int(self.plan.total_timeout_seconds * 1000),
+                lambda token=total_token: self._on_total_timeout(token),
+            )
+            self._advance_locked()
+
     def add_done_callback(
         self,
         callback: Callable[["TerminalExecutionRunner"], None],
@@ -478,6 +583,9 @@ class TerminalExecutionRunner:
             self._done_callbacks.append(callback)
 
     def public_dict(self) -> dict[str, Any]:
+        return self.snapshot()
+
+    def snapshot(self, *, since_cursor: int = 0) -> dict[str, Any]:
         with self._lock:
             now = self.completed_monotonic or self.clock()
             secrets = tuple(value for value in self._known_secrets if value)
@@ -503,14 +611,41 @@ class TerminalExecutionRunner:
                     message=self._active_result.message,
                 )
                 step_results.append(active.public_dict(secrets=secrets))
+            command_results = self._command_results_locked(
+                step_results,
+                duration_ms=(
+                    round(max(0.0, now - self.started_monotonic) * 1000, 2)
+                    if self.started_monotonic
+                    else 0.0
+                ),
+            )
+            outcome = self._aggregate_outcome_locked(
+                command_results,
+                secrets=secrets,
+            )
             return {
                 "execution_id": self.execution_id,
                 "session_id": self.session_id,
                 "device_id": self.device_id,
                 "status": self.status,
+                "phase": self._phase_locked(),
                 "current_step": self.current_step,
                 "total_steps": len(self.plan.steps),
+                "waiting_for": self._waiting_for_locked(),
+                "last_output": _redact_values(self._last_output, secrets),
+                "matched_prompt": _redact_values(self._matched_prompt, secrets),
+                "can_send": self.status == "running" and isinstance(self._current_plan_step(), ExpectStep),
+                "can_cancel": not self.is_terminal,
+                "can_resume": self.status == "cancelled_by_user",
+                "event_cursor": self._event_cursor,
+                "events": [
+                    self._redacted_event_locked(item, secrets)
+                    for item in self._events
+                    if int(item.get("cursor", 0)) > since_cursor
+                ],
                 "steps": step_results,
+                "outcome": outcome,
+                "command_results": command_results,
                 "duration_ms": round(
                     max(0.0, now - self.started_monotonic) * 1000,
                     2,
@@ -528,6 +663,155 @@ class TerminalExecutionRunner:
                 ),
                 "lease_released": self.is_terminal,
             }
+
+    def wait_for_event(self, since_cursor: int = 0, timeout_seconds: float = 0.0) -> dict[str, Any]:
+        """Wait until a newer event exists or the execution reaches a terminal state."""
+        deadline = self.clock() + max(0.0, float(timeout_seconds))
+        with self._event_condition:
+            while self._event_cursor <= int(since_cursor) and not self.is_terminal:
+                remaining = deadline - self.clock()
+                if remaining <= 0:
+                    break
+                self._event_condition.wait(remaining)
+            return self.snapshot(since_cursor=since_cursor)
+
+    @staticmethod
+    def _redacted_event_locked(
+        event: dict[str, Any],
+        secrets: tuple[str, ...],
+    ) -> dict[str, Any]:
+        public = dict(event)
+        for key in ("data", "matched", "message"):
+            value = public.get(key)
+            if isinstance(value, str):
+                public[key] = _redact_values(value, secrets)
+        return public
+
+    def _record_event_locked(self, event_type: str, *, data: str = "", **fields: Any) -> None:
+        self._event_cursor += 1
+        event: dict[str, Any] = {
+            "cursor": self._event_cursor,
+            "type": event_type,
+            "timestamp": self.clock(),
+        }
+        if data:
+            event["data"] = data[-4096:]
+        event.update({key: value for key, value in fields.items() if value not in ("", None)})
+        self._events.append(event)
+        if len(self._events) > MAX_EXECUTION_EVENTS:
+            del self._events[: len(self._events) - MAX_EXECUTION_EVENTS]
+        self._event_condition.notify_all()
+
+    def _phase_locked(self) -> str:
+        if self.status != "running":
+            return self.status
+        step = self._current_plan_step()
+        if isinstance(step, ExpectStep):
+            return "waiting_for_input" if self._interaction_prompt else "waiting_for_output"
+        if isinstance(step, WaitStateStep):
+            return "waiting_for_state"
+        return "sending"
+
+    def _waiting_for_locked(self) -> str:
+        step = self._current_plan_step()
+        if isinstance(step, ExpectStep):
+            if self._interaction_prompt:
+                return self._interaction_prompt.type
+            return step.success[0] if step.success else "output"
+        if isinstance(step, WaitStateStep):
+            return step.state
+        return ""
+
+    def _command_results_locked(
+        self,
+        step_results: list[dict[str, Any]],
+        *,
+        duration_ms: float,
+    ) -> list[dict[str, Any]]:
+        results_by_index = {
+            int(result.get("index", -1)): result
+            for result in step_results
+            if isinstance(result, dict)
+        }
+        command_results: list[dict[str, Any]] = []
+        for index, step in enumerate(self.plan.steps):
+            if not isinstance(step, ExpectStep):
+                continue
+            result = results_by_index.get(index)
+            if result is None:
+                continue
+            command = self._command_before_locked(index)
+            outcome = classify_command_outcome(
+                str(result.get("output") or ""),
+                lifecycle_status=str(result.get("status") or self.status),
+                command=command,
+                matched=str(result.get("matched") or self._matched_prompt),
+                duration_ms=float(result.get("duration_ms") or duration_ms),
+                failure_patterns=step.failures,
+            )
+            command_results.append(
+                {
+                    "step_index": index,
+                    "command": command,
+                    "outcome": outcome,
+                }
+            )
+        return command_results
+
+    def _command_before_locked(self, step_index: int) -> str:
+        for candidate in reversed(self.plan.steps[:step_index]):
+            if isinstance(candidate, SendStep):
+                return candidate.label or candidate.text
+            if isinstance(candidate, ExpectStep):
+                break
+        return ""
+
+    def _aggregate_outcome_locked(
+        self,
+        command_results: list[dict[str, Any]],
+        *,
+        secrets: tuple[str, ...],
+    ) -> dict[str, Any]:
+        if not command_results:
+            return classify_command_outcome(
+                _redact_values(self._last_output, secrets),
+                lifecycle_status=self.status,
+                matched=_redact_values(self._matched_prompt, secrets),
+                duration_ms=(
+                    max(0.0, (self.completed_monotonic or self.clock()) - self.started_monotonic) * 1000
+                    if self.started_monotonic
+                    else 0.0
+                ),
+            )
+        outcomes = [item["outcome"] for item in command_results]
+        if len(outcomes) == 1:
+            return dict(outcomes[0])
+        statuses = {str(item.get("status") or "unknown") for item in outcomes}
+        if "interaction_required" in statuses:
+            status = "interaction_required"
+        elif "failure" in statuses:
+            status = "failure"
+        elif statuses == {"success"} and self.status == "completed":
+            status = "success"
+        else:
+            status = "unknown"
+        last = dict(outcomes[-1])
+        last.update(
+            {
+                "status": status,
+                "finished": bool(self.status == "completed" and all(item.get("finished") for item in outcomes)),
+                "command": "",
+                "errors": [error for item in outcomes for error in item.get("errors", [])],
+                "basis": f"batch_{status}",
+                "duration_ms": round(
+                    max(0.0, (self.completed_monotonic or self.clock()) - self.started_monotonic) * 1000,
+                    2,
+                )
+                if self.started_monotonic
+                else 0.0,
+            }
+        )
+        return last
 
     def redact_text(self, text: str) -> str:
         with self._lock:
@@ -601,9 +885,15 @@ class TerminalExecutionRunner:
             started_monotonic=self.clock(),
         )
         self._active_result = result
+        target_step = step.next_step
+        next_index = (
+            target_step
+            if target_step is not None
+            else self.current_step + 1
+        )
         next_step = (
-            self.plan.steps[self.current_step + 1]
-            if self.current_step + 1 < len(self.plan.steps)
+            self.plan.steps[next_index]
+            if next_index < len(self.plan.steps)
             else None
         )
         try:
@@ -616,7 +906,7 @@ class TerminalExecutionRunner:
                 append_enter=step.append_enter,
             )
             self._finish_active_step_locked("completed")
-            self.current_step += 1
+            self.current_step = next_index
             if isinstance(next_step, ExpectStep):
                 self._arm_wait_locked(next_step)
             armed_index = self.current_step
@@ -691,6 +981,22 @@ class TerminalExecutionRunner:
                 secret_ref=rule.secret_ref,
                 append_enter=rule.append_enter,
             )
+            if (
+                re.search(r"password|passphrase", found[0], re.IGNORECASE)
+                and not payload.sensitive
+            ):
+                self._finish_active_step_locked(
+                    "failed",
+                    matched=found[0],
+                    error_code="secret_required",
+                    message="密码提示只能使用 secret_ref。",
+                )
+                self._finish_locked(
+                    "failed",
+                    error_code="secret_required",
+                    message="密码提示只能使用 secret_ref。",
+                )
+                return
         except TerminalPlanError as exc:
             self._finish_active_step_locked(
                 "failed",
@@ -702,6 +1008,14 @@ class TerminalExecutionRunner:
         assert self._active_result is not None
         self._active_result.response_count += 1
         self._active_result.responses_sent.append(rule.match)
+        self._matched_prompt = rule.match
+        self._answered_interaction_prompt = rule.match
+        self._record_event_locked(
+            "auto_response",
+            matched=rule.match,
+            data="[redacted]" if payload.sensitive else payload.text,
+            control=rule.control,
+        )
         # Keep a coalesced next prompt as a deferred tail. Huawei VRP can
         # deliver the username and password prompts in one terminal event;
         # dropping the tail leaves the runner waiting forever because the
@@ -714,6 +1028,112 @@ class TerminalExecutionRunner:
                 RESPONSE_RETRY_DELAY_MS,
                 lambda token=token: self._on_response_retry(token),
             )
+
+    def _evaluate_expect_locked(self, step: ExpectStep) -> None:
+        response_counts_before = dict(self._response_counts)
+        self._apply_responses_locked(step)
+        if self.status != "running":
+            return
+        responded = self._response_counts != response_counts_before
+        prompt = classify_terminal_prompt(self._scan_buffer)
+        if prompt is not None and prompt.type == "command_prompt":
+            self._answered_interaction_prompt = ""
+        elif prompt is not None and prompt.type in INTERACTION_PROMPT_TYPES:
+            if prompt.text != self._answered_interaction_prompt:
+                self._answered_interaction_prompt = ""
+        expected_success = _first_match(
+            self._scan_buffer,
+            self._success_tokens(step),
+            case_sensitive=step.case_sensitive,
+        )
+        if (
+            prompt is not None
+            and prompt.type in INTERACTION_PROMPT_TYPES
+            and not responded
+        ):
+            # Indexed plans use the step immediately targeted by ``success``
+            # as the confirmation response.  A confirmation prompt therefore
+            # advances into that send step automatically; waiting for an
+            # external interact_send here would either deadlock the plan or
+            # cause the same answer to be sent twice.
+            if (
+                step.success_target is not None
+                and step.success_target > self.current_step
+                and isinstance(self.plan.steps[step.success_target], SendStep)
+            ):
+                self._complete_expect_locked(step, prompt.text)
+                return
+            if expected_success is None:
+                if self._interaction_prompt != prompt:
+                    self._interaction_prompt = prompt
+                    self._matched_prompt = prompt.text
+                    self._record_event_locked(
+                        "interaction_required",
+                        matched=prompt.text,
+                        prompt_type=prompt.type,
+                    )
+                self._attention_event.set()
+                return
+        success_marker = _first_match(
+            self._scan_buffer,
+            step.success_markers,
+            case_sensitive=step.case_sensitive,
+        )
+        if success_marker is not None and not step.disconnect_is_success:
+            self._complete_expect_locked(step, success_marker[0])
+            return
+        failure = None
+        if not responded and not step.success_markers:
+            failure = _first_match(
+                self._scan_buffer,
+                step.failures,
+                case_sensitive=step.case_sensitive,
+            )
+        if failure is not None:
+            self._finish_active_step_locked(
+                "failed",
+                matched=failure[0],
+                error_code="terminal_failure",
+                message=f"终端输出匹配失败条件: {failure[0]}",
+            )
+            if not self._take_branch_locked(step, step.on_failure, reason="failure"):
+                self._finish_locked(
+                    "failed",
+                    error_code="terminal_failure",
+                    message=f"步骤 {self.current_step} 执行失败。",
+                )
+            return
+        if self.status != "running":
+            return
+        success = expected_success
+        if success is not None and not step.disconnect_is_success:
+            self._complete_expect_locked(step, success[0])
+            return
+        if step.idle_seconds > 0:
+            token = self._step_token
+            self.schedule(
+                int(step.idle_seconds * 1000),
+                lambda token=token: self._on_idle_timeout(token),
+            )
+
+    def _success_tokens(self, step: ExpectStep) -> tuple[str, ...]:
+        return (step.pattern,) if step.pattern else (step.success or ("device_prompt",))
+
+    def _complete_expect_locked(self, step: ExpectStep, matched: str) -> None:
+        self._matched_prompt = matched
+        self._record_event_locked("matched", matched=matched)
+        self._finish_active_step_locked("completed", matched=matched)
+        target = step.success_target
+        if target is not None:
+            if target == self.current_step or target >= len(self.plan.steps):
+                self._finish_locked("completed", message="终端交互执行完成。")
+            else:
+                self.current_step = target
+                self._advance_locked()
+            return
+        if not self._take_branch_locked(step, step.on_match, reason="match"):
+            self.current_step += 1
+            self._advance_locked()
 
     def _has_pending_response_locked(self, step: ExpectStep) -> bool:
         if not self._scan_buffer:
@@ -736,20 +1156,7 @@ class TerminalExecutionRunner:
             step = self._current_plan_step()
             if not isinstance(step, ExpectStep):
                 return
-            before = dict(self._response_counts)
-            self._apply_responses_locked(step)
-            if self.status != "running" or self._response_counts == before:
-                return
-            success = _first_match(
-                self._scan_buffer,
-                step.success,
-                case_sensitive=step.case_sensitive,
-            )
-            if success is not None:
-                self._finish_active_step_locked("completed", matched=success[0])
-                if not self._take_branch_locked(step, step.on_match, reason="match"):
-                    self.current_step += 1
-                    self._advance_locked()
+            self._evaluate_expect_locked(step)
 
     def _input_for(
         self,
@@ -819,9 +1226,16 @@ class TerminalExecutionRunner:
         self.status = status
         self.error_code = error_code
         self.message = message
+        self._record_event_locked(
+            "finished",
+            status=status,
+            error_code=error_code,
+            message=message,
+        )
         self.completed_monotonic = self.clock()
         self._step_token += 1
         self._completion_event.set()
+        self._attention_event.set()
         self.on_finished(self)
         callbacks = list(self._done_callbacks)
         self._done_callbacks.clear()
@@ -843,7 +1257,11 @@ class TerminalExecutionRunner:
             step = self._current_plan_step()
             self._finish_active_step_locked(
                 "timed_out",
-                error_code=(step.timeout_code if isinstance(step, (ExpectStep, WaitStateStep)) else "step_timeout"),
+                error_code=(
+                    "interaction_timeout"
+                    if isinstance(step, ExpectStep) and self._interaction_prompt is not None
+                    else step.timeout_code if isinstance(step, (ExpectStep, WaitStateStep)) else "step_timeout"
+                ),
                 message=f"步骤 {self.current_step}「{step.label or self.current_step}」等待超时。",
             )
             if (
@@ -857,7 +1275,11 @@ class TerminalExecutionRunner:
                 return
             self._finish_locked(
                 "timed_out",
-                error_code=(step.timeout_code if isinstance(step, (ExpectStep, WaitStateStep)) else "step_timeout"),
+                error_code=(
+                    "interaction_timeout"
+                    if isinstance(step, ExpectStep) and self._interaction_prompt is not None
+                    else step.timeout_code if isinstance(step, (ExpectStep, WaitStateStep)) else "step_timeout"
+                ),
                 message=f"步骤 {self.current_step}「{step.label or self.current_step}」等待超时。",
             )
 
@@ -985,6 +1407,25 @@ class TerminalExecutionCoordinator:
         runner.cancel(by_user=by_user)
         return runner
 
+    def resume(self, execution_id: str) -> TerminalExecutionRunner:
+        runner = self.get(execution_id)
+        with self._lock:
+            active_id = self._session_leases.get(runner.session_id)
+            if active_id and active_id != execution_id:
+                raise TerminalPlanError(
+                    "session_busy",
+                    f"会话正在执行其他任务: {active_id}",
+                )
+            self._session_leases[runner.session_id] = execution_id
+        try:
+            runner.resume()
+        except Exception:
+            with self._lock:
+                if self._session_leases.get(runner.session_id) == execution_id:
+                    self._session_leases.pop(runner.session_id, None)
+            raise
+        return runner
+
     def cancel_for_user_input(self, session_id: str) -> str:
         with self._lock:
             execution_id = self._session_leases.get(session_id, "")
@@ -1078,11 +1519,20 @@ def _parse_send_step(raw: dict[str, Any], index: int) -> SendStep:
         append_enter=bool(raw.get("append_enter", True)),
         label=str(raw.get("label") or text or control or secret_ref),
         name=_step_name(raw, index),
+        next_step=_numeric_transition(raw.get("success"), index),
     )
 
 
 def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
-    success = _match_list(raw.get("success"), f"步骤 {index} success", required=True)
+    pattern = str(raw.get("pattern") or "").strip()
+    if pattern:
+        _match_text(pattern, f"步骤 {index} pattern")
+    raw_success = raw.get("success")
+    success_target = _numeric_transition(raw_success, index)
+    if success_target is not None:
+        success = (pattern,) if pattern else ()
+    else:
+        success = _match_list(raw_success or [], f"步骤 {index} success")
     failures = _match_list(raw.get("failures", []), f"步骤 {index} failures")
     success_markers = _match_list(
         raw.get("success_markers", []),
@@ -1145,6 +1595,7 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
     timeout_code = _timeout_code(raw.get("timeout_code"), index)
     return ExpectStep(
         success=success,
+        pattern=pattern,
         responses=tuple(responses),
         failures=failures,
         success_markers=success_markers,
@@ -1166,7 +1617,21 @@ def _parse_expect_step(raw: dict[str, Any], index: int) -> ExpectStep:
             )
         ),
         disconnect_is_success=bool(raw.get("disconnect_is_success", False)),
+        success_target=success_target,
     )
+
+
+def _numeric_transition(value: Any, index: int) -> int | None:
+    """Accept the MCP compatibility form ``success: [next_step_index]``."""
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], int):
+        return None
+    target = int(value[0])
+    if target < 0:
+        raise TerminalPlanError(
+            "invalid_plan",
+            f"步骤 {index} success 目标索引不能为负数。",
+        )
+    return target
 
 
 def _parse_wait_state_step(raw: dict[str, Any], index: int) -> WaitStateStep:
@@ -1251,6 +1716,24 @@ def _validate_plan_branches(steps: list[TerminalStep]) -> None:
                     "invalid_plan",
                     f"步骤 {index} 的向后跳转必须设置 max_retries。",
                 )
+
+
+def _validate_numeric_transitions(steps: list[TerminalStep]) -> None:
+    for index, step in enumerate(steps):
+        target = (
+            step.next_step
+            if isinstance(step, SendStep)
+            else step.success_target
+            if isinstance(step, ExpectStep)
+            else None
+        )
+        if target is None:
+            continue
+        if target >= len(steps):
+            raise TerminalPlanError(
+                "invalid_plan",
+                f"步骤 {index} success 目标索引超出计划范围: {target}。",
+            )
 
 
 def _exclusive_input(

@@ -8,30 +8,17 @@ import re
 ANSI_ESCAPE_RE = re.compile(
     r"(?:\x1B[@-_][0-?]*[ -/]*[@-~])|(?:\x9B[0-?]*[ -/]*[@-~])"
 )
-PROMPT_PATTERNS = (
-    re.compile(r"<[^<>\r\n]{1,128}>"),
-    re.compile(r"\[[^\[\]\r\n]{1,128}\]"),
-    # Shell prompts are one non-whitespace token (for example root@host:/#).
-    # Requiring that shape prevents a partially echoed command such as
-    # ``dir slave#flash:/`` from matching at the intermediate ``dir slave#``.
-    re.compile(r"[^\s\r\n]{1,160}[$#]"),
-)
-
-
 def strip_terminal_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def detect_terminal_prompt(text: str) -> str:
-    normalized = strip_terminal_ansi(text)
-    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
-    if not lines:
+    from .outcome import classify_terminal_prompt
+
+    prompt = classify_terminal_prompt(text)
+    if prompt is None or prompt.type != "command_prompt":
         return ""
-    candidate = lines[-1]
-    for pattern in PROMPT_PATTERNS:
-        if pattern.fullmatch(candidate):
-            return candidate
-    return ""
+    return prompt.text
 
 
 def incremental_terminal_output(

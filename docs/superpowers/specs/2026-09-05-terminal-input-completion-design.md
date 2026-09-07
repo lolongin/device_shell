@@ -30,23 +30,21 @@ Suggestions are requested only when all of these conditions hold:
 - the shadow cursor is at the end of the current line;
 - no completion acceptance is already being applied.
 
-The visible candidate list contains at most eight results. The first result is
-selected by default. A request sequence number prevents a late response from
-replacing candidates for newer input. Clearing the line or moving away from the
-line end immediately hides the list.
+Only the top-ranked result is shown. It is rendered as a single gray hint at
+the right edge of the terminal input area. A request sequence number prevents
+a late response from replacing the hint for newer input. Clearing the line or
+moving away from the line end immediately hides the hint.
 
 Keyboard behavior is intentionally explicit:
 
-- `Tab` accepts the selected candidate when the list is visible. Otherwise it
-  is forwarded unchanged to the device shell.
-- `ArrowRight` accepts the selected candidate when the list is visible and the
+- `Tab` is always forwarded unchanged to the device shell so native shell
+  completion keeps its normal behavior.
+- `ArrowRight` accepts the candidate when the hint is visible and the
   cursor is at the line end. Otherwise it is forwarded unchanged.
-- `ArrowUp` and `ArrowDown` change the selected candidate only while the list
-  is visible. Without a visible list, they retain the shell's normal history
-  behavior.
-- `ArrowLeft` always moves the shell cursor and closes the candidate list; it
+- `ArrowUp` and `ArrowDown` always retain the shell's normal history behavior.
+- `ArrowLeft` always moves the shell cursor and closes the hint; it
   never accepts a candidate.
-- `Escape` closes the candidate list without sending input.
+- `Escape` closes the hint without sending input.
 - `Enter` keeps the existing reconnect and send behavior.
 
 Accepting a candidate sends only the missing suffix from the current line to
@@ -59,7 +57,7 @@ candidate list closed until new input changes the query.
 xterm.js instance and raw input forwarding. The state consists of:
 
 - current line text and cursor offset;
-- candidate strings and selected index;
+- the top-ranked candidate string;
 - a monotonically increasing request id;
 - a debounce timer and an acceptance-in-progress flag.
 
@@ -67,10 +65,9 @@ The existing Pinia store method and API transport remain the request boundary.
 The terminal component calls the store/API with the active session id and the
 current line query. No suggestion data is persisted in the renderer.
 
-The candidate popup is rendered as an overlay within the terminal pane, with
-stable dimensions, an accessible listbox role, an active descendant, and a
-status label. Pointer selection is optional but must not steal focus from
-xterm.js; clicking a candidate accepts it and restores terminal focus.
+The gray hint is rendered as a non-interactive overlay within the terminal
+pane, aligned to the right edge with ellipsis for long commands. It never
+steals focus from xterm.js.
 
 ## Input Parsing and Safety
 
@@ -104,14 +101,14 @@ Add focused renderer-facing unit coverage for the pure input-state helpers:
 
 - printable input and backspace update text and cursor offsets;
 - left/right movement keeps the cursor model correct;
-- right-arrow and Tab accept only when a candidate is visible;
+- right-arrow accepts only when a candidate is visible; Tab always reaches the shell;
 - left-arrow never accepts a candidate;
-- up/down cycle candidates and wrap at both ends;
+- the single top-ranked candidate is the only visible result;
 - Enter, Ctrl+C, and Ctrl+U reset the line;
 - stale asynchronous responses cannot replace current candidates;
 - sensitive prompts and non-end cursors suppress requests.
 
-Update Electron parity/smoke assertions to cover the popup contract and the
+Update Electron parity/smoke assertions to cover the gray hint contract and the
 keyboard acceptance rules. Run the focused tests, `npm run typecheck`, and the
 desktop production build.
 

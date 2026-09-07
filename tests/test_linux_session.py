@@ -56,8 +56,10 @@ class _FakeConnection:
 
 def test_linux_ssh_session_reads_bytes_and_writes_utf8(monkeypatch) -> None:
     fake_connection = _FakeConnection()
+    connect_kwargs: dict[str, object] = {}
 
     async def fake_connect(*_args: object, **_kwargs: object) -> _FakeConnection:
+        connect_kwargs.update(_kwargs)
         return fake_connection
 
     monkeypatch.setattr(asyncssh, "connect", fake_connect)
@@ -73,6 +75,8 @@ def test_linux_ssh_session_reads_bytes_and_writes_utf8(monkeypatch) -> None:
     asyncio.run(run())
 
     assert fake_connection.create_process_kwargs["encoding"] is None
+    assert connect_kwargs["keepalive_interval"] == 15
+    assert connect_kwargs["keepalive_count_max"] == 2
 
 
 def test_remote_output_decoder_preserves_split_utf8() -> None:

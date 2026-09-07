@@ -9,7 +9,7 @@ import {
   Search,
   X
 } from 'lucide-vue-next'
-import type { DeviceSummary, SessionSummary } from '../types'
+import type { ConnectionProfileSummary, DeviceSummary, SessionSummary } from '../types'
 import {
   aggregateSessionHealth,
   sessionHealthLabel,
@@ -27,6 +27,7 @@ interface SessionDeviceGroup {
 
 const props = defineProps<{
   devices: DeviceSummary[]
+  profiles: ConnectionProfileSummary[]
   sessions: SessionSummary[]
   activeSessionId: string
   collapsed: boolean
@@ -44,12 +45,16 @@ const emit = defineEmits<{
 const WIDTH_KEY = 'odyterm.desktop-v2.session-manager-width'
 const COLLAPSED_GROUPS_KEY = 'odyterm.desktop-v2.session-manager-collapsed-groups'
 const SESSION_DRAG_TYPE = 'application/x-odyterm-session'
+const DEVICE_DRAG_TYPE = 'application/x-odyterm-device-group'
 const manager = ref<HTMLElement | null>(null)
 const query = ref('')
 const managerWidth = ref(readManagerWidth())
 const collapsedGroups = ref<Set<string>>(readCollapsedGroups())
 const deviceById = computed(() => new Map(
   props.devices.map((device) => [device.id, device])
+))
+const profileById = computed(() => new Map(
+  props.profiles.map((profile) => [profile.id, profile])
 ))
 
 const groups = computed<SessionDeviceGroup[]>(() => {
@@ -63,7 +68,11 @@ const groups = computed<SessionDeviceGroup[]>(() => {
     const device = deviceById.value.get(deviceId) || null
     return {
       id: deviceId,
-      label: device?.name || sessions[0]?.title.split(' · ')[0] || deviceId,
+      label: profileById.value.get(deviceId)?.name
+        || device?.name
+        || sessions[0]?.title.split(' · ').slice(1).join(' · ')
+        || sessions[0]?.title
+        || deviceId,
       device,
       sessions,
       health: aggregateSessionHealth(sessions)
@@ -166,8 +175,16 @@ function activateGroup(group: SessionDeviceGroup): void {
 
 function startSessionDrag(event: DragEvent, session: SessionSummary): void {
   if (!event.dataTransfer) return
-  emit('activate', session.id)
   event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData(SESSION_DRAG_TYPE, session.id)
+  event.dataTransfer.setData('text/plain', session.id)
+}
+
+function startDeviceDrag(event: DragEvent, group: SessionDeviceGroup): void {
+  const session = group.sessions.find((candidate) => candidate.id === props.activeSessionId) || group.sessions[0]
+  if (!session || !event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData(DEVICE_DRAG_TYPE, group.id)
   event.dataTransfer.setData(SESSION_DRAG_TYPE, session.id)
   event.dataTransfer.setData('text/plain', session.id)
 }
@@ -327,6 +344,8 @@ onBeforeUnmount(stopResize)
             :title="groupAccessibleLabel(group)"
             :data-device-group-id="group.id"
             tabindex="0"
+            draggable="true"
+            @dragstart="startDeviceDrag($event, group)"
             @contextmenu.prevent="emit('deviceContext', $event, group.id)"
             @keydown="handleDeviceKeydown($event, group)"
           >

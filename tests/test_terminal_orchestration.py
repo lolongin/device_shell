@@ -73,6 +73,229 @@ def test_batch_plan_arms_prompt_before_sending() -> None:
     result = runner.public_dict()
     assert result["status"] == "completed"
     assert result["steps"][1]["matched"] == "<sim>"
+    assert result["outcome"]["status"] == "success"
+    assert result["outcome"]["finished"] is True
+    assert result["command_results"][0]["command"] == "display version"
+    assert coordinator.active_execution_id("tab-1") == ""
+
+
+def test_compatibility_actions_normalize_into_existing_plan_steps() -> None:
+    plan = parse_terminal_plan(
+        [
+            {"action": "send", "text": "show version", "enter": True},
+            {"action": "expect", "match": "Password:", "respond": {"secret_ref": "transfer.password"}},
+            {"action": "done"},
+        ]
+    )
+
+    assert [type(step).__name__ for step in plan.steps] == ["SendStep", "ExpectStep"]
+    expect = plan.steps[1]
+    assert expect.pattern == "Password:"
+    assert expect.responses[0].secret_ref == "transfer.password"
+
+
+def test_interactive_execution_rejects_duplicate_response_at_same_prompt() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(["copy source target"]),
+    )
+
+    coordinator.on_output("tab-1", "Continue? [Y/N]: ")
+    runner.send_manual_input(text="y")
+
+    with pytest.raises(TerminalPlanError, match="已经收到应答") as error:
+        runner.send_manual_input(text="y")
+    assert error.value.code == "duplicate_response"
+
+
+def test_password_prompt_requires_secret_reference() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(["login"]),
+    )
+
+    coordinator.on_output("tab-1", "Password: ")
+    with pytest.raises(TerminalPlanError) as error:
+        runner.send_manual_input(text="plaintext")
+    assert error.value.code == "secret_required"
+    assert harness.sent == [("tab-1", TerminalInput("login\r"), runner.execution_id)]
+
+
+def test_batch_plan_honors_custom_prompt_and_failure_patterns() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(
+            ["show version"],
+            terminal_prompt=r"<READY>",
+            failure_patterns=["FAILED"],
+        ),
+    )
+
+    coordinator.on_output("tab-1", "FAILED: operation rejected")
+
+    assert runner.public_dict()["status"] == "failed"
+    assert runner.public_dict()["error_code"] == "terminal_failure"
+
+
+def test_batch_plan_surfaces_unhandled_confirmation_without_completing() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(["copy flash:/a flash:/b"]),
+    )
+
+    coordinator.on_output("tab-1", "Continue? [Y/N]: ")
+
+    result = runner.public_dict()
+    assert runner.attention_event.is_set()
+    assert result["status"] == "running"
+    assert result["phase"] == "waiting_for_input"
+    assert result["waiting_for"] == "confirmation_prompt"
+    assert result["outcome"]["status"] == "interaction_required"
+    assert result["outcome"]["finished"] is False
+    assert coordinator.active_execution_id("tab-1") == runner.execution_id
+
+    runner.send_manual_input(text="y")
+    assert not runner.attention_event.is_set()
+    coordinator.on_output("tab-1", "Copy complete.\n<sim> ")
+    assert runner.public_dict()["status"] == "completed"
+    assert coordinator.active_execution_id("tab-1") == ""
+
+
+def test_indexed_interactive_plan_auto_answers_confirmation() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "copy flash:/elabel.txt flash:/dtui_scratch.txt", "success": [1]},
+            {"type": "expect", "pattern": "[Y/N]", "success": [2]},
+            {"type": "send", "text": "Y", "success": [3]},
+            {"type": "expect", "pattern": "<HUAWEI>", "success": [3]},
+        ],
+        total_timeout_seconds=30,
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "Continue? [Y/N]: ")
+    assert runner.public_dict()["current_step"] == 3
+    assert harness.sent[-1][1].text == "Y\r"
+    assert runner.public_dict()["waiting_for"] == "<HUAWEI>"
+    assert not runner.attention_event.is_set()
+
+    coordinator.on_output(
+        "tab-1",
+        "0% complete\n100% complete\nInfo: Copying file ... Done.\n<HUAWEI> ",
+    )
+    result = runner.public_dict()
+    assert result["status"] == "completed"
+    assert result["outcome"]["status"] == "success"
+    assert result["outcome"]["finished"] is True
+    assert result["lease_released"] is True
+    assert coordinator.active_execution_id("tab-1") == ""
+    assert [item[1].text for item in harness.sent] == [
+        "copy flash:/elabel.txt flash:/dtui_scratch.txt\r",
+        "Y\r",
+    ]
+
+
+def test_indexed_plan_auto_answers_two_confirmation_points_without_double_send() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "copy source target", "success": [1]},
+            {"type": "expect", "pattern": "[Y/N]", "success": [2]},
+            {"type": "send", "text": "Y", "success": [3]},
+            {"type": "expect", "pattern": "<sim>", "success": [4]},
+            {"type": "send", "text": "delete target", "success": [5]},
+            {"type": "expect", "pattern": "[Y/N]", "success": [6]},
+            {"type": "send", "text": "Y", "success": [7]},
+            {"type": "expect", "pattern": "<sim>", "success": [7]},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "Continue? [Y/N]: ")
+    assert runner.current_step == 3
+    coordinator.on_output("tab-1", "Copy complete.\n<sim> ")
+    assert runner.current_step == 5
+    coordinator.on_output("tab-1", "Delete target? [Y/N]: ")
+    assert runner.current_step == 7
+    coordinator.on_output("tab-1", "Delete complete.\n<sim> ")
+
+    result = runner.public_dict()
+    assert result["status"] == "completed"
+    assert result["outcome"]["status"] == "success"
+    assert [item[1].text for item in harness.sent] == [
+        "copy source target\r",
+        "Y\r",
+        "delete target\r",
+        "Y\r",
+    ]
+
+
+def test_expect_can_omit_success_for_terminal_step() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "display version"},
+            {"type": "expect", "success": []},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "SimOS V2\n<sim> ")
+
+    assert runner.public_dict()["status"] == "completed"
+
+
+def test_expect_pattern_can_omit_success_for_terminal_step() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "copy a b"},
+            {"type": "expect", "pattern": "Copy complete"},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "Copy complete")
+
+    assert runner.public_dict()["status"] == "completed"
+
+
+def test_failed_command_has_finished_failure_outcome() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    runner = coordinator.start(
+        session_id="tab-1",
+        device_id="device-1",
+        plan=build_batch_plan(["bad command"]),
+    )
+
+    coordinator.on_output(
+        "tab-1",
+        "Error: Unrecognized command\n<sim> ",
+    )
+
+    result = runner.public_dict()
+    assert result["status"] == "failed"
+    assert result["outcome"]["status"] == "failure"
+    assert result["outcome"]["finished"] is True
+    assert result["outcome"]["errors"][0]["code"] == "command_rejected"
     assert coordinator.active_execution_id("tab-1") == ""
 
 
@@ -132,6 +355,29 @@ def test_vrp_bracket_ftp_prompt_completes_login_step() -> None:
     assert runner.public_dict()["status"] == "completed"
 
 
+def test_expected_credential_prompt_advances_managed_plan() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "ftp 192.0.2.10 2121"},
+            {"type": "expect", "success": ["username_prompt"]},
+            {"type": "send", "secret_ref": "transfer.username"},
+            {"type": "expect", "success": ["password_prompt"]},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "User(10.10.10.1):(none): ")
+
+    result = runner.public_dict()
+    assert result["status"] == "running"
+    assert result["current_step"] == 3
+    assert result["phase"] == "waiting_for_output"
+    assert not runner.attention_event.is_set()
+    assert harness.sent[-1][1].text == "device-user\r"
+
+
 def test_interactive_plan_handles_split_prompts_and_local_secrets() -> None:
     harness = Harness()
     coordinator = harness.coordinator()
@@ -167,7 +413,7 @@ def test_interactive_plan_handles_split_prompts_and_local_secrets() -> None:
     coordinator.on_output("tab-1", "Pass")
     coordinator.on_output("tab-1", "word: ")
     assert coordinator.redact_output("tab-1", "echo super-secret") == "echo ***"
-    coordinator.on_output("tab-1", "230 User logged in.\nftp> ")
+    coordinator.on_output("tab-1", "super-secret\r\n230 User logged in.\nftp> ")
 
     assert [item[1].text for item in harness.sent] == [
         "ftp 192.0.2.10 2121\r",
@@ -409,6 +655,54 @@ def test_session_lease_rejects_second_execution_and_user_input_cancels() -> None
     assert coordinator.cancel_for_user_input("tab-1") == first.execution_id
     assert first.public_dict()["status"] == "cancelled_by_user"
     assert coordinator.active_execution_id("tab-1") == ""
+
+
+def test_interactive_execution_accepts_manual_input_and_emits_events() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "delete candidate"},
+            {
+                "type": "expect",
+                "success": ["command complete"],
+                "responses": [{"match": "Continue?", "control": "enter"}],
+            },
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    coordinator.on_output("tab-1", "Continue? [y/n]\n")
+    assert harness.sent[-1][1].text == "\r"
+    assert runner.public_dict()["phase"] == "waiting_for_output"
+    assert any(event["type"] == "auto_response" for event in runner.public_dict()["events"])
+
+    runner.send_manual_input(text="n")
+    assert harness.sent[-1][1].text == "n\r"
+    snapshot = runner.public_dict()
+    assert snapshot["can_send"] is True
+    assert snapshot["event_cursor"] >= 3
+
+
+def test_user_taken_over_interactive_execution_can_resume_from_checkpoint() -> None:
+    harness = Harness()
+    coordinator = harness.coordinator()
+    plan = parse_terminal_plan(
+        [
+            {"type": "send", "text": "show version"},
+            {"type": "expect", "success": ["device_prompt"]},
+        ]
+    )
+    runner = coordinator.start(session_id="tab-1", device_id="device-1", plan=plan)
+
+    assert coordinator.cancel_for_user_input("tab-1") == runner.execution_id
+    assert runner.public_dict()["can_resume"] is True
+
+    resumed = coordinator.resume(runner.execution_id)
+    assert resumed.public_dict()["status"] == "running"
+    assert resumed.public_dict()["current_step"] == 1
+    coordinator.on_output("tab-1", "<sim> ")
+    assert resumed.public_dict()["status"] == "completed"
 
 
 def test_step_timeout_preserves_partial_output() -> None:

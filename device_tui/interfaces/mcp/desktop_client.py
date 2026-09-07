@@ -66,11 +66,11 @@ class DesktopApiClient:
     def terminal_run(self, commands: list[str], *, session_id: str | None = None, device_id: str | None = None, ensure_session: bool = True, protocol: str = "auto", command_timeout_seconds: int = 30, total_timeout_seconds: int | None = None, max_output_chars_per_step: int = 16_384, approval_token: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         return self._tool("terminal_run", commands=commands, session_id=session_id or "", device_id=device_id or "", ensure_session=ensure_session, protocol=protocol, command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds, max_output_chars_per_step=max_output_chars_per_step, approval_token=approval_token, idempotency_key=idempotency_key)
 
-    def terminal_execute(self, command: str, *, session_id: str | None = None, device_id: str | None = None, timeout_seconds: int = 30, max_output_chars: int = 16_384, approval_token: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
-        return self._tool("terminal_execute", command=command, session_id=session_id or "", device_id=device_id or "", timeout_seconds=timeout_seconds, max_output_chars=max_output_chars, approval_token=approval_token, idempotency_key=idempotency_key)
+    def terminal_execute(self, command: str, *, session_id: str | None = None, device_id: str | None = None, timeout_seconds: int = 30, max_output_chars: int = 16_384, approval_token: str | None = None, idempotency_key: str | None = None, terminal_prompt: str = "", failure_patterns: list[str] | None = None) -> dict[str, Any]:
+        return self._tool("terminal_execute", command=command, session_id=session_id or "", device_id=device_id or "", timeout_seconds=timeout_seconds, max_output_chars=max_output_chars, approval_token=approval_token, idempotency_key=idempotency_key, terminal_prompt=terminal_prompt, failure_patterns=failure_patterns or [])
 
-    def terminal_execute_batch(self, commands: list[str], *, session_id: str | None = None, device_id: str | None = None, command_timeout_seconds: int = 30, total_timeout_seconds: int | None = None, max_output_chars_per_step: int = 16_384, mode: str = "auto", approval_token: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
-        return self._tool("terminal_execute_batch", commands=commands, session_id=session_id or "", device_id=device_id or "", command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds, max_output_chars_per_step=max_output_chars_per_step, mode=mode, approval_token=approval_token, idempotency_key=idempotency_key)
+    def terminal_execute_batch(self, commands: list[str], *, session_id: str | None = None, device_id: str | None = None, command_timeout_seconds: int = 30, total_timeout_seconds: int | None = None, max_output_chars_per_step: int = 16_384, mode: str = "auto", approval_token: str | None = None, idempotency_key: str | None = None, terminal_prompt: str = "", failure_patterns: list[str] | None = None) -> dict[str, Any]:
+        return self._tool("terminal_execute_batch", commands=commands, session_id=session_id or "", device_id=device_id or "", command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds, max_output_chars_per_step=max_output_chars_per_step, mode=mode, approval_token=approval_token, idempotency_key=idempotency_key, terminal_prompt=terminal_prompt, failure_patterns=failure_patterns or [])
 
     def terminal_execute_parallel(self, requests: list[dict[str, Any]], *, max_concurrency: int = 8, idempotency_key: str | None = None) -> dict[str, Any]:
         return self._tool("terminal_execute_parallel", requests=requests, max_concurrency=max_concurrency, idempotency_key=idempotency_key, timeout_seconds_override=120)
@@ -84,8 +84,8 @@ class DesktopApiClient:
     def terminal_read(self, device_id: str, *, max_chars: int = 4096) -> dict[str, Any]:
         return self._tool("terminal_read", device_id=device_id, max_chars=max_chars)
 
-    def execution_get(self, execution_id: str) -> dict[str, Any]:
-        return self._tool("execution_get", execution_id=execution_id)
+    def execution_get(self, execution_id: str, *, since_cursor: int = 0, wait_seconds: float = 0.0) -> dict[str, Any]:
+        return self._tool("execution_get", execution_id=execution_id, since_cursor=since_cursor, wait_seconds=wait_seconds)
 
     def execution_cancel(self, execution_id: str) -> dict[str, Any]:
         return self._tool("execution_cancel", execution_id=execution_id)

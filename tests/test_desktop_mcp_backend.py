@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from fastapi.testclient import TestClient
 
@@ -28,6 +29,24 @@ def _call(client: TestClient, tool: str, payload: dict[str, object] | None = Non
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _wait_for_terminal_status(
+    client: TestClient,
+    execution_id: str,
+    status: str,
+) -> dict[str, object]:
+    snapshot: dict[str, object] = {}
+    for _ in range(50):
+        snapshot = _call(
+            client,
+            "terminal_interact_get",
+            {"execution_id": execution_id},
+        )
+        if snapshot["data"]["status"] == status:
+            return snapshot
+        time.sleep(0.01)
+    raise AssertionError(f"terminal execution did not reach {status}: {snapshot}")
 
 
 def test_qt_free_mcp_facade_runs_device_session_and_terminal_tools() -> None:
@@ -73,6 +92,199 @@ def test_qt_free_mcp_facade_runs_parallel_terminal_batches() -> None:
     assert result["data"]["completed_count"] == 2
 
 
+def test_qt_free_mcp_facade_supports_incremental_interactive_execution() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        session_id = _call(client, "session_open", {"device_id": device_id})["data"]["session"]["session_id"]
+        adapter = client.app.state.session_hub.get(session_id).adapter
+        adapter._session.configure_package_upgrade(
+            "current.cc",
+            123_456,
+            require_startup_confirmation=True,
+        )
+        started = _call(client, "terminal_interact_start", {
+            "session_id": session_id,
+            "steps": [
+                {"type": "send", "text": "display version"},
+                {"type": "expect", "success": ["__manual_completion__"]},
+            ],
+            "total_timeout_seconds": 30,
+        })
+        execution_id = started["data"]["execution_id"]
+        snapshot = _call(client, "terminal_interact_get", {
+            "execution_id": execution_id,
+            "since_cursor": 0,
+        })
+        sent = _call(client, "terminal_interact_send", {
+            "execution_id": execution_id,
+            "text": "continue",
+        })
+        cancelled = _call(client, "terminal_interact_cancel", {
+            "execution_id": execution_id,
+        })
+
+    assert started["data"]["execution_id"] == execution_id
+    assert snapshot["data"]["event_cursor"] >= 1
+    assert sent["data"]["execution_id"] == execution_id
+    assert cancelled["data"]["status"] == "cancelled"
+
+
+def test_terminal_execute_surfaces_interaction_and_attach_resumes_existing_prompt() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        opened = _call(client, "session_open", {"device_id": device_id})
+        session_id = opened["data"]["session"]["session_id"]
+        adapter = client.app.state.session_hub.get(session_id).adapter
+        adapter._session.configure_package_upgrade(
+            "target.cc",
+            123_456,
+            require_startup_confirmation=True,
+        )
+
+        paused = _call(client, "terminal_execute", {
+            "session_id": session_id,
+            "command": "startup system-software flash:/current.cc",
+            "timeout_seconds": 5,
+        })
+        execution_id = paused["data"]["execution_id"]
+
+        assert paused["data"]["status"] == "running"
+        assert paused["data"]["phase"] == "waiting_for_input"
+        assert paused["data"]["completion_reason"] == "interaction_required"
+        assert paused["data"]["outcome"]["status"] == "interaction_required"
+        assert paused["data"]["outcome"]["finished"] is False
+
+        _call(client, "terminal_interact_send", {
+            "execution_id": execution_id,
+            "text": "y",
+        })
+        completed = _wait_for_terminal_status(client, execution_id, "completed")
+
+        assert completed["data"]["outcome"]["status"] == "success"
+        assert completed["data"]["lease_released"] is True
+
+        paused_again = _call(client, "terminal_execute", {
+            "session_id": session_id,
+            "command": "startup system-software flash:/current.cc",
+            "timeout_seconds": 5,
+        })
+        _call(client, "terminal_interact_cancel", {
+            "execution_id": paused_again["data"]["execution_id"],
+        })
+        terminal = _call(client, "terminal_read", {
+            "session_id": session_id,
+        })
+
+        assert terminal["data"]["prompt"]["type"] == "confirmation_prompt"
+        fresh = client.post(
+            "/api/v1/mcp/terminal_interact_start",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "session_id": session_id,
+                "steps": [{"type": "expect", "success": ["device_prompt"]}],
+            },
+        )
+        assert fresh.status_code == 400
+        assert fresh.json()["error"]["code"] == "session_not_ready"
+
+        stale = client.post(
+            "/api/v1/mcp/terminal_interact_start",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "session_id": session_id,
+                "attach_mode": "attach",
+                "output_cursor": terminal["data"]["output_cursor"] - 1,
+                "generation": terminal["data"]["generation"],
+                "expected_prompt": "confirmation_prompt",
+                "steps": [{"type": "expect", "success": ["device_prompt"]}],
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "stale_terminal_cursor"
+
+        stale_generation = client.post(
+            "/api/v1/mcp/terminal_interact_start",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "session_id": session_id,
+                "attach_mode": "attach",
+                "output_cursor": terminal["data"]["output_cursor"],
+                "generation": terminal["data"]["generation"] - 1,
+                "expected_prompt": "confirmation_prompt",
+                "steps": [{"type": "expect", "success": ["device_prompt"]}],
+            },
+        )
+        assert stale_generation.status_code == 409
+        assert stale_generation.json()["error"]["code"] == "stale_terminal_generation"
+
+        attached = _call(client, "terminal_interact_start", {
+            "session_id": session_id,
+            "attach_mode": "attach",
+            "output_cursor": terminal["data"]["output_cursor"],
+            "generation": terminal["data"]["generation"],
+            "expected_prompt": "confirmation_prompt",
+            "steps": [
+                {
+                    "type": "expect",
+                    "success": ["device_prompt"],
+                    "responses": [
+                        {"match": "confirmation_prompt", "text": "y"},
+                    ],
+                },
+            ],
+        })
+        attached_result = _wait_for_terminal_status(
+            client,
+            attached["data"]["execution_id"],
+            "completed",
+        )
+
+    assert attached_result["data"]["outcome"]["status"] == "success"
+
+
+def test_terminal_interact_start_indexed_confirmation_chain_auto_completes() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        session_id = _call(client, "session_open", {"device_id": device_id})["data"]["session"]["session_id"]
+        adapter = client.app.state.session_hub.get(session_id).adapter
+        adapter._session.configure_package_upgrade(
+            "current.cc",
+            123_456,
+            require_startup_confirmation=True,
+        )
+        started = _call(client, "terminal_interact_start", {
+            "session_id": session_id,
+            "total_timeout_seconds": 10,
+            "steps": [
+                {"type": "send", "text": "startup system-software flash:/current.cc", "success": [1]},
+                {"type": "expect", "pattern": "[Y/N]", "success": [2]},
+                {"type": "send", "text": "Y", "success": [3]},
+                {"type": "expect", "pattern": "<sim>", "success": [3]},
+            ],
+        })
+        execution_id = started["data"]["execution_id"]
+        completed = _wait_for_terminal_status(client, execution_id, "completed")
+
+    assert completed["data"]["current_step"] == 3
+    assert completed["data"]["outcome"]["status"] == "success"
+    assert completed["data"]["lease_released"] is True
+
+
+def test_terminal_execute_reports_finished_command_failure() -> None:
+    with _client() as client:
+        device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
+        result = _call(client, "terminal_execute", {
+            "device_id": device_id,
+            "command": "definitely-not-a-command",
+            "timeout_seconds": 5,
+        })
+
+    assert result["data"]["status"] == "failed"
+    assert result["data"]["outcome"]["status"] == "failure"
+    assert result["data"]["outcome"]["finished"] is True
+    assert result["data"]["outcome"]["errors"]
+
+
 def test_qt_free_mcp_facade_exposes_skills_and_direct_ai_execution() -> None:
     with _client() as client:
         device_id = _call(client, "device_list")["data"]["devices"][0]["id"]
@@ -105,7 +317,9 @@ def test_qt_free_mcp_facade_covers_registered_tool_surface() -> None:
         "system_status", "device_list", "device_get", "device_select",
         "session_open", "session_list", "session_manage",
         "terminal_run", "terminal_execute", "terminal_execute_batch", "terminal_execute_parallel",
-        "terminal_interact", "terminal_send_command", "terminal_read",
+        "terminal_interact", "terminal_interact_start", "terminal_interact_get",
+        "terminal_interact_send", "terminal_interact_cancel", "terminal_interact_resume",
+        "terminal_send_command", "terminal_read",
         "execution_get", "execution_cancel", "file_transfer_list",
         "file_transfer_start", "package_upgrade_start", "operation_get",
         "operation_wait", "operation_cancel", "ai_create_session",

@@ -506,6 +506,9 @@ class AiApplicationService:
         max_output_chars: int = 16_384,
         source: str = "desktop-api",
         kind: str = "terminal_batch",
+        return_on_interaction: bool = False,
+        terminal_prompt: str = "",
+        failure_patterns: list[str] | tuple[str, ...] = (),
     ) -> dict[str, Any]:
         session = self._session(session_id)
         result = await self.desktop.control.execute(
@@ -516,6 +519,9 @@ class AiApplicationService:
                 timeout_seconds=command_timeout_seconds,
                 total_timeout_seconds=total_timeout_seconds,
                 max_output_chars=max_output_chars,
+                return_on_interaction=return_on_interaction,
+                terminal_prompt=terminal_prompt,
+                failure_patterns=tuple(str(item) for item in failure_patterns),
             ),
             context=ControlContext(source=source),
         )

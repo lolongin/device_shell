@@ -594,6 +594,27 @@ function syncEditorScroll(): void {
   rememberEditorViewState()
 }
 
+function scrollSelectionIntoView(): void {
+  const element = editor.value
+  if (!element) return
+
+  const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight)
+  if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+    syncEditorScroll()
+    return
+  }
+
+  const lineNumber = content.value.slice(0, element.selectionStart).split(/\r?\n/).length - 1
+  const paddingTop = Number.parseFloat(getComputedStyle(element).paddingTop) || 0
+  const targetTop = paddingTop + lineNumber * lineHeight
+  const visibleTop = element.scrollTop
+  const visibleBottom = visibleTop + element.clientHeight - lineHeight
+  if (targetTop < visibleTop || targetTop > visibleBottom) {
+    element.scrollTop = Math.max(0, targetTop - (element.clientHeight - lineHeight) / 2)
+  }
+  syncEditorScroll()
+}
+
 function findNext(): void {
   const element = editor.value
   const query = findValue.value
@@ -608,6 +629,7 @@ function findNext(): void {
   if (index >= 0) {
     element.focus()
     element.setSelectionRange(index, index + query.length)
+    scrollSelectionIntoView()
     updateSelectionState()
     findStatus.value = ''
   } else {
@@ -631,6 +653,7 @@ function replaceCurrent(): void {
   findStatus.value = '已替换当前匹配。'
   void nextTick(() => {
     element.setSelectionRange(start, start + replaceValue.value.length)
+    scrollSelectionIntoView()
     updateSelectionState()
     void saveContent()
   })

@@ -49,6 +49,9 @@ class CommandRequest:
     max_output_chars: int = 16_384
     steps: tuple[dict[str, object], ...] = ()
     require_confirmation: bool = False
+    return_on_interaction: bool = False
+    terminal_prompt: str = ""
+    failure_patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

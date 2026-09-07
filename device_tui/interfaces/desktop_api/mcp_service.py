@@ -28,6 +28,11 @@ from device_tui.application import (
 )
 from device_tui.application.profiles import ConnectionProfileDraft, ProfileEndpoint
 from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
+from device_tui.application.terminal.orchestration import (
+    TerminalPlanError,
+    parse_terminal_plan,
+)
+from device_tui.application.terminal.outcome import classify_terminal_prompt
 from .terminal_executor import BackendTerminalExecutor
 
 
@@ -81,6 +86,14 @@ class DesktopMcpService:
             data = await handler(dict(params))
         except ApplicationError as exc:
             return self._error(409 if exc.code == "conflict" else 400, exc.code, exc.message, exc.details)
+        except TerminalPlanError as exc:
+            status = 409 if exc.code in {
+                "session_busy",
+                "stale_terminal_cursor",
+                "stale_terminal_generation",
+                "duplicate_response",
+            } else 400
+            return self._error(status, exc.code, str(exc), exc.details)
         except KeyError as exc:
             return self._error(404, "resource_not_found", f"Unknown resource: {exc}")
         except Exception as exc:  # keep the compatibility envelope stable
@@ -109,7 +122,7 @@ class DesktopMcpService:
                 "sessions": {"read": ["list", "status"], "write": ["open", "reconnect", "disconnect", "close"]},
                 "workflows": {"read": ["list", "plan.get"], "write": ["run", "plan.validate", "plan.approve", "replan"]},
                 "tasks": {"read": ["list", "get", "decision.get", "framework.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply", "framework.start", "framework.execute"]},
-                "terminal": {"read": ["read", "execution.get"], "write": ["execute", "batch", "parallel", "interact", "execution.cancel"]},
+                "terminal": {"read": ["read", "execution.get", "interact.get"], "write": ["execute", "batch", "parallel", "interact", "interact.start", "interact.send", "interact.resume", "interact.cancel", "execution.cancel"]},
                 "profiles": {"read": ["list"], "write": ["save", "delete"]},
                 "connections": {"write": ["open"]},
                 "commands": {"read": ["workspace"], "write": ["group.save", "group.delete", "group.reorder", "preferences"]},
@@ -819,6 +832,7 @@ class DesktopMcpService:
             max_output_chars=int(params.get("max_output_chars_per_step") or 16_384),
             source="mcp",
             kind="terminal_run",
+            return_on_interaction=True,
         )
         return self._execution_payload(result)
 
@@ -832,10 +846,19 @@ class DesktopMcpService:
             max_output_chars=int(params.get("max_output_chars") or 16_384),
             source="mcp",
             kind="terminal_execute",
+            return_on_interaction=True,
+            terminal_prompt=str(params.get("terminal_prompt") or ""),
+            failure_patterns=[str(item) for item in params.get("failure_patterns", []) if str(item)],
         )
         payload = self._execution_payload(result)
         payload["output"] = self.ai._result_output(result)
-        payload["completion_reason"] = "prompt" if result.get("status") == "completed" else str(result.get("status") or "failed")
+        outcome = result.get("outcome") if isinstance(result.get("outcome"), dict) else {}
+        if outcome.get("status") == "interaction_required":
+            payload["completion_reason"] = "interaction_required"
+        elif result.get("status") == "completed":
+            payload["completion_reason"] = "prompt"
+        else:
+            payload["completion_reason"] = str(result.get("status") or "failed")
         return payload
 
     async def _tool_terminal_execute_batch(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -848,6 +871,7 @@ class DesktopMcpService:
             max_output_chars=int(params.get("max_output_chars_per_step") or 16_384),
             source="mcp",
             kind="terminal_execute_batch",
+            return_on_interaction=True,
         )
         return self._execution_payload(result)
 
@@ -863,18 +887,104 @@ class DesktopMcpService:
         return result
 
     async def _tool_terminal_interact(self, params: dict[str, Any]) -> dict[str, Any]:
+        started = await self._tool_terminal_interact_start(params)
+        execution_id = str(started.get("execution_id") or "")
+        timeout_seconds = self._terminal_timeout(params)
+        await asyncio.to_thread(
+            self.terminal_executor.wait_execution,
+            execution_id,
+            timeout_seconds + 1,
+        )
+        return self._execution_payload(
+            self.terminal_executor.get_execution(execution_id)
+        )
+
+    async def _tool_terminal_interact_start(self, params: dict[str, Any]) -> dict[str, Any]:
         session = await self._terminal_target(params, ensure=True)
         steps = params.get("steps")
         if not isinstance(steps, list):
-            raise UnsupportedOperationError("Terminal interaction steps must be a list.")
-        result = await self.ai.run_terminal_plan(
+            raise UnsupportedOperationError(
+                "Terminal interaction steps must be a list.",
+                details={"field": "steps", "code": "invalid_plan"},
+            )
+        try:
+            plan = parse_terminal_plan(
+                [dict(step) for step in steps],
+                total_timeout_seconds=self._terminal_timeout(params),
+            )
+        except (TypeError, ValueError, TerminalPlanError) as exc:
+            if isinstance(exc, TerminalPlanError):
+                code = exc.code
+                message = str(exc)
+                details = dict(exc.details)
+            else:
+                code = "invalid_plan"
+                message = str(exc)
+                details = {}
+            raise UnsupportedOperationError(
+                message,
+                details={"code": code, **details},
+            ) from exc
+        output_cursor = params.get("output_cursor")
+        generation = params.get("generation")
+        try:
+            parsed_cursor = int(output_cursor) if output_cursor is not None else None
+            parsed_generation = int(generation) if generation is not None else None
+        except (TypeError, ValueError) as exc:
+            raise UnsupportedOperationError(
+                "output_cursor and generation must be integers.",
+                details={"code": "invalid_attachment_context"},
+            ) from exc
+        return self.terminal_executor.start_plan(
             session_id=session.id,
-            steps=steps,
-            total_timeout_seconds=int(params.get("total_timeout_seconds") or 60),
-            source="mcp",
-            kind="terminal_interact",
+            device_id=session.device_id,
+            plan=plan,
+            attach_mode=str(params.get("attach_mode") or "fresh"),
+            output_cursor=parsed_cursor,
+            generation=parsed_generation,
+            expected_prompt=str(params.get("expected_prompt") or ""),
         )
-        return self._execution_payload(result)
+
+    async def _tool_terminal_interact_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._execution_payload(
+            self.terminal_executor.get_execution(
+                self._text(params, "execution_id"),
+                since_cursor=int(params.get("since_cursor", 0) or 0),
+                wait_seconds=min(max(float(params.get("wait_seconds", 0) or 0), 0.0), 60.0),
+            )
+        )
+
+    async def _tool_terminal_interact_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._execution_payload(
+            self.terminal_executor.send_manual_input(
+                self._text(params, "execution_id"),
+                text=str(params.get("text") or ""),
+                control=str(params.get("control") or ""),
+                secret_ref=str(params.get("secret_ref") or ""),
+                append_enter=bool(params.get("append_enter", True)),
+            )
+        )
+
+    async def _tool_terminal_interact_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._execution_payload(
+            self.terminal_executor.cancel_execution(self._text(params, "execution_id"))
+        )
+
+    async def _tool_terminal_interact_resume(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._execution_payload(
+            self.terminal_executor.resume_execution(self._text(params, "execution_id"))
+        )
+
+    @staticmethod
+    def _terminal_timeout(params: dict[str, Any]) -> float:
+        raw = params.get("total_timeout_seconds", 60)
+        try:
+            return float(raw)
+        except (TypeError, ValueError) as exc:
+            raise UnsupportedOperationError(
+                "total_timeout_seconds must be a number.",
+                details={"field": "total_timeout_seconds", "code": "invalid_plan"},
+            ) from exc
 
     async def _tool_terminal_send_command(self, params: dict[str, Any]) -> dict[str, Any]:
         device_id = self._text(params, "device_id")
@@ -895,17 +1005,35 @@ class DesktopMcpService:
 
     async def _tool_terminal_read(self, params: dict[str, Any]) -> dict[str, Any]:
         session = await self._terminal_target(params, ensure=True)
-        log = self.desktop.sessions.read_log(session.id, int(params.get("max_chars") or 4096))
-        return {"session_id": session.id, "device_id": session.device_id, "output": log.content, "truncated": log.truncated}
+        max_chars = int(params.get("max_chars") or 4096)
+        log = self.desktop.sessions.read_log(session.id, max_chars)
+        terminal = self.terminal_executor.terminal_snapshot(
+            session.id,
+            max_chars=max_chars,
+        )
+        prompt = classify_terminal_prompt(str(terminal.get("output") or ""))
+        return {
+            "session_id": session.id,
+            "device_id": session.device_id,
+            "output": log.content,
+            "truncated": log.truncated,
+            "output_cursor": terminal["output_cursor"],
+            "generation": terminal["generation"],
+            "prompt": prompt.public_dict() if prompt is not None else {},
+        }
 
     async def _tool_execution_get(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._execution_payload(
-            self.desktop.control.get_execution(self._text(params, "execution_id"))
+            self.terminal_executor.get_execution(
+                self._text(params, "execution_id"),
+                since_cursor=int(params.get("since_cursor", 0) or 0),
+                wait_seconds=min(max(float(params.get("wait_seconds", 0) or 0), 0.0), 60.0),
+            )
         )
 
     async def _tool_execution_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._execution_payload(
-            self.desktop.control.cancel_execution(self._text(params, "execution_id"))
+            self.terminal_executor.cancel_execution(self._text(params, "execution_id"))
         )
 
     async def _tool_file_transfer_list(self, params: dict[str, Any]) -> dict[str, Any]:

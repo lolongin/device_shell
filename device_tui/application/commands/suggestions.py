@@ -72,11 +72,21 @@ def _terminal_line_command_candidates(line: str, typed: str) -> list[str]:
 def _candidate_matches_typed_prefix(candidate: str, typed: str) -> bool:
     candidate_folded = candidate.casefold()
     typed_folded = typed.casefold()
+    candidate_parts = candidate_folded.split()
+    typed_parts = typed_folded.split()
+    # Shell history suggestions can be rendered after a partially typed path
+    # (for example ``cat /proc/d`` followed by ``isp status``). Treating the
+    # extra words as a completed command would record text the user never
+    # entered. Path completion remains valid when it only extends the path
+    # token itself.
+    if (
+        any("/" in part or "\\" in part for part in typed_parts)
+        and len(candidate_parts) > len(typed_parts)
+    ):
+        return False
     if candidate_folded.startswith(typed_folded):
         return True
 
-    candidate_parts = candidate_folded.split()
-    typed_parts = typed_folded.split()
     if not candidate_parts or len(candidate_parts) < len(typed_parts):
         return False
     return all(
@@ -124,6 +134,7 @@ def suggest_commands(
     device_id: str = "",
     session_kind: str = "",
     limit: int = 5,
+    include_defaults: bool = True,
 ) -> list[str]:
     normalized_query = normalize_command_text(query).casefold()
     if not normalized_query:
@@ -131,12 +142,15 @@ def suggest_commands(
     candidates: dict[str, tuple[float, int]] = {}
     now = time.time()
 
-    for command in DEFAULT_COMMAND_SUGGESTIONS:
-        score = _score_command(command, normalized_query, 0, 0, now, default=True)
-        if score > 0:
-            candidates[command] = _best_candidate(candidates.get(command), score, 2)
+    if include_defaults:
+        for command in DEFAULT_COMMAND_SUGGESTIONS:
+            score = _score_command(command, normalized_query, 0, 0, now, default=True)
+            if score > 0:
+                candidates[command] = _best_candidate(candidates.get(command), score, 2)
 
     for item in history:
+        if _path_query_has_history_suffix(item.command, normalized_query):
+            continue
         score = _score_command(item.command, normalized_query, item.count, item.last_used_at, now)
         if item.device_id and item.device_id == device_id:
             score += 30
@@ -193,6 +207,20 @@ def _score_command(
     if default:
         score -= 18
     return score
+
+
+def _path_query_has_history_suffix(command: str, query: str) -> bool:
+    """Reject history candidates that append old arguments after a path prefix."""
+    command_parts = command.casefold().split()
+    query_parts = query.casefold().split()
+    if not query_parts or not command_parts:
+        return False
+    if not any("/" in part or "\\" in part for part in query_parts):
+        return False
+    return (
+        len(command_parts) > len(query_parts)
+        and command.casefold().startswith(query.casefold())
+    )
 
 
 def _fuzzy_initials_match(command: str, query: str) -> bool:

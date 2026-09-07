@@ -53,6 +53,19 @@ def test_command_suggestions_support_substring_and_defaults() -> None:
     assert suggestions[0] == "display version"
 
 
+def test_command_suggestions_can_use_history_only_for_terminal_hints() -> None:
+    history = [CommandHistoryItem(command="display version", count=1, last_used_at=100)]
+
+    assert suggest_commands(history, "dis", include_defaults=False) == ["display version"]
+    assert suggest_commands([], "dis", include_defaults=False) == []
+
+
+def test_command_suggestions_ignore_history_suffix_after_path_prefix() -> None:
+    history = [CommandHistoryItem(command="cat /proc/disp status", count=1, last_used_at=100)]
+
+    assert suggest_commands(history, "cat /proc/d", include_defaults=False) == []
+
+
 def test_command_suggestions_prefer_recent_same_device_history_over_defaults() -> None:
     history = [
         CommandHistoryItem(
@@ -115,4 +128,14 @@ def test_infer_completed_command_from_terminal_line_supports_token_completion() 
     assert (
         infer_completed_command_from_terminal_line("cat /proc/k", "root@box:~# cat /proc/kbox")
         == "cat /proc/kbox"
+    )
+
+
+def test_infer_completed_command_from_terminal_line_ignores_history_suffix_after_path() -> None:
+    assert (
+        infer_completed_command_from_terminal_line(
+            "cat /proc/d",
+            "root@box:~# cat /proc/disp status",
+        )
+        == ""
     )

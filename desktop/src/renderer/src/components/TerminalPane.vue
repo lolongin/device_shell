@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CircleAlert,
   Clipboard,
+  Columns2,
   ExternalLink,
   FilePlus2,
   FileText,
@@ -52,6 +53,7 @@ const props = defineProps<{
   session: SessionSummary
   active: boolean
   protocolActions: DeviceProtocolAction[]
+  splitAvailable: boolean
 }>()
 const emit = defineEmits<{
   status: [sessionId: string, status: string, sequence: number]
@@ -59,6 +61,7 @@ const emit = defineEmits<{
   transfer: [sessionId: string]
   upgrade: [sessionId: string]
   openProtocol: [kind: DeviceProtocolKind]
+  split: [sessionId: string]
 }>()
 
 const pane = ref<HTMLElement | null>(null)
@@ -79,10 +82,24 @@ const disconnecting = ref(false)
 const contextMenu = ref<{ x: number; y: number; hasSelection: boolean } | null>(null)
 const contextMenuElement = ref<HTMLElement | null>(null)
 const contextMenuReturnFocus = ref<HTMLElement | null>(null)
+const inputLine = ref('')
+const inputCursor = ref(0)
+const inputModelValid = ref(true)
+const completionCandidates = ref<string[]>([])
+const completionCandidate = computed(() => completionCandidates.value[0] || '')
+const completionSuffix = computed(() => completionCandidate.value.slice(inputLine.value.length))
+const completionVisible = computed(() =>
+  Boolean(completionSuffix.value)
+  && Boolean(inputLine.value.trim())
+  && inputCursor.value === inputLine.value.length
+)
+const completionHintStyle = ref<Record<string, string>>({})
+const completionActionStyle = ref<Record<string, string>>({})
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let searchAddon: SearchAddon | null = null
 let socket: WebSocket | null = null
+const socketReady = ref(false)
 let unsubscribeLocalData: (() => void) | null = null
 let unsubscribeLocalStatus: (() => void) | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -93,6 +110,10 @@ let pendingCommand = ''
 let outputTail = ''
 let pendingOutput = ''
 let outputFlushTimer: ReturnType<typeof setTimeout> | null = null
+let completionTimer: ReturnType<typeof setTimeout> | null = null
+let completionRequestId = 0
+let completionApplying = false
+let nativeCompletionPending = false
 const TERMINAL_OUTPUT_BATCH_MS = 8
 const TERMINAL_OUTPUT_BATCH_MAX_CHARS = 64 * 1024
 
@@ -104,7 +125,7 @@ const canDisconnect = computed(() =>
 )
 const canPaste = computed(() => isLocal.value
   ? ['connected', 'connecting'].includes(connectionStatus.value)
-  : socket?.readyState === WebSocket.OPEN)
+  : socketReady.value)
 const connectionStatusLabel = computed(() =>
   connectionStatus.value === 'connecting' ? '正在连接' : sessionStatusLabel(connectionStatus.value)
 )
@@ -128,6 +149,7 @@ function flushTerminalOutput(): void {
   pendingOutput = ''
   terminal?.write(output)
   outputTail = `${outputTail}${output}`.slice(-512)
+  syncInputModelFromTerminalLine(true)
 }
 
 function queueTerminalOutput(output: string): void {
@@ -156,6 +178,8 @@ async function connect(): Promise<void> {
         lastSequence = event.sequence
         flushTerminalOutput()
         connectionStatus.value = event.status
+        if (!['connected', 'connecting'].includes(event.status)) invalidateInputModel()
+        else scheduleCompletions()
         if (event.error) terminal?.writeln(`\r\n\x1b[31m[本地终端] ${event.error}\x1b[0m`)
         emit('status', props.session.id, event.status, event.sequence)
       })
@@ -165,6 +189,7 @@ async function connect(): Promise<void> {
         queueTerminalOutput(snapshot.output)
       }
       connectionStatus.value = snapshot.session.status
+      if (['connected', 'connecting'].includes(connectionStatus.value)) scheduleCompletions()
     } catch (cause) {
       connectionStatus.value = 'error'
       terminal?.writeln(`\r\n\x1b[31m[本地终端连接失败] ${cause instanceof Error ? cause.message : String(cause)}\x1b[0m`)
@@ -172,10 +197,15 @@ async function connect(): Promise<void> {
     return
   }
   try {
+    socketReady.value = false
     socket?.close()
     const url = await terminalSocketUrl(props.session.id, lastSequence)
     socket = new WebSocket(url)
-    socket.addEventListener('open', sendResize)
+    socket.addEventListener('open', () => {
+      socketReady.value = true
+      sendResize()
+      scheduleCompletions()
+    })
     socket.addEventListener('message', (message) => {
       const event = JSON.parse(String(message.data)) as TerminalEvent
       lastSequence = Math.max(lastSequence, event.sequence)
@@ -199,17 +229,22 @@ async function connect(): Promise<void> {
       }
     })
     socket.addEventListener('close', () => {
+      socketReady.value = false
       flushTerminalOutput()
+      invalidateInputModel()
       if (!['disconnected', 'error', 'failed', 'closed'].includes(connectionStatus.value)) {
         connectionStatus.value = 'detached'
       }
     })
     socket.addEventListener('error', () => {
+      socketReady.value = false
       flushTerminalOutput()
+      invalidateInputModel()
       connectionStatus.value = 'error'
       terminal?.writeln('\r\n\x1b[31m[终端通道错误] 请重新连接。\x1b[0m')
     })
   } catch (cause) {
+    socketReady.value = false
     const message = cause instanceof Error ? cause.message : String(cause)
     connectionStatus.value = 'error'
     emit('status', props.session.id, 'error', lastSequence)
@@ -237,6 +272,7 @@ function sendResize(): void {
 
 async function reconnect(): Promise<void> {
   if (reconnecting.value) return
+  invalidateInputModel()
   reconnecting.value = true
   terminal?.writeln('\r\n\x1b[36m[正在重新连接]\x1b[0m')
   try {
@@ -257,6 +293,7 @@ async function reconnect(): Promise<void> {
 
 async function disconnect(): Promise<void> {
   if (!canDisconnect.value) return
+  invalidateInputModel()
   disconnecting.value = true
   try {
     const session = isLocal.value
@@ -382,12 +419,13 @@ async function pasteFromClipboard(): Promise<void> {
   const text = await window.desktopApi.readClipboardText()
   if (!text) return
   recordTerminalInput(text)
+  applyTerminalInputModel(text)
   if (isLocal.value) await window.desktopApi.writeLocalTerminal(props.session.id, text).catch(() => false)
   else socket?.send(JSON.stringify({ type: 'terminal.input', data: text }))
   contextMenu.value = null
 }
 
-function handleTerminalClipboardShortcut(event: KeyboardEvent): boolean {
+function handleClipboardShortcut(event: KeyboardEvent): boolean {
   if (event.type !== 'keydown' || !(event.ctrlKey || event.metaKey) || event.altKey) return true
   const key = event.key.toLocaleLowerCase()
   if (key === 'c' && terminal?.hasSelection()) {
@@ -568,12 +606,290 @@ function terminalThemeFor(mode: 'dark' | 'light') {
   }
 }
 
+function clearCompletions(): void {
+  completionRequestId += 1
+  if (completionTimer) clearTimeout(completionTimer)
+  completionTimer = null
+  completionCandidates.value = []
+}
+
+function invalidateInputModel(): void {
+  inputModelValid.value = false
+  clearCompletions()
+}
+
+function sensitivePromptActive(): boolean {
+  return /(?:password|passwd|secret|token|密码|口令)\s*[:：]?\s*$/i.test(
+    outputTail.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').trim()
+  )
+}
+
+function completionMatchesInput(candidate: string): boolean {
+  const query = inputLine.value
+  return candidate.length > query.length
+    && candidate.slice(0, query.length).toLocaleLowerCase() === query.toLocaleLowerCase()
+}
+
+function updateCompletionPosition(): void {
+  if (!terminal?.element || !container.value || !completionVisible.value) return
+  const screen = terminal.element.querySelector<HTMLElement>('.xterm-screen')
+  if (!screen) return
+  const hostRect = container.value.getBoundingClientRect()
+  const screenRect = screen.getBoundingClientRect()
+  if (!screenRect.width || !screenRect.height || !terminal.cols || !terminal.rows) return
+  const cellWidth = screenRect.width / terminal.cols
+  const cellHeight = screenRect.height / terminal.rows
+  const left = screenRect.left - hostRect.left + terminal.buffer.active.cursorX * cellWidth
+  const top = screenRect.top - hostRect.top + terminal.buffer.active.cursorY * cellHeight
+  completionHintStyle.value = {
+    left: `${Math.max(0, left)}px`,
+    top: `${Math.max(0, top)}px`,
+    maxWidth: `${Math.max(0, hostRect.width - left - 12)}px`
+  }
+  completionActionStyle.value = { top: `${Math.max(0, top)}px` }
+}
+
+function currentTerminalLine(): string {
+  if (!terminal) return ''
+  const buffer = terminal.buffer.active
+  return buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true) || ''
+}
+
+function inferCompletedCommandFromTerminalLine(prefix: string, terminalLine: string): string {
+  const typed = prefix.trim()
+  const line = terminalLine.replace(/\s+$/, '')
+  if (!typed || !line) return ''
+  const candidates: string[] = []
+  const addCandidate = (value: string): void => {
+    const candidate = value.trim()
+    if (candidate && !candidates.includes(candidate)) candidates.push(candidate)
+  }
+  for (const delimiter of ['>', '#', '$', ']']) {
+    const index = line.lastIndexOf(delimiter)
+    if (index >= 0) addCandidate(line.slice(index + 1))
+  }
+  const typedIndex = line.toLocaleLowerCase().lastIndexOf(typed.toLocaleLowerCase())
+  if (typedIndex >= 0) addCandidate(line.slice(typedIndex))
+  addCandidate(line)
+  for (let index = 0; index < line.length; index += 1) {
+    if ((index === 0 || /\s/.test(line[index - 1])) && !/\s/.test(line[index])) addCandidate(line.slice(index))
+  }
+  const typedParts = typed.toLocaleLowerCase().split(/\s+/)
+  for (const candidate of candidates) {
+    const candidateFolded = candidate.toLocaleLowerCase()
+    const candidateParts = candidateFolded.split(/\s+/)
+    if (
+      typedParts.some((part) => part.includes('/') || part.includes('\\'))
+      && candidateParts.length > typedParts.length
+    ) continue
+    if (candidateFolded.startsWith(typed.toLocaleLowerCase())) return candidate
+    if (candidateParts.length >= typedParts.length && typedParts.every((part, index) => candidateParts[index].startsWith(part))) {
+      return candidate
+    }
+  }
+  return ''
+}
+
+function syncPendingCommandFromTerminalLine(): void {
+  const completed = inferCompletedCommandFromTerminalLine(pendingCommand, currentTerminalLine())
+  if (completed) pendingCommand = completed
+}
+
+function syncInputModelFromTerminalLine(finalizeNativeCompletion = false): void {
+  if (!nativeCompletionPending || !pendingCommand || !terminal) return
+  const completed = inferCompletedCommandFromTerminalLine(pendingCommand, currentTerminalLine())
+  if (!completed) return
+  const previousLength = pendingCommand.length
+  inputLine.value = completed
+  inputCursor.value = completed.length
+  inputModelValid.value = true
+  pendingCommand = completed
+  if (finalizeNativeCompletion || completed.length > previousLength) {
+    nativeCompletionPending = false
+  }
+  scheduleCompletions()
+}
+
+function scheduleCompletions(): void {
+  clearCompletions()
+  if (
+    !inputModelValid.value
+    || !inputLine.value.trim()
+    || inputCursor.value !== inputLine.value.length
+    || sensitivePromptActive()
+    || completionApplying
+  ) return
+  const requestId = completionRequestId
+  completionTimer = setTimeout(async () => {
+    completionTimer = null
+    try {
+      let suggestions: string[]
+      try {
+        const response = await desktopApi.commandSuggestions(inputLine.value, props.session.id, 8, true)
+        suggestions = response.suggestions
+      } catch {
+        // Older bundled backends may not know history_only; use the history payload directly.
+        const workspace = await desktopApi.commandWorkspace()
+        suggestions = workspace.history.map((item) => item.command)
+      }
+      if (requestId !== completionRequestId) return
+      completionCandidates.value = suggestions.filter(completionMatchesInput).slice(0, 1)
+      window.requestAnimationFrame(updateCompletionPosition)
+    } catch {
+      if (requestId === completionRequestId) completionCandidates.value = []
+    }
+  }, 100)
+}
+
+function resetInputModel(): void {
+  inputLine.value = ''
+  inputCursor.value = 0
+  inputModelValid.value = true
+  pendingCommand = ''
+  nativeCompletionPending = false
+  clearCompletions()
+}
+
+function applyPlainInput(character: string): void {
+  syncInputModelFromTerminalLine()
+  if (!inputModelValid.value) {
+    inputLine.value = ''
+    inputCursor.value = 0
+    inputModelValid.value = true
+  }
+  const start = inputLine.value.slice(0, inputCursor.value)
+  const end = inputLine.value.slice(inputCursor.value)
+  inputLine.value = `${start}${character}${end}`
+  inputCursor.value += character.length
+  pendingCommand = inputLine.value
+}
+
+function applyTerminalInputModel(data: string): void {
+  let index = 0
+  while (index < data.length) {
+    const remaining = data.slice(index)
+    if (remaining.startsWith('\x1b[D')) {
+      inputCursor.value = Math.max(0, inputCursor.value - 1)
+      index += 3
+    } else if (remaining.startsWith('\x1b[C')) {
+      inputCursor.value = Math.min(inputLine.value.length, inputCursor.value + 1)
+      index += 3
+    } else if (remaining.startsWith('\x1b[H') || remaining.startsWith('\x1b[1~')) {
+      inputCursor.value = 0
+      index += remaining.startsWith('\x1b[H') ? 3 : 4
+    } else if (remaining.startsWith('\x1b[F') || remaining.startsWith('\x1b[4~')) {
+      inputCursor.value = inputLine.value.length
+      index += remaining.startsWith('\x1b[F') ? 3 : 4
+    } else if (remaining.startsWith('\x1b[3~')) {
+      if (inputModelValid.value) {
+        inputLine.value = `${inputLine.value.slice(0, inputCursor.value)}${inputLine.value.slice(inputCursor.value + 1)}`
+        pendingCommand = inputLine.value
+      }
+      index += 4
+    } else if (remaining.startsWith('\x1b[')) {
+      invalidateInputModel()
+      break
+    } else {
+      const character = data[index]
+      if (character === '\r' || character === '\n') {
+        resetInputModel()
+        index += 1
+        continue
+      }
+      if (character === '\x7f' || character === '\b') {
+        if (inputModelValid.value && inputCursor.value > 0) {
+          inputLine.value = `${inputLine.value.slice(0, inputCursor.value - 1)}${inputLine.value.slice(inputCursor.value)}`
+          inputCursor.value -= 1
+          pendingCommand = inputLine.value
+        }
+      } else if (character === '\x03' || character === '\x15') {
+        resetInputModel()
+      } else if (character === '\x01') {
+        inputCursor.value = 0
+      } else if (character === '\x05') {
+        inputCursor.value = inputLine.value.length
+      } else if (character >= ' ') {
+        applyPlainInput(character)
+      } else if (character === '\t') {
+        // Native shell completion can replace the whole line, so discard the local model.
+        nativeCompletionPending = true
+        invalidateInputModel()
+        index += 1
+        continue
+      } else {
+        invalidateInputModel()
+        break
+      }
+      index += 1
+    }
+  }
+  if (inputModelValid.value) scheduleCompletions()
+}
+
+async function sendTerminalInput(data: string): Promise<boolean> {
+  if (isLocal.value) {
+    return window.desktopApi.writeLocalTerminal(props.session.id, data).then(() => true).catch(() => false)
+  }
+  if (socket?.readyState !== WebSocket.OPEN) return false
+  try {
+    socket.send(JSON.stringify({ type: 'terminal.input', data }))
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function acceptCompletion(): Promise<void> {
+  if (!completionVisible.value || completionApplying) return
+  const candidate = completionCandidate.value
+  if (!candidate || !completionMatchesInput(candidate)) return
+  const suffix = candidate.slice(inputLine.value.length)
+  clearCompletions()
+  if (!suffix) return
+  completionApplying = true
+  const sendPromise = sendTerminalInput(suffix)
+  inputLine.value = candidate
+  inputCursor.value = candidate.length
+  inputModelValid.value = true
+  pendingCommand = candidate
+  const sent = await sendPromise
+  completionApplying = false
+  terminal?.focus()
+  if (!sent) {
+    invalidateInputModel()
+  }
+}
+
+function handleCompletionKey(event: KeyboardEvent): boolean {
+  if (event.type !== 'keydown') return true
+  if (completionVisible.value) {
+    if (event.key === 'ArrowRight' && inputCursor.value === inputLine.value.length) {
+      event.preventDefault()
+      void acceptCompletion()
+      return false
+    }
+    if (event.key === 'ArrowLeft') {
+      clearCompletions()
+      return true
+    }
+    if (event.key === 'Escape') {
+      clearCompletions()
+      event.preventDefault()
+      return false
+    }
+  }
+  return handleClipboardShortcut(event)
+}
+
+function handleTerminalClipboardShortcut(event: KeyboardEvent): boolean {
+  return handleCompletionKey(event)
+}
+
 function applyTerminalTheme(): void {
   if (terminal) terminal.options.theme = terminalThemeFor(readThemeMode())
 }
 
 function recordTerminalInput(data: string): void {
-  if (isLocal.value) return
   if (data.includes('\x1b')) return
   for (const character of data) {
     if (character === '\r' || character === '\n') {
@@ -619,7 +935,14 @@ function handleShortcut(event: KeyboardEvent): void {
 }
 
 watch(() => props.session.status, (status) => {
-  if (status) connectionStatus.value = status
+  if (!status) return
+  connectionStatus.value = status
+  if (!['connected', 'connecting'].includes(status)) invalidateInputModel()
+})
+
+watch(() => props.session.id, () => {
+  resetInputModel()
+  outputTail = ''
 })
 
 watch(() => props.active, async (active) => {
@@ -629,8 +952,13 @@ watch(() => props.active, async (active) => {
     if (!props.active) return
     fitAddon?.fit()
     sendResize()
+    updateCompletionPosition()
     terminal?.focus()
   })
+})
+
+watch([completionVisible, completionCandidate], () => {
+  if (completionVisible.value) window.requestAnimationFrame(updateCompletionPosition)
 })
 
 onMounted(async () => {
@@ -664,16 +992,15 @@ onMounted(async () => {
       void reconnect()
       return
     }
+    if (data === '\r' || data === '\n') syncPendingCommandFromTerminalLine()
     recordTerminalInput(data)
-    if (isLocal.value) {
-      void window.desktopApi.writeLocalTerminal(props.session.id, data).catch(() => false)
-    } else if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'terminal.input', data }))
-    }
+    applyTerminalInputModel(data)
+    void sendTerminalInput(data)
   })
   resizeObserver = new ResizeObserver(() => {
     fitAddon?.fit()
     sendResize()
+    updateCompletionPosition()
   })
   resizeObserver.observe(container.value)
   themeObserver = new MutationObserver(applyTerminalTheme)
@@ -694,8 +1021,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('odyterm:focus-terminal', handleTerminalFocusRequest)
   flushTerminalOutput()
   socket?.close()
+  socketReady.value = false
   unsubscribeLocalData?.()
   unsubscribeLocalStatus?.()
+  clearCompletions()
   terminal?.dispose()
 })
 </script>
@@ -716,7 +1045,28 @@ onBeforeUnmount(() => {
       tabindex="0"
       @contextmenu.prevent="openContextMenu"
       @keydown="handleTerminalContextKeydown"
-    ></div>
+    >
+      <div
+        v-if="completionVisible"
+        class="terminal-completion-hint"
+        data-testid="terminal-completion-hint"
+        role="status"
+        aria-label="命令补齐建议，按右方向键接受"
+        :title="completionCandidate"
+        :style="completionHintStyle"
+      >
+        {{ completionSuffix }}
+      </div>
+      <div
+        v-if="completionVisible"
+        class="terminal-completion-action"
+        role="status"
+        aria-label="按右方向键补全命令"
+        :style="completionActionStyle"
+      >
+        按 → 补全
+      </div>
+    </div>
     <div v-if="recoveryMessage" class="terminal-recovery-banner" :data-state="connectionStatus" role="status">
       <CircleAlert :size="14" aria-hidden="true" />
       <span>{{ recoveryMessage }}</span>
@@ -733,6 +1083,17 @@ onBeforeUnmount(() => {
     </div>
     <footer class="terminal-bottom-toolbar" role="toolbar" aria-label="终端辅助操作">
       <span class="terminal-bottom-spacer" aria-hidden="true"></span>
+      <button
+        class="icon-button terminal-operation-button"
+        type="button"
+        :disabled="!splitAvailable"
+        :title="splitAvailable ? '将当前终端分屏到右侧' : '需要至少两个终端会话才能分屏'"
+        :aria-label="splitAvailable ? '将当前终端分屏到右侧' : '需要至少两个终端会话才能分屏'"
+        @click="emit('split', session.id)"
+      >
+        <Columns2 :size="15" aria-hidden="true" />
+        <span class="sr-only">{{ splitAvailable ? '分屏到右侧' : '需要至少两个终端会话才能分屏' }}</span>
+      </button>
       <button v-if="!isLocal" class="icon-button" type="button" title="查看会话日志" @click="loadLog">
         <FileText :size="15" aria-hidden="true" />
         <span class="sr-only">查看会话日志</span>

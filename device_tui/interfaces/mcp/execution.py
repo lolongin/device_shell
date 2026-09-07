@@ -5,11 +5,13 @@ from __future__ import annotations
 import threading
 import sys
 import time
+import re
 from typing import Any
 from uuid import uuid4
 
 from device_tui.application.ai.operations import AiDeviceAction, AiDeviceToolResult, RiskLevel
 from device_tui.application.terminal.execution import detect_terminal_prompt
+from device_tui.application.terminal.outcome import classify_terminal_prompt, detect_outcome_errors
 from .core import TERMINAL_EXECUTE_IDLE_SECONDS, TERMINAL_EXECUTE_POLL_SECONDS
 
 
@@ -217,6 +219,8 @@ class ExecutionMixin:
         start_cursor = int(initial.data.get("output_cursor_start", 0))
         timeout_seconds = int(action.params.get("timeout_seconds", 30))
         max_output_chars = int(action.params.get("max_output_chars", 16_384))
+        terminal_prompt = str(action.params.get("terminal_prompt") or "").strip()
+        failure_patterns = [str(item) for item in action.params.get("failure_patterns", [])]
         deadline = started + timeout_seconds
         last_cursor = start_cursor
         last_change = started
@@ -261,7 +265,24 @@ class ExecutionMixin:
                 last_cursor = end_cursor
                 last_change = now
             prompt = detect_terminal_prompt(output)
-            if prompt:
+            classified_prompt = classify_terminal_prompt(output)
+            if failure_patterns and detect_outcome_errors(output, failure_patterns):
+                return self._terminal_execution_result(
+                    action, execution_id=execution_id, session_id=session_id,
+                    status="failed", output=output, started=started,
+                    completion_reason="failure_pattern",
+                    prompt_matched=classified_prompt.text if classified_prompt else "",
+                    start_cursor=start_cursor, end_cursor=end_cursor, truncated=truncated,
+                    error_code="terminal_failure", message="命令输出匹配失败模式。",
+                    http_status=409,
+                )
+            prompt_matches = bool(prompt)
+            if terminal_prompt:
+                prompt_matches = bool(
+                    classified_prompt
+                    and (re.search(terminal_prompt, classified_prompt.text) or terminal_prompt == classified_prompt.type)
+                )
+            if prompt_matches:
                 return self._terminal_execution_result(
                     action,
                     execution_id=execution_id,
@@ -270,13 +291,15 @@ class ExecutionMixin:
                     output=output,
                     started=started,
                     completion_reason="prompt",
-                    prompt_matched=prompt,
+                    prompt_matched=(classified_prompt.text if classified_prompt else prompt),
                     start_cursor=start_cursor,
                     end_cursor=end_cursor,
                     truncated=truncated,
                 )
             if (
                 output
+                and not terminal_prompt
+                and not failure_patterns
                 and now - last_change
                 >= _runtime_setting(
                     self,

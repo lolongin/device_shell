@@ -223,14 +223,14 @@ def register_app_control_tools(mcp: Any, gateway: McpGateway) -> None:
         return _call(gateway, "operation.cancel", operation_id=operation_id, confirm=confirm)
 
     @mcp.tool(name="terminal.execute")
-    def terminal_execute(command: str, session_id: str = "", device_id: str = "", timeout_seconds: int = 30) -> dict[str, Any]:
-        """Execute one policy-checked terminal command."""
-        return _call(gateway, "terminal.execute", command=command, session_id=session_id, device_id=device_id, timeout_seconds=timeout_seconds)
+    def terminal_execute(command: str, session_id: str = "", device_id: str = "", timeout_seconds: int = 30, terminal_prompt: str = "", failure_patterns: list[str] | None = None) -> dict[str, Any]:
+        """Run one policy-checked command; continue interaction_required via interact.send."""
+        return _call(gateway, "terminal.execute", command=command, session_id=session_id, device_id=device_id, timeout_seconds=timeout_seconds, terminal_prompt=terminal_prompt, failure_patterns=failure_patterns or [])
 
     @mcp.tool(name="terminal.batch")
-    def terminal_batch(commands: list[str], session_id: str = "", device_id: str = "", command_timeout_seconds: int = 30, total_timeout_seconds: int | None = None) -> dict[str, Any]:
-        """Execute a policy-checked terminal command batch."""
-        return _call(gateway, "terminal.execute_batch", commands=commands, session_id=session_id, device_id=device_id, command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds)
+    def terminal_batch(commands: list[str], session_id: str = "", device_id: str = "", command_timeout_seconds: int = 30, total_timeout_seconds: int | None = None, terminal_prompt: str = "", failure_patterns: list[str] | None = None) -> dict[str, Any]:
+        """Run a policy-checked batch with aggregate and per-command outcomes."""
+        return _call(gateway, "terminal.execute_batch", commands=commands, session_id=session_id, device_id=device_id, command_timeout_seconds=command_timeout_seconds, total_timeout_seconds=total_timeout_seconds, terminal_prompt=terminal_prompt, failure_patterns=failure_patterns or [])
 
     @mcp.tool(name="terminal.parallel")
     def terminal_parallel(requests: list[dict[str, Any]], max_concurrency: int = 8) -> dict[str, Any]:
@@ -241,6 +241,51 @@ def register_app_control_tools(mcp: Any, gateway: McpGateway) -> None:
     def terminal_interact(steps: list[dict[str, Any]], session_id: str = "", device_id: str = "", total_timeout_seconds: int = 60) -> dict[str, Any]:
         """Run a policy-checked terminal interaction plan."""
         return _call(gateway, "terminal.interact", steps=steps, session_id=session_id, device_id=device_id, total_timeout_seconds=total_timeout_seconds)
+
+    @mcp.tool(name="terminal.interact.start")
+    def terminal_interact_start(
+        steps: list[dict[str, Any]],
+        session_id: str = "",
+        device_id: str = "",
+        total_timeout_seconds: float = 60,
+        attach_mode: Literal["fresh", "attach"] = "fresh",
+        output_cursor: int | None = None,
+        generation: int | None = None,
+        expected_prompt: str = "",
+    ) -> dict[str, Any]:
+        """Start fresh, or safely attach using terminal.read cursor and generation."""
+        return _call(
+            gateway,
+            "terminal.interact.start",
+            steps=steps,
+            session_id=session_id,
+            device_id=device_id,
+            total_timeout_seconds=total_timeout_seconds,
+            attach_mode=attach_mode,
+            output_cursor=output_cursor,
+            generation=generation,
+            expected_prompt=expected_prompt,
+        )
+
+    @mcp.tool(name="terminal.interact.get")
+    def terminal_interact_get(execution_id: str, since_cursor: int = 0, wait_seconds: float = 0.0) -> dict[str, Any]:
+        """Read interactive terminal state and events."""
+        return _call(gateway, "terminal.interact.get", execution_id=execution_id, since_cursor=since_cursor, wait_seconds=wait_seconds)
+
+    @mcp.tool(name="terminal.interact.send")
+    def terminal_interact_send(execution_id: str, text: str = "", control: str = "", secret_ref: str = "", append_enter: bool = True) -> dict[str, Any]:
+        """Send input to a running interactive terminal execution."""
+        return _call(gateway, "terminal.interact.send", execution_id=execution_id, text=text, control=control, secret_ref=secret_ref, append_enter=append_enter)
+
+    @mcp.tool(name="terminal.interact.cancel")
+    def terminal_interact_cancel(execution_id: str) -> dict[str, Any]:
+        """Cancel an interactive terminal execution."""
+        return _call(gateway, "terminal.interact.cancel", execution_id=execution_id)
+
+    @mcp.tool(name="terminal.interact.resume")
+    def terminal_interact_resume(execution_id: str) -> dict[str, Any]:
+        """Resume an interactive terminal execution taken over by the user."""
+        return _call(gateway, "terminal.interact.resume", execution_id=execution_id)
 
     @mcp.tool(name="terminal.read")
     def terminal_read(device_id: str, max_chars: int = 4096) -> dict[str, Any]:

@@ -226,20 +226,23 @@ class CommandService:
         device_id: str = "",
         session_kind: str = "",
         limit: int = 5,
+        history_only: bool = False,
     ) -> list[str]:
         history = self._store.list_command_history()
-        known = {item.command for item in history}
-        for group in self.list_groups():
-            for command in self._content_commands(group.content):
-                if command not in known:
-                    history.append(CommandHistoryItem(command=command, count=1))
-                    known.add(command)
+        if not history_only:
+            known = {item.command for item in history}
+            for group in self.list_groups():
+                for command in self._content_commands(group.content):
+                    if command not in known:
+                        history.append(CommandHistoryItem(command=command, count=1))
+                        known.add(command)
         return suggest_commands(
             history,
             query,
             device_id=device_id,
             session_kind=session_kind,
             limit=max(1, min(limit, 20)),
+            include_defaults=not history_only,
         )
 
     def record_for_session(self, session_id: str, command: str) -> None:

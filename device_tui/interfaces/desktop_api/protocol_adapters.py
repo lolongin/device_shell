@@ -173,7 +173,10 @@ class TelnetAdapter:
             raise SessionUnavailableError(str(exc)) from exc
 
     async def resize(self, columns: int, lines: int) -> None:
-        await self._session.resize_terminal(columns, lines)
+        try:
+            await self._session.resize_terminal(columns, lines)
+        except TelnetSessionError as exc:
+            raise SessionUnavailableError(str(exc)) from exc
 
 
 class ProtocolAdapterFactory:

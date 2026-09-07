@@ -6,6 +6,7 @@ from unittest.mock import patch
 from device_tui.infrastructure.transports.telnet_session import (
     DO,
     IAC,
+    NOP,
     SB,
     SE,
     TERMINAL_TYPE_IS,
@@ -16,6 +17,7 @@ from device_tui.infrastructure.transports.telnet_session import (
     OPTION_NAWS,
     OPTION_TERMINAL_TYPE,
 )
+import device_tui.infrastructure.transports.telnet_session as telnet_module
 
 
 class _FakeWriter:
@@ -33,6 +35,11 @@ class _FakeWriter:
 
     async def wait_closed(self) -> None:
         return None
+
+
+class _FailingWriter(_FakeWriter):
+    async def drain(self) -> None:
+        raise OSError("peer closed")
 
 
 class _FakeReader:
@@ -119,5 +126,44 @@ def test_huawei_telnet_keeps_connection_open_after_authentication_failure() -> N
         await session.send_text("retry-user\n")
         assert writer.writes[-1] == b"retry-user\r\n"
         await session.disconnect("")
+
+    asyncio.run(scenario())
+
+
+def test_huawei_telnet_keepalive_writes_nop(monkeypatch) -> None:
+    async def scenario() -> None:
+        writer = _FakeWriter()
+        session = HuaweiTelnetSession(on_output=lambda _text: None, on_status=lambda _status: None)
+        session._writer = writer
+        session._closed = False
+        monkeypatch.setattr(telnet_module, "TELNET_KEEPALIVE_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(telnet_module, "TELNET_KEEPALIVE_TIMEOUT_SECONDS", 0.05)
+
+        task = asyncio.create_task(session._keepalive_loop())
+        await asyncio.sleep(0.03)
+        await session.disconnect("")
+        await task
+
+        assert bytes([IAC, NOP]) in writer.writes
+
+    asyncio.run(scenario())
+
+
+def test_huawei_telnet_keepalive_failures_disconnect(monkeypatch) -> None:
+    async def scenario() -> None:
+        statuses: list[str] = []
+        writer = _FailingWriter()
+        session = HuaweiTelnetSession(on_output=lambda _text: None, on_status=statuses.append)
+        session._writer = writer
+        session._closed = False
+        monkeypatch.setattr(telnet_module, "TELNET_KEEPALIVE_INTERVAL_SECONDS", 0.001)
+        monkeypatch.setattr(telnet_module, "TELNET_KEEPALIVE_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(telnet_module, "TELNET_KEEPALIVE_FAILURE_LIMIT", 2)
+
+        task = asyncio.create_task(session._keepalive_loop())
+        await asyncio.wait_for(task, timeout=0.2)
+
+        assert not session.is_connected
+        assert statuses[-1] == "Disconnected"
 
     asyncio.run(scenario())

@@ -45,6 +45,8 @@ def register_terminal_tools(mcp: Any, gateway: McpGateway) -> None:
         max_output_chars: int = 16_384,
         approval_token: str | None = None,
         idempotency_key: str | None = None,
+        terminal_prompt: str = "",
+        failure_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Execute one command and return only its incremental terminal output."""
         return gateway.call(
@@ -56,6 +58,8 @@ def register_terminal_tools(mcp: Any, gateway: McpGateway) -> None:
             max_output_chars=max_output_chars,
             approval_token=approval_token,
             idempotency_key=idempotency_key,
+            terminal_prompt=terminal_prompt,
+            failure_patterns=failure_patterns or [],
         )
 
     @mcp.tool()
@@ -69,6 +73,8 @@ def register_terminal_tools(mcp: Any, gateway: McpGateway) -> None:
         mode: str = "auto",
         approval_token: str | None = None,
         idempotency_key: str | None = None,
+        terminal_prompt: str = "",
+        failure_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Execute multiple commands locally, waiting for each device prompt."""
         return gateway.call(
@@ -82,6 +88,8 @@ def register_terminal_tools(mcp: Any, gateway: McpGateway) -> None:
             mode=mode,
             approval_token=approval_token,
             idempotency_key=idempotency_key,
+            terminal_prompt=terminal_prompt,
+            failure_patterns=failure_patterns or [],
         )
 
     @mcp.tool()

@@ -175,6 +175,7 @@ class TerminalPlanExecutor(Protocol):
         plan: TerminalExecutionPlan,
         owner_id: str,
         execution_id: str | None = None,
+        return_on_interaction: bool = False,
     ) -> dict[str, object]: ...
 
     def get_execution(self, execution_id: str) -> dict[str, object]: ...

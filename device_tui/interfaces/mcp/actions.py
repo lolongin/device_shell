@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from device_tui.application.ai.operations import AiDeviceAction, RiskLevel, classify_command_risk
@@ -134,12 +135,25 @@ class ActionBuilderMixin:
                 if requested_total is not None
                 else None
             )
+            terminal_prompt = self._optional_text(params, "terminal_prompt", max_chars=512)
+            failure_patterns = params.get("failure_patterns", [])
+            if not isinstance(failure_patterns, list) or any(len(str(item)) > 512 for item in failure_patterns):
+                raise AppControlError("invalid_request", "failure_patterns 必须是长度不超过 512 的数组。")
+            try:
+                if terminal_prompt:
+                    re.compile(terminal_prompt)
+                for item in failure_patterns:
+                    re.compile(str(item))
+            except re.error as exc:
+                raise AppControlError("invalid_request", f"终端匹配模式无效: {exc}") from exc
             try:
                 plan = build_batch_plan(
                     commands,
                     command_timeout_seconds=command_timeout_seconds,
                     total_timeout_seconds=total_timeout_seconds,
                     max_output_chars=max_output_chars,
+                    terminal_prompt=terminal_prompt,
+                    failure_patterns=[str(item) for item in failure_patterns],
                 )
             except TerminalPlanError as exc:
                 raise AppControlError(exc.code, str(exc)) from exc
@@ -178,6 +192,8 @@ class ActionBuilderMixin:
                     "command_timeout_seconds": command_timeout_seconds,
                     "total_timeout_seconds": plan.total_timeout_seconds,
                     "max_output_chars_per_step": max_output_chars,
+                    "terminal_prompt": terminal_prompt,
+                    "failure_patterns": [str(item) for item in failure_patterns],
                     "mode": "auto",
                     "run_async": run_async,
                 },
@@ -210,6 +226,17 @@ class ActionBuilderMixin:
                 minimum=1,
                 maximum=MAX_OUTPUT_CHARS,
             )
+            terminal_prompt = self._optional_text(params, "terminal_prompt", max_chars=512)
+            failure_patterns = params.get("failure_patterns", [])
+            if not isinstance(failure_patterns, list) or any(len(str(item)) > 512 for item in failure_patterns):
+                raise AppControlError("invalid_request", "failure_patterns 必须是长度不超过 512 的数组。")
+            try:
+                if terminal_prompt:
+                    re.compile(terminal_prompt)
+                for item in failure_patterns:
+                    re.compile(str(item))
+            except re.error as exc:
+                raise AppControlError("invalid_request", f"终端匹配模式无效: {exc}") from exc
             return AiDeviceAction(
                 "terminal_execute_start",
                 "执行终端命令并等待结果",
@@ -220,6 +247,8 @@ class ActionBuilderMixin:
                     "session_id": session_id,
                     "timeout_seconds": timeout_seconds,
                     "max_output_chars": max_output_chars,
+                    "terminal_prompt": terminal_prompt,
+                    "failure_patterns": [str(item) for item in failure_patterns],
                 },
             )
         if tool == "terminal_execute_batch":
@@ -253,12 +282,25 @@ class ActionBuilderMixin:
                 if requested_total is not None
                 else None
             )
+            terminal_prompt = self._optional_text(params, "terminal_prompt", max_chars=512)
+            failure_patterns = params.get("failure_patterns", [])
+            if not isinstance(failure_patterns, list) or any(len(str(item)) > 512 for item in failure_patterns):
+                raise AppControlError("invalid_request", "failure_patterns 必须是长度不超过 512 的数组。")
+            try:
+                if terminal_prompt:
+                    re.compile(terminal_prompt)
+                for item in failure_patterns:
+                    re.compile(str(item))
+            except re.error as exc:
+                raise AppControlError("invalid_request", f"终端匹配模式无效: {exc}") from exc
             try:
                 plan = build_batch_plan(
                     commands,
                     command_timeout_seconds=command_timeout_seconds,
                     total_timeout_seconds=total_timeout_seconds,
                     max_output_chars=max_output_chars,
+                    terminal_prompt=terminal_prompt,
+                    failure_patterns=[str(item) for item in failure_patterns],
                 )
             except TerminalPlanError as exc:
                 raise AppControlError(exc.code, str(exc)) from exc
@@ -290,6 +332,8 @@ class ActionBuilderMixin:
                     "command_timeout_seconds": command_timeout_seconds,
                     "total_timeout_seconds": plan.total_timeout_seconds,
                     "max_output_chars_per_step": max_output_chars,
+                    "terminal_prompt": terminal_prompt,
+                    "failure_patterns": [str(item) for item in failure_patterns],
                     "mode": mode,
                     "run_async": run_async,
                 },
@@ -364,6 +408,15 @@ class ActionBuilderMixin:
                 "execution_id",
                 max_chars=80,
             )
+            get_params: dict[str, Any] = {"execution_id": execution_id}
+            if tool == "execution_get":
+                get_params["since_cursor"] = self._integer(params, "since_cursor", default=0, minimum=0, maximum=2_147_483_647)
+                raw_wait = params.get("wait_seconds", 0)
+                try:
+                    wait_seconds = max(0.0, min(float(raw_wait or 0), 60.0))
+                except (TypeError, ValueError) as exc:
+                    raise AppControlError("invalid_request", "wait_seconds 必须是数字。") from exc
+                get_params["wait_seconds"] = wait_seconds
             return AiDeviceAction(
                 "terminal_execution_get"
                 if tool == "execution_get"
@@ -372,7 +425,7 @@ class ActionBuilderMixin:
                 if tool == "execution_get"
                 else "取消终端执行",
                 RiskLevel.OBSERVE if tool == "execution_get" else RiskLevel.LOW,
-                params={"execution_id": execution_id},
+                params=get_params,
             )
         if tool == "ai_create_session":
             return AiDeviceAction(

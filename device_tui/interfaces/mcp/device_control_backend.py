@@ -142,11 +142,17 @@ class DeviceControlAppBackend(AppControlBackend):
                 timeout_seconds=int(params.get("command_timeout_seconds") or params.get("timeout_seconds") or 30),
                 total_timeout_seconds=params.get("total_timeout_seconds"),
                 max_output_chars=int(params.get("max_output_chars_per_step") or params.get("max_output_chars") or 16_384),
+                terminal_prompt=str(params.get("terminal_prompt") or ""),
+                failure_patterns=tuple(str(item) for item in params.get("failure_patterns", []) if str(item)),
             )
             result = self._run(self.desktop.control.execute(DeviceTarget(device_id=session.device_id, session_id=session.id), request, context=ControlContext(source="stdio-mcp")))
             return dict(result.data)
         if kind == "terminal_execution_get":
-            return self.desktop.control.get_execution(str(params.get("execution_id") or ""))
+            return self.desktop.control.get_execution(
+                str(params.get("execution_id") or ""),
+                since_cursor=int(params.get("since_cursor") or 0),
+                wait_seconds=float(params.get("wait_seconds") or 0),
+            )
         if kind == "terminal_execution_cancel":
             return self.desktop.control.cancel_execution(str(params.get("execution_id") or ""))
         if kind == "read_terminal":

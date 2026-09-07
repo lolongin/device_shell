@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
 from collections.abc import Callable
 
 
@@ -12,6 +13,7 @@ WONT = 252
 WILL = 251
 SB = 250
 SE = 240
+NOP = 241
 
 NEGOTIATION_COMMANDS = {DO, DONT, WILL, WONT}
 OPTION_ECHO = 1
@@ -37,6 +39,10 @@ AUTHENTICATION_FAILURE_PATTERNS = (
     "access denied",
 )
 READ_CHUNK_SIZE = 16384
+TELNET_KEEPALIVE_INTERVAL_SECONDS = 15
+TELNET_KEEPALIVE_TIMEOUT_SECONDS = 5
+TELNET_KEEPALIVE_FAILURE_LIMIT = 2
+TELNET_WRITE_TIMEOUT_SECONDS = 5
 PROMPT_PATTERN = re.compile(r"(<[^<>\r\n]+>|\[[^\[\]\r\n]+\]|[^\r\n]+[>#])\s*$")
 
 
@@ -57,7 +63,10 @@ class HuaweiTelnetSession:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._keepalive_task: asyncio.Task[None] | None = None
         self._read_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+        self._disconnect_lock = asyncio.Lock()
         self._pending_iac = bytearray()
         self._closed = True
         self._terminal_columns = 160
@@ -87,6 +96,8 @@ class HuaweiTelnetSession:
         self._on_output(f"\n=== Connecting to {host}:{port} ===\n")
         self._reader, self._writer = await asyncio.open_connection(host, port)
         self._closed = False
+        self._naws_enabled = False
+        self._configure_socket_keepalive(self._writer)
 
         try:
             await self._login(
@@ -101,31 +112,45 @@ class HuaweiTelnetSession:
             raise
 
         self._reader_task = asyncio.create_task(self._reader_loop())
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def disconnect(self, message: str = "Disconnected.") -> None:
-        self._closed = True
-        task = self._reader_task
-        self._reader_task = None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        async with self._disconnect_lock:
+            if self._closed and self._reader is None and self._writer is None:
+                return
+            self._closed = True
+            task = self._reader_task
+            self._reader_task = None
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-        if self._writer is not None:
-            self._writer.close()
-            try:
-                await self._writer.wait_closed()
-            except OSError:
-                pass
+            keepalive_task = self._keepalive_task
+            self._keepalive_task = None
+            if keepalive_task is not None and keepalive_task is not asyncio.current_task():
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
 
-        self._reader = None
-        self._writer = None
-        self._pending_iac.clear()
-        self._safe_status("Disconnected")
-        if message:
-            self._safe_output(f"\n=== {message} ===\n")
+            writer = self._writer
+            self._reader = None
+            self._writer = None
+            self._pending_iac.clear()
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+
+            self._safe_status("Disconnected")
+            if message:
+                self._safe_output(f"\n=== {message} ===\n")
 
     async def send_command(self, command: str) -> None:
         if not self.is_connected or self._writer is None:
@@ -135,14 +160,18 @@ class HuaweiTelnetSession:
         await self.send_text(line + "\n")
 
     async def send_text(self, text: str) -> None:
-        if not self.is_connected or self._writer is None:
+        writer = self._writer
+        if not self.is_connected or writer is None:
             raise TelnetSessionError("Not connected.")
 
         payload = text.replace("\r\n", "\n").replace("\n", "\r\n")
         try:
-            self._writer.write(payload.encode("utf-8"))
-            await self._writer.drain()
-        except OSError as exc:
+            async with self._write_lock:
+                if self._closed or self._writer is not writer:
+                    raise TelnetSessionError("Not connected.")
+                writer.write(payload.encode("utf-8"))
+                await asyncio.wait_for(writer.drain(), timeout=TELNET_WRITE_TIMEOUT_SECONDS)
+        except (OSError, asyncio.TimeoutError) as exc:
             await self.disconnect("Connection lost.")
             raise TelnetSessionError(str(exc)) from exc
 
@@ -152,13 +181,18 @@ class HuaweiTelnetSession:
 
     async def resize_terminal(self, columns: int, lines: int) -> None:
         self.set_terminal_size(columns, lines)
-        if not self.is_connected or self._writer is None or not self._naws_enabled:
+        writer = self._writer
+        if not self.is_connected or writer is None or not self._naws_enabled:
             return
-        self._writer.write(self._naws_subnegotiation())
         try:
-            await self._writer.drain()
-        except OSError:
-            return
+            async with self._write_lock:
+                if self._closed or self._writer is not writer:
+                    return
+                writer.write(self._naws_subnegotiation())
+                await asyncio.wait_for(writer.drain(), timeout=TELNET_WRITE_TIMEOUT_SECONDS)
+        except (OSError, asyncio.TimeoutError) as exc:
+            await self.disconnect("Connection lost.")
+            raise TelnetSessionError(str(exc)) from exc
 
     async def _login(
         self,
@@ -225,10 +259,14 @@ class HuaweiTelnetSession:
             await self.send_command(setup_command)
 
     async def _write_line(self, value: str) -> None:
-        if self._writer is None:
+        writer = self._writer
+        if writer is None:
             raise TelnetSessionError("Connection is not open.")
-        self._writer.write((value + "\r\n").encode("utf-8"))
-        await self._writer.drain()
+        async with self._write_lock:
+            if self._closed or self._writer is not writer:
+                raise TelnetSessionError("Connection is not open.")
+            writer.write((value + "\r\n").encode("utf-8"))
+            await asyncio.wait_for(writer.drain(), timeout=TELNET_WRITE_TIMEOUT_SECONDS)
 
     async def _read_until_stage(self, timeout_seconds: float) -> str:
         if self._reader is None:
@@ -411,10 +449,68 @@ class HuaweiTelnetSession:
         return max(1, min(65535, dimension))
 
     async def _drain_writer(self) -> None:
-        if self._writer is None:
+        writer = self._writer
+        if writer is None:
             return
         try:
-            await self._writer.drain()
+            async with self._write_lock:
+                if self._closed or self._writer is not writer:
+                    return
+                await asyncio.wait_for(writer.drain(), timeout=TELNET_WRITE_TIMEOUT_SECONDS)
+        except (OSError, asyncio.TimeoutError):
+            await self.disconnect("Connection lost.")
+
+    async def _keepalive_loop(self) -> None:
+        failures = 0
+        try:
+            while not self._closed:
+                await asyncio.sleep(TELNET_KEEPALIVE_INTERVAL_SECONDS)
+                if self._closed:
+                    return
+                writer = self._writer
+                if writer is None:
+                    return
+                try:
+                    async with self._write_lock:
+                        writer.write(bytes([IAC, NOP]))
+                        await asyncio.wait_for(
+                            writer.drain(),
+                            timeout=TELNET_KEEPALIVE_TIMEOUT_SECONDS,
+                        )
+                    failures = 0
+                except asyncio.CancelledError:
+                    raise
+                except (OSError, asyncio.TimeoutError) as exc:
+                    failures += 1
+                    if failures >= TELNET_KEEPALIVE_FAILURE_LIMIT:
+                        await self.disconnect("Connection lost: keepalive timeout.")
+                        return
+                    self._safe_output(f"\n=== Keepalive warning: {exc} ===\n")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._safe_output(f"\n=== Keepalive error: {exc} ===\n")
+            await self.disconnect("Connection lost.")
+
+    @staticmethod
+    def _configure_socket_keepalive(writer: asyncio.StreamWriter) -> None:
+        get_extra_info = getattr(writer, "get_extra_info", None)
+        if not callable(get_extra_info):
+            return
+        sock = get_extra_info("socket")
+        if sock is None:
+            return
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            idle_option = getattr(socket, "TCP_KEEPIDLE", None)
+            interval_option = getattr(socket, "TCP_KEEPINTVL", None)
+            count_option = getattr(socket, "TCP_KEEPCNT", None)
+            if idle_option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, idle_option, TELNET_KEEPALIVE_INTERVAL_SECONDS)
+            if interval_option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, interval_option, TELNET_KEEPALIVE_TIMEOUT_SECONDS)
+            if count_option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, count_option, TELNET_KEEPALIVE_FAILURE_LIMIT)
         except OSError:
             return
 

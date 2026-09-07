@@ -11,6 +11,8 @@ from .session_protocol import SessionCallbacks, SessionUnavailableError
 READ_CHUNK_SIZE = 16384
 TERM_TYPE = "xterm-256color"
 REMOTE_INPUT_ENCODING = "utf-8"
+SSH_KEEPALIVE_INTERVAL_SECONDS = 15
+SSH_KEEPALIVE_COUNT_MAX = 2
 
 
 class RemoteOutputDecoder:
@@ -85,8 +87,10 @@ class LinuxSshSession:
                 username=username,
                 password=password,
                 known_hosts=None,
+                keepalive_interval=SSH_KEEPALIVE_INTERVAL_SECONDS,
+                keepalive_count_max=SSH_KEEPALIVE_COUNT_MAX,
             )
-        except (asyncssh.Error, OSError) as exc:
+        except (asyncssh.Error, OSError, asyncio.TimeoutError) as exc:
             self._connection = None
             self.callbacks.on_status("Disconnected")
             raise SessionUnavailableError(str(exc)) from exc
@@ -97,7 +101,7 @@ class LinuxSshSession:
                 term_size=term_size,
                 encoding=None,
             )
-        except (asyncssh.Error, OSError) as exc:
+        except (asyncssh.Error, OSError, asyncio.TimeoutError) as exc:
             connection = self._connection
             self._connection = None
             if connection is not None:

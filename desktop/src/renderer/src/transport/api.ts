@@ -236,9 +236,10 @@ export const desktopApi = {
       method: 'PUT',
       body: JSON.stringify(update)
     }),
-  commandSuggestions: (query: string, sessionId = ''): Promise<CommandSuggestionResponse> => {
-    const params = new URLSearchParams({ query, limit: '5' })
+  commandSuggestions: (query: string, sessionId = '', limit = 8, historyOnly = false): Promise<CommandSuggestionResponse> => {
+    const params = new URLSearchParams({ query, limit: String(Math.max(1, Math.min(limit, 20))) })
     if (sessionId) params.set('session_id', sessionId)
+    if (historyOnly) params.set('history_only', 'true')
     return request(`/api/v1/commands/suggestions?${params.toString()}`)
   },
   sendCommand: (sessionId: string, command: string): Promise<CommandDispatchResponse> =>

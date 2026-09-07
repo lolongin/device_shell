@@ -8,11 +8,13 @@ from typing import Callable
 from uuid import uuid4
 
 from device_tui.application.terminal.orchestration import (
+    ExpectStep,
     TerminalExecutionCoordinator,
     TerminalExecutionPlan,
     TerminalInput,
     TerminalPlanError,
 )
+from device_tui.application.terminal.outcome import PromptMatch, classify_terminal_prompt
 from .session_hub import SessionHub, TerminalEvent
 
 
@@ -70,11 +72,29 @@ class BackendTerminalExecutor:
         plan: TerminalExecutionPlan,
         owner_id: str,
         execution_id: str | None = None,
+        return_on_interaction: bool = False,
     ) -> dict[str, object]:
-        loop = asyncio.get_running_loop()
+        return await self._run(
+            session_id=session_id,
+            device_id=device_id,
+            plan=plan,
+            owner_id=owner_id,
+            execution_id=execution_id,
+            return_on_attention=return_on_interaction,
+        )
+
+    async def _run(
+        self,
+        *,
+        session_id: str,
+        device_id: str,
+        plan: TerminalExecutionPlan,
+        owner_id: str,
+        execution_id: str | None,
+        return_on_attention: bool,
+    ) -> dict[str, object]:
         execution_id = execution_id or str(uuid4())
         self._execution_owners[execution_id] = owner_id
-        completed: asyncio.Future[dict[str, object]] = loop.create_future()
         try:
             runner = self._coordinator.start(
                 session_id=session_id,
@@ -87,24 +107,169 @@ class BackendTerminalExecutor:
             self._execution_owners.pop(execution_id, None)
             raise
 
-        def finish(_runner: object) -> None:
-            result = runner.public_dict()
+        def cleanup(_runner: object) -> None:
+            self._execution_owners.pop(execution_id, None)
 
-            def deliver() -> None:
-                if not completed.done():
-                    completed.set_result(result)
-
-            loop.call_soon_threadsafe(deliver)
-
-        runner.add_done_callback(finish)
+        runner.add_done_callback(cleanup)
         try:
-            return await completed
+            wait_event = (
+                runner.attention_event
+                if return_on_attention
+                else runner.completion_event
+            )
+            await asyncio.to_thread(wait_event.wait)
+            return runner.public_dict()
         except asyncio.CancelledError:
             with suppress(TerminalPlanError):
                 self._coordinator.cancel(execution_id)
             raise
         finally:
+            if runner.is_terminal:
+                self._execution_owners.pop(execution_id, None)
+
+    def start_plan(
+        self,
+        *,
+        session_id: str,
+        device_id: str,
+        plan: TerminalExecutionPlan,
+        execution_id: str | None = None,
+        attach_mode: str = "fresh",
+        output_cursor: int | None = None,
+        generation: int | None = None,
+        expected_prompt: str = "",
+    ) -> dict[str, object]:
+        """Start a plan without waiting for completion."""
+        mode = str(attach_mode or "fresh").strip().casefold()
+        if mode not in {"fresh", "attach"}:
+            raise TerminalPlanError(
+                "invalid_attach_mode",
+                "attach_mode must be fresh or attach.",
+            )
+        terminal = self._hub.terminal_snapshot(session_id)
+        prompt = classify_terminal_prompt(str(terminal.get("output") or ""))
+        if mode == "fresh" and prompt is not None and prompt.type != "command_prompt":
+            raise TerminalPlanError(
+                "session_not_ready",
+                "The terminal is already waiting for input; use attach mode to continue it.",
+                details={
+                    "generation": terminal["generation"],
+                    "output_cursor": terminal["output_cursor"],
+                    "prompt": prompt.public_dict(),
+                },
+            )
+        if mode == "attach":
+            self._validate_attachment(
+                plan=plan,
+                terminal=terminal,
+                prompt=prompt,
+                output_cursor=output_cursor,
+                generation=generation,
+                expected_prompt=expected_prompt,
+            )
+        execution_id = execution_id or str(uuid4())
+        owner_id = f"mcp-terminal:{execution_id}"
+        self._execution_owners[execution_id] = owner_id
+        try:
+            runner = self._coordinator.start(
+                session_id=session_id,
+                device_id=device_id,
+                plan=plan,
+                execution_id=execution_id,
+            )
+        except Exception:
             self._execution_owners.pop(execution_id, None)
+            raise
+
+        def cleanup(_runner: object) -> None:
+            self._execution_owners.pop(execution_id, None)
+
+        runner.add_done_callback(cleanup)
+        if mode == "attach":
+            runner.on_output(str(terminal.get("output") or ""))
+        return runner.public_dict()
+
+    def terminal_snapshot(self, session_id: str, *, max_chars: int = 32_768) -> dict[str, object]:
+        return self._hub.terminal_snapshot(session_id, max_chars=max_chars)
+
+    @staticmethod
+    def _validate_attachment(
+        *,
+        plan: TerminalExecutionPlan,
+        terminal: dict[str, object],
+        prompt: PromptMatch | None,
+        output_cursor: int | None,
+        generation: int | None,
+        expected_prompt: str,
+    ) -> None:
+        if not plan.steps or not isinstance(plan.steps[0], ExpectStep):
+            raise TerminalPlanError(
+                "invalid_attachment_plan",
+                "An attached interaction must start with an expect step.",
+            )
+        if output_cursor is None or generation is None:
+            raise TerminalPlanError(
+                "attachment_context_required",
+                "Attach mode requires output_cursor and generation.",
+            )
+        if int(generation) != int(terminal["generation"]):
+            raise TerminalPlanError(
+                "stale_terminal_generation",
+                "The terminal reconnected after the attachment context was observed.",
+                details={"generation": terminal["generation"]},
+            )
+        if int(output_cursor) != int(terminal["output_cursor"]):
+            raise TerminalPlanError(
+                "stale_terminal_cursor",
+                "Terminal output changed after the attachment context was observed.",
+                details={"output_cursor": terminal["output_cursor"]},
+            )
+        if prompt is None:
+            raise TerminalPlanError(
+                "prompt_mismatch",
+                "The current terminal tail does not contain an active prompt.",
+            )
+        prompt_type = str(getattr(prompt, "type", ""))
+        prompt_text = str(getattr(prompt, "text", ""))
+        expected = str(expected_prompt or "").strip()
+        if not expected or expected not in {prompt_type, prompt_text}:
+            raise TerminalPlanError(
+                "prompt_mismatch",
+                "The current terminal prompt does not match expected_prompt.",
+                details={"prompt": prompt.public_dict()},
+            )
+
+    def get_execution(self, execution_id: str, *, since_cursor: int = 0, wait_seconds: float = 0.0) -> dict[str, object]:
+        """Return a redacted terminal-plan snapshot for MCP compatibility."""
+        runner = self._coordinator.get(execution_id)
+        if wait_seconds > 0:
+            return runner.wait_for_event(since_cursor, wait_seconds)
+        return runner.snapshot(since_cursor=since_cursor)
+
+    def send_manual_input(
+        self,
+        execution_id: str,
+        *,
+        text: str = "",
+        control: str = "",
+        secret_ref: str = "",
+        append_enter: bool = True,
+    ) -> dict[str, object]:
+        runner = self._coordinator.get(execution_id)
+        runner.send_manual_input(
+            text=text,
+            control=control,
+            secret_ref=secret_ref,
+            append_enter=append_enter,
+        )
+        return runner.public_dict()
+
+    def resume_execution(self, execution_id: str) -> dict[str, object]:
+        runner = self._coordinator.resume(execution_id)
+        return runner.public_dict()
+
+    def wait_execution(self, execution_id: str, timeout_seconds: float) -> bool:
+        return self._coordinator.wait(execution_id, timeout_seconds)
 
     def cancel_active(self, session_id: str) -> str:
         first = self._coordinator.cancel_for_user_input(session_id)
@@ -114,10 +279,6 @@ class BackendTerminalExecutor:
         second = self._coordinator.cancel_for_user_input(session_id)
         self._cancel_writes(second)
         return first or second
-
-    def get_execution(self, execution_id: str) -> dict[str, object]:
-        """Return a redacted terminal-plan snapshot for MCP compatibility."""
-        return self._coordinator.get(execution_id).public_dict()
 
     def cancel_execution(self, execution_id: str) -> dict[str, object]:
         """Cancel one terminal plan and return its final snapshot."""

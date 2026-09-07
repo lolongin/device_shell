@@ -217,6 +217,30 @@ def test_replay_reports_a_gap_when_requested_output_was_evicted() -> None:
     asyncio.run(scenario())
 
 
+def test_terminal_snapshot_is_generation_bound_and_cursor_addressable() -> None:
+    async def scenario() -> None:
+        factory = FakeAdapterFactory()
+        hub = SessionHub(factory)  # type: ignore[arg-type]
+        created = await hub.create(_target())
+        factory.adapters[0].emit("first generation\n<HUAWEI>")
+        first = hub.terminal_snapshot(created.id)
+
+        assert first["generation"] == 1
+        assert first["output_cursor"] == hub.get(created.id).sequence
+        assert str(first["output"]).endswith("<HUAWEI>")
+
+        await hub.reconnect(created.id)
+        factory.adapters[1].emit("second generation\n[HUAWEI]")
+        second = hub.terminal_snapshot(created.id)
+
+        assert second["generation"] == 2
+        assert "first generation" not in str(second["output"])
+        assert str(second["output"]).endswith("[HUAWEI]")
+        await hub.close_all()
+
+    asyncio.run(scenario())
+
+
 def test_lagging_subscriber_receives_explicit_gap_event() -> None:
     async def scenario() -> None:
         factory = FakeAdapterFactory()

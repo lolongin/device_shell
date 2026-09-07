@@ -207,6 +207,8 @@ class AppControlClient:
         max_output_chars: int = 16_384,
         approval_token: str | None = None,
         idempotency_key: str | None = None,
+        terminal_prompt: str = "",
+        failure_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -219,6 +221,8 @@ class AppControlClient:
                 "max_output_chars": max_output_chars,
                 "approval_token": approval_token,
                 "idempotency_key": idempotency_key,
+                "terminal_prompt": terminal_prompt,
+                "failure_patterns": failure_patterns or [],
             },
             request_timeout_seconds=timeout_seconds + 5,
         )
@@ -235,6 +239,8 @@ class AppControlClient:
         mode: str = "auto",
         approval_token: str | None = None,
         idempotency_key: str | None = None,
+        terminal_prompt: str = "",
+        failure_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "commands": commands,
@@ -245,6 +251,8 @@ class AppControlClient:
             "mode": mode,
             "approval_token": approval_token,
             "idempotency_key": idempotency_key,
+            "terminal_prompt": terminal_prompt,
+            "failure_patterns": failure_patterns or [],
         }
         if total_timeout_seconds is not None:
             payload["total_timeout_seconds"] = total_timeout_seconds
@@ -299,8 +307,9 @@ class AppControlClient:
             request_timeout_seconds=min(total_timeout_seconds, 60) + 5,
         )
 
-    def execution_get(self, execution_id: str) -> dict[str, Any]:
-        return self._request("GET", f"/v1/executions/{quote(execution_id, safe='')}")
+    def execution_get(self, execution_id: str, *, since_cursor: int = 0, wait_seconds: float = 0.0) -> dict[str, Any]:
+        query = urlencode({"since_cursor": since_cursor, "wait_seconds": wait_seconds})
+        return self._request("GET", f"/v1/executions/{quote(execution_id, safe='')}?{query}")
 
     def execution_cancel(self, execution_id: str) -> dict[str, Any]:
         return self._request("POST", "/v1/executions/cancel", {"execution_id": execution_id})

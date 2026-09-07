@@ -82,7 +82,15 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             self._invoke("operation_get", {"operation_id": path.rsplit("/", 1)[-1]})
             return
         if path.startswith("/v1/executions/"):
-            self._invoke("execution_get", {"execution_id": path.rsplit("/", 1)[-1]})
+            query = parse_qs(parsed.query)
+            self._invoke(
+                "execution_get",
+                {
+                    "execution_id": path.rsplit("/", 1)[-1],
+                    "since_cursor": str(query.get("since_cursor", ["0"])[0]),
+                    "wait_seconds": str(query.get("wait_seconds", ["0"])[0]),
+                },
+            )
             return
         self._send_error(404, "not_found", "接口不存在。")
 

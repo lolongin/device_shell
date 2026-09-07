@@ -22,6 +22,12 @@ def test_prompt_detection_strips_ansi_and_ignores_regular_output() -> None:
     assert detect_terminal_prompt("progress 50%\noperation running") == ""
 
 
+def test_prompt_detection_rejects_interactive_prompts() -> None:
+    assert detect_terminal_prompt("Continue? [Y/N]:") == ""
+    assert detect_terminal_prompt("---- More ----") == ""
+    assert detect_terminal_prompt("Password: ") == ""
+
+
 def test_incremental_output_uses_absolute_cursor() -> None:
     output, truncated = incremental_terminal_output(
         "3456789",
