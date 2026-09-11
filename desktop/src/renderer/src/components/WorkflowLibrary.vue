@@ -10,15 +10,17 @@ const selected = ref<WorkflowItem | null>(null)
 const error = ref('')
 const loading = ref(false)
 const selectedNode = ref<Record<string, any> | null>(null)
+const configText = ref('{}')
 const actions = [{ id: 'device.command', label: '执行命令' }, { id: 'device.reboot', label: '重启设备' }, { id: 'utility.wait', label: '等待' }, { id: 'utility.condition', label: '条件判断' }]
 async function refresh(): Promise<void> { loading.value = true; try { workflows.value = (await desktopApi.workflowDefinitions()).workflows as WorkflowItem[] } catch (cause) { error.value = String(cause) } finally { loading.value = false } }
 async function create(): Promise<void> { const result = await desktopApi.createWorkflowDefinition({ name: '新建 Workflow', nodes: [], edges: [] }); selected.value = result.workflow as WorkflowItem; await refresh() }
-async function save(): Promise<void> { if (!selected.value) return; const result = await desktopApi.saveWorkflowDefinition(selected.value.id, selected.value); selected.value = result.workflow as WorkflowItem; await refresh() }
+async function save(): Promise<void> { if (!selected.value) return; if (selectedNode.value && typeof selectedNode.value.config === 'string') { try { selectedNode.value.config = JSON.parse(selectedNode.value.config) } catch { error.value = '配置必须是合法 JSON'; return } } const result = await desktopApi.saveWorkflowDefinition(selected.value.id, selected.value); selected.value = result.workflow as WorkflowItem; await refresh() }
 async function publish(): Promise<void> { if (!selected.value) return; const result = await desktopApi.publishWorkflowDefinition(selected.value.id); if (!result.published) error.value = (result.errors || []).map((item: { message: string }) => item.message).join('；'); await refresh() }
 async function remove(): Promise<void> { if (!selected.value) return; await desktopApi.deleteWorkflowDefinition(selected.value.id); selected.value = null; await refresh() }
 function addNode(actionId: string): void { if (!selected.value) return; const node = { id: `${actionId.split('.').pop()}_${Date.now().toString(36)}`, action_id: actionId, config: actionId === 'device.command' ? { command: '' } : actionId === 'utility.wait' ? { seconds: 1 } : {} }; selected.value.nodes = [...(selected.value.nodes || []), node]; selectedNode.value = node }
-function chooseNode(node: unknown): void { selectedNode.value = node as Record<string, any> }
+function chooseNode(node: unknown): void { selectedNode.value = node as Record<string, any>; configText.value = JSON.stringify(selectedNode.value.config || {}, null, 2) }
 function removeNode(): void { if (!selected.value || !selectedNode.value) return; selected.value.nodes = (selected.value.nodes || []).filter((node: any) => node !== selectedNode.value); selectedNode.value = null }
+function updateNodeConfig(event: Event): void { if (!selectedNode.value) return; try { const parsed = JSON.parse((event.target as HTMLTextAreaElement).value); if (parsed && typeof parsed === 'object') selectedNode.value.config = parsed } catch { error.value = '配置必须是合法 JSON' } }
 onMounted(refresh)
 </script>
 
