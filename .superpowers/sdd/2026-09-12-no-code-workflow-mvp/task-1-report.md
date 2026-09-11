@@ -37,3 +37,6 @@ Follow-up output: `9 passed in 0.07s`
 - The catalog is intentionally a schema/executor metadata boundary; execution mapping remains for the compiler task.
 - Variable validation currently allows workflow input names, `device`, `inputs`, and node IDs as roots; richer output-path semantics should be tightened by the compiler when output schemas are available.
 - Dataclasses use immutable containers for top-level collections, while nested dictionaries remain copied on serialization rather than deeply frozen.
+
+
+Edge conditions now allow source output references; focused suite 10 passed.

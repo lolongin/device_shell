@@ -37,3 +37,14 @@ def test_validation_rejects_duplicate_names() -> None:
     draft = WorkflowDraft("w", "x", inputs=(WorkflowInput("x"), WorkflowInput("x")), nodes=(WorkflowNode("a", "utility.wait", {"seconds": 1}), WorkflowNode("a", "utility.wait", {"seconds": 1})))
     codes = {i.code for i in issues(draft)}
     assert {"duplicate_input_name", "duplicate_node_id"} <= codes
+
+def test_edge_condition_can_reference_source_output() -> None:
+    draft = WorkflowDraft(
+        "w", "x",
+        nodes=(
+            WorkflowNode("a", "device.command", {"command": "show version"}),
+            WorkflowNode("b", "utility.condition", {"expression": "ok"}),
+        ),
+        edges=(WorkflowEdge("a", "b", condition="${a.output}"),),
+    )
+    assert "invalid_variable_ref" not in {item.code for item in issues(draft)}

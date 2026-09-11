@@ -93,5 +93,5 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
         visible = known_inputs | predecessors[node.id]
         scan(node.config, node.id, visible); scan(node.input_mapping, node.id, visible)
         for edge in workflow.edges:
-            if edge.source == node.id: scan(edge.condition, node.id, visible)
+            if edge.source == node.id: scan(edge.condition, node.id, visible | {node.id})
     return ValidationResult(tuple(errors), tuple(warnings))
