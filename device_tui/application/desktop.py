@@ -55,6 +55,7 @@ from .composition.workflows import build_default_activity_executor
 from device_tui.framework.events import WorkflowEventStore
 from device_tui.framework.runtime import WorkflowRunStore
 from .workflow_plugins.device_bridge import build_device_action_registry
+from .workflow_studio import MemoryWorkflowDefinitionStore, WorkflowDefinitionStore
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.reconcile import build_huawei_reconcile_registry
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpDeviceCommandProfile
 
@@ -77,6 +78,7 @@ class DesktopApplication:
     control: DeviceControlService
     task_service: TaskService
     workflows: WorkflowCatalog
+    workflow_definitions: WorkflowDefinitionStore
     framework_workflows: WorkflowRegistry
     framework_adapters: AdapterRegistry
     workflow_runtime: WorkflowRuntime
@@ -111,6 +113,7 @@ def build_desktop_application(
     framework_run_store: WorkflowRunStore | None = None,
     framework_event_store: WorkflowEventStore | None = None,
     framework_task_run_store: TaskRunStore | None = None,
+    workflow_definition_store: WorkflowDefinitionStore | None = None,
 ) -> DesktopApplication:
     events = EventBus()
     devices = DeviceService(repository)
@@ -233,6 +236,7 @@ def build_desktop_application(
         control=control,
         task_service=task_service,
         workflows=workflows,
+        workflow_definitions=workflow_definition_store or MemoryWorkflowDefinitionStore(),
         framework_workflows=framework_workflows,
         framework_adapters=framework_adapters,
         workflow_runtime=runtime,

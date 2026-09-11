@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from device_tui.application.workflow_studio.models import WorkflowDraft, WorkflowVersion
+from device_tui.application.workflow_studio.store import WorkflowDefinitionStore
 
 from device_tui.framework.events import Event, WorkflowEventStore
 from device_tui.framework.models import (
@@ -77,6 +81,78 @@ class SQLiteWorkflowRunStore:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         return connection
+
+
+class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
+    """Durable drafts and immutable published workflow snapshots."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve(); self.path.parent.mkdir(parents=True, exist_ok=True); self._migrate()
+
+    def create(self, draft: WorkflowDraft) -> WorkflowDraft:
+        with self._connect() as c:
+            try: c.execute("INSERT INTO workflow_definitions VALUES (?, NULL, 'draft', 0, ?)", (draft.id, json.dumps(draft.to_dict(), ensure_ascii=False, separators=(",", ":"))))
+            except sqlite3.IntegrityError as exc: raise ValueError(f"workflow already exists: {draft.id}") from exc
+        return draft
+
+    def save(self, draft: WorkflowDraft) -> WorkflowDraft:
+        with self._connect() as c:
+            count = c.execute("UPDATE workflow_definitions SET payload=? WHERE workflow_id=? AND kind='draft'", (json.dumps(draft.to_dict(), ensure_ascii=False, separators=(",", ":")), draft.id)).rowcount
+        if not count: raise KeyError(f"workflow not found: {draft.id}")
+        return draft
+
+    def get(self, workflow_id: str, version: int | str | None = None) -> WorkflowDraft | WorkflowVersion:
+        with self._connect() as c:
+            if version is None or version == "draft":
+                row = c.execute("SELECT payload FROM workflow_definitions WHERE workflow_id=? AND kind='draft'", (workflow_id,)).fetchone()
+                if row is None: raise KeyError(f"workflow not found: {workflow_id}")
+                return WorkflowDraft.from_dict(json.loads(str(row["payload"])))
+            row = c.execute("SELECT payload FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).fetchone()
+        if row is None: raise KeyError(f"workflow version not found: {workflow_id}@{version}")
+        return WorkflowVersion.from_dict(json.loads(str(row["payload"])))
+
+    def list(self, *, limit: int = 500) -> list[WorkflowDraft]:
+        with self._connect() as c: rows = c.execute("SELECT payload FROM workflow_definitions WHERE kind='draft' ORDER BY rowid DESC LIMIT ?", (max(0, limit),)).fetchall()
+        return [WorkflowDraft.from_dict(json.loads(str(row["payload"]))) for row in rows]
+
+    def delete(self, workflow_id: str, version: int | str | None = None) -> None:
+        with self._connect() as c:
+            if version is None or version == "draft":
+                count = c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind='draft'", (workflow_id,)).rowcount
+            else:
+                count = c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=? AND referenced=0", (workflow_id, int(version))).rowcount
+                if not count and c.execute("SELECT referenced FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).fetchone() is not None: raise ValueError(f"published workflow version is referenced: {workflow_id}@{version}")
+        if not count: raise KeyError(f"workflow not found: {workflow_id}")
+
+    def publish(self, workflow_id: str) -> WorkflowVersion:
+        draft = self.get(workflow_id)
+        with self._connect() as c:
+            number = int(c.execute("SELECT COALESCE(MAX(version),0)+1 FROM workflow_definitions WHERE workflow_id=? AND kind='published'", (workflow_id,)).fetchone()[0])
+            version = WorkflowVersion(workflow_id, number, draft.name, draft.inputs, draft.nodes, draft.edges, datetime.now(UTC).isoformat())
+            c.execute("INSERT INTO workflow_definitions VALUES (?, ?, 'published', 0, ?)", (workflow_id, number, json.dumps(version.to_dict(), ensure_ascii=False, separators=(",", ":"))))
+        return version
+
+    def mark_referenced(self, workflow_id: str, version: int | str) -> None:
+        with self._connect() as c: count = c.execute("UPDATE workflow_definitions SET referenced=1 WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).rowcount
+        if not count: raise KeyError(f"workflow version not found: {workflow_id}@{version}")
+
+    def list_versions(self, workflow_id: str) -> list[WorkflowVersion]:
+        with self._connect() as c: rows = c.execute("SELECT payload FROM workflow_definitions WHERE workflow_id=? AND kind='published' ORDER BY version", (workflow_id,)).fetchall()
+        return [WorkflowVersion.from_dict(json.loads(str(row["payload"]))) for row in rows]
+
+    def _migrate(self) -> None:
+        with self._connect() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS workflow_definitions (workflow_id TEXT NOT NULL, version INTEGER, kind TEXT NOT NULL, referenced INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL, PRIMARY KEY(workflow_id, kind, version))")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_definitions_draft ON workflow_definitions(workflow_id) WHERE kind='draft'")
+
+    @contextmanager
+    def _connect(self):
+        c = sqlite3.connect(self.path); c.row_factory = sqlite3.Row
+        try:
+            yield c
+            c.commit()
+        finally:
+            c.close()
 
 
 class SQLiteTaskRunStore(TaskRunStore):
@@ -258,4 +334,4 @@ def _event_from_dict(payload: dict[str, Any]) -> Event:
     )
 
 
-__all__ = ["SQLiteTaskRunStore", "SQLiteWorkflowEventStore", "SQLiteWorkflowRunStore"]
+__all__ = ["SQLiteTaskRunStore", "SQLiteWorkflowDefinitionStore", "SQLiteWorkflowEventStore", "SQLiteWorkflowRunStore"]
