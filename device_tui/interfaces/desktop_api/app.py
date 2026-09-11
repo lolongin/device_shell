@@ -39,6 +39,7 @@ from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopSt
 from device_tui.infrastructure.persistence.sqlite_settings import SQLiteSettingsStore
 from device_tui.infrastructure.persistence.sqlite_workflows import (
     SQLiteTaskRunStore,
+    SQLiteWorkflowDefinitionStore,
     SQLiteWorkflowEventStore,
     SQLiteWorkflowRunStore,
 )
@@ -56,6 +57,7 @@ from .routers.health import router as health_router
 from .routers.ai import legacy_router as legacy_ai_router
 from .routers.ai import router as ai_router
 from .routers.tasks import router as tasks_router
+from .routers.workflow_definitions import router as workflow_definitions_router
 from .routers.device_sources import router as device_sources_router
 from .routers.mcp import router as mcp_router
 from .routers.operations import router as operations_router
@@ -337,6 +339,11 @@ def create_app(
             if production_defaults and framework_runtime is None
             else None
         ),
+        workflow_definition_store=(
+            SQLiteWorkflowDefinitionStore(data_root / "odyterm.sqlite3")
+            if production_defaults
+            else None
+        ),
     )
     _attempt_internal_auto_login(
         repo,
@@ -447,6 +454,7 @@ def create_app(
     app.include_router(ai_router)
     app.include_router(legacy_ai_router)
     app.include_router(tasks_router)
+    app.include_router(workflow_definitions_router)
     app.include_router(device_sources_router)
     app.include_router(mcp_router)
     app.include_router(operations_router)

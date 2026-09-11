@@ -45,6 +45,7 @@ import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SessionManager from './components/SessionManager.vue'
 import TerminalSplitWorkspace from './components/TerminalSplitWorkspace.vue'
+import WorkflowLibrary from './components/WorkflowLibrary.vue'
 import { useWorkspaceStore } from './stores/workspace'
 import {
   aggregateSessionHealth,
@@ -142,13 +143,14 @@ const navigatorVisible = ref(localStorage.getItem(NAVIGATOR_VISIBLE_KEY) !== '0'
 const navigatorWidth = ref(readStoredNavigatorWidth())
 const navigatorResizing = ref(false)
 const operationPanelOpen = computed(() =>
-  workspace.automationPanelOpen || workspace.transferPanelOpen || workspace.upgradePanelOpen || workspace.packageBuildPanelOpen
+  workspace.automationPanelOpen || workspace.transferPanelOpen || workspace.upgradePanelOpen || workspace.packageBuildPanelOpen || workflowPanelOpen.value
 )
 const showSessionSidebar = computed(() =>
   workspace.sessions.length > 0 && sessionTabLayout.value === 'side'
 )
 const settingsPanelOpen = ref(false)
 const helpPanelOpen = ref(false)
+const workflowPanelOpen = ref(false)
 const selectedProfileId = ref('')
 const editingProfile = ref<ConnectionProfileSummary | null>(null)
 const dialogType = ref<ProfileType | ''>('')
@@ -231,23 +233,15 @@ const effectiveNavigatorWidth = computed(() => Math.max(
 ))
 
 const recommendedDeviceSessionKind = computed(() => recommendedSessionKind(workspace.selectedDevice))
-const availableDeviceProtocolLabels = computed(() => {
+const availableDeviceProtocols = computed(() => {
   const device = workspace.selectedDevice
   if (!device) return []
-  if (device.is_simulated) return ['模拟终端']
+  if (device.is_simulated) return [{ kind: 'simulated' as SessionKind, label: '模拟终端', endpoint: '本地模拟终端' }]
   return [
-    device.can_connect_ssh ? 'SSH' : '',
-    device.can_connect_telnet ? 'Telnet' : '',
-    device.can_connect_serial ? '串口' : ''
-  ].filter(Boolean)
-})
-const emptyWorkspaceActionLabel = computed(() => {
-  const device = workspace.selectedDevice
-  const kind = recommendedDeviceSessionKind.value
-  if (!device) return '请先选择设备'
-  if (kind === 'simulated') return '打开模拟终端'
-  if (!kind) return '暂无可用连接'
-  return `打开 ${device.name} · ${kind === 'ssh' ? 'SSH' : kind === 'telnet' ? 'Telnet' : '串口'}`
+    device.can_connect_ssh ? { kind: 'ssh' as SessionKind, label: 'SSH', endpoint: device.ssh_endpoint || '地址未配置' } : null,
+    device.can_connect_telnet ? { kind: 'telnet' as SessionKind, label: 'Telnet', endpoint: device.telnet_endpoint || '地址未配置' } : null,
+    device.can_connect_serial ? { kind: 'serial' as SessionKind, label: '串口', endpoint: device.serial_display || device.serial_endpoint || '端口未配置' } : null
+  ].filter((protocol): protocol is { kind: SessionKind; label: string; endpoint: string } => Boolean(protocol))
 })
 
 const appShellStyle = computed<Record<string, string>>(() => ({
@@ -1040,6 +1034,12 @@ function openDeviceSessionTabContextMenu(
 ): void {
   if (!preserveActive) activateSessionDevice(deviceId)
   openSessionManagerDeviceContextMenu(event, deviceId)
+}
+
+function openDeviceProtocolSession(kind: SessionKind): void {
+  const device = workspace.selectedDevice
+  if (!device || workspace.openingKind) return
+  void workspace.openSessionForDevice(device, kind)
 }
 
 function handleDeviceSessionTabKeydown(event: KeyboardEvent, deviceId: string): void {
@@ -1868,6 +1868,7 @@ onBeforeUnmount(() => {
       >
         <Workflow :size="19" /><span class="sr-only">终端自动化</span>
       </button>
+      <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Library" :aria-pressed="workflowPanelOpen" @click="workflowPanelOpen = !workflowPanelOpen"><Workflow :size="19" /><span class="sr-only">Workflow Library</span></button>
       <button
         class="rail-button"
         :class="{ active: workspace.transferPanelOpen }"
@@ -2126,7 +2127,7 @@ onBeforeUnmount(() => {
         <input
           v-if="activeSection === 'devices'"
           v-model="workspace.query"
-          type="search" aria-label="搜索设备" placeholder="搜索名称、ID、站点或型号"
+          type="search" aria-label="搜索设备" placeholder="搜索设备名、IP、ID、站点、机架位或型号"
         />
         <input
           v-else
@@ -2184,7 +2185,6 @@ onBeforeUnmount(() => {
           <span>CPU</span>
           <span>Slot</span>
           <span>状态</span>
-          <span>来源</span>
         </div>
         <div class="device-loading-rows" aria-hidden="true">
           <div v-for="index in 7" :key="index" class="device-loading-row">
@@ -2197,7 +2197,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-      <div v-else-if="workspace.error" class="navigator-state error">{{ workspace.error }}</div>
+      <div v-else-if="workspace.error && !workspace.devices.length" class="navigator-state error">
+        <CircleAlert :size="18" aria-hidden="true" />
+        <strong>设备列表加载失败</strong>
+        <span>{{ workspace.error }}</span>
+        <button class="secondary-button" type="button" :disabled="workspace.loading" @click="workspace.initialize">
+          <RefreshCw :size="13" />重新加载
+        </button>
+      </div>
       <div
         v-else-if="activeSection === 'devices'"
         ref="deviceListElement"
@@ -2215,7 +2222,6 @@ onBeforeUnmount(() => {
           <span role="columnheader">CPU</span>
           <span role="columnheader">Slot</span>
           <span role="columnheader">状态</span>
-          <span role="columnheader">来源</span>
         </div>
         <div
           v-if="virtualDeviceTopHeight"
@@ -2781,6 +2787,7 @@ onBeforeUnmount(() => {
     <TransferWorkspace v-if="workspace.transferPanelOpen" />
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
+    <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" />
     <div
       v-if="operationPanelOpen"
       class="navigator-resize-handle operation-panel-resize-handle"
@@ -3136,27 +3143,37 @@ onBeforeUnmount(() => {
           <MonitorDot v-if="activeSection === 'devices'" :size="26" />
           <ServerCog v-else :size="26" />
         </div>
-        <h3>{{ activeSection === 'devices' ? '准备开始设备会话' : '准备打开连接配置' }}</h3>
-        <p v-if="activeSection === 'devices'">从左侧选择设备并创建终端。连接由 Python SessionHub 持有，界面刷新不会销毁会话。</p>
+        <h3 v-if="activeSection === 'devices'">{{ workspace.selectedDevice ? `${workspace.selectedDevice.name} 已就绪` : '准备开始设备会话' }}</h3>
+        <h3 v-else>准备打开连接配置</h3>
+        <p v-if="activeSection === 'devices'">{{ workspace.selectedDevice ? '选择连接方式，终端将在右侧打开。' : '从左侧选择设备并创建终端。' }}</p>
         <p v-else>从左侧选择连接配置。凭据由 Python 后端从操作系统凭据库读取，不会随配置列表返回。</p>
         <div v-if="activeSection === 'devices'" class="empty-workspace-context" aria-label="首个终端目标">
-          <span>当前目标</span>
+          <span>连接目标</span>
           <strong>{{ workspace.selectedDevice?.name || '尚未选择设备' }}</strong>
-          <div v-if="availableDeviceProtocolLabels.length" aria-label="可用连接协议">
-            <small v-for="label in availableDeviceProtocolLabels" :key="label">{{ label }}</small>
+          <div v-if="availableDeviceProtocols.length" class="empty-workspace-endpoints" aria-label="可用连接协议">
+            <small v-for="protocol in availableDeviceProtocols" :key="protocol.kind" class="empty-workspace-endpoint">
+              {{ protocol.label }} · {{ protocol.endpoint }}
+            </small>
           </div>
           <em v-else>当前设备没有可用连接协议</em>
         </div>
-        <button
-          v-if="activeSection === 'devices'"
-          class="primary-button"
-          type="button"
-          :disabled="!recommendedDeviceSessionKind || Boolean(workspace.openingKind)"
-          :title="recommendedDeviceSessionKind ? `使用推荐协议打开 ${workspace.selectedDevice?.name}` : '当前设备没有可用连接协议'"
-          @click="openRecommendedDeviceSession()"
-        >
-          <Plus :size="16" />{{ workspace.openingKind ? '正在创建终端…' : emptyWorkspaceActionLabel }}
-        </button>
+        <div v-if="activeSection === 'devices'" class="empty-workspace-actions" aria-label="选择连接方式">
+          <button
+            v-for="protocol in availableDeviceProtocols"
+            :key="protocol.kind"
+            class="primary-button empty-workspace-protocol"
+            type="button"
+            :disabled="Boolean(workspace.openingKind)"
+            :title="`使用 ${protocol.label} 打开 ${workspace.selectedDevice?.name || '设备'}`"
+            @click="openDeviceProtocolSession(protocol.kind)"
+          >
+            <KeyRound v-if="protocol.kind === 'ssh'" :size="15" />
+            <Cable v-else-if="protocol.kind === 'telnet'" :size="15" />
+            <Plug v-else :size="15" />
+            <span>{{ workspace.openingKind === protocol.kind ? '正在连接…' : `打开 ${protocol.label}` }}</span>
+          </button>
+          <span v-if="workspace.selectedDevice && !availableDeviceProtocols.length" class="empty-workspace-unavailable">暂无可用连接</span>
+        </div>
         <button
           v-else
           class="primary-button"

@@ -52,6 +52,8 @@ import type {
   AiChatResponse
 } from '../types'
 
+export interface WorkflowDefinitionResponse { workflows: Array<Record<string, unknown>> }
+
 let runtimePromise: Promise<BackendRuntime> | null = null
 
 export function getRuntime(refresh = false): Promise<BackendRuntime> {
@@ -422,6 +424,11 @@ export const desktopApi = {
   aiReject: (approvalId: string): Promise<{ approval: AiApproval }> =>
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/reject`, { method: 'POST' }),
   workflows: (): Promise<WorkflowCatalogResponse> => request('/api/v1/workflows'),
+  workflowDefinitions: (): Promise<WorkflowDefinitionResponse> => request('/api/v1/workflow-definitions'),
+  createWorkflowDefinition: (payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions', { method: 'POST', body: JSON.stringify(payload) }),
+  saveWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  publishWorkflowDefinition: (id: string): Promise<{ published: boolean; errors?: Array<{ message: string }>; workflow?: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
+  deleteWorkflowDefinition: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createTask: (payload: { workflow_id: string; device_id: string; parameters?: Record<string, unknown>; package?: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>
     request('/api/v1/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   workflowPlanValidate: (plan: Record<string, unknown>): Promise<McpResponse<WorkflowPlanValidation>> =>
