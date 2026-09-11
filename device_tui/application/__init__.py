@@ -132,6 +132,21 @@ from device_tui.framework import (
     WorkflowRuntime,
 )
 from .composition.workflows import build_default_adapter_registry, build_default_workflow_registry
+from .workflow_studio import (
+    ActionCatalog,
+    ActionSpec,
+    MemoryWorkflowDefinitionStore,
+    ValidationIssue,
+    ValidationResult,
+    WorkflowDefinitionStore,
+    WorkflowDraft,
+    WorkflowEdge,
+    WorkflowInput,
+    WorkflowNode as StudioWorkflowNode,
+    WorkflowVersion,
+    build_action_catalog,
+    validate_workflow,
+)
 
 __all__ = [
     "ApplicationError",
@@ -155,6 +170,19 @@ __all__ = [
     "CommandStore",
     "CredentialResolver",
     "DesktopApplication",
+    "ActionCatalog",
+    "ActionSpec",
+    "MemoryWorkflowDefinitionStore",
+    "ValidationIssue",
+    "ValidationResult",
+    "WorkflowDefinitionStore",
+    "WorkflowDraft",
+    "WorkflowEdge",
+    "WorkflowInput",
+    "StudioWorkflowNode",
+    "WorkflowVersion",
+    "build_action_catalog",
+    "validate_workflow",
     "DeviceInventory",
     "DeviceActionResult",
     "DeviceService",
