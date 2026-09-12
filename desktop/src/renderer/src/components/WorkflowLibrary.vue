@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { CheckCircle2, GitBranch, Play, Plus, Save, Search, Trash2, Workflow, X, AlertTriangle, Copy } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -208,10 +208,19 @@ function configString(key: string): string { return String(selectedNode.value?.c
 function updateConfigString(key: string, event: Event): void { if (selectedNode.value) selectedNode.value.config[key] = (event.target as HTMLInputElement | HTMLTextAreaElement).value }
 
 onMounted(async () => {
-  selectedDeviceId.value = workspace.selectedDeviceId || workspace.devices[0]?.row_id || workspace.devices[0]?.id || ''
+  selectedDeviceId.value = workspace.selectedDeviceId || workspace.devices[0]?.id || ''
   await refresh()
   if (workflows.value[0]) selectWorkflow(workflows.value[0])
 })
+
+watch(
+  () => [workspace.selectedDeviceId, workspace.devices] as const,
+  ([deviceId, devices]) => {
+    if (deviceId && !selectedDeviceId.value) selectedDeviceId.value = deviceId
+    if (!selectedDeviceId.value && devices.length) selectedDeviceId.value = devices[0].id
+  },
+  { deep: true }
+)
 </script>
 
 <template>
@@ -225,7 +234,7 @@ onMounted(async () => {
       <button type="button" :disabled="!selected" @click="duplicateWorkflow"><Copy :size="14" />复制</button>
       <button type="button" :disabled="!selected || saving" @click="save"><Save :size="14" />{{ saving ? '保存中…' : '保存草稿' }}</button>
       <button type="button" :disabled="!selected" @click="validate"><CheckCircle2 :size="14" />检查流程</button>
-      <label class="workflow-run-target">目标设备<select v-model="selectedDeviceId" aria-label="测试运行目标设备"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.row_id || device.id">{{ deviceLabel(device) }}</option></select></label>
+      <label class="workflow-run-target">目标设备<select v-model="selectedDeviceId" aria-label="测试运行目标设备"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">{{ deviceLabel(device) }}</option></select></label>
       <button class="run-action" type="button" :disabled="!canRun" @click="runWorkflow"><Play :size="14" />{{ running ? '启动中…' : '测试运行' }}</button>
       <button class="primary-action" type="button" :disabled="!canPublish" @click="publish"><Play :size="14" />发布</button>
       <button class="danger-action" type="button" :disabled="!selected" @click="remove"><Trash2 :size="14" />删除</button>
@@ -259,7 +268,7 @@ onMounted(async () => {
         <section v-if="selectedNode" class="workflow-properties">
           <div class="panel-heading"><strong>步骤设置</strong><small>{{ selectedAction?.label }}</small></div>
           <label>步骤名称<input v-model="selectedNode.id" /></label>
-          <label v-if="selectedNode.action_id === 'device.select'">目标设备<select v-model="selectedNode.config.device_id"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.row_id || device.id">{{ deviceLabel(device) }}</option></select></label>
+          <label v-if="selectedNode.action_id === 'device.select'">目标设备<select v-model="selectedNode.config.device_id"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">{{ deviceLabel(device) }}</option></select></label>
           <template v-else-if="selectedNode.action_id === 'device.ssh' || selectedNode.action_id === 'device.telnet'">
             <label>主机<input :value="configString('host')" placeholder="设备地址" @input="updateConfigString('host', $event)" /></label>
             <label>端口<input v-model.number="selectedNode.config.port" type="number" min="1" max="65535" /></label>
