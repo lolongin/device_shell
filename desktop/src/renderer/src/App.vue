@@ -146,7 +146,7 @@ const operationPanelOpen = computed(() =>
   workspace.automationPanelOpen || workspace.transferPanelOpen || workspace.upgradePanelOpen || workspace.packageBuildPanelOpen || workflowPanelOpen.value
 )
 const showSessionSidebar = computed(() =>
-  workspace.sessions.length > 0 && sessionTabLayout.value === 'side'
+  !workflowPanelOpen.value && workspace.sessions.length > 0 && sessionTabLayout.value === 'side'
 )
 const settingsPanelOpen = ref(false)
 const helpPanelOpen = ref(false)
@@ -1514,6 +1514,7 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  workflowPanelOpen.value = false
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
   workspace.packageBuildPanelOpen = false
@@ -1529,6 +1530,7 @@ function toggleAutomationPanel(): void {
   if (workspace.automationPanelOpen) {
     workspace.closeAutomationPanel()
   } else {
+    workflowPanelOpen.value = false
     workspace.automationPanelOpen = true
     workspace.transferPanelOpen = false
     workspace.upgradePanelOpen = false
@@ -1538,6 +1540,7 @@ function toggleAutomationPanel(): void {
 }
 
 function openSessionAutomation(sessionId: string): void {
+  workflowPanelOpen.value = false
   workspace.activeSessionId = sessionId
   workspace.automationPanelOpen = true
   workspace.transferPanelOpen = false
@@ -1548,6 +1551,7 @@ function openSessionAutomation(sessionId: string): void {
 
 function openSessionTransfer(sessionId: string): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  workflowPanelOpen.value = false
   workspace.activeSessionId = sessionId
   workspace.transferPanelOpen = true
   workspace.upgradePanelOpen = false
@@ -1557,6 +1561,7 @@ function openSessionTransfer(sessionId: string): void {
 
 function openSessionUpgrade(sessionId: string): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  workflowPanelOpen.value = false
   workspace.activeSessionId = sessionId
   workspace.upgradePanelOpen = true
   workspace.transferPanelOpen = false
@@ -1569,8 +1574,21 @@ function toggleTransferPanel(): void {
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.transferPanelOpen = open
   if (open) {
+    workflowPanelOpen.value = false
     workspace.upgradePanelOpen = false
     workspace.packageBuildPanelOpen = false
+  }
+}
+
+function toggleWorkflowPanel(): void {
+  const open = !workflowPanelOpen.value
+  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  workflowPanelOpen.value = open
+  if (open) {
+    workspace.transferPanelOpen = false
+    workspace.upgradePanelOpen = false
+    workspace.packageBuildPanelOpen = false
+    workspace.aiPanelOpen = false
   }
 }
 
@@ -1588,6 +1606,7 @@ function toggleUpgradePanel(): void {
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.upgradePanelOpen = open
   if (open) {
+    workflowPanelOpen.value = false
     workspace.transferPanelOpen = false
     workspace.packageBuildPanelOpen = false
   }
@@ -1598,6 +1617,7 @@ function togglePackageBuildPanel(): void {
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workspace.packageBuildPanelOpen = open
   if (open) {
+    workflowPanelOpen.value = false
     workspace.transferPanelOpen = false
     workspace.upgradePanelOpen = false
   }
@@ -1868,7 +1888,7 @@ onBeforeUnmount(() => {
       >
         <Workflow :size="19" /><span class="sr-only">终端自动化</span>
       </button>
-      <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Library" :aria-pressed="workflowPanelOpen" @click="workflowPanelOpen = !workflowPanelOpen"><Workflow :size="19" /><span class="sr-only">Workflow Library</span></button>
+      <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Studio" :aria-pressed="workflowPanelOpen" @click="toggleWorkflowPanel"><Workflow :size="19" /><span class="sr-only">Workflow Studio</span></button>
       <button
         class="rail-button"
         :class="{ active: workspace.transferPanelOpen }"
@@ -2787,9 +2807,11 @@ onBeforeUnmount(() => {
     <TransferWorkspace v-if="workspace.transferPanelOpen" />
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
-    <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" />
+    <KeepAlive>
+      <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" />
+    </KeepAlive>
     <div
-      v-if="operationPanelOpen"
+      v-if="operationPanelOpen && !workflowPanelOpen"
       class="navigator-resize-handle operation-panel-resize-handle"
       data-testid="operation-panel-resize-handle"
       role="separator"
@@ -2805,7 +2827,7 @@ onBeforeUnmount(() => {
       @dblclick="resetNavigatorWidth"
     ><span aria-hidden="true"></span></div>
 
-    <main class="workspace-stage">
+    <main v-show="!workflowPanelOpen" class="workspace-stage">
       <header
         v-if="!terminalSplitActive"
         class="workspace-header"
