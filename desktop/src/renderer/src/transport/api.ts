@@ -53,6 +53,7 @@ import type {
 } from '../types'
 
 export interface WorkflowDefinitionResponse { workflows: Array<Record<string, unknown>> }
+export interface WorkflowActionCatalogResponse { actions: Array<Record<string, unknown>> }
 
 let runtimePromise: Promise<BackendRuntime> | null = null
 
@@ -425,9 +426,15 @@ export const desktopApi = {
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/reject`, { method: 'POST' }),
   workflows: (): Promise<WorkflowCatalogResponse> => request('/api/v1/workflows'),
   workflowDefinitions: (): Promise<WorkflowDefinitionResponse> => request('/api/v1/workflow-definitions'),
+  workflowActions: (): Promise<WorkflowActionCatalogResponse> => request('/api/v1/workflow-definitions/actions'),
   createWorkflowDefinition: (payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions', { method: 'POST', body: JSON.stringify(payload) }),
   saveWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   publishWorkflowDefinition: (id: string): Promise<{ published: boolean; errors?: Array<{ message: string }>; workflow?: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
+  runWorkflowDefinition: (id: string, payload: { device_id: string; protocol?: 'auto' | 'ssh' | 'telnet' | 'serial' | 'simulated'; inputs?: Record<string, unknown> }): Promise<{ task: TaskRecord }> =>
+    request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
   validateWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ valid: boolean; errors: Array<{ code: string; message: string; node_id?: string | null }>; warnings: Array<{ code: string; message: string; node_id?: string | null }> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/validate`, { method: 'POST', body: JSON.stringify(payload) }),
   deleteWorkflowDefinition: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createTask: (payload: { workflow_id: string; device_id: string; parameters?: Record<string, unknown>; package?: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>

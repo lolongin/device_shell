@@ -57,6 +57,8 @@ def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvide
         ActivityWorkflowProvider("terminal.batch"),
         ActivityWorkflowProvider("device.power_off"),
         ActivityWorkflowProvider("operation.wait"),
+        ActivityWorkflowProvider("utility.wait"),
+        ActivityWorkflowProvider("device.select"),
         ActivityWorkflowProvider("device.verify_artifact"),
         ActivityWorkflowProvider("device.storage.cleanup"),
         ActivityWorkflowProvider("device.storage.sync"),

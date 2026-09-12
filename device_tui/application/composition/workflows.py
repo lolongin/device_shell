@@ -16,6 +16,7 @@ from ..workflow_plugins.package_upgrade.workflow import HuaweiVrpPackageUpgradeP
 from ..workflow_plugins.process import ProcessActivityHandler
 from ..workflow_plugins.terminal_transfer import TerminalTransferAdapter
 from ..workflow_plugins.device_activity import DeviceActivityHandler
+from ..workflow_plugins.utility import DeviceSelectActivityHandler, WaitActivityHandler
 from ..workflow_plugins.transfer import TransferActivityHandler
 from ..workflow_plugins.generic import build_default_activity_workflow_providers
 from ..workflow_plugins.vendor_adapter import DeviceVendorActivityHandler
@@ -65,6 +66,10 @@ def build_default_activity_executor(
             },
         ))
         executor.register_handler(ProcessActivityHandler(activity_id))
+    executor.register_definition(ActivityDefinition(id="utility.wait"))
+    executor.register_handler(WaitActivityHandler())
+    executor.register_definition(ActivityDefinition(id="device.select"))
+    executor.register_handler(DeviceSelectActivityHandler())
     if control is not None:
         executor.register_definition(ActivityDefinition(
             id="file.transfer",
