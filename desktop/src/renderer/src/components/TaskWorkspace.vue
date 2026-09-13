@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, FileArchive, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
+import { desktopApi } from '../transport/api'
 import type { TaskDecisionActionPayload, TaskRecord, TaskStepState, WorkflowParameterDescriptor } from '../types'
 
 const workspace = useWorkspaceStore()
@@ -11,6 +12,7 @@ const workflowParameters = ref<Record<string, unknown>>({})
 const planObjective = ref('')
 const planCommand = ref('')
 const localError = ref('')
+const reportBusy = ref(false)
 const decisionInputReason = ref('')
 const selectedTaskIds = ref<Set<string>>(new Set())
 let initializedWorkflowId = ''
@@ -21,6 +23,12 @@ const selectedWorkflow = computed(() => workflowOptions.value.find((item) => ite
 const workflowParametersVisible = computed(() => selectedWorkflow.value?.parameters.filter((item) => !item.advanced) || [])
 const selectedTask = computed(() => workspace.tasks.find((task) => task.id === workspace.activeTaskId) || null)
 const terminalTasks = computed(() => workspace.tasks.filter((task) => isTerminalStatus(task.status)))
+const taskSummary = computed(() => ({
+  total: workspace.tasks.length,
+  completed: workspace.tasks.filter((task) => task.status === 'completed' || task.status === 'succeeded').length,
+  failed: workspace.tasks.filter((task) => task.status === 'failed').length,
+  waiting: workspace.tasks.filter((task) => ['waiting_for_decision', 'waiting_for_user', 'paused', 'waiting_child', 'waiting_reconcile'].includes(task.status)).length,
+}))
 const selectedTerminalTaskCount = computed(() => terminalTasks.value.filter((task) => selectedTaskIds.value.has(task.id)).length)
 const allTerminalTasksSelected = computed(() => terminalTasks.value.length > 0 && selectedTerminalTaskCount.value === terminalTasks.value.length)
 const someTerminalTasksSelected = computed(() => selectedTerminalTaskCount.value > 0 && !allTerminalTasksSelected.value)
@@ -99,7 +107,17 @@ function stepIcon(state: TaskStepState): string {
   if (state.status === 'completed' || state.status === 'success') return '✓'
   if (state.status === 'failed') return '✕'
   if (state.status === 'running') return '…'
+  if (state.status === 'skipped') return '–'
+  if (state.status === 'waiting' || state.status === 'waiting_for_user' || state.status === 'waiting_for_decision') return '◷'
   return '·'
+}
+function stepStatusLabel(status: string): string {
+  if (status === 'completed' || status === 'success') return '已完成'
+  if (status === 'failed') return '执行失败'
+  if (status === 'running') return '执行中'
+  if (status === 'skipped') return '已跳过'
+  if (status === 'waiting' || status === 'waiting_for_user' || status === 'waiting_for_decision') return '等待确认'
+  return '等待执行'
 }
 function stepOutput(state: TaskStepState): string {
   const direct = state.result?.output
@@ -159,6 +177,10 @@ function errorMessage(task: TaskRecord | null): string {
   const failedState = task.checkpoint?.step_states.find((state) => state.status === 'failed')
   const detail = failedState?.error?.message || task.checkpoint?.error_message || ''
   if (detail) {
+    const normalized = detail.toLowerCase()
+    if (normalized.includes('timeout') || normalized.includes('timed out')) return '设备响应超时，请检查连接后重试。'
+    if (normalized.includes('connection') || normalized.includes('connect')) return '设备连接失败，请确认设备在线。'
+    if (normalized.includes('permission') || normalized.includes('denied')) return '设备拒绝了操作，请检查账号权限。'
     if (code === 'version_mismatch' || code.includes('verify') || detail.toLowerCase().includes('unknown command')) return detail
     return detail
   }
@@ -173,11 +195,15 @@ function taskStatusLabel(task: TaskRecord | null): string {
   if (task.status === 'cancelled') return '任务已取消'
   if (task.status === 'completed' || task.status === 'success') return '工作流已完成'
   if (task.status === 'failed') return errorMessage(task) || '工作流失败'
-  return task.message || task.status
+  if (task.status === 'waiting_child' || task.status === 'waiting_reconcile') return '等待系统处理'
+  if (task.status === 'unknown') return '状态待确认'
+  return task.message || '任务处理中'
 }
 function taskStatusMessage(task: TaskRecord | null): string {
   if (!task || task.status === 'completed' || task.status === 'success') return ''
   if (task.status === 'waiting_for_user' || task.status === 'waiting_for_decision') return '等待人工确认后继续工作流。'
+  if (task.status === 'waiting_child' || task.status === 'waiting_reconcile') return '系统正在整理执行结果，请稍候。'
+  if (task.status === 'unknown') return '暂时无法确认任务状态，请刷新后再试。'
   if (task.status === 'failed') return errorMessage(task) || '工作流失败'
   return ''
 }
@@ -331,6 +357,31 @@ async function applyAction(action: TaskDecisionActionPayload): Promise<void> {
 async function retryFailedStep(): Promise<void> {
   if (failedStepId.value) await workspace.resumeTask(workspace.activeTaskId, failedStepId.value)
 }
+async function downloadReport(): Promise<void> {
+  if (!selectedTask.value) return
+  reportBusy.value = true
+  localError.value = ''
+  try {
+    const report = await desktopApi.taskReport(selectedTask.value.id)
+    const cell = (value: unknown): string => {
+      const text = String(value ?? '')
+      const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text
+      return `"${safe.replaceAll('"', '""')}"`
+    }
+    const rows = report.rows.length ? report.rows : [{ 流程: report.summary.workflow_id, 设备: report.summary.device_id, 总体状态: report.summary.status }]
+    const csv = [report.columns, ...rows.map(row => report.columns.map(column => (row as Record<string, unknown>)[column]))].map(row => row.map(cell).join(',')).join('\r\n')
+    const url = URL.createObjectURL(new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = report.filename
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (cause) {
+    localError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    reportBusy.value = false
+  }
+}
 async function resumeFromPreviousStep(): Promise<void> {
   if (previousStepId.value) await workspace.resumeTask(workspace.activeTaskId, previousStepId.value)
 }
@@ -448,24 +499,25 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
     </div>
 
     <div class="task-ui-list" aria-label="Task 列表">
-      <div class="task-ui-list-heading"><strong>Task 记录</strong><div class="task-ui-list-actions"><small>{{ workspace.tasks.length }} 条</small><label v-if="terminalTasks.length" class="task-select-all" title="选择全部已结束任务"><input type="checkbox" :checked="allTerminalTasksSelected" :indeterminate="someTerminalTasksSelected" :disabled="workspace.taskBusy" @change="toggleAllTerminalTasks" /><span>已结束</span></label><button v-if="selectedTerminalTaskCount" class="task-bulk-delete" type="button" :disabled="workspace.taskBusy" title="删除选中的任务记录" @click="deleteSelectedTasks"><Trash2 :size="13" />删除选中 ({{ selectedTerminalTaskCount }})</button></div></div>
+      <div class="task-ui-list-heading"><strong>Task 记录</strong><div class="task-ui-list-actions"><small>{{ workspace.tasks.length }} 条 · ✓{{ taskSummary.completed }}　✕{{ taskSummary.failed }}　⏸{{ taskSummary.waiting }}</small><label v-if="terminalTasks.length" class="task-select-all" title="选择全部已结束任务"><input type="checkbox" :checked="allTerminalTasksSelected" :indeterminate="someTerminalTasksSelected" :disabled="workspace.taskBusy" @change="toggleAllTerminalTasks" /><span>已结束</span></label><button v-if="selectedTerminalTaskCount" class="task-bulk-delete" type="button" :disabled="workspace.taskBusy" title="删除选中的任务记录" @click="deleteSelectedTasks"><Trash2 :size="13" />删除选中 ({{ selectedTerminalTaskCount }})</button></div></div>
       <div v-for="task in workspace.tasks" :key="task.id" class="task-row" :data-active="task.id === workspace.activeTaskId" role="button" tabindex="0" @click="chooseTask(task)" @keydown.enter="chooseTask(task)">
-        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ taskWorkflowLabel(task) }}</strong><small>{{ task.workflow_id }} · {{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ task.status }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
+        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ taskWorkflowLabel(task) }}</strong><small>{{ task.workflow_id }} · {{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ taskStatusLabel(task) }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
       </div>
       <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择 Workflow 或“制定任务”开始。</p>
     </div>
 
     <article v-if="selectedTask" class="task-detail">
       <header><div><strong>Task {{ selectedTask.id.slice(0, 8) }}</strong><small>{{ selectedTask.progress_percent }}% · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
+        <button class="secondary-button" type="button" :disabled="reportBusy" @click="downloadReport"><FileArchive :size="13" />{{ reportBusy ? '正在导出…' : '导出报告' }}</button>
         <button v-if="selectedTask.status === 'running'" class="secondary-button" type="button" @click="workspace.pauseTask()"><CirclePause :size="13" />暂停</button>
         <button v-if="selectedTask.status === 'paused'" class="secondary-button" type="button" @click="workspace.resumeTask()"><CirclePlay :size="13" />恢复</button>
-        <button v-if="!isFrameworkTask && selectedTask.status === 'failed' && failedStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="retryFailedStep"><RotateCcw :size="13" />重试断点</button>
-        <button v-if="!isFrameworkTask && selectedTask.status === 'failed' && previousStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="resumeFromPreviousStep"><CirclePlay :size="13" />从上一步恢复</button>
+        <button v-if="selectedTask.status === 'failed' && failedStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="retryFailedStep"><RotateCcw :size="13" />重新执行此步骤</button>
+        <button v-if="selectedTask.status === 'failed' && previousStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="resumeFromPreviousStep"><CirclePlay :size="13" />从上一步继续</button>
         <button v-if="!isTerminal" class="danger-button task-cancel-button" type="button" @click="workspace.cancelTask()"><CircleStop :size="14" />取消任务</button>
       </div></header>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
       <ol class="task-timeline">
-        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ state.status }} · attempt {{ state.attempt }}</small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result?.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><p v-else-if="stepDescription(state.step_id)">{{ stepDescription(state.step_id) }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details></div></li>
+        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ stepStatusLabel(state.status) }}<span v-if="state.attempt > 1"> · 第 {{ state.attempt }} 次尝试</span></small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><p v-else-if="stepDescription(state.step_id)">{{ stepDescription(state.step_id) }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
       <div v-if="workspace.taskDecision" class="task-decision" role="dialog" aria-labelledby="task-decision-title">

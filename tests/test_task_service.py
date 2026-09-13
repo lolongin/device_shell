@@ -17,6 +17,7 @@ class _Orchestrator:
     def __init__(self) -> None:
         self.started: tuple[TaskPlan, str, dict[str, object] | None, dict[str, object] | None, str | None] | None = None
         self.executed: tuple[str, TaskPlan] | None = None
+        self.runs: dict[str, TaskRun] = {}
 
     def start(self, plan: TaskPlan, *, device_id: str, inputs=None, context=None, task_run_id=None, child_run_id=None) -> TaskRun:
         del child_run_id
@@ -28,6 +29,8 @@ class _Orchestrator:
         return TaskRun(task_run_id, plan.id, "device-1", status=TaskRunStatus.SUCCEEDED)
 
     def get(self, task_run_id: str) -> TaskRun:
+        if task_run_id in self.runs:
+            return self.runs[task_run_id]
         return TaskRun(task_run_id, "plan-1", "device-1")
 
     def list(self, *, limit: int = 500) -> list[TaskRun]:
@@ -84,6 +87,56 @@ def test_task_service_projects_generic_task_workflow_for_the_desktop() -> None:
         "action_id": "command",
         "operation": "command",
     }]
+
+
+def test_framework_task_projection_adopts_session_created_during_run() -> None:
+    orchestrator = _Orchestrator()
+    service = TaskService(object(), orchestrator)  # type: ignore[arg-type]
+    task = service.create(TaskCreate(
+        workflow=WorkflowDefinition(
+            id="ui-plan",
+            name="检查设备",
+            steps=(WorkflowStep("wait", action=Action("wait")),),
+        ),
+        target=DeviceTarget(device_id="device-1"),
+        framework_plan=_plan(),
+    ))
+    orchestrator.runs[task.id] = TaskRun(
+        task.id,
+        "plan-1",
+        "device-1",
+        status=TaskRunStatus.SUCCEEDED,
+        outputs={"wait": {"session_id": "created-session-1"}},
+    )
+
+    projected = service.get(task.id)
+
+    assert projected.session_id == "created-session-1"
+
+
+def test_framework_task_projection_preserves_requested_session() -> None:
+    orchestrator = _Orchestrator()
+    service = TaskService(object(), orchestrator)  # type: ignore[arg-type]
+    task = service.create(TaskCreate(
+        workflow=WorkflowDefinition(
+            id="ui-plan",
+            name="检查设备",
+            steps=(WorkflowStep("wait", action=Action("wait")),),
+        ),
+        target=DeviceTarget(device_id="device-1", session_id="requested-session-1"),
+        framework_plan=_plan(),
+    ))
+    orchestrator.runs[task.id] = TaskRun(
+        task.id,
+        "plan-1",
+        "device-1",
+        status=TaskRunStatus.SUCCEEDED,
+        outputs={"wait": {"session_id": "created-session-1"}},
+    )
+
+    projected = service.get(task.id)
+
+    assert projected.session_id == "requested-session-1"
 
 
 def test_task_plan_lifecycle_is_structurally_separate_from_legacy_lifecycle() -> None:

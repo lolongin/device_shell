@@ -2851,13 +2851,34 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 .workflow-node-card:hover, .workflow-node-card.active { border-color: #60a5fa; background: rgba(37, 99, 235, .16); }
 .workflow-node-card.state-attention { border-color: rgba(245, 158, 11, .55); }
 .workflow-node-card b, .workflow-node-card small { display: block; } .workflow-node-card small { margin-top: 3px; color: rgba(226, 232, 240, .5); font-size: 10px; }
+.workflow-node-card.disconnected { border-color: rgba(251, 113, 133, .6); background: rgba(76, 5, 25, .38); }
 .node-index { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: rgba(96, 165, 250, .18); color: #bfdbfe; font-size: 11px; }
 .state-ready > svg { color: #4ade80; } .state-attention > svg { color: #fbbf24; }
-.node-connector { height: 25px; display: grid; place-items: center; color: rgba(148, 163, 184, .55); }
+.workflow-terminal { display: inline-flex; align-items: center; justify-self: center; min-width: 58px; padding: 5px 10px; border: 1px solid rgba(148, 163, 184, .28); border-radius: 999px; color: rgba(203, 213, 225, .72); font-size: 10px; background: rgba(15, 23, 42, .6); }
+.node-connector { min-height: 32px; display: grid; justify-items: center; gap: 3px; color: rgba(148, 163, 184, .52); }
+.node-connector i { position: relative; width: 2px; height: 100%; min-height: 18px; background: rgba(148, 163, 184, .28); }
+.node-connector i::after { content: ""; position: absolute; right: -4px; bottom: 0; width: 0; height: 0; border-top: 6px solid rgba(148, 163, 184, .48); border-right: 5px solid transparent; border-left: 5px solid transparent; }
+.node-connector.connected i { background: linear-gradient(180deg, rgba(96, 165, 250, .78), rgba(96, 165, 250, .25)); }
+.node-connector.connected i::after { border-top-color: rgba(96, 165, 250, .78); }
+.node-connector.missing i { background-image: repeating-linear-gradient(180deg, rgba(251, 113, 133, .55) 0 4px, transparent 4px 8px); }
+.node-connector small { font-size: 9px; }
+.node-connector.missing small { color: #fda4af; }
 .canvas-empty { padding: 65px 10px; border: 1px dashed var(--workflow-border); border-radius: 8px; text-align: center; color: rgba(226, 232, 240, .55); line-height: 1.8; }
 .canvas-empty small { font-size: 11px; }
 .workflow-properties label { margin-bottom: 13px; } .workflow-properties textarea { resize: vertical; }
 .risk-note { display: flex; gap: 7px; padding: 10px; border: 1px solid rgba(239, 68, 68, .28); border-radius: 6px; color: #fca5a5; font-size: 11px; line-height: 1.5; }
+.workflow-inputs { display: grid; gap: 8px; margin-bottom: 16px; padding: 10px; border: 1px solid var(--workflow-border); border-radius: 6px; }
+.workflow-inputs > strong { font-size: 11px; }
+.workflow-input-declaration { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .7fr) minmax(0, .9fr) auto auto; gap: 6px; align-items: end; }
+.workflow-input-declaration label { margin: 0; }
+.workflow-input-required { display: flex; align-items: center; gap: 5px; }
+.workflow-input-required input { width: auto; margin: 0; }
+.workflow-input-declaration button { display: grid; place-items: center; min-height: 30px; padding: 7px; border: 1px solid var(--workflow-border); border-radius: 5px; background: transparent; color: #fca5a5; cursor: pointer; }
+.workflow-input-values { display: grid; gap: 8px; padding-top: 8px; border-top: 1px dashed var(--workflow-border); }
+.workflow-input-values label { margin: 0; }
+.preview-risk-warning { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: #fca5a5; font-size: 12px; }
+.preview-risk-confirm { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; color: rgba(226, 232, 240, .8); font-size: 12px; }
+.preview-risk-confirm input { width: auto; margin: 0; }
 .remove-node-button { margin-top: auto; color: #fca5a5; border-color: rgba(239, 68, 68, .3); }
 .workflow-validation-bar { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-top: 1px solid var(--workflow-border); font-size: 12px; }
 .workflow-validation-bar span { display: inline-flex; align-items: center; gap: 6px; } .workflow-validation-bar.valid { color: #86efac; } .workflow-validation-bar.invalid { color: #fca5a5; }

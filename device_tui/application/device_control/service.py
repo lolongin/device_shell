@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from uuid import uuid4
 
 from device_tui.application.devices import DeviceActionResult, DeviceService
 from device_tui.application.commands import CommandService
 from device_tui.application.credentials import ConnectionTarget
-from device_tui.application.errors import ApplicationConflictError, ResourceNotFoundError, UnsupportedOperationError
+from device_tui.application.errors import (
+    ApplicationConflictError,
+    ResourceNotFoundError,
+    SessionConnectionError,
+    UnsupportedOperationError,
+)
 from device_tui.application.operations import OperationManager, OperationRecord
 from device_tui.application.sessions import SessionRecord, SessionService
 from device_tui.application.terminal.orchestration import (
@@ -30,6 +36,10 @@ from .models import (
 )
 from .lease import DeviceLeaseService
 from .protocol import CompatibilityDeviceCommandProfile, DeviceCommandProfile
+
+
+SESSION_CONNECT_WAIT_SECONDS = 15.0
+SESSION_CONNECT_POLL_SECONDS = 0.05
 
 
 class DeviceControlService:
@@ -179,7 +189,7 @@ class DeviceControlService:
         if not value.strip():
             raise UnsupportedOperationError("Command text cannot be empty.")
         resolved_target = await self.resolve_or_open_session(target, context=context)
-        session = self._connected_session_for_target(resolved_target)
+        session = await self._wait_for_connected_session(resolved_target)
         await self._sessions.write(session.id, CommandService.command_payload(value))
         return SendResult(session_id=session.id, device_id=session.device_id, sent=True)
 
@@ -216,7 +226,7 @@ class DeviceControlService:
     ) -> CommandResult:
         self._validate_task_lease(target, context)
         resolved_target = await self.resolve_or_open_session(target, context=context)
-        session = self._connected_session_for_target(resolved_target)
+        session = await self._wait_for_connected_session(resolved_target)
         mode = request.mode.casefold()
         if mode == "interactive":
             if not request.steps:
@@ -431,6 +441,30 @@ class DeviceControlService:
                 details={"session_id": session.id, "status": session.status},
             )
         return session
+
+    async def _wait_for_connected_session(
+        self,
+        target: DeviceTarget,
+        *,
+        timeout_seconds: float = SESSION_CONNECT_WAIT_SECONDS,
+    ) -> SessionRecord:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.1, float(timeout_seconds))
+        while True:
+            session = self._session_for_target(target)
+            if session.status.casefold() == "connected":
+                return session
+            if session.status.casefold() in {"failed", "disconnected"}:
+                raise SessionConnectionError(
+                    f"Session failed to connect: {session.id}",
+                    details={"session_id": session.id, "status": session.status},
+                )
+            if loop.time() >= deadline:
+                raise SessionConnectionError(
+                    f"Timed out waiting for session to connect: {session.id}",
+                    details={"session_id": session.id, "status": session.status},
+                )
+            await asyncio.sleep(SESSION_CONNECT_POLL_SECONDS)
 
     def _session(self, session_id: str) -> SessionRecord:
         for session in self._sessions.list_sessions():

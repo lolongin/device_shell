@@ -18,11 +18,20 @@ from device_tui.application.tasking import DeviceExecutionTool, DeviceWorkflowEx
 from device_tui.application.tasking.models import WorkflowStep
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.infrastructure.transports.session_protocol import SessionCallbacks
 
 
 class FakeExecutor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
     async def run(self, *, session_id, device_id, plan, owner_id):
-        del plan, owner_id
+        self.calls.append({
+            "session_id": session_id,
+            "device_id": device_id,
+            "plan": plan,
+            "owner_id": owner_id,
+        })
         return {
             "execution_id": "exec-1",
             "session_id": session_id,
@@ -31,6 +40,79 @@ class FakeExecutor:
             "steps": [{"output": "ok\n", "status": "completed"}],
             "duration_ms": 1,
         }
+
+
+class SlowAdapterFactory:
+    def __init__(self, connect_delay_seconds: float = 0.05) -> None:
+        self.connect_delay_seconds = connect_delay_seconds
+        self.adapters: list[SlowAdapter] = []
+
+    def create(self, target, callbacks: SessionCallbacks) -> "SlowAdapter":
+        del target
+        adapter = SlowAdapter(callbacks, self.connect_delay_seconds)
+        self.adapters.append(adapter)
+        return adapter
+
+
+class FailingAdapterFactory:
+    def create(self, target, callbacks: SessionCallbacks) -> "FailingAdapter":
+        del target
+        return FailingAdapter(callbacks)
+
+
+class FailingAdapter:
+    def __init__(self, callbacks: SessionCallbacks) -> None:
+        self._callbacks = callbacks
+
+    @property
+    def is_connected(self) -> bool:
+        return False
+
+    async def connect(self, target, term_size) -> None:
+        del target, term_size
+        self._callbacks.on_status("Connecting")
+        raise OSError("expected connection failure")
+
+    async def disconnect(self, message: str = "Disconnected.") -> None:
+        del message
+
+    async def send_text(self, text: str) -> None:
+        del text
+
+    async def send_command(self, command: str) -> None:
+        del command
+
+    async def resize(self, columns: int, lines: int) -> None:
+        del columns, lines
+
+
+class SlowAdapter:
+    def __init__(self, callbacks: SessionCallbacks, connect_delay_seconds: float) -> None:
+        self._callbacks = callbacks
+        self._connect_delay_seconds = connect_delay_seconds
+        self.is_connected = False
+        self.sent: list[str] = []
+
+    async def connect(self, target, term_size) -> None:
+        del target, term_size
+        self._callbacks.on_status("Connecting")
+        await asyncio.sleep(self._connect_delay_seconds)
+        self.is_connected = True
+        self._callbacks.on_status("Connected")
+
+    async def disconnect(self, message: str = "Disconnected.") -> None:
+        del message
+        self.is_connected = False
+        self._callbacks.on_status("Disconnected")
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    async def send_command(self, command: str) -> None:
+        del command
+
+    async def resize(self, columns: int, lines: int) -> None:
+        del columns, lines
 
 
 class RebootExecutor:
@@ -331,6 +413,63 @@ def test_control_executes_for_a_device_without_a_preopened_terminal() -> None:
         assert result.device_id == SIMULATED_DEVICE_ID
         assert result.session_id
         assert len(application.sessions.list_sessions()) == 1
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_control_execute_waits_for_newly_created_session_to_connect() -> None:
+    async def scenario() -> None:
+        executor = FakeExecutor()
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(adapter_factory=SlowAdapterFactory()),
+            terminal_executor=executor,
+        )
+        result = await application.control.execute(
+            DeviceTarget(device_id=SIMULATED_DEVICE_ID),
+            CommandRequest(commands=("display version",)),
+        )
+
+        assert result.status == "completed"
+        assert len(executor.calls) == 1
+        assert result.session_id == executor.calls[0]["session_id"]
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_control_send_raw_waits_for_newly_created_session_to_connect() -> None:
+    async def scenario() -> None:
+        factory = SlowAdapterFactory()
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(adapter_factory=factory),
+        )
+        result = await application.control.send_raw(
+            DeviceTarget(device_id=SIMULATED_DEVICE_ID),
+            "display version",
+        )
+
+        assert result.sent is True
+        assert factory.adapters[0].sent == ["display version\r"]
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_control_execute_reports_connection_failure() -> None:
+    async def scenario() -> None:
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(adapter_factory=FailingAdapterFactory()),
+            terminal_executor=FakeExecutor(),
+        )
+        with pytest.raises(ApplicationError, match="failed to connect"):
+            await application.control.execute(
+                DeviceTarget(device_id=SIMULATED_DEVICE_ID),
+                CommandRequest(commands=("display version",)),
+            )
         await application.sessions.close_all()
 
     asyncio.run(scenario())

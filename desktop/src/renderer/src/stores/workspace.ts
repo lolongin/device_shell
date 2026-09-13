@@ -202,10 +202,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         device.board_id,
         device.domain,
         device.model,
+        device.vendor,
+        device.device_type,
         device.site,
+        device.rack,
+        device.owner,
         device.cpu,
         device.board_type,
         device.slot,
+        device.ssh_endpoint,
+        device.telnet_endpoint,
+        device.serial_endpoint,
+        device.serial_display,
         device.status_text,
         device.tooltip
       ].join(' ').toLocaleLowerCase(),
@@ -515,6 +523,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         sessions.value = sessions.value.filter((item) => item.id !== event.resourceId)
       } else {
         upsertSession(session)
+        if (event.type === 'session.created') {
+          activeSessionId.value = session.id
+        }
       }
       return
     }

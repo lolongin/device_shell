@@ -424,7 +424,7 @@ class TaskService:
         record = self.project_run(
             run,
             workflow_id=request.workflow.id,
-            session_id=request.target.session_id,
+            session_id=request.target.session_id or self._session_from_run_outputs(run),
             source=request.source,
             workflow_view=workflow_view,
         )
@@ -462,6 +462,23 @@ class TaskService:
                 },
             )
         return record
+
+    @staticmethod
+    def _session_from_run_outputs(run: TaskRun) -> str:
+        """Adopt a session opened by a run when the request did not bind one."""
+        for value in run.outputs.values():
+            session_id = TaskService._session_id_from_output(value)
+            if session_id:
+                return session_id
+        return ""
+
+    @staticmethod
+    def _session_id_from_output(value: Any) -> str:
+        if isinstance(value, Mapping):
+            candidate = value.get("session_id")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        return ""
 
     def _framework_workflow_view(
         self,
@@ -707,10 +724,11 @@ class TaskService:
             raise RuntimeError("generic TaskPlan orchestration is not configured")
         return self._orchestrator.pause(task_run_id)
 
-    def resume_plan(self, task_run_id: str, *, context: dict[str, Any] | None = None) -> TaskRun:
+    def resume_plan(self, task_run_id: str, *, context: dict[str, Any] | None = None, step_id: str = "") -> TaskRun:
         if self._orchestrator is None:
             raise RuntimeError("generic TaskPlan orchestration is not configured")
-        return self._orchestrator.resume(task_run_id, context=context)
+        plan = self._framework_plans.get(task_run_id)
+        return self._orchestrator.resume(task_run_id, context=context, step_id=step_id, plan=plan)
 
     def cancel_plan(self, task_run_id: str) -> TaskRun:
         if self._orchestrator is None:
@@ -816,7 +834,7 @@ class TaskService:
         step_id: str = "",
     ) -> TaskRecord:
         if task_id in self._framework_requests:
-            run = self.resume_plan(task_id, context=context)
+            run = self.resume_plan(task_id, context=context, step_id=step_id)
             plan = self._framework_plans[task_id]
             if str(run.status) == "running" and not any(
                 getattr(job, "get_name", lambda: "")() == f"framework-task-{task_id}"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from device_tui.framework import ActionSpec, StateNode, WorkflowDefinition
+from device_tui.framework import ActionSpec, Option, StateNode, WorkflowDefinition
 
 
 class ActivityWorkflowProvider:
@@ -45,6 +45,28 @@ class ActivityWorkflowProvider:
         )
 
 
+class ManualConfirmationWorkflowProvider:
+    id = "utility.confirm"
+    version = "1"
+
+    def build(self, inputs: dict[str, Any]) -> WorkflowDefinition:
+        prompt = str(inputs.get("prompt") or "请确认是否继续执行流程。")
+        approve = str(inputs.get("approve_label") or "确认继续")
+        reject = str(inputs.get("reject_label") or "取消流程")
+        return WorkflowDefinition(
+            id=self.id,
+            version=self.version,
+            start_state="confirm",
+            states=(
+                StateNode("confirm", decision_options=(
+                    Option("approve", "approve", approve, description=prompt, next_state="complete"),
+                    Option("reject", "abort", reject, description="停止后续步骤。"),
+                )),
+                StateNode("complete", terminal=True),
+            ),
+        )
+
+
 def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvider, ...]:
     return (
         ActivityWorkflowProvider("script.run"),
@@ -52,13 +74,19 @@ def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvide
         ActivityWorkflowProvider("file.transfer", required_capabilities=("file.transfer",)),
         ActivityWorkflowProvider("device.reboot", required_capabilities=("device.reboot",)),
         ActivityWorkflowProvider("device.wait_online"),
+        ActivityWorkflowProvider("device.info"),
         ActivityWorkflowProvider("device.verify_version"),
         ActivityWorkflowProvider("terminal.command"),
         ActivityWorkflowProvider("terminal.batch"),
         ActivityWorkflowProvider("device.power_off"),
         ActivityWorkflowProvider("operation.wait"),
         ActivityWorkflowProvider("utility.wait"),
+        ManualConfirmationWorkflowProvider(),
+        ActivityWorkflowProvider("result.save"),
         ActivityWorkflowProvider("device.select"),
+        ActivityWorkflowProvider("variable.set"),
+        ActivityWorkflowProvider("expression.evaluate"),
+        ActivityWorkflowProvider("loop.for_each"),
         ActivityWorkflowProvider("device.verify_artifact"),
         ActivityWorkflowProvider("device.storage.cleanup"),
         ActivityWorkflowProvider("device.storage.sync"),
@@ -67,4 +95,4 @@ def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvide
     )
 
 
-__all__ = ["ActivityWorkflowProvider", "build_default_activity_workflow_providers"]
+__all__ = ["ActivityWorkflowProvider", "ManualConfirmationWorkflowProvider", "build_default_activity_workflow_providers"]

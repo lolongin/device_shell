@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from typing import Any
 from pathlib import Path
 from uuid import uuid4
 
@@ -187,6 +188,37 @@ async def task_delete_many(
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
 async def task_get(task_id: str, ctx=Depends(get_context)) -> TaskResponse:
     return TaskResponse(task=task_model(ctx.desktop.task_service.get(task_id)))
+
+
+@router.get("/tasks/{task_id}/report")
+async def task_report(task_id: str, ctx=Depends(get_context)) -> dict[str, Any]:
+    """Return a safe, business-facing report payload for local CSV export."""
+    record = ctx.desktop.task_service.get(task_id)
+    result = getattr(record, "result", None)
+    columns = ["流程", "设备", "总体状态", "步骤", "步骤状态", "重试次数", "说明", "错误代码"]
+    rows: list[dict[str, Any]] = []
+    for step in (getattr(result, "steps", ()) if result else ()):
+        raw_attempt = (getattr(step, "data", {}) or {}).get("attempt", 1)
+        try:
+            retry_count = max(0, int(raw_attempt or 1) - 1)
+        except (TypeError, ValueError):
+            retry_count = 0
+        rows.append({
+            "流程": record.workflow_id,
+            "设备": record.device_id,
+            "总体状态": record.status,
+            "步骤": getattr(step, "step_id", ""),
+            "步骤状态": getattr(step, "status", ""),
+            "重试次数": retry_count,
+            "说明": getattr(step, "message", "") or ("已完成" if getattr(step, "status", "") == "completed" else ""),
+            "错误代码": getattr(step, "error_code", ""),
+        })
+    return {
+        "filename": f"workflow-{task_id}.csv",
+        "columns": columns,
+        "rows": rows,
+        "summary": {"task_id": task_id, "workflow_id": record.workflow_id, "device_id": record.device_id, "status": record.status},
+    }
 
 
 @router.delete("/tasks/{task_id}", status_code=204)

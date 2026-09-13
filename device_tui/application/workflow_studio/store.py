@@ -14,6 +14,7 @@ class WorkflowDefinitionStore(Protocol):
     def list(self, *, limit: int = 500) -> list[WorkflowDraft]: ...
     def delete(self, workflow_id: str, version: int | str | None = None) -> None: ...
     def publish(self, workflow_id: str) -> WorkflowVersion: ...
+    def list_versions(self, workflow_id: str) -> list[WorkflowVersion]: ...
 
 
 class MemoryWorkflowDefinitionStore:
@@ -69,6 +70,9 @@ class MemoryWorkflowDefinitionStore:
         version = WorkflowVersion(workflow_id, number, draft.name, draft.inputs, draft.nodes, draft.edges, datetime.now(UTC).isoformat())
         versions[number] = version
         return deepcopy(version)
+
+    def list_versions(self, workflow_id: str) -> list[WorkflowVersion]:
+        return [deepcopy(item) for _, item in sorted(self._versions.get(workflow_id, {}).items())]
 
     def mark_referenced(self, workflow_id: str, version: int | str) -> None:
         self._references.add((workflow_id, int(version)))

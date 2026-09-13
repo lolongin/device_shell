@@ -429,8 +429,8 @@ export const desktopApi = {
   workflowActions: (): Promise<WorkflowActionCatalogResponse> => request('/api/v1/workflow-definitions/actions'),
   createWorkflowDefinition: (payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions', { method: 'POST', body: JSON.stringify(payload) }),
   saveWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  publishWorkflowDefinition: (id: string): Promise<{ published: boolean; errors?: Array<{ message: string }>; workflow?: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
-  runWorkflowDefinition: (id: string, payload: { device_id: string; protocol?: 'auto' | 'ssh' | 'telnet' | 'serial' | 'simulated'; inputs?: Record<string, unknown> }): Promise<{ task: TaskRecord }> =>
+  publishWorkflowDefinition: (id: string): Promise<{ published: boolean; errors?: Array<{ code?: string; message: string; node_id?: string | null }>; workflow?: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
+  runWorkflowDefinition: (id: string, payload: { device_id?: string; device_ids?: string[]; session_id?: string; session_ids?: Record<string, string>; step_id?: string; version?: string | number; draft?: boolean; protocol?: 'auto' | 'ssh' | 'telnet' | 'serial' | 'simulated'; inputs?: Record<string, unknown>; dry_run?: boolean; confirmed_risks?: boolean }): Promise<{ task?: TaskRecord; tasks?: TaskRecord[]; target_count?: number; dry_run?: boolean; preview?: Record<string, unknown> }> =>
     request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/run`, {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -447,6 +447,8 @@ export const desktopApi = {
     request('/api/v1/mcp/workflow.run', { method: 'POST', body: JSON.stringify({ plan_id: planId, plan_hash: planHash, source: 'desktop' }) }),
   getTask: (taskId: string): Promise<TaskResponse> =>
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}`),
+  taskReport: (taskId: string): Promise<{ filename: string; columns: string[]; rows: Array<Record<string, string | number>>; summary: Record<string, string> }> =>
+    request(`/api/v1/tasks/${encodeURIComponent(taskId)}/report`),
   listTasks: (): Promise<TaskListResponse> => request('/api/v1/tasks'),
   deleteTask: (taskId: string): Promise<void> =>
     request(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),

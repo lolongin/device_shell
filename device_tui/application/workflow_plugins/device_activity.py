@@ -6,6 +6,7 @@ vendor command selection remains in ``DeviceExecutionTool`` and its drivers.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from device_tui.application.device_control import ControlContext, DeviceTarget
@@ -30,6 +31,7 @@ class DeviceActivityHandler:
     _EXECUTION_ACTIONS = {
         "device.reboot": "reboot",
         "device.wait_online": "wait_online",
+        "device.info": "verify_version",
         "device.verify_version": "verify_version",
         "terminal.command": "command",
         "terminal.batch": "batch",
@@ -107,6 +109,18 @@ class DeviceActivityHandler:
             )
 
         outputs = dict(data)
+        if operation == "device.info":
+            match = re.search(r"\b(?:v|version\s*)?(\d+(?:\.\d+)+)\b", str(outputs.get("output") or ""), re.IGNORECASE)
+            if match:
+                outputs["software_version"] = match.group(1)
+            requested_fields = inputs.get("fields")
+            if isinstance(requested_fields, str):
+                requested_fields = [item.strip() for item in requested_fields.split(",") if item.strip()]
+            elif isinstance(requested_fields, (list, tuple, set)):
+                requested_fields = [str(item).strip() for item in requested_fields if str(item).strip()]
+            else:
+                requested_fields = ["name", "software_version", "status"]
+            outputs["requested_fields"] = requested_fields or ["name", "software_version", "status"]
         operation_id = str(outputs.get("operation_id") or outputs.get("execution_id") or "")
         raw_status = str(outputs.get("status") or "completed").casefold()
         succeeded = raw_status in {"success", "succeeded", "completed", "ok", "ready"}

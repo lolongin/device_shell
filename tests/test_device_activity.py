@@ -58,6 +58,31 @@ def test_device_activity_maps_success_and_keeps_vendor_execution_behind_handler(
     assert events[0].type == "device.activity.dispatching"
 
 
+def test_device_info_activity_exposes_a_structured_software_version():
+    backend = FakeExecution({"status": "completed", "output": "SimOS V8.120 build 1", "execution_id": "exec-2"})
+    handler = DeviceActivityHandler(backend, "device.info")
+    invocation = _invocation("device.info", fields=["software_version"])
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "dev-1"), invocation)
+
+    result = asyncio.run(handler.execute(invocation, context, lambda event: event))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["software_version"] == "8.120"
+    assert result.outputs["requested_fields"] == ["software_version"]
+    assert backend.calls[0][1].action == "verify_version"
+
+
+def test_device_info_activity_normalizes_legacy_comma_separated_fields():
+    backend = FakeExecution({"status": "completed", "output": "version 8.120"})
+    handler = DeviceActivityHandler(backend, "device.info")
+    invocation = _invocation("device.info", fields="name, software_version, status")
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "dev-1"), invocation)
+
+    result = asyncio.run(handler.execute(invocation, context, lambda event: event))
+
+    assert result.outputs["requested_fields"] == ["name", "software_version", "status"]
+
+
 def test_reboot_execution_error_is_unknown_until_reconciled():
     backend = FakeExecution(error=DeviceWorkflowExecutionError("terminal_timeout", "connection lost", error_class="unknown"))
     handler = DeviceActivityHandler(backend, "device.reboot")
@@ -118,4 +143,3 @@ def test_device_activity_emits_legacy_reboot_and_readiness_signals_during_migrat
     assert [event.type for event in events] == [
         "huawei.reboot.started", "huawei.cli.ready", "huawei.startup.package.match",
     ]
-

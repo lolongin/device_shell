@@ -27,10 +27,12 @@ MOCK_PROTOCOL_FAILURE = os.getenv("DEVICE_TUI_MOCK_PROTOCOL_FAILURE") == "1"
 MOCK_DEVICE_SSH_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2200
 MOCK_DEVICE_TELNET_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2323
 ENSP_AR_TELNET_IP = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_IP", "192.168.40.20").strip()
-ENSP_AR_TELNET_USER = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_USER", "appadmin").strip()
+ENSP_AR_TELNET_USER =  "appadmin"
+ENSP_AR_TELNET_PASSWORD = "Root@123"
 # Keep the lab credential out of source control. The custom connection dialog
 # can supply it for a one-time session when this is empty.
-ENSP_AR_TELNET_PASSWORD = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_PASSWORD", "").strip()
+#ENSP_AR_TELNET_PASSWORD = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_PASSWORD", "").strip()
+
 SAMPLE_NOW = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
 
 def sample_devices() -> list[Device]:

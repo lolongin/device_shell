@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Mapping, Protocol
+import asyncio
+from typing import Any, Callable, Mapping, Protocol
 from uuid import uuid4
 
 from .models import FrameworkModel, RunStatus, WorkflowDefinition, WorkflowRun
+from .conditions import evaluate_rules
+from .expression import evaluate_expression
 from .resources import ResourceCoordinator, ResourceLease, ResourceRequest
 from .runtime import WorkflowRuntime
 
@@ -36,6 +39,12 @@ class WorkflowNode(FrameworkModel):
     # resolved against the parent TaskRun inputs/outputs.
     input_mapping: dict[str, Any] = field(default_factory=dict)
     version: str = "1"
+    # Optional business rule produced by the Workflow Studio branch compiler.
+    # It remains JSON-compatible so plans can be persisted and resumed.
+    run_if: dict[str, Any] | None = None
+    retry_policy: dict[str, Any] = field(default_factory=dict)
+    repeat_policy: dict[str, Any] = field(default_factory=dict)
+    parallel_group: str | None = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowNode":
@@ -45,6 +54,10 @@ class WorkflowNode(FrameworkModel):
             depends_on=tuple(str(item) for item in payload.get("depends_on", ()) if str(item)),
             input_mapping={str(key): value for key, value in dict(payload.get("input_mapping") or payload.get("inputs") or {}).items()},
             version=str(payload.get("version") or "1"),
+            run_if=dict(payload.get("run_if") or {}) or None,
+            retry_policy=dict(payload.get("retry_policy") or {}),
+            repeat_policy=dict(payload.get("repeat_policy") or payload.get("repeat") or {}),
+            parallel_group=str(payload.get("parallel_group") or "").strip() or None,
         )
 
 
@@ -79,6 +92,14 @@ class TaskPlan(FrameworkModel):
             unknown = set(node.depends_on) - ids
             if unknown:
                 raise ValueError(f"node {node.id} depends on unknown nodes: {', '.join(sorted(unknown))}")
+        groups: dict[str, set[str]] = {}
+        for node in self.nodes:
+            if node.parallel_group:
+                groups.setdefault(node.parallel_group, set()).add(node.id)
+        for group, members in groups.items():
+            for node in self.nodes:
+                if node.id in members and set(node.depends_on) & members:
+                    raise ValueError(f"parallel group {group} contains dependent nodes")
         self._ordered_nodes()
 
     def _ordered_nodes(self) -> tuple[WorkflowNode, ...]:
@@ -92,6 +113,33 @@ class TaskPlan(FrameworkModel):
                 ordered.append(node)
                 pending.pop(node.id)
         return tuple(ordered)
+
+    def execution_batches(self) -> tuple[tuple[WorkflowNode, ...], ...]:
+        """Return dependency-safe batches for schedulers.
+
+        Nodes without a parallel group remain singleton batches. Nodes sharing
+        a group are batched only when all of their dependencies are complete;
+        validation guarantees that group members do not depend on one another.
+        This keeps persistence and resume boundaries deterministic.
+        """
+        ordered = self._ordered_nodes()
+        batches: list[tuple[WorkflowNode, ...]] = []
+        pending = {node.id: node for node in ordered}
+        completed: set[str] = set()
+        while pending:
+            ready = [node for node in ordered if node.id in pending and set(node.depends_on) <= completed]
+            if not ready:
+                raise ValueError("task plan contains a dependency cycle")
+            first = ready[0]
+            if first.parallel_group:
+                batch = tuple(node for node in ready if node.parallel_group == first.parallel_group)
+            else:
+                batch = (first,)
+            batches.append(batch)
+            for node in batch:
+                pending.pop(node.id, None)
+                completed.add(node.id)
+        return tuple(batches)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,11 +197,13 @@ class TaskOrchestrator:
         *,
         store: TaskRunStore | None = None,
         resource_coordinator: ResourceCoordinator | None = None,
+        sleep: Callable[[float], Any] | None = None,
     ) -> None:
         self.runtime = runtime
         self.workflows = workflows
         self.store = store or MemoryTaskRunStore()
         self.resource_coordinator = resource_coordinator
+        self._sleep = sleep or asyncio.sleep
         self._runs: dict[str, TaskRun] = {}
         self._resource_leases: dict[str, ResourceLease] = {}
         for run in self.store.list():
@@ -242,9 +292,33 @@ class TaskOrchestrator:
             self.runtime.pause(child.id)
         return self._save(replace(task, status=TaskRunStatus.WAITING_RECONCILE))
 
-    def resume(self, task_run_id: str, *, context: Mapping[str, Any] | None = None) -> TaskRun:
+    def resume(self, task_run_id: str, *, context: Mapping[str, Any] | None = None, step_id: str = "", plan: TaskPlan | None = None) -> TaskRun:
         """Resume a task; child recovery remains owned by ``WorkflowRuntime``."""
         task = self.get(task_run_id)
+        if step_id:
+            if plan is None or step_id not in {node.id for node in plan.nodes}:
+                raise ValueError(f"unknown workflow step: {step_id}")
+            downstream = {step_id}
+            changed = True
+            while changed:
+                changed = False
+                for node in plan.nodes:
+                    if node.id not in downstream and set(node.depends_on) & downstream:
+                        downstream.add(node.id)
+                        changed = True
+            child = self._active_child(task)
+            if child is not None:
+                cancel = getattr(self.runtime, "cancel", None)
+                if callable(cancel):
+                    cancel(child.id)
+            return self._save(replace(
+                task,
+                status=TaskRunStatus.RUNNING,
+                node_runs={key: value for key, value in task.node_runs.items() if key not in downstream},
+                outputs={key: value for key, value in task.outputs.items() if key not in downstream},
+                error=None,
+                context={**task.context, **dict(context or {}), "resume_from_step": step_id},
+            ))
         child = self._active_child(task)
         if child is not None:
             self.runtime.resume(child.id, context=dict(context or {}))
@@ -292,6 +366,55 @@ class TaskOrchestrator:
             status = TaskRunStatus.RUNNING
         return self._save(replace(task, status=status))
 
+    async def _execute_parallel_node(
+        self,
+        task: TaskRun,
+        node: WorkflowNode,
+        values: Mapping[str, Any],
+        on_child_started: Callable[[str, str], None] | None = None,
+    ) -> tuple[str, str, dict[str, Any] | None, dict[str, Any] | None, str | None]:
+        """Execute one independent node for a parallel batch."""
+        if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, values):
+            return node.id, "skipped", {"status": "skipped", "reason": "condition_false"}, None, None
+        node_inputs = self._resolve_inputs(node.input_mapping, {**task.inputs, **values})
+        definition = self.workflows.build(node.workflow_id, node_inputs)
+        max_attempts = max(1, min(5, int(node.retry_policy.get("max_attempts", 1) or 1)))
+        max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
+        backoff_seconds = max(0.0, min(60.0, float(node.retry_policy.get("backoff_seconds", 0) or 0)))
+        child = None
+        for iteration in range(max_iterations):
+            for attempt in range(max_attempts):
+                if attempt > 0:
+                    await self._sleep(backoff_seconds)
+                child = self.runtime.start(
+                    definition,
+                    device_id=task.device_id,
+                    context={
+                        **task.context,
+                        "task_run_id": task.id,
+                        "node_id": node.id,
+                        "inputs": node_inputs,
+                        "retry_attempt": attempt + 1,
+                        "retry_limit": max_attempts,
+                        "repeat_iteration": iteration + 1,
+                        "repeat_limit": max_iterations,
+                        "resource_owner_id": str(task.context.get("resource_owner_id") or task.id),
+                    },
+                )
+                if on_child_started is not None:
+                    on_child_started(node.id, child.id)
+                child = await self.runtime.run_until_blocked(child.id)
+                status = str(child.status)
+                if status == RunStatus.SUCCEEDED.value:
+                    break
+                if status not in {RunStatus.FAILED.value, "unknown"} or attempt + 1 >= max_attempts:
+                    return node.id, status, None, getattr(child, "error", None), child.id
+        assert child is not None
+        output = dict(child.outputs)
+        if max_iterations > 1:
+            output["repeat_iterations"] = max_iterations
+        return node.id, RunStatus.SUCCEEDED.value, output, None, child.id
+
     def _active_child(self, task: TaskRun):
         for node_id in reversed(tuple(task.node_runs)):
             child = self.runtime.runs.get(task.node_runs[node_id])
@@ -318,7 +441,46 @@ class TaskOrchestrator:
         outputs = dict(task.outputs)
         node_runs = dict(task.node_runs)
         try:
+            parallel_batches = {batch[0].id: batch for batch in plan.execution_batches() if len(batch) > 1}
+            parallel_completed: set[str] = set()
             for node in plan._ordered_nodes():
+                if node.id in parallel_completed:
+                    continue
+                batch = parallel_batches.get(node.id)
+                if batch and not any(item.id in node_runs for item in batch):
+                    group_name = batch[0].parallel_group or "parallel"
+                    task = self._save(replace(
+                        task,
+                        status=TaskRunStatus.WAITING_CHILD,
+                        context={**task.context, "parallel_batch": {"group": group_name, "node_ids": [item.id for item in batch]}},
+                    ))
+                    def record_child(node_id: str, child_id: str) -> None:
+                        node_runs[node_id] = child_id
+                        self._save(replace(task, node_runs=dict(node_runs), status=TaskRunStatus.WAITING_CHILD))
+                    results = await asyncio.gather(*(
+                        self._execute_parallel_node(task, item, outputs, record_child) for item in batch
+                    ))
+                    failures = [result for result in results if result[1] not in {RunStatus.SUCCEEDED.value, "skipped"}]
+                    if failures:
+                        cancel = getattr(self.runtime, "cancel", None)
+                        if callable(cancel):
+                            for _node_id, _status, _output, _error, child_id in results:
+                                if child_id:
+                                    try:
+                                        child = self.runtime.runs.get(child_id)
+                                        if str(child.status) not in {RunStatus.SUCCEEDED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}:
+                                            cancel(child_id)
+                                    except (KeyError, AttributeError):
+                                        continue
+                        first = failures[0]
+                        return self._save(replace(task, status=self._aggregate_child_status(first[1]), outputs=outputs, error=first[3], context={key: value for key, value in task.context.items() if key != "parallel_batch"}))
+                    for node_id, _status, output, _error, child_id in results:
+                        if child_id:
+                            node_runs[node_id] = child_id
+                        outputs[node_id] = output or {"status": "skipped", "reason": "condition_false"}
+                        parallel_completed.add(node_id)
+                    task = self._save(replace(task, node_runs=dict(node_runs), outputs=dict(outputs), status=TaskRunStatus.RUNNING, context={key: value for key, value in task.context.items() if key != "parallel_batch"}))
+                    continue
                 if node.id in node_runs:
                     child = self.runtime.runs.get(node_runs[node.id])
                     child_status = str(child.status)
@@ -336,40 +498,75 @@ class TaskOrchestrator:
                             ))
                         return self._save(replace(task, status=aggregate, outputs=outputs))
                     outputs[node.id] = dict(child.outputs)
+                    if node.workflow_id == "variable.set":
+                        variable_name = str(child.outputs.get("name") or "").strip()
+                        if variable_name:
+                            outputs[variable_name] = child.outputs.get("value")
                     continue
-                node_inputs = self._resolve_inputs(node.input_mapping, {**task.inputs, **outputs})
-                definition = self.workflows.build(node.workflow_id, node_inputs)
-                child = self.runtime.start(
-                    definition,
-                    device_id=task.device_id,
-                    run_id=(
-                        str(task.context.get("orchestrator.child_run_id") or "") or None
-                        if len(plan.nodes) == 1 else None
-                    ),
-                    context={
-                        **task.context,
-                        "task_run_id": task.id,
-                        "node_id": node.id,
-                        "inputs": node_inputs,
-                        "resource_owner_id": str(task.context.get("resource_owner_id") or task.id),
-                    },
+                if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, outputs):
+                    outputs[node.id] = {
+                        "status": "skipped",
+                        "reason": "condition_false",
+                    }
+                    task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
+                    continue
+                node_inputs = self._resolve_inputs(
+                    node.input_mapping,
+                    {"inputs": dict(task.inputs), "outputs": dict(outputs), **task.inputs, **outputs},
                 )
-                node_runs[node.id] = child.id
-                task = self._save(replace(task, node_runs=dict(node_runs), status=TaskRunStatus.WAITING_CHILD))
-                child = await self.runtime.run_until_blocked(child.id)
-                child_status = str(child.status)
-                if child_status != RunStatus.SUCCEEDED.value:
-                    aggregate = self._aggregate_child_status(child_status)
-                    return self._save(replace(
-                        task,
-                        status=aggregate,
-                        outputs=outputs,
-                        error=getattr(child, "error", None)
-                        if aggregate in {TaskRunStatus.FAILED, TaskRunStatus.UNKNOWN}
-                        else task.error,
-                    ))
-                outputs[node.id] = dict(child.outputs)
-                task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
+                definition = self.workflows.build(node.workflow_id, node_inputs)
+                max_attempts = max(1, min(5, int(node.retry_policy.get("max_attempts", 1) or 1)))
+                max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
+                backoff_seconds = max(0.0, min(60.0, float(node.retry_policy.get("backoff_seconds", 0) or 0)))
+                child = None
+                for _iteration in range(max_iterations):
+                    for _attempt in range(max_attempts):
+                        if _attempt > 0:
+                            await self._sleep(backoff_seconds)
+                        child = self.runtime.start(
+                        definition,
+                        device_id=task.device_id,
+                        run_id=(
+                            str(task.context.get("orchestrator.child_run_id") or "") or None
+                            if len(plan.nodes) == 1 and _attempt == 0 and _iteration == 0 else None
+                        ),
+                        context={
+                            **task.context,
+                            "task_run_id": task.id,
+                            "node_id": node.id,
+                            "inputs": node_inputs,
+                            "retry_attempt": _attempt + 1,
+                            "retry_limit": max_attempts,
+                            "repeat_iteration": _iteration + 1,
+                            "repeat_limit": max_iterations,
+                            "resource_owner_id": str(task.context.get("resource_owner_id") or task.id),
+                        },
+                        )
+                        node_runs[node.id] = child.id
+                        task = self._save(replace(task, node_runs=dict(node_runs), status=TaskRunStatus.WAITING_CHILD))
+                        child = await self.runtime.run_until_blocked(child.id)
+                        child_status = str(child.status)
+                        if child_status == RunStatus.SUCCEEDED.value:
+                            break
+                        if child_status not in {RunStatus.FAILED.value, "unknown"} or _attempt + 1 >= max_attempts:
+                            aggregate = self._aggregate_child_status(child_status)
+                            return self._save(replace(
+                                task,
+                                status=aggregate,
+                                outputs=outputs,
+                                error=getattr(child, "error", None)
+                                if aggregate in {TaskRunStatus.FAILED, TaskRunStatus.UNKNOWN}
+                                else task.error,
+                            ))
+                    assert child is not None
+                    outputs[node.id] = dict(child.outputs)
+                    if node.workflow_id == "variable.set":
+                        variable_name = str(child.outputs.get("name") or "").strip()
+                        if variable_name:
+                            outputs[variable_name] = child.outputs.get("value")
+                    if max_iterations > 1:
+                        outputs[node.id]["repeat_iterations"] = _iteration + 1
+                    task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
             return self._save(replace(task, status=TaskRunStatus.SUCCEEDED, outputs=outputs))
         except Exception as exc:
             # A failed child creation/resolution can leave a runtime lease
@@ -404,11 +601,15 @@ class TaskOrchestrator:
 
     @staticmethod
     def _resolve_inputs(mapping: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
-        resolved: dict[str, Any] = {}
-        for name, expression in mapping.items():
+        def resolve(expression: Any) -> Any:
+            if isinstance(expression, Mapping):
+                return {str(key): resolve(value) for key, value in expression.items()}
+            if isinstance(expression, list):
+                return [resolve(item) for item in expression]
+            if isinstance(expression, tuple):
+                return tuple(resolve(item) for item in expression)
             if not isinstance(expression, str) or not expression.startswith("${") or not expression.endswith("}"):
-                resolved[name] = expression
-                continue
+                return expression
             path = expression[2:-1].split(".")
             current: Any = values
             for segment in path:
@@ -416,8 +617,30 @@ class TaskOrchestrator:
                     current = current[segment]
                 else:
                     raise ValueError(f"unresolved task input: {expression}")
-            resolved[name] = current
-        return resolved
+            return current
+        return {str(name): resolve(expression) for name, expression in mapping.items()}
+
+    @staticmethod
+    def _matches_run_if(
+        run_if: Mapping[str, Any],
+        inputs: Mapping[str, Any],
+        outputs: Mapping[str, Any],
+    ) -> bool:
+        source_id = str(run_if.get("values_from") or "").strip()
+        values: Mapping[str, Any] = outputs.get(source_id, {}) if source_id else {**inputs, **outputs}
+        expression = str(run_if.get("expression") or "").strip()
+        if expression:
+            expression_values = {"inputs": inputs, "outputs": outputs, **inputs, **outputs}
+            if source_id:
+                expression_values.update(values)
+            matched = bool(evaluate_expression(expression, expression_values))
+        else:
+            matched = evaluate_rules(
+                [item for item in run_if.get("rules", ()) if isinstance(item, Mapping)],
+                values,
+                logical_operator=str(run_if.get("logical_operator") or "AND"),
+            )
+        return matched is bool(run_if.get("expected", True))
 
     def _save(self, run: TaskRun) -> TaskRun:
         self._runs[run.id] = run

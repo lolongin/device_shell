@@ -6,6 +6,7 @@ contracts.
 """
 
 from .decisions import DecisionEngine, DecisionSubmission, DecisionValidationError
+from .conditions import evaluate_rules
 from .activity import (
     ActivityContext,
     ActivityDefinition,
@@ -105,6 +106,7 @@ __all__ = [
     "DecisionPoint",
     "DecisionSubmission",
     "DecisionValidationError",
+    "evaluate_rules",
     "DeviceAdapter",
     "DeviceVendorAdapter",
     "DeviceStateSnapshot",

@@ -24,10 +24,12 @@ class ActionCatalog:
     def list(self) -> tuple[ActionSpec, ...]: return tuple(self._actions.values())
 
 def build_action_catalog() -> ActionCatalog:
-    def a(id: str, name: str, category: str, required: tuple[str, ...] = (), risk: str = "low", **props: Any) -> ActionSpec:
-        return ActionSpec(id, name, category, {"type": "object", "properties": props, "required": list(required)}, {}, risk, id)
+    def a(id: str, display_name: str, category: str, required: tuple[str, ...] = (), risk: str = "low", **props: Any) -> ActionSpec:
+        return ActionSpec(id, display_name, category, {"type": "object", "properties": props, "required": list(required)}, {}, risk, id)
     return ActionCatalog(tuple([
         a("device.select", "选择设备", "device", ("device_id",), device_id={"type": "string"}),
+        a("device.connect", "连接设备", "device", (), device_id={"type": "string"}, timeout={"type": "number"}),
+        a("device.info", "获取设备信息", "device", (), fields={"type": "array"}),
         a("device.ssh", "SSH 连接", "connection", ("host",), host={"type": "string"}, port={"type": "integer"}),
         a("device.telnet", "Telnet 连接", "connection", ("host",), host={"type": "string"}, port={"type": "integer"}),
         a("device.command", "执行命令", "device", ("command",), command={"type": "string"}),
@@ -35,5 +37,10 @@ def build_action_catalog() -> ActionCatalog:
         a("file.download", "下载文件", "transfer", ("source", "destination"), source={"type": "string"}, destination={"type": "string"}),
         a("device.reboot", "重启设备", "device", risk="high"),
         a("utility.wait", "等待", "control", ("seconds",), seconds={"type": "number"}),
-        a("utility.condition", "条件判断", "control", ("expression",), expression={"type": "string"}),
+        a("utility.condition", "条件判断", "control", (), expression={"type": "string"}, rules={"type": "array"}, logical_operator={"type": "string"}),
+        a("utility.confirm", "人工确认", "control", (), prompt={"type": "string"}, approve_label={"type": "string"}, reject_label={"type": "string"}),
+        a("result.save", "保存结果", "result", (), key={"type": "string"}),
+        a("variable.set", "设置变量", "control", ("name",), name={"type": "string"}, value={"type": ["string", "number", "boolean", "object", "array", "null"]}),
+        a("expression.evaluate", "计算表达式", "control", ("expression",), expression={"type": "string"}, values={"type": "object"}),
+        a("loop.for_each", "循环 FOR", "control", ("items", "action_id"), items={"type": "array"}, action_id={"type": "string"}, action_inputs={"type": "object"}),
     ]))

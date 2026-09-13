@@ -16,7 +16,16 @@ from ..workflow_plugins.package_upgrade.workflow import HuaweiVrpPackageUpgradeP
 from ..workflow_plugins.process import ProcessActivityHandler
 from ..workflow_plugins.terminal_transfer import TerminalTransferAdapter
 from ..workflow_plugins.device_activity import DeviceActivityHandler
-from ..workflow_plugins.utility import DeviceSelectActivityHandler, WaitActivityHandler
+from ..workflow_plugins.utility import (
+    DeviceSelectActivityHandler,
+    ExpressionActivityHandler,
+    ForEachActivityHandler,
+    ResultSaveActivityHandler,
+    VariableSetActivityHandler,
+    WaitActivityHandler,
+)
+from device_tui.framework import ActivityContext, ActivityInvocation
+from uuid import uuid4
 from ..workflow_plugins.transfer import TransferActivityHandler
 from ..workflow_plugins.generic import build_default_activity_workflow_providers
 from ..workflow_plugins.vendor_adapter import DeviceVendorActivityHandler
@@ -68,8 +77,31 @@ def build_default_activity_executor(
         executor.register_handler(ProcessActivityHandler(activity_id))
     executor.register_definition(ActivityDefinition(id="utility.wait"))
     executor.register_handler(WaitActivityHandler())
+    executor.register_definition(ActivityDefinition(id="result.save"))
+    executor.register_handler(ResultSaveActivityHandler())
     executor.register_definition(ActivityDefinition(id="device.select"))
     executor.register_handler(DeviceSelectActivityHandler())
+    executor.register_definition(ActivityDefinition(id="variable.set"))
+    executor.register_handler(VariableSetActivityHandler())
+    executor.register_definition(ActivityDefinition(id="expression.evaluate"))
+    executor.register_handler(ExpressionActivityHandler())
+    executor.register_definition(ActivityDefinition(id="loop.for_each"))
+    if execution is None:
+        executor.register_handler(ForEachActivityHandler())
+    else:
+        async def run_child(action_id, inputs, parent_context, report):
+            invocation = ActivityInvocation(
+                activity_id=str(action_id),
+                invocation_id=f"loop:{uuid4().hex}",
+                workflow_run_id=parent_context.workflow_run.id,
+                inputs=dict(inputs),
+                context=dict(parent_context.invocation.context),
+            )
+            result = await executor.execute(invocation, ActivityContext(parent_context.workflow_run, invocation), report)
+            if str(result.status) != "succeeded":
+                raise RuntimeError((result.error or {}).get("message", "loop child failed"))
+            return {**result.outputs, "status": str(result.status)}
+        executor.register_handler(ForEachActivityHandler(run_child))
     if control is not None:
         executor.register_definition(ActivityDefinition(
             id="file.transfer",
@@ -98,6 +130,7 @@ def build_default_activity_executor(
         for activity_id in (
             "device.reboot",
             "device.wait_online",
+            "device.info",
             "device.verify_version",
             "terminal.command",
             "terminal.batch",

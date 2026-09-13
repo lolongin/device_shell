@@ -34,6 +34,29 @@ UI_PARITY_SMOKE = Path("desktop/scripts/smoke-ui-parity.mjs")
 PRELOAD_TS = Path("desktop/src/preload/index.ts")
 
 
+def test_created_session_automatically_activates_when_no_terminal_is_open() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+
+    assert "event.type === 'session.created'" in store
+    assert "upsertSession(session)" in store
+    assert "!sessions.value.some((session) => session.id === activeSessionId.value)" in store
+    assert "activeSessionId.value = session.id" in store
+
+
+def test_created_session_automatically_activates_when_another_terminal_is_open() -> None:
+    store = WORKSPACE_STORE.read_text(encoding="utf-8")
+    split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
+    event_handler_start = store.index("function applyApplicationEvent")
+    event_handler_end = store.index("function startApplicationEvents", event_handler_start)
+    event_handler = store[event_handler_start:event_handler_end]
+
+    assert "event.type === 'session.created'" in event_handler
+    assert "activeSessionId.value = session.id" in event_handler
+    assert "!sessions.value.some((item) => item.id === activeSessionId.value)" not in event_handler
+    assert "warmSessionIds.value" in split
+    assert "mountedSessionIds" in split
+
+
 def test_internal_website_login_is_prominent_and_reports_cookie_state() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
