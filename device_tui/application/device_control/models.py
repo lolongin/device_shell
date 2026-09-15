@@ -13,6 +13,8 @@ class DeviceTarget:
     device_id: str = ""
     session_id: str = ""
     protocol: str = "auto"
+    host: str = ""
+    port: int = 0
 
 
 @dataclass(frozen=True, slots=True)

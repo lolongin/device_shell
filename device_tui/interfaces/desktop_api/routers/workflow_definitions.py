@@ -23,6 +23,7 @@ from device_tui.application.workflow_studio import (
     validate_workflow_inputs,
 )
 from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
+from device_tui.domain.devices.repository import RepositoryError
 
 from ..dependencies import authorize, get_context
 
@@ -33,6 +34,7 @@ _ACTION_WORKFLOW_IDS = {
     "device.command": "terminal.command",
     "device.reboot": "device.reboot",
     "utility.wait": "utility.wait",
+    "terminal.wait": "terminal.wait",
     "utility.confirm": "utility.confirm",
     "file.upload": "file.transfer",
     "file.download": "file.transfer",
@@ -45,10 +47,55 @@ _ACTION_WORKFLOW_IDS = {
     "variable.set": "variable.set",
     "expression.evaluate": "expression.evaluate",
     "loop.for_each": "loop.for_each",
+    "loop.until": "loop.until",
 }
 
-_LOOP_DISALLOWED_ACTIONS = frozenset({"loop.for_each", "utility.condition", "utility.confirm"})
+_LOOP_DISALLOWED_ACTIONS = frozenset({"loop.for_each", "loop.until", "utility.condition", "utility.confirm"})
 _HIGH_RISK_WORKFLOW_IDS = frozenset({"device.reboot", "file.transfer"})
+
+
+def _normalize_action_inputs(action_id: str, raw_params: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate Studio-facing aliases into the executable workflow contract."""
+    params = dict(raw_params)
+    if action_id in {"device.connect", "device.ssh", "device.telnet"}:
+        if "timeout" in params and "timeout_seconds" not in params:
+            params["timeout_seconds"] = params.pop("timeout")
+        if action_id == "device.ssh":
+            params["recovery_protocol"] = "ssh"
+        elif action_id == "device.telnet":
+            params["recovery_protocol"] = "telnet"
+        if action_id != "device.select":
+            params.pop("device_id", None)
+    elif action_id in {"file.upload", "file.download"}:
+        params["direction"] = "upload" if action_id == "file.upload" else "download"
+        source_path = params.pop("source_path", None)
+        source = params.pop("source", None)
+        destination_path = params.pop("destination_path", None)
+        destination = params.pop("destination", None)
+        params["source_path"] = source_path if source_path not in (None, "") else (source or "")
+        params["destination_path"] = destination_path if destination_path not in (None, "") else (destination or "")
+    return params
+
+
+def _device_reference_context(ctx: Any, device_id: str) -> dict[str, Any]:
+    """Build a credential-free context exposed to workflow expressions."""
+    normalized_id = str(device_id).strip()
+    try:
+        snapshot = ctx.desktop.devices.require_device(normalized_id)
+    except (ResourceNotFoundError, RepositoryError):
+        # Draft and simulator callers may use a temporary target that is not
+        # present in the inventory yet. Keep the reference resolvable without
+        # inventing device metadata or touching repository credentials.
+        return {"id": normalized_id}
+    context = asdict(snapshot)
+    context["software_version"] = snapshot.version
+    context["address"] = (
+        snapshot.ssh_endpoint
+        or snapshot.telnet_endpoint
+        or snapshot.serial_endpoint
+        or ""
+    )
+    return context
 
 
 def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
@@ -63,8 +110,9 @@ def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
     condition_specs: dict[str, dict[str, Any]] = {}
     condition_dependencies: dict[str, tuple[str, ...]] = {}
     for condition_id, condition in condition_nodes.items():
-        rules = condition.config.get("rules")
-        expression = str(condition.config.get("expression") or "").strip()
+        condition_config = {**dict(condition.config), **dict(condition.input_mapping)}
+        rules = condition_config.get("rules")
+        expression = str(condition_config.get("expression") or "").strip()
         if (not isinstance(rules, (list, tuple)) or not any(isinstance(rule, Mapping) for rule in rules)) and not expression:
             raise UnsupportedOperationError("visual rules are required for condition branches")
         incoming = tuple(
@@ -80,7 +128,7 @@ def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
             raise UnsupportedOperationError("visual rules or condition branches are required")
         condition_specs[condition_id] = {
             "rules": [dict(rule) for rule in (rules or ()) if isinstance(rule, Mapping)],
-            "logical_operator": str(condition.config.get("logical_operator") or "AND"),
+            "logical_operator": str(condition_config.get("logical_operator") or "AND"),
             "values_from": incoming[0] if len(incoming) == 1 else "",
         }
         if expression:
@@ -137,13 +185,15 @@ def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
         workflow_id = _ACTION_WORKFLOW_IDS.get(node.action_id)
         if workflow_id is None:
             raise UnsupportedOperationError(f"workflow action cannot run yet: {node.action_id}")
-        params = dict(node.config)
-        if node.action_id in {"device.select", "device.ssh", "device.telnet"}:
+        params = {**dict(node.config), **dict(node.input_mapping)}
+        if node.action_id in {"device.select", "device.connect", "device.ssh", "device.telnet"}:
             configured_device = str(params.get("device_id") or "").strip()
             if configured_device and configured_device != device_id:
                 raise UnsupportedOperationError(
                     f"node {node.id} selects device {configured_device}, but task target is {device_id}"
                 )
+            if "timeout" in params and "timeout_seconds" not in params:
+                params["timeout_seconds"] = params.pop("timeout")
             if node.action_id == "device.ssh":
                 params["recovery_protocol"] = "ssh"
             elif node.action_id == "device.telnet":
@@ -151,18 +201,18 @@ def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
             if node.action_id != "device.select":
                 params.pop("device_id", None)
         elif node.action_id in {"file.upload", "file.download"}:
-            params["direction"] = "upload" if node.action_id == "file.upload" else "download"
-            params["source_path"] = params.pop("source_path", params.get("source", ""))
-            params["destination_path"] = params.pop("destination_path", params.get("destination", ""))
+            params = _normalize_action_inputs(node.action_id, params)
         elif node.action_id == "expression.evaluate":
             params.setdefault("values", {"inputs": "${inputs}", "outputs": "${outputs}"})
-        elif node.action_id == "loop.for_each":
+        elif node.action_id in {"loop.for_each", "loop.until"}:
             child_action = str(params.get("action_id") or "").strip()
             child_workflow_id = _ACTION_WORKFLOW_IDS.get(child_action)
             if child_workflow_id is None or child_action in _LOOP_DISALLOWED_ACTIONS:
                 raise UnsupportedOperationError(f"loop child action cannot run yet: {child_action}")
+            raw_action_inputs = params.get("action_inputs")
+            if isinstance(raw_action_inputs, Mapping):
+                params["action_inputs"] = _normalize_action_inputs(child_action, raw_action_inputs)
             params["action_id"] = child_workflow_id
-        params.update(node.input_mapping)
         retry_attempts = params.pop("retry_attempts", None)
         retry_backoff_seconds = params.pop("retry_backoff_seconds", None)
         retry_policy = params.pop("retry_policy", {})
@@ -379,6 +429,12 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
     input_issues = validate_workflow_inputs(version, inputs)  # type: ignore[arg-type]
     if input_issues:
         raise UnsupportedOperationError("workflow inputs are invalid", details={"errors": [asdict(item) for item in input_issues]})
+    definition_issues = validate_workflow(version, build_action_catalog())  # type: ignore[arg-type]
+    if not definition_issues.valid:
+        raise UnsupportedOperationError(
+            "workflow definition is invalid",
+            details={"errors": [asdict(item) for item in definition_issues.errors]},
+        )
     plans = {device_id: _compile_task_plan(version, device_id) for device_id in device_ids}
     if step_id:
         plans = {device_id: _select_plan_from_step(plan, step_id) for device_id, plan in plans.items()}
@@ -415,10 +471,32 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
     workflow = TaskWorkflowDefinition(id=workflow_id, version=execution_version, name=version.name, steps=tuple(steps), metadata={"workflow_id": workflow_id, "workflow_version": str(version.version)})
     workflow_metadata = {**workflow.metadata, "framework_inputs": inputs}
     workflow = TaskWorkflowDefinition(id=workflow.id, version=workflow.version, name=workflow.name, steps=workflow.steps, metadata=workflow_metadata)
-    records = [
-            ctx.desktop.task_service.create(TaskCreate(workflow=workflow, framework_plan=plans[target_id], target=DeviceTarget(device_id=target_id, session_id=session_by_device.get(target_id, str(payload.get("session_id") or "")), protocol=str(payload.get("protocol") or "auto")), source="desktop-workflow-studio", context=inputs))
-        for target_id in device_ids
-    ]
-    task_payload = records[0].to_dict()
-    task_payload["context"] = dict(inputs)
-    return {"task": task_payload, "tasks": [record.to_dict() for record in records], "target_count": len(records)}
+    task_payloads: list[dict[str, Any]] = []
+    for target_id in device_ids:
+        task_context = {
+            **inputs,
+            "device": _device_reference_context(ctx, target_id),
+        }
+        record = ctx.desktop.task_service.create(
+            TaskCreate(
+                workflow=workflow,
+                framework_plan=plans[target_id],
+                target=DeviceTarget(
+                    device_id=target_id,
+                    session_id=session_by_device.get(target_id, str(payload.get("session_id") or "")),
+                    protocol=str(payload.get("protocol") or "auto"),
+                    host=str(payload.get("host") or ""),
+                    port=int(payload.get("port") or 0),
+                ),
+                source="desktop-workflow-studio",
+                context=task_context,
+            )
+        )
+        record_payload = record.to_dict()
+        record_payload["context"] = task_context
+        task_payloads.append(record_payload)
+    return {
+        "task": task_payloads[0],
+        "tasks": task_payloads,
+        "target_count": len(task_payloads),
+    }

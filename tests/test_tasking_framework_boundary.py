@@ -12,11 +12,13 @@ from device_tui.application.tasking import (
     TaskCreate,
     TaskManager,
     TaskRecord,
+    WorkflowDefinition,
     WorkflowTarget,
     build_default_workflow_catalog,
 )
 from device_tui.application.composition.workflows import build_default_workflow_registry
 from device_tui.framework import ActivityInvocation, TaskOrchestrator, TaskRun, WorkflowRuntime
+from device_tui.framework import TaskPlan, WorkflowNode
 
 
 class NoopExecution:
@@ -127,6 +129,43 @@ def test_framework_task_restore_requires_reconcile_before_resume() -> None:
         assert resumed.status == "running"
         assert runtime.runs.get("task-restarted").status == "recovering"
 
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_explicit_framework_plan_preserves_workflow_inputs() -> None:
+    async def scenario() -> None:
+        runtime = WorkflowRuntime()
+        orchestrator = TaskOrchestrator(runtime, build_default_workflow_registry())
+        manager = TaskManager(
+            NoopExecution(),
+            EventBus(),
+            task_orchestrator=orchestrator,
+        )
+        request = TaskCreate(
+                workflow=WorkflowDefinition(
+                    id="ui-plan",
+                    name="命令流程",
+                    steps=(),
+                    metadata={"framework_inputs": {"command_text": "display version"}},
+                ),
+            target=DeviceTarget(device_id="d1"),
+            framework_plan=TaskPlan(
+                "ui-plan",
+                nodes=(
+                    WorkflowNode(
+                        "command",
+                        "terminal.command",
+                        input_mapping={"command": "${inputs.command_text}"},
+                    ),
+                ),
+            ),
+        )
+
+        record = manager.create(request)
+
+        assert orchestrator.get(record.id).inputs == {"command_text": "display version"}
         await manager.close()
 
     asyncio.run(scenario())

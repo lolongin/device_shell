@@ -19,12 +19,17 @@ from device_tui.framework import (
     ReconcilePolicy,
     ReconcileResult,
     StateNode,
+    TaskOrchestrator,
+    TaskPlan,
+    TaskRunStatus,
     WorkflowDefinition,
+    WorkflowNode,
     WorkflowRun,
     WorkflowRuntime,
     compile_workflow,
 )
 from device_tui.application.composition.workflows import (
+    build_default_activity_executor,
     build_default_adapter_registry,
     build_default_workflow_registry,
 )
@@ -34,6 +39,7 @@ from device_tui.framework.models import ActionAttempt, DeviceStateSnapshot
 from device_tui.application.workflow_plugins.device_bridge import (
     DeviceExecutionActionHandler,
     DeviceReconcileProvider,
+    build_device_action_registry,
 )
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 from device_tui.application.tasking import DeviceExecutionTool, DeviceWorkflowExecutionError
@@ -75,6 +81,104 @@ def test_provider_is_generic_and_huawei_is_only_a_registered_workflow() -> None:
     assert workflow.states[1].action.operation == "device.storage.cleanup"
     assert next(item for item in workflow.states if item.id == "reboot").action.params["_framework_activity"] is True
     assert next(item for item in workflow.states if item.id == "wait_online").action.params["_framework_activity"] is True
+
+
+def test_default_action_registry_resolves_studio_basic_activity_nodes() -> None:
+    class Execution:
+        async def execute_operation(self, target, operation, params, *, context):
+            del target, operation, params, context
+            return {"status": "completed"}
+
+    executor = build_default_activity_executor(SimpleNamespace(), Execution())
+    registry = build_device_action_registry(
+        object(),
+        build_default_adapter_registry(),
+        activity_executor=executor,
+    )
+
+    for operation in (
+        "device.select",
+        "device.wait_online",
+        "device.info",
+        "terminal.command",
+        "file.transfer",
+        "device.reboot",
+        "utility.wait",
+        "terminal.wait",
+        "result.save",
+        "variable.set",
+        "expression.evaluate",
+        "loop.for_each",
+        "loop.until",
+    ):
+        handler = registry.resolve(operation)
+        assert handler.operation == operation
+
+
+def test_activity_backed_action_registry_does_not_register_null_legacy_aliases() -> None:
+    class Execution:
+        async def execute_operation(self, target, operation, params, *, context):
+            del target, operation, params, context
+            return {"status": "completed"}
+
+    executor = build_default_activity_executor(SimpleNamespace(), Execution())
+    registry = build_device_action_registry(
+        object(),
+        build_default_adapter_registry(),
+        activity_executor=executor,
+    )
+
+    for operation in (
+        "huawei.storage.cleanup",
+        "huawei.storage.sync",
+        "huawei.startup.configure",
+        "huawei.startup.rollback",
+    ):
+        with pytest.raises(KeyError):
+            registry.resolve(operation)
+
+    assert all(item is not None and hasattr(item, "execute") for item in registry.list())
+
+
+def test_default_utility_loop_executes_child_activity_without_device_execution() -> None:
+    executor = build_default_activity_executor()
+    registry = build_device_action_registry(
+        object(),
+        build_default_adapter_registry(),
+        activity_executor=executor,
+    )
+    orchestrator = TaskOrchestrator(
+        WorkflowRuntime(actions=registry),
+        build_default_workflow_registry(),
+    )
+    plan = TaskPlan(
+        "utility-loop",
+        nodes=(
+            WorkflowNode(
+                "items",
+                "variable.set",
+                input_mapping={"name": "targets", "value": ["a", "b"]},
+            ),
+            WorkflowNode(
+                "loop",
+                "loop.for_each",
+                depends_on=("items",),
+                input_mapping={
+                    "items": "${targets}",
+                    "action_id": "result.save",
+                    "action_inputs": {"key": "${item}", "value": "${index}"},
+                },
+            ),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert result.outputs["targets"] == ["a", "b"]
+    assert [item["key"] for item in result.outputs["loop"]["results"]] == ["a", "b"]
+    assert [item["value"] for item in result.outputs["loop"]["results"]] == [0, 1]
 
 
 def test_huawei_adapter_parses_semantic_events_and_capabilities() -> None:

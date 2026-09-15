@@ -93,6 +93,15 @@ class SessionService:
             raise self._not_found(session_id) from exc
         return target if isinstance(target, ConnectionTarget) else None
 
+    def connection_target_for_device(self, device_id: str, kind: str) -> ConnectionTarget:
+        """Resolve credentials for a caller-supplied endpoint."""
+        if kind not in {"simulated", "ssh", "telnet", "serial"}:
+            raise UnsupportedOperationError(
+                f"Unsupported session protocol: {kind}",
+                details={"protocol": kind},
+            )
+        return self._credentials.resolve(device_id, cast(SessionProtocol, kind))
+
     async def create(
         self,
         device_id: str,

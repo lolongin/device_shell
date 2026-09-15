@@ -7,8 +7,10 @@ import pytest
 
 from device_tui.application import build_desktop_application
 from device_tui.application.tasking import Action, TaskCreate, TaskPlanLifecycle, TaskService, WorkflowDefinition, WorkflowStep
+from device_tui.application.tasking.service import LegacyTaskManager
 from device_tui.application.device_control import DeviceTarget
-from device_tui.framework import TaskPlan, TaskRun, TaskRunStatus, WorkflowNode
+from device_tui.framework import ActionAttempt, ActionStatus, TaskPlan, TaskRun, TaskRunStatus, WorkflowNode, WorkflowRun, RunStatus, StateNode, ActionSpec
+from device_tui.framework.models import WorkflowDefinition as FrameworkWorkflowDefinition
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
 
@@ -175,3 +177,47 @@ def test_desktop_task_service_executes_builtin_activity_workflow() -> None:
     assert result.status == TaskRunStatus.SUCCEEDED
     assert result.outputs["script"]["run"]["returncode"] == 0
     assert "task-ok" in result.outputs["script"]["run"]["output"]
+
+
+def test_framework_task_projection_uses_workflow_outputs_not_execution_context() -> None:
+    manager = object.__new__(LegacyTaskManager)
+    manager._framework_definitions = {
+        "task-1": FrameworkWorkflowDefinition(
+            id="framework-wf",
+            version="1",
+            start_state="run",
+            states=(
+                StateNode("run", ActionSpec("run", "test.action"), next_state="done"),
+                StateNode("done", terminal=True),
+            ),
+        ),
+    }
+    captured: dict[str, object] = {}
+    manager._update = lambda task_id, **changes: captured.update(changes)
+
+    run = WorkflowRun(
+        "child-1",
+        "framework-wf",
+        "1",
+        "device-1",
+        status=RunStatus.SUCCEEDED,
+        current_state="done",
+        context={"target": {"device_id": "device-1"}},
+        outputs={"run": {"value": "visible-result"}},
+        attempts=(
+            ActionAttempt(
+                "attempt-1",
+                "run",
+                1,
+                status=ActionStatus.SUCCEEDED,
+                result={"value": "visible-result"},
+            ),
+        ),
+    )
+
+    manager._update_framework_record("task-1", object(), run)
+
+    result = captured["result"]
+    checkpoint = captured["checkpoint"]
+    assert result.outputs == run.outputs
+    assert checkpoint.outputs == run.outputs

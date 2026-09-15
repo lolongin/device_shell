@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import replace
 from uuid import uuid4
 
 from device_tui.application.devices import DeviceActionResult, DeviceService
@@ -90,7 +91,10 @@ class DeviceControlService:
         protocol = requested_protocol
         if protocol == "auto":
             protocol = self._protocol_for(self._devices.require_device(device_id))
-        if reuse:
+        custom_endpoint = bool(target.host.strip() or target.port)
+        if custom_endpoint and (not target.host.strip() or target.port <= 0):
+            raise UnsupportedOperationError("host and port are both required for a custom endpoint.")
+        if reuse and not custom_endpoint:
             candidates = [
                 session
                 for session in self._sessions.list_sessions()
@@ -102,7 +106,15 @@ class DeviceControlService:
                 return self._session_view(candidates[0], reused=True)
             # More than one compatible interactive terminal is ambiguous.
             # Create an isolated session instead of silently borrowing one.
-        session = await self._sessions.create(device_id, protocol, title, term_size)
+        if custom_endpoint:
+            connection_target = self._sessions.connection_target_for_device(device_id, protocol)
+            session = await self._sessions.create_target(
+                replace(connection_target, host=target.host.strip(), port=target.port),
+                title,
+                term_size,
+            )
+        else:
+            session = await self._sessions.create(device_id, protocol, title, term_size)
         return self._session_view(session)
 
     async def resolve_or_open_session(
@@ -122,6 +134,8 @@ class DeviceControlService:
             device_id=view.device_id,
             session_id=view.session_id,
             protocol=view.protocol,
+            host=target.host,
+            port=target.port,
         )
 
     async def open_connection(
@@ -406,6 +420,18 @@ class DeviceControlService:
 
     def get_operation(self, operation_id: str) -> OperationView:
         return self._operation_view(self._operations.get(operation_id))
+
+    def session_status(self, target: DeviceTarget) -> dict[str, str]:
+        """Return the current status of the explicitly bound session."""
+        session = self._session_for_target(target)
+        status = str(session.status or "unknown").casefold()
+        return {
+            "session_id": session.id,
+            "device_id": session.device_id,
+            "protocol": session.kind,
+            "status": status,
+            "value": status,
+        }
 
     def list_operations(self, *, kind: str = "", limit: int = 200) -> list[OperationView]:
         return [self._operation_view(item) for item in self._operations.list(kind=kind, limit=limit)]

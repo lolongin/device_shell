@@ -311,6 +311,21 @@ class WorkflowRuntime:
         option = self.decisions.validate(run, submission)
         target = option.next_state
         self._emit(run, "decision.applied", payload={"option_id": option.id, "actor_type": submission.actor_type})
+        decision_outputs = {
+            "approved": option.kind == "approve",
+            "option_id": option.id,
+            "reason": submission.reason,
+            "status": "approved" if option.kind == "approve" else "rejected",
+        }
+        run = replace(
+            run,
+            context={
+                **run.context,
+                "decision": dict(decision_outputs),
+                f"decision.{option.id}": dict(decision_outputs),
+            },
+            outputs={**run.outputs, **decision_outputs},
+        )
         if option.kind in {"abort", "cancel"}:
             return self._save(replace(run, status=RunStatus.CANCELLED, decision_point=None, revision=run.revision + 1))
         if option.kind == "reconnect":

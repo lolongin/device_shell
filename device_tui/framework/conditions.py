@@ -33,26 +33,60 @@ def _value(values: Mapping[str, Any], field: str) -> Any:
 
 
 def _compare(left: Any, right: Any, operator: str) -> bool:
-    if operator == "是否为空":
+    normalized = _normalize_operator(operator)
+    if normalized == "empty":
         return left is None or str(left).strip() == ""
     if left is None:
         return False
     left_text, right_text = str(left), str(right)
-    if operator == "等于":
+    if normalized == "equals":
         return left == right or left_text.casefold() == right_text.casefold()
-    if operator == "不等于":
+    if normalized == "not_equals":
         return not (left == right or left_text.casefold() == right_text.casefold())
-    if operator == "包含":
+    if normalized == "contains":
         return right_text.casefold() in left_text.casefold()
-    if operator == "不包含":
+    if normalized == "not_contains":
         return right_text.casefold() not in left_text.casefold()
-    if operator in {"大于", "小于"}:
+    if normalized in {"greater_than", "less_than"}:
         try:
             left_value, right_value = Decimal(left_text), Decimal(right_text)
         except InvalidOperation:
             left_value, right_value = left_text.casefold(), right_text.casefold()
-        return left_value > right_value if operator == "大于" else left_value < right_value
+        return left_value > right_value if normalized == "greater_than" else left_value < right_value
     return False
+
+
+def _normalize_operator(operator: str) -> str:
+    key = str(operator).strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "等于": "equals",
+        "==": "equals",
+        "=": "equals",
+        "eq": "equals",
+        "equals": "equals",
+        "不等于": "not_equals",
+        "!=": "not_equals",
+        "<>": "not_equals",
+        "ne": "not_equals",
+        "not_equals": "not_equals",
+        "包含": "contains",
+        "contains": "contains",
+        "includes": "contains",
+        "不包含": "not_contains",
+        "not_contains": "not_contains",
+        "大于": "greater_than",
+        ">": "greater_than",
+        "gt": "greater_than",
+        "greater_than": "greater_than",
+        "小于": "less_than",
+        "<": "less_than",
+        "lt": "less_than",
+        "less_than": "less_than",
+        "是否为空": "empty",
+        "empty": "empty",
+        "is_empty": "empty",
+    }
+    return aliases.get(key, key)
 
 
 def evaluate_rules(

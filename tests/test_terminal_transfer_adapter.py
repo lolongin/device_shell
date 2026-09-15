@@ -5,6 +5,8 @@ import asyncio
 from device_tui.application.device_control import DeviceTarget, OperationView
 from device_tui.framework import ActivityInvocation, Event
 from device_tui.application.workflow_plugins import TerminalTransferAdapter
+from device_tui.application.workflow_plugins.transfer import TransferActivityHandler
+from device_tui.framework import ActivityContext, ActivityStatus, WorkflowRun
 
 
 class FakeControl:
@@ -48,6 +50,16 @@ class FakeControl:
     def cancel_operation(self, operation_id: str) -> OperationView:
         self.cancelled.append(operation_id)
         return self.get_operation(operation_id)
+
+
+class ResolvingControl(FakeControl):
+    def __init__(self) -> None:
+        super().__init__(["completed"])
+        self.resolve_calls: list[tuple[DeviceTarget, object]] = []
+
+    async def resolve_or_open_session(self, target, *, context=None):
+        self.resolve_calls.append((target, context))
+        return DeviceTarget(device_id=target.device_id, session_id="session-1", protocol="simulated")
 
 
 def invocation(**inputs):
@@ -109,3 +121,73 @@ def test_terminal_adapter_timeout_is_unknown_and_cancel_is_forwarded():
     result = asyncio.run(run())
     assert result.status == "unknown"
     assert control.cancelled == ["op-1"]
+
+
+def test_terminal_adapter_can_open_a_session_for_direct_workflow_transfer():
+    control = ResolvingControl()
+    adapter = TerminalTransferAdapter(control, poll_interval_seconds=0.001)
+    current = ActivityInvocation(
+        "file.transfer",
+        "inv-1",
+        "run-1",
+        inputs={
+            "direction": "download",
+            "source_path": "flash:/firmware.bin",
+            "destination_path": "firmware.bin",
+        },
+        context={"target": {"device_id": "device-1", "protocol": "simulated"}},
+    )
+
+    async def run():
+        assert await adapter.check_preconditions(current) is True
+        return await adapter.start(current, lambda event: event)
+
+    asyncio.run(run())
+
+    assert control.resolve_calls
+    assert control.request[0] == DeviceTarget(
+        device_id="device-1",
+        session_id="session-1",
+        protocol="simulated",
+    )
+
+
+def test_transfer_activity_falls_back_to_workflow_device_id_when_target_context_is_missing():
+    control = ResolvingControl()
+    handler = TransferActivityHandler(TerminalTransferAdapter(control, poll_interval_seconds=0.001))
+    current = ActivityInvocation(
+        "file.transfer",
+        "inv-1",
+        "run-1",
+        inputs={
+            "direction": "upload",
+            "source_path": "firmware.bin",
+            "destination_path": "flash:/firmware.bin",
+        },
+    )
+    context = ActivityContext(
+        WorkflowRun("run-1", "wf", "1", "device-from-run"),
+        current,
+    )
+
+    result = asyncio.run(handler.execute(current, context, lambda event: event))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert control.request[0].device_id == "device-from-run"
+
+
+def test_transfer_activity_returns_catalog_fields_on_success():
+    control = FakeControl(["completed"])
+    handler = TransferActivityHandler(TerminalTransferAdapter(control, poll_interval_seconds=0.001))
+    current = invocation()
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "device-1"), current)
+
+    result = asyncio.run(handler.execute(current, context, lambda event: event))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["operation_id"] == "op-1"
+    assert result.outputs["output"] == ""
+    assert result.outputs["skipped"] is False
+    assert result.outputs["skip_reason"] == ""
+    assert result.outputs["verified"] is True
+    assert isinstance(result.outputs["evidence"], list)

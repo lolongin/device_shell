@@ -42,11 +42,12 @@ class TerminalTransferAdapter(TransferAdapter):
         """Validate the target and required transfer fields before dispatch."""
         inputs = invocation.inputs
         target = self._target_values(invocation)
+        device_id = str(target.get("device_id") or "").strip()
         session_id = str(target.get("session_id") or "").strip()
         direction = str(inputs.get("direction") or "upload").strip().casefold()
         source = str(inputs.get("source_path") or "").strip()
         destination = str(inputs.get("destination_path") or "").strip()
-        if not session_id or direction not in {"upload", "download"}:
+        if not device_id or direction not in {"upload", "download"}:
             return False
         if not source or not destination:
             return False
@@ -79,8 +80,21 @@ class TerminalTransferAdapter(TransferAdapter):
         session_id = str(target.get("session_id") or "").strip()
         device_id = str(target.get("device_id") or "").strip()
         protocol = str(target.get("protocol") or "auto").strip() or "auto"
-        direction = str(inputs.get("direction") or "upload").strip().casefold()
         context = self._context(invocation)
+        if not session_id:
+            resolved = await self._control.resolve_or_open_session(
+                DeviceTarget(
+                    device_id=device_id,
+                    protocol=protocol,
+                    host=str(target.get("host") or ""),
+                    port=int(target.get("port") or 0),
+                ),
+                context=context,
+            )
+            session_id = resolved.session_id
+            device_id = resolved.device_id
+            protocol = resolved.protocol
+        direction = str(inputs.get("direction") or "upload").strip().casefold()
         operation = self._control.transfer(
             DeviceTarget(device_id=device_id, session_id=session_id, protocol=protocol),
             TransferRequest(
@@ -191,7 +205,7 @@ class TerminalTransferAdapter(TransferAdapter):
     def _target_values(invocation: ActivityInvocation) -> dict[str, Any]:
         values = invocation.context.get("target")
         target = dict(values) if isinstance(values, dict) else {}
-        for key in ("device_id", "session_id", "protocol"):
+        for key in ("device_id", "session_id", "protocol", "host", "port"):
             if key in invocation.inputs:
                 target[key] = invocation.inputs[key]
         return target

@@ -119,6 +119,129 @@ def test_task_orchestrator_composes_workflows_and_maps_outputs() -> None:
     assert result.outputs["test"]["run"]["value"] == "image.cc"
 
 
+def test_task_orchestrator_resolves_single_action_output_alias() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan(
+        id="alias-plan",
+        nodes=(
+            WorkflowNode("command_1", "test.action", input_mapping={"value": "display output"}),
+            WorkflowNode(
+                "save",
+                "test.action",
+                depends_on=("command_1",),
+                input_mapping={"value": "${command_1.value}"},
+            ),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert result.outputs["command_1"]["value"] == "display output"
+    assert result.outputs["command_1"]["run"]["value"] == "display output"
+    assert result.outputs["save"]["run"]["value"] == "display output"
+
+
+def test_task_orchestrator_error_names_unresolved_reference_and_available_keys() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan(
+        id="bad-reference-plan",
+        nodes=(
+            WorkflowNode("command_1", "test.action", input_mapping={"value": "ok"}),
+            WorkflowNode("save", "test.action", depends_on=("command_1",), input_mapping={"value": "${command_1.missing}"}),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.FAILED
+    assert result.error is not None
+    assert result.error["code"] == "unresolved_task_input"
+    assert "${command_1.missing}" in result.error["message"]
+    assert "available keys" in result.error["message"]
+
+
+def test_task_orchestrator_rejects_output_reference_without_dependency() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan(
+        id="missing-dependency-plan",
+        nodes=(
+            WorkflowNode("command_1", "test.action", input_mapping={"value": "ok"}),
+            WorkflowNode(
+                "save",
+                "test.action",
+                input_mapping={"value": "${command_1.value}"},
+            ),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.FAILED
+    assert result.error is not None
+    assert result.error["code"] == "task_input_dependency_missing"
+    assert result.error["node_id"] == "save"
+    assert result.error["reference"] == "command_1.value"
+    assert result.error["required_dependency"] == "command_1"
+
+
+def test_task_orchestrator_resolves_device_context_references() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan(
+        id="device-context-plan",
+        nodes=(WorkflowNode("save", "test.action", input_mapping={"value": "${device.name}"}),),
+    )
+    task = orchestrator.start(
+        plan,
+        device_id="d1",
+        context={"device": {"id": "d1", "name": "Router-1", "software_version": "8.200"}},
+    )
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert result.outputs["save"]["value"] == "Router-1"
+
+
+def test_task_orchestrator_reserved_reference_namespaces_are_not_shadowed_by_inputs() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan(
+        id="reserved-reference-plan",
+        nodes=(
+            WorkflowNode(
+                "save",
+                "test.action",
+                input_mapping={"value": "${outputs.save_value}"},
+            ),
+        ),
+    )
+    task = orchestrator.start(
+        plan,
+        device_id="d1",
+        inputs={"outputs": {"save_value": "reserved-value"}},
+        context={"outputs": {"save_value": "context-value"}},
+    )
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.FAILED
+    assert result.error is not None
+    assert result.error["code"] == "unresolved_task_input"
+
+
 def test_task_orchestrator_retries_failed_node_with_retry_policy():
     actions = ActionRegistry()
     handler = FlakyHandler()
@@ -220,6 +343,34 @@ def test_parallel_group_failure_is_aggregated_to_parent_task():
     assert result.error["code"] == "parallel_failed"
 
 
+def test_parallel_group_failure_keeps_outputs_from_completed_siblings():
+    class PartialFailureHandler:
+        async def execute(self, action, run, emit):
+            del run, emit
+            if action.params.get("value") == "bad":
+                return ActionResult(
+                    ActionStatus.FAILED,
+                    facts={"value": "rejected", "status": "failed"},
+                    error={"code": "parallel_failed", "message": "检查失败"},
+                )
+            return ActionResult(ActionStatus.SUCCEEDED, facts={"value": "accepted"})
+
+    actions = ActionRegistry()
+    actions.register(PartialFailureHandler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan("parallel-partial-failure", nodes=(
+        WorkflowNode("bad", "test.action", input_mapping={"value": "bad"}, parallel_group="checks"),
+        WorkflowNode("good", "test.action", input_mapping={"value": "good"}, parallel_group="checks"),
+    ))
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.FAILED
+    assert result.outputs["bad"]["value"] == "rejected"
+    assert result.outputs["good"]["value"] == "accepted"
+
+
 def test_parallel_node_keeps_retry_policy():
     actions = ActionRegistry()
     handler = ParallelFlakyHandler()
@@ -262,6 +413,31 @@ def test_task_orchestrator_runs_only_the_matching_condition_branch() -> None:
     assert result.outputs["record"]["reason"] == "condition_false"
 
 
+def test_task_orchestrator_condition_rules_accept_english_operator_aliases() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    condition = {
+        "rules": [{"field": "value", "operator": "equals", "value": "ready"}],
+        "logical_operator": "AND",
+        "values_from": "info",
+        "expected": True,
+    }
+    plan = TaskPlan(
+        id="condition-alias-plan",
+        nodes=(
+            WorkflowNode("info", "test.action", input_mapping={"value": "ready"}),
+            WorkflowNode("next", "test.action", depends_on=("info",), run_if=condition),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert "next" in result.node_runs
+
+
 def test_task_orchestrator_runs_only_the_matching_expression_branch() -> None:
     actions = ActionRegistry()
     actions.register(Handler(), item_id="test.action")
@@ -287,6 +463,57 @@ def test_task_orchestrator_runs_only_the_matching_expression_branch() -> None:
     assert result.outputs["skip"] == {"status": "skipped", "reason": "condition_false"}
 
 
+def test_task_orchestrator_defers_for_each_action_input_references_to_loop_runtime() -> None:
+    from device_tui.framework import ActivityActionHandler, ActivityDefinition, ActivityExecutor, ActivityResult, ActivityStatus
+    from device_tui.application.workflow_plugins.utility import ForEachActivityHandler
+
+    calls: list[dict[str, object]] = []
+
+    async def child(_action_id, inputs, _context, _report):
+        calls.append(dict(inputs))
+        return {"status": "completed", "key": inputs["key"]}
+
+    class ActivityBuilder:
+        def build(self, workflow_id, inputs):
+            return WorkflowDefinition(
+                id=workflow_id,
+                version="1",
+                start_state="run",
+                states=(
+                    StateNode("run", ActionSpec("run", workflow_id, params=inputs), next_state="done"),
+                    StateNode("done", terminal=True),
+                ),
+            )
+
+    executor = ActivityExecutor()
+    executor.register_definition(ActivityDefinition(id="loop.for_each"))
+    executor.register_handler(ForEachActivityHandler(child))
+    actions = ActionRegistry()
+    actions.register(ActivityActionHandler(executor, "loop.for_each"), item_id="loop.for_each")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), ActivityBuilder())
+    plan = TaskPlan(
+        "loop-local-plan",
+        nodes=(
+            WorkflowNode(
+                "loop",
+                "loop.for_each",
+                input_mapping={
+                    "items": ["a", "b"],
+                    "action_id": "result.save",
+                    "action_inputs": {"key": "${item}"},
+                },
+            ),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert [call["key"] for call in calls] == ["a", "b"]
+    assert [item["key"] for item in result.outputs["loop"]["results"]] == ["a", "b"]
+
+
 def test_task_orchestrator_passes_persisted_context_to_child_workflow() -> None:
     actions = ActionRegistry()
     actions.register(Handler(), item_id="test.action")
@@ -302,6 +529,55 @@ def test_task_orchestrator_passes_persisted_context_to_child_workflow() -> None:
 
     assert result.status == TaskRunStatus.SUCCEEDED
     assert result.outputs["step"]["run"]["context"]["target"]["session_id"] == "sess-1"
+
+
+def test_task_orchestrator_carries_session_output_to_later_device_node() -> None:
+    class SessionHandler:
+        async def execute(self, action, run, emit):
+            del emit
+            if action.params.get("open"):
+                return ActionResult(
+                    ActionStatus.SUCCEEDED,
+                    facts={"session_id": "created-session", "device_id": "d1"},
+                )
+            return ActionResult(
+                ActionStatus.SUCCEEDED,
+                facts={"session_seen": run.context.get("target", {}).get("session_id")},
+            )
+
+    class SessionBuilder:
+        def build(self, workflow_id, inputs):
+            return WorkflowDefinition(
+                id=workflow_id,
+                version="1",
+                start_state="run",
+                states=(
+                    StateNode(
+                        "run",
+                        ActionSpec("run", "test.session", params=dict(inputs)),
+                        next_state="done",
+                    ),
+                    StateNode("done", terminal=True),
+                ),
+            )
+
+    actions = ActionRegistry()
+    actions.register(SessionHandler(), item_id="test.session")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), SessionBuilder())
+    plan = TaskPlan(
+        "session-propagation-plan",
+        nodes=(
+            WorkflowNode("connect", "test.session", input_mapping={"open": True}),
+            WorkflowNode("command", "test.session", depends_on=("connect",)),
+        ),
+    )
+    task = orchestrator.start(plan, device_id="d1", context={"target": {"device_id": "d1"}})
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert result.outputs["command"]["session_seen"] == "created-session"
+    assert result.context["target"]["session_id"] == "created-session"
 
 
 def test_task_plan_rejects_dependency_cycles() -> None:
@@ -496,6 +772,25 @@ def test_task_orchestrator_resume_from_step_clears_step_and_downstream_state():
     assert resumed.status == TaskRunStatus.RUNNING
     assert resumed.node_runs == {"one": "run-1"}
     assert resumed.outputs == {"one": {"ok": True}}
+
+
+def test_task_orchestrator_plain_resume_restarts_failed_child_when_plan_is_supplied() -> None:
+    actions = ActionRegistry()
+    handler = FlakyHandler()
+    actions.register(handler, item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan("plain-resume", nodes=(WorkflowNode("step", "test.action"),))
+    task = orchestrator.start(plan, device_id="d1")
+
+    failed = asyncio.run(orchestrator.execute(task.id, plan))
+    assert failed.status == TaskRunStatus.FAILED
+
+    resumed = orchestrator.resume(task.id, plan=plan)
+    result = asyncio.run(orchestrator.execute(resumed.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert handler.calls == 2
+    assert result.outputs["step"]["value"] == "recovered"
 
 
 def test_task_orchestrator_fences_persisted_inflight_runs_after_restart() -> None:

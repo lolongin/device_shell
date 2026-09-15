@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import asyncio
+import re
 from typing import Any, Callable, Mapping, Protocol
 from uuid import uuid4
 
@@ -13,6 +14,63 @@ from .conditions import evaluate_rules
 from .expression import evaluate_expression
 from .resources import ResourceCoordinator, ResourceLease, ResourceRequest
 from .runtime import WorkflowRuntime
+
+
+class TaskInputResolutionError(ValueError):
+    """Raised when a TaskPlan input reference cannot be resolved."""
+
+    def __init__(
+        self,
+        expression: str,
+        *,
+        missing_segment: str,
+        available_keys: tuple[str, ...] = (),
+        resolved_path: str = "",
+    ) -> None:
+        available = ", ".join(available_keys) if available_keys else "none"
+        location = resolved_path or "<root>"
+        super().__init__(
+            f"unresolved task input: {expression}; missing segment: {missing_segment}; "
+            f"available keys at {location}: {available}"
+        )
+        self.expression = expression
+        self.missing_segment = missing_segment
+        self.available_keys = available_keys
+        self.resolved_path = resolved_path
+
+    def to_error(self) -> dict[str, Any]:
+        return {
+            "code": "unresolved_task_input",
+            "message": str(self),
+            "class": "deterministic",
+            "expression": self.expression,
+            "missing_segment": self.missing_segment,
+            "available_keys": list(self.available_keys),
+            "resolved_path": self.resolved_path,
+        }
+
+
+class TaskInputDependencyError(ValueError):
+    """Raised when a node references an output outside its dependency chain."""
+
+    def __init__(self, node_id: str, reference: str, required_dependency: str) -> None:
+        self.node_id = node_id
+        self.reference = reference
+        self.required_dependency = required_dependency
+        super().__init__(
+            f"task input reference requires dependency: node {node_id} references "
+            f"{reference}, but {required_dependency} is not an upstream dependency"
+        )
+
+    def to_error(self) -> dict[str, Any]:
+        return {
+            "code": "task_input_dependency_missing",
+            "message": str(self),
+            "class": "deterministic",
+            "node_id": self.node_id,
+            "reference": self.reference,
+            "required_dependency": self.required_dependency,
+        }
 
 
 class TaskRunStatus(str, Enum):
@@ -298,30 +356,14 @@ class TaskOrchestrator:
         if step_id:
             if plan is None or step_id not in {node.id for node in plan.nodes}:
                 raise ValueError(f"unknown workflow step: {step_id}")
-            downstream = {step_id}
-            changed = True
-            while changed:
-                changed = False
-                for node in plan.nodes:
-                    if node.id not in downstream and set(node.depends_on) & downstream:
-                        downstream.add(node.id)
-                        changed = True
-            child = self._active_child(task)
-            if child is not None:
-                cancel = getattr(self.runtime, "cancel", None)
-                if callable(cancel):
-                    cancel(child.id)
-            return self._save(replace(
-                task,
-                status=TaskRunStatus.RUNNING,
-                node_runs={key: value for key, value in task.node_runs.items() if key not in downstream},
-                outputs={key: value for key, value in task.outputs.items() if key not in downstream},
-                error=None,
-                context={**task.context, **dict(context or {}), "resume_from_step": step_id},
-            ))
+            return self._resume_from_step(task, plan, step_id, context=context, cancel_active=True)
         child = self._active_child(task)
         if child is not None:
             self.runtime.resume(child.id, context=dict(context or {}))
+        elif plan is not None and str(task.status) in {TaskRunStatus.FAILED.value, TaskRunStatus.UNKNOWN.value}:
+            failed_step = self._failed_child_step(task, plan)
+            if failed_step:
+                return self._resume_from_step(task, plan, failed_step, context=context)
         return self._save(replace(task, status=TaskRunStatus.RUNNING, context={**task.context, **dict(context or {})}))
 
     def cancel(self, task_run_id: str) -> TaskRun:
@@ -360,11 +402,17 @@ class TaskOrchestrator:
             raise ValueError("task is not waiting for a child Workflow decision")
         updated_child = self.runtime.apply_decision(child.id, submission)
         status = self._aggregate_child_status(str(updated_child.status))
+        outputs = dict(task.outputs)
+        projected = self._project_node_outputs(updated_child.outputs)
+        if projected:
+            node_id = str(child.context.get("node_id") or "").strip()
+            if node_id:
+                outputs[node_id] = projected
         if str(updated_child.status) == RunStatus.RUNNING.value:
             status = TaskRunStatus.RUNNING
         elif str(updated_child.status) == RunStatus.SUCCEEDED.value:
             status = TaskRunStatus.RUNNING
-        return self._save(replace(task, status=status))
+        return self._save(replace(task, status=status, outputs=outputs))
 
     async def _execute_parallel_node(
         self,
@@ -376,7 +424,7 @@ class TaskOrchestrator:
         """Execute one independent node for a parallel batch."""
         if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, values):
             return node.id, "skipped", {"status": "skipped", "reason": "condition_false"}, None, None
-        node_inputs = self._resolve_inputs(node.input_mapping, {**task.inputs, **values})
+        node_inputs = self._resolve_node_inputs(node, task.inputs, values, context=task.context)
         definition = self.workflows.build(node.workflow_id, node_inputs)
         max_attempts = max(1, min(5, int(node.retry_policy.get("max_attempts", 1) or 1)))
         max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
@@ -408,9 +456,9 @@ class TaskOrchestrator:
                 if status == RunStatus.SUCCEEDED.value:
                     break
                 if status not in {RunStatus.FAILED.value, "unknown"} or attempt + 1 >= max_attempts:
-                    return node.id, status, None, getattr(child, "error", None), child.id
+                    return node.id, status, self._project_node_outputs(child.outputs), getattr(child, "error", None), child.id
         assert child is not None
-        output = dict(child.outputs)
+        output = self._project_node_outputs(child.outputs)
         if max_iterations > 1:
             output["repeat_iterations"] = max_iterations
         return node.id, RunStatus.SUCCEEDED.value, output, None, child.id
@@ -425,6 +473,57 @@ class TaskOrchestrator:
             }:
                 return child
         return None
+
+    def _resume_from_step(
+        self,
+        task: TaskRun,
+        plan: TaskPlan,
+        step_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+        cancel_active: bool = False,
+    ) -> TaskRun:
+        downstream = self._downstream_node_ids(plan, step_id)
+        if cancel_active:
+            child = self._active_child(task)
+            if child is not None:
+                cancel = getattr(self.runtime, "cancel", None)
+                if callable(cancel):
+                    cancel(child.id)
+        return self._save(replace(
+            task,
+            status=TaskRunStatus.RUNNING,
+            node_runs={key: value for key, value in task.node_runs.items() if key not in downstream},
+            outputs={key: value for key, value in task.outputs.items() if key not in downstream},
+            error=None,
+            context={**task.context, **dict(context or {}), "resume_from_step": step_id},
+        ))
+
+    @staticmethod
+    def _downstream_node_ids(plan: TaskPlan, step_id: str) -> set[str]:
+        downstream = {step_id}
+        changed = True
+        while changed:
+            changed = False
+            for node in plan.nodes:
+                if node.id not in downstream and set(node.depends_on) & downstream:
+                    downstream.add(node.id)
+                    changed = True
+        return downstream
+
+    def _failed_child_step(self, task: TaskRun, plan: TaskPlan) -> str:
+        restartable = {RunStatus.FAILED.value, RunStatus.CANCELLED.value, "unknown"}
+        for node in plan._ordered_nodes():
+            child_id = task.node_runs.get(node.id)
+            if not child_id:
+                continue
+            try:
+                child = self.runtime.runs.get(child_id)
+            except KeyError:
+                continue
+            if str(child.status) in restartable:
+                return node.id
+        return ""
 
     async def execute(self, task_run_id: str, plan: TaskPlan) -> TaskRun:
         task = self.get(task_run_id)
@@ -441,6 +540,7 @@ class TaskOrchestrator:
         outputs = dict(task.outputs)
         node_runs = dict(task.node_runs)
         try:
+            self._validate_input_dependencies(plan)
             parallel_batches = {batch[0].id: batch for batch in plan.execution_batches() if len(batch) > 1}
             parallel_completed: set[str] = set()
             for node in plan._ordered_nodes():
@@ -462,6 +562,9 @@ class TaskOrchestrator:
                     ))
                     failures = [result for result in results if result[1] not in {RunStatus.SUCCEEDED.value, "skipped"}]
                     if failures:
+                        for node_id, _status, output, _error, _child_id in results:
+                            if output:
+                                outputs[node_id] = dict(output)
                         cancel = getattr(self.runtime, "cancel", None)
                         if callable(cancel):
                             for _node_id, _status, _output, _error, child_id in results:
@@ -478,6 +581,11 @@ class TaskOrchestrator:
                         if child_id:
                             node_runs[node_id] = child_id
                         outputs[node_id] = output or {"status": "skipped", "reason": "condition_false"}
+                        self._record_variable_output(outputs, next(item for item in batch if item.id == node_id), outputs[node_id])
+                        task = replace(
+                            task,
+                            context=self._context_with_target_output(task.context, outputs[node_id]),
+                        )
                         parallel_completed.add(node_id)
                     task = self._save(replace(task, node_runs=dict(node_runs), outputs=dict(outputs), status=TaskRunStatus.RUNNING, context={key: value for key, value in task.context.items() if key != "parallel_batch"}))
                     continue
@@ -489,19 +597,21 @@ class TaskOrchestrator:
                         child_status = str(child.status)
                     if child_status != RunStatus.SUCCEEDED.value:
                         aggregate = self._aggregate_child_status(child_status)
+                        projected = self._project_node_outputs(child.outputs)
+                        if projected:
+                            outputs[node.id] = projected
                         if aggregate in {TaskRunStatus.FAILED, TaskRunStatus.CANCELLED, TaskRunStatus.UNKNOWN}:
                             return self._save(replace(
                                 task,
                                 status=aggregate,
-                                outputs=outputs,
+                                outputs=dict(outputs),
                                 error=getattr(child, "error", None),
                             ))
-                        return self._save(replace(task, status=aggregate, outputs=outputs))
-                    outputs[node.id] = dict(child.outputs)
-                    if node.workflow_id == "variable.set":
-                        variable_name = str(child.outputs.get("name") or "").strip()
-                        if variable_name:
-                            outputs[variable_name] = child.outputs.get("value")
+                        return self._save(replace(task, status=aggregate, outputs=dict(outputs)))
+                    projected = self._project_node_outputs(child.outputs)
+                    outputs[node.id] = projected
+                    self._record_variable_output(outputs, node, projected)
+                    task = replace(task, context=self._context_with_target_output(task.context, projected))
                     continue
                 if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, outputs):
                     outputs[node.id] = {
@@ -510,10 +620,7 @@ class TaskOrchestrator:
                     }
                     task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
                     continue
-                node_inputs = self._resolve_inputs(
-                    node.input_mapping,
-                    {"inputs": dict(task.inputs), "outputs": dict(outputs), **task.inputs, **outputs},
-                )
+                node_inputs = self._resolve_node_inputs(node, task.inputs, outputs, context=task.context)
                 definition = self.workflows.build(node.workflow_id, node_inputs)
                 max_attempts = max(1, min(5, int(node.retry_policy.get("max_attempts", 1) or 1)))
                 max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
@@ -524,23 +631,23 @@ class TaskOrchestrator:
                         if _attempt > 0:
                             await self._sleep(backoff_seconds)
                         child = self.runtime.start(
-                        definition,
-                        device_id=task.device_id,
-                        run_id=(
-                            str(task.context.get("orchestrator.child_run_id") or "") or None
-                            if len(plan.nodes) == 1 and _attempt == 0 and _iteration == 0 else None
-                        ),
-                        context={
-                            **task.context,
-                            "task_run_id": task.id,
-                            "node_id": node.id,
-                            "inputs": node_inputs,
-                            "retry_attempt": _attempt + 1,
-                            "retry_limit": max_attempts,
-                            "repeat_iteration": _iteration + 1,
-                            "repeat_limit": max_iterations,
-                            "resource_owner_id": str(task.context.get("resource_owner_id") or task.id),
-                        },
+                            definition,
+                            device_id=task.device_id,
+                            run_id=(
+                                str(task.context.get("orchestrator.child_run_id") or "") or None
+                                if len(plan.nodes) == 1 and _attempt == 0 and _iteration == 0 else None
+                            ),
+                            context={
+                                **task.context,
+                                "task_run_id": task.id,
+                                "node_id": node.id,
+                                "inputs": node_inputs,
+                                "retry_attempt": _attempt + 1,
+                                "retry_limit": max_attempts,
+                                "repeat_iteration": _iteration + 1,
+                                "repeat_limit": max_iterations,
+                                "resource_owner_id": str(task.context.get("resource_owner_id") or task.id),
+                            },
                         )
                         node_runs[node.id] = child.id
                         task = self._save(replace(task, node_runs=dict(node_runs), status=TaskRunStatus.WAITING_CHILD))
@@ -550,24 +657,43 @@ class TaskOrchestrator:
                             break
                         if child_status not in {RunStatus.FAILED.value, "unknown"} or _attempt + 1 >= max_attempts:
                             aggregate = self._aggregate_child_status(child_status)
+                            projected = self._project_node_outputs(child.outputs)
+                            if projected:
+                                outputs[node.id] = projected
                             return self._save(replace(
                                 task,
                                 status=aggregate,
-                                outputs=outputs,
+                                outputs=dict(outputs),
                                 error=getattr(child, "error", None)
                                 if aggregate in {TaskRunStatus.FAILED, TaskRunStatus.UNKNOWN}
                                 else task.error,
                             ))
                     assert child is not None
-                    outputs[node.id] = dict(child.outputs)
-                    if node.workflow_id == "variable.set":
-                        variable_name = str(child.outputs.get("name") or "").strip()
-                        if variable_name:
-                            outputs[variable_name] = child.outputs.get("value")
+                    projected = self._project_node_outputs(child.outputs)
+                    outputs[node.id] = projected
+                    self._record_variable_output(outputs, node, projected)
                     if max_iterations > 1:
                         outputs[node.id]["repeat_iterations"] = _iteration + 1
-                    task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
+                    task = self._save(replace(
+                        task,
+                        outputs=dict(outputs),
+                        status=TaskRunStatus.RUNNING,
+                        context=self._context_with_target_output(task.context, projected),
+                    ))
             return self._save(replace(task, status=TaskRunStatus.SUCCEEDED, outputs=outputs))
+        except (TaskInputResolutionError, TaskInputDependencyError) as exc:
+            for child_id in node_runs.values():
+                try:
+                    child = self.runtime.runs.get(child_id)
+                except KeyError:
+                    continue
+                if str(child.status) not in {
+                    RunStatus.SUCCEEDED.value,
+                    RunStatus.FAILED.value,
+                    RunStatus.CANCELLED.value,
+                }:
+                    self.runtime.cancel(child.id)
+            return self._save(replace(task, status=TaskRunStatus.FAILED, outputs=outputs, error=exc.to_error()))
         except Exception as exc:
             # A failed child creation/resolution can leave a runtime lease
             # behind before the child reaches a terminal state. Fence those
@@ -586,6 +712,47 @@ class TaskOrchestrator:
             return self._save(replace(task, status=TaskRunStatus.FAILED, outputs=outputs, error={"code": "task_orchestration_failed", "message": str(exc)}))
 
     @staticmethod
+    def _validate_input_dependencies(plan: TaskPlan) -> None:
+        """Ensure node output references have an explicit upstream edge."""
+        node_ids = {node.id for node in plan.nodes}
+        ancestors: dict[str, set[str]] = {node.id: set() for node in plan.nodes}
+        by_id = {node.id: node for node in plan.nodes}
+        for node in plan._ordered_nodes():
+            for dependency in node.depends_on:
+                ancestors[node.id].add(dependency)
+                ancestors[node.id].update(ancestors[dependency])
+
+        pattern = re.compile(r"\$\{([^}]+)\}")
+
+        def references(value: Any):
+            if isinstance(value, Mapping):
+                for nested in value.values():
+                    yield from references(nested)
+            elif isinstance(value, (list, tuple)):
+                for nested in value:
+                    yield from references(nested)
+            elif isinstance(value, str):
+                yield from pattern.findall(value)
+
+        for node in plan.nodes:
+            for reference in references(node.input_mapping):
+                parts = reference.split(".")
+                root = parts[0] if parts else ""
+                if root in {"inputs", "context", "device"}:
+                    continue
+                source = parts[1] if root == "outputs" and len(parts) > 1 else root
+                if source in {"item", "index", "iteration", "result"}:
+                    continue
+                if source in node_ids and source not in ancestors[node.id]:
+                    raise TaskInputDependencyError(node.id, reference, source)
+                if root == "outputs" and source not in node_ids:
+                    continue
+                if root not in node_ids and root != "outputs":
+                    # Top-level aliases remain valid for generic task inputs;
+                    # the Studio validator checks their producer visibility.
+                    continue
+
+    @staticmethod
     def _aggregate_child_status(status: str) -> TaskRunStatus:
         """Preserve child recovery semantics at the Task boundary."""
         mapping = {
@@ -599,26 +766,150 @@ class TaskOrchestrator:
         }
         return mapping.get(status, TaskRunStatus.WAITING_CHILD)
 
+    @classmethod
+    def _resolve_node_inputs(
+        cls,
+        node: WorkflowNode,
+        inputs: Mapping[str, Any],
+        outputs: Mapping[str, Any],
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        context_values = dict(context or {})
+        device_values = (
+            {"device": context_values["device"]}
+            if isinstance(context_values.get("device"), Mapping)
+            else {}
+        )
+        return cls._resolve_inputs(
+            node.input_mapping,
+            {
+                **inputs,
+                **outputs,
+                **device_values,
+                "inputs": dict(inputs),
+                "outputs": dict(outputs),
+                "context": context_values,
+            },
+            deferred_reference_roots=cls._deferred_reference_roots(node),
+            deferred_reference_keys=("action_inputs",),
+        )
+
     @staticmethod
-    def _resolve_inputs(mapping: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
-        def resolve(expression: Any) -> Any:
-            if isinstance(expression, Mapping):
-                return {str(key): resolve(value) for key, value in expression.items()}
-            if isinstance(expression, list):
-                return [resolve(item) for item in expression]
-            if isinstance(expression, tuple):
-                return tuple(resolve(item) for item in expression)
-            if not isinstance(expression, str) or not expression.startswith("${") or not expression.endswith("}"):
-                return expression
+    def _deferred_reference_roots(node: WorkflowNode) -> frozenset[str]:
+        if node.workflow_id == "loop.for_each":
+            return frozenset({"item", "index"})
+        if node.workflow_id == "loop.until":
+            return frozenset({"iteration", "result", "outputs"})
+        return frozenset()
+
+    @staticmethod
+    def _project_node_outputs(outputs: Mapping[str, Any]) -> dict[str, Any]:
+        """Expose one-step Workflow outputs in one stable, flat shape."""
+        projected = dict(outputs)
+        run_output = projected.get("run")
+        if isinstance(run_output, Mapping):
+            for key, value in run_output.items():
+                projected.setdefault(str(key), value)
+        return projected
+
+    @staticmethod
+    def _record_variable_output(
+        outputs: dict[str, Any],
+        node: WorkflowNode,
+        projected: Mapping[str, Any],
+    ) -> None:
+        if node.workflow_id != "variable.set":
+            return
+        variable_name = str(projected.get("name") or "").strip()
+        if variable_name:
+            outputs[variable_name] = projected.get("value")
+
+    @staticmethod
+    def _context_with_target_output(
+        context: Mapping[str, Any],
+        output: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Carry connection identity from one node to later device actions."""
+        target_value = context.get("target")
+        target = dict(target_value) if isinstance(target_value, Mapping) else {}
+        changed = False
+        for key in ("device_id", "session_id", "protocol", "host", "port"):
+            value = output.get(key)
+            if key == "protocol" and not value:
+                value = output.get("recovery_protocol")
+            if value not in (None, "") and target.get(key) != value:
+                target[key] = value
+                changed = True
+        if not changed:
+            return dict(context)
+        return {**context, "target": target}
+
+    @staticmethod
+    def _resolve_inputs(
+        mapping: Mapping[str, Any],
+        values: Mapping[str, Any],
+        *,
+        deferred_reference_roots: frozenset[str] = frozenset(),
+        deferred_reference_keys: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        reference_pattern = re.compile(r"\$\{([^}]+)\}")
+
+        def resolve_reference(
+            expression: str,
+            container_path: tuple[str, ...],
+        ) -> Any:
             path = expression[2:-1].split(".")
+            root = path[0] if path else ""
+            if root in deferred_reference_roots and (
+                not deferred_reference_keys
+                or any(key in container_path for key in deferred_reference_keys)
+            ):
+                return expression
             current: Any = values
+            resolved: list[str] = []
             for segment in path:
                 if isinstance(current, Mapping) and segment in current:
                     current = current[segment]
+                    resolved.append(segment)
+                elif (
+                    isinstance(current, Mapping)
+                    and isinstance(current.get("run"), Mapping)
+                    and segment in current["run"]
+                ):
+                    current = current["run"][segment]
+                    resolved.extend(("run", segment))
                 else:
-                    raise ValueError(f"unresolved task input: {expression}")
+                    available = tuple(str(key) for key in current.keys()) if isinstance(current, Mapping) else ()
+                    raise TaskInputResolutionError(
+                        expression,
+                        missing_segment=segment,
+                        available_keys=available,
+                        resolved_path=".".join(resolved),
+                    )
             return current
-        return {str(name): resolve(expression) for name, expression in mapping.items()}
+
+        def resolve(expression: Any, container_path: tuple[str, ...] = ()) -> Any:
+            if isinstance(expression, Mapping):
+                return {
+                    str(key): resolve(value, container_path + (str(key),))
+                    for key, value in expression.items()
+                }
+            if isinstance(expression, list):
+                return [resolve(item, container_path) for item in expression]
+            if isinstance(expression, tuple):
+                return tuple(resolve(item, container_path) for item in expression)
+            if not isinstance(expression, str):
+                return expression
+            if expression.startswith("${") and expression.endswith("}"):
+                return resolve_reference(expression, container_path)
+            if container_path and container_path[-1] == "command" and reference_pattern.search(expression):
+                return reference_pattern.sub(
+                    lambda match: str(resolve_reference("${" + match.group(1) + "}", container_path)),
+                    expression,
+                )
+            return expression
+        return {str(name): resolve(expression, (str(name),)) for name, expression in mapping.items()}
 
     @staticmethod
     def _matches_run_if(

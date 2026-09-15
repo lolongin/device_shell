@@ -71,6 +71,25 @@ def test_activity_handler_runs_through_workflow_runtime() -> None:
     assert "runtime-ok" in result.outputs["run"]["output"]
 
 
+def test_process_activity_reports_invalid_inputs_with_structured_outputs() -> None:
+    activities = build_default_activity_executor()
+    invocation = ActivityInvocation(
+        "script.run", "inv-invalid", "run-1", inputs={"argv": "python -c pass"}
+    )
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "local"), invocation)
+
+    result = asyncio.run(activities.execute(invocation, context, lambda event: event))
+
+    assert result.status == ActivityStatus.FAILED
+    assert result.outputs == {
+        "output": "",
+        "returncode": None,
+        "program": "",
+        "status": "failed",
+    }
+    assert result.error["code"] == "process_input_invalid"
+
+
 def test_default_transfer_registration_wraps_adapter_in_activity_handler() -> None:
     activities = build_default_activity_executor(_TransferControl())
     invocation = ActivityInvocation(
@@ -88,3 +107,30 @@ def test_default_transfer_registration_wraps_adapter_in_activity_handler() -> No
     assert result.status == ActivityStatus.SUCCEEDED
     assert result.outputs["verified"] is True
     assert any(event.type == "transfer.completed" for event in events)
+
+
+def test_default_transfer_registration_uses_a_session_status_probe_when_available() -> None:
+    class GuardedTransferControl(_TransferControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probe_targets = []
+
+        def session_status(self, target):
+            self.probe_targets.append(target)
+            return {"status": "connected", "value": "connected"}
+
+    control = GuardedTransferControl()
+    activities = build_default_activity_executor(control)
+    invocation = ActivityInvocation(
+        "file.transfer", "inv-1", "run-1",
+        inputs={
+            "device_id": "dev-1", "session_id": "sess-1", "direction": "upload",
+            "source_path": "firmware.bin", "destination_path": "flash:/firmware.bin",
+        },
+    )
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "dev-1"), invocation)
+
+    result = asyncio.run(activities.execute(invocation, context, lambda event: event))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert control.probe_targets[0].session_id == "sess-1"

@@ -44,6 +44,23 @@ def build_device_action_registry(
     if activity_executor is None:
         from device_tui.infrastructure.vendor_adapters.huawei_vrp.action_handler import DeviceExecutionActionHandler
         handler = DeviceExecutionActionHandler(execution, adapters, transfers)
+    activity_backed_operations = {
+        "device.probe",
+        "device.verify",
+        "file.transfer",
+        "device.reboot",
+        "device.wait_online",
+        "device.storage.cleanup",
+        "device.storage.sync",
+        "device.verify_artifact",
+        "device.startup.configure",
+        "device.startup.rollback",
+        "terminal.command",
+        "terminal.batch",
+        "terminal.wait",
+        "device.power_off",
+        "operation.wait",
+    }
     legacy_operations = (
         "device.probe", "file.transfer", "device.verify",
         "huawei.storage.cleanup", "huawei.storage.sync",
@@ -51,48 +68,42 @@ def build_device_action_registry(
         "device.storage.cleanup", "device.storage.sync",
         "device.verify_artifact",
         "device.startup.configure", "device.startup.rollback",
-        "terminal.command", "terminal.batch", "device.power_off", "operation.wait",
+        "terminal.command", "terminal.batch", "terminal.wait", "device.power_off", "operation.wait",
     )
     for operation in legacy_operations:
         selected: Any = handler
-        if activity_executor is not None and operation in {
-            "device.probe",
-            "device.verify",
-            "file.transfer",
-            "device.reboot",
-            "device.wait_online",
-            "device.storage.cleanup",
-                "device.storage.sync",
-                "device.verify_artifact",
-                "device.verify",
-            "device.startup.configure",
-            "device.startup.rollback",
-            "terminal.command",
-            "terminal.batch",
-            "device.power_off",
-            "operation.wait",
-        }:
-            # Framework runs use the Activity lifecycle directly. The legacy
-            # Action handler remains available only when no Activity executor
-            # was supplied by a compatibility composition root.
+        if activity_executor is not None:
+            # Framework runs use the Activity lifecycle directly. Huawei-
+            # prefixed aliases remain available only to legacy compositions;
+            # vendor-neutral Activity ids are the production contract.
+            if operation not in activity_backed_operations:
+                continue
             selected = ActivityActionHandler(activity_executor, operation)
-            if selected is None:
-                # Vendor-neutral Activity ids are the production contract;
-                # Huawei-prefixed aliases remain available only to legacy
-                # compositions and need not be registered in the new graph.
-                if activity_executor is not None:
-                    continue
-                raise RuntimeError(f"No ActivityExecutor or legacy handler for {operation}")
         registry.register(selected, item_id=operation)
     # Process Activities are fully transport-independent and can be adopted
     # immediately. Generic device Activities remain registered alongside the
     # compatibility actions until all legacy callers use the framework path.
     if activity_executor is not None:
-        registry.register(
-            ActivityActionHandler(activity_executor, "device.verify_version"),
-            item_id="device.verify_version",
+        studio_activity_operations = (
+            "device.select",
+            "device.info",
+            "device.verify_version",
+            "utility.wait",
+            "result.save",
+            "variable.set",
+            "expression.evaluate",
+            "loop.for_each",
+            "loop.until",
+            "script.run",
+            "artifact.build",
         )
-        for operation in ("script.run", "artifact.build"):
+        for operation in studio_activity_operations:
+            try:
+                registry.resolve(operation)
+            except KeyError:
+                pass
+            else:
+                continue
             registry.register(
                 ActivityActionHandler(activity_executor, operation),
                 item_id=operation,

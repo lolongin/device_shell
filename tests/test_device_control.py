@@ -46,12 +46,39 @@ class SlowAdapterFactory:
     def __init__(self, connect_delay_seconds: float = 0.05) -> None:
         self.connect_delay_seconds = connect_delay_seconds
         self.adapters: list[SlowAdapter] = []
+        self.targets = []
 
     def create(self, target, callbacks: SessionCallbacks) -> "SlowAdapter":
-        del target
+        self.targets.append(target)
         adapter = SlowAdapter(callbacks, self.connect_delay_seconds)
         self.adapters.append(adapter)
         return adapter
+
+
+def test_control_uses_workflow_custom_endpoint() -> None:
+    async def scenario() -> None:
+        factory = SlowAdapterFactory()
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(factory),  # type: ignore[arg-type]
+        )
+
+        session = await application.control.open_session(
+            DeviceTarget(
+                device_id="MOCK-LAB-000",
+                protocol="ssh",
+                host="10.20.30.40",
+                port=2222,
+            ),
+            reuse=True,
+        )
+
+        assert session.protocol == "ssh"
+        assert factory.targets[0].host == "10.20.30.40"
+        assert factory.targets[0].port == 2222
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
 
 
 class FailingAdapterFactory:
@@ -372,6 +399,29 @@ def test_control_opens_and_sends_through_existing_session_service() -> None:
         )
         assert sent.sent is True
         assert sent.session_id == session.session_id
+        await application.sessions.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_control_exposes_session_status_for_workflow_preconditions() -> None:
+    async def scenario() -> None:
+        application = build_desktop_application(
+            SampleDeviceRepository(),
+            SessionHub(),
+        )
+        session = await application.control.open_session(
+            DeviceTarget(device_id=SIMULATED_DEVICE_ID),
+        )
+
+        observed = application.control.session_status(
+            DeviceTarget(session_id=session.session_id),
+        )
+
+        assert observed["session_id"] == session.session_id
+        assert observed["device_id"] == SIMULATED_DEVICE_ID
+        assert observed["status"] == "connected"
+        assert observed["value"] == "connected"
         await application.sessions.close_all()
 
     asyncio.run(scenario())

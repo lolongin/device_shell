@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, FileArchive, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
+import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, Copy, FileArchive, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
 import { desktopApi } from '../transport/api'
 import type { TaskDecisionActionPayload, TaskRecord, TaskStepState, WorkflowParameterDescriptor } from '../types'
@@ -12,16 +12,31 @@ const workflowParameters = ref<Record<string, unknown>>({})
 const planObjective = ref('')
 const planCommand = ref('')
 const localError = ref('')
+const copyNotice = ref('')
 const reportBusy = ref(false)
 const decisionInputReason = ref('')
 const selectedTaskIds = ref<Set<string>>(new Set())
 let initializedWorkflowId = ''
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+let copyNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
 const workflowOptions = computed(() => workspace.workflows)
 const selectedWorkflow = computed(() => workflowOptions.value.find((item) => item.id === workflowId.value) || workflowOptions.value[0] || null)
 const workflowParametersVisible = computed(() => selectedWorkflow.value?.parameters.filter((item) => !item.advanced) || [])
 const selectedTask = computed(() => workspace.tasks.find((task) => task.id === workspace.activeTaskId) || null)
+const workflowActionLabels: Record<string, string> = {
+  'terminal.command': '执行命令',
+  'terminal.batch': '批量执行命令',
+  'terminal.wait': '等待终端输出',
+  'device.info': '获取设备信息',
+  'device.select': '选择设备',
+  'device.wait_online': '等待设备上线',
+  'device.reboot': '重启设备',
+  'device.verify_version': '校验设备版本',
+  'utility.wait': '等待',
+  'utility.confirm': '人工确认',
+  'file.transfer': '文件传输',
+}
 const terminalTasks = computed(() => workspace.tasks.filter((task) => isTerminalStatus(task.status)))
 const taskSummary = computed(() => ({
   total: workspace.tasks.length,
@@ -92,7 +107,13 @@ const previousStepId = computed(() => {
 })
 
 function stepLabel(stepId: string): string {
-  return workflowStateById.value.get(stepId)?.label || stepId
+  const state = workflowStateById.value.get(stepId)
+  return workflowActionLabels[state?.action_id || state?.operation || ''] || state?.label || stepId
+}
+function taskCurrentStepLabel(task: TaskRecord | null): string {
+  if (!task) return ''
+  if (task.status === 'completed' || task.status === 'success') return '全部步骤已完成'
+  return task.current_step_id ? stepLabel(task.current_step_id) : '准备执行'
 }
 function taskWorkflowLabel(task: TaskRecord): string {
   return workspace.workflows.find((workflow) => workflow.id === task.workflow_id)?.name
@@ -117,6 +138,7 @@ function stepStatusLabel(status: string): string {
   if (status === 'running') return '执行中'
   if (status === 'skipped') return '已跳过'
   if (status === 'waiting' || status === 'waiting_for_user' || status === 'waiting_for_decision') return '等待确认'
+  if (status === 'pending') return '排队中'
   return '等待执行'
 }
 function stepOutput(state: TaskStepState): string {
@@ -176,6 +198,9 @@ function errorMessage(task: TaskRecord | null): string {
   const code = task.error_code || task.checkpoint?.error_code || ''
   const failedState = task.checkpoint?.step_states.find((state) => state.status === 'failed')
   const detail = failedState?.error?.message || task.checkpoint?.error_message || ''
+  if (code === 'unresolved_task_input' || code === 'task_input_dependency_missing') {
+    return '流程输入引用无效，请检查节点依赖和输出字段配置。'
+  }
   if (detail) {
     const normalized = detail.toLowerCase()
     if (normalized.includes('timeout') || normalized.includes('timed out')) return '设备响应超时，请检查连接后重试。'
@@ -186,6 +211,77 @@ function errorMessage(task: TaskRecord | null): string {
   }
   if (code === 'version_mismatch' || code.includes('verify')) return '软件包校验失败'
   return task.message || task.checkpoint?.error_message || code
+}
+function taskErrorDetails(task: TaskRecord): string {
+  const failedState = task.checkpoint?.step_states?.find((state) => state.status === 'failed')
+  const resultFailedStep = task.result?.steps?.find((step) => step.status === 'failed')
+  const rawMessage = task.message || task.checkpoint?.error_message || task.result?.message || ''
+  const details = {
+    task_id: task.id,
+    workflow: taskWorkflowLabel(task),
+    workflow_id: task.workflow_id,
+    device_id: task.device_id,
+    status: task.status,
+    current_step_id: task.current_step_id || task.checkpoint?.current_step || '',
+    failed_step_id: task.checkpoint?.failed_step_id || failedState?.step_id || resultFailedStep?.step_id || '',
+    error_code: task.error_code || task.checkpoint?.error_code || task.result?.error_code || '',
+    message: rawMessage,
+    display_message: errorMessage(task),
+    failed_step: failedState
+      ? {
+          step_id: failedState.step_id,
+          status: failedState.status,
+          attempt: failedState.attempt,
+          error: failedState.error,
+        }
+      : resultFailedStep
+        ? {
+            step_id: resultFailedStep.step_id,
+            status: resultFailedStep.status,
+            error_code: resultFailedStep.error_code || '',
+            message: resultFailedStep.message || '',
+          }
+        : null,
+    result: task.result
+      ? {
+          status: task.result.status || '',
+          error_code: task.result.error_code || '',
+          message: task.result.message || '',
+        }
+      : null,
+    checkpoint: task.checkpoint
+      ? {
+          revision: task.checkpoint.revision,
+          current_step: task.checkpoint.current_step,
+          failed_step_id: task.checkpoint.failed_step_id,
+          error_code: task.checkpoint.error_code,
+          error_message: task.checkpoint.error_message,
+        }
+      : null,
+    updated_at: task.updated_at,
+  }
+  return JSON.stringify(details, null, 2)
+}
+const selectedTaskErrorDetails = computed(() => selectedTask.value ? taskErrorDetails(selectedTask.value) : '')
+function showCopyNotice(message: string): void {
+  copyNotice.value = message
+  if (copyNoticeTimer) clearTimeout(copyNoticeTimer)
+  copyNoticeTimer = setTimeout(() => { copyNotice.value = '' }, 2600)
+}
+async function copyText(text: string, successMessage: string): Promise<void> {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showCopyNotice(successMessage)
+  } catch {
+    showCopyNotice('复制失败，请检查系统剪贴板权限')
+  }
+}
+async function copySelectedTaskError(): Promise<void> {
+  await copyText(selectedTaskErrorDetails.value, '错误详情已复制')
+}
+async function copyTaskApiError(): Promise<void> {
+  await copyText(`Task API 暂不可用：${workspace.taskError}`, 'Task API 错误已复制')
 }
 function taskStatusLabel(task: TaskRecord | null): string {
   if (!task) return ''
@@ -431,7 +527,10 @@ onMounted(async () => {
   refreshTimer = setInterval(() => { void workspace.refreshTasks() }, 1000)
   openLatestTask()
 })
-onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  if (copyNoticeTimer) clearTimeout(copyNoticeTimer)
+})
 
 watch(selectedWorkflow, (workflow) => {
   if (workflow && workflowId.value !== workflow.id) workflowId.value = workflow.id
@@ -495,7 +594,8 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
         <button class="primary-button" type="button" :disabled="workspace.taskBusy || !planObjective.trim() || !planCommand.trim() || !workspace.selectedDeviceId" @click="createTask"><Workflow :size="14" />校验并创建 Task</button>
       </template>
       <p v-if="localError" class="task-error" role="alert">{{ localError }}</p>
-      <p v-if="workspace.taskError" class="task-error" role="alert">Task API 暂不可用：{{ workspace.taskError }}</p>
+      <div v-if="workspace.taskError" class="task-error task-error-with-action" role="alert"><span>Task API 暂不可用：{{ workspace.taskError }}</span><button class="icon-button" type="button" title="复制 Task API 错误" aria-label="复制 Task API 错误" @click="copyTaskApiError"><Copy :size="13" /></button></div>
+      <p v-if="copyNotice" class="task-copy-notice" role="status" aria-live="polite">{{ copyNotice }}</p>
     </div>
 
     <div class="task-ui-list" aria-label="Task 列表">
@@ -507,7 +607,7 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
     </div>
 
     <article v-if="selectedTask" class="task-detail">
-      <header><div><strong>Task {{ selectedTask.id.slice(0, 8) }}</strong><small>{{ selectedTask.progress_percent }}% · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
+      <header><div><strong>{{ taskWorkflowLabel(selectedTask) }}</strong><small>Task {{ selectedTask.id.slice(0, 8) }} · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
         <button class="secondary-button" type="button" :disabled="reportBusy" @click="downloadReport"><FileArchive :size="13" />{{ reportBusy ? '正在导出…' : '导出报告' }}</button>
         <button v-if="selectedTask.status === 'running'" class="secondary-button" type="button" @click="workspace.pauseTask()"><CirclePause :size="13" />暂停</button>
         <button v-if="selectedTask.status === 'paused'" class="secondary-button" type="button" @click="workspace.resumeTask()"><CirclePlay :size="13" />恢复</button>
@@ -516,10 +616,15 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
         <button v-if="!isTerminal" class="danger-button task-cancel-button" type="button" @click="workspace.cancelTask()"><CircleStop :size="14" />取消任务</button>
       </div></header>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
+      <div class="task-detail-summary"><span><small>整体进度</small><strong>{{ selectedTask.progress_percent }}%</strong></span><span><small>步骤</small><strong>{{ taskSteps.filter((step) => step.status === 'completed' || step.status === 'success').length }}/{{ taskSteps.length }}</strong></span><span><small>当前步骤</small><strong>{{ taskCurrentStepLabel(selectedTask) }}</strong></span></div>
       <ol class="task-timeline">
         <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ stepStatusLabel(state.status) }}<span v-if="state.attempt > 1"> · 第 {{ state.attempt }} 次尝试</span></small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><p v-else-if="stepDescription(state.step_id)">{{ stepDescription(state.step_id) }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
+      <details v-if="selectedTask.status === 'failed'" class="task-error-details" open>
+        <summary><span>错误详情</span><button class="secondary-button" type="button" title="复制完整错误详情" @click.stop="copySelectedTaskError"><Copy :size="13" />复制错误详情</button></summary>
+        <pre>{{ selectedTaskErrorDetails }}</pre>
+      </details>
       <div v-if="workspace.taskDecision" class="task-decision" role="dialog" aria-labelledby="task-decision-title">
         <div class="task-decision-heading"><ShieldAlert :size="16" /><div><strong id="task-decision-title">需要人工决策</strong><small>{{ stepLabel(workspace.taskDecision.current_step) }} · revision {{ workspace.taskDecision.checkpoint_revision }}</small></div></div>
         <p v-if="workspace.taskDecision.error?.message">{{ workspace.taskDecision.error.message }}</p>

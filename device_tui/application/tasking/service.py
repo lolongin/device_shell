@@ -557,6 +557,8 @@ class WorkflowEngine:
             device_id=str(facts.get("device_id") or self._target.device_id),
             session_id=session_id,
             protocol=str(facts.get("recovery_protocol") or self._target.protocol or "auto"),
+            host=self._target.host,
+            port=self._target.port,
         )
 
     def _restore_recovery_target(self) -> None:
@@ -788,10 +790,11 @@ class LegacyTaskManager:
         self._completed_steps[task_id] = 0
         if framework_task_plan is not None and self._task_orchestrator is not None:
             self._framework_task_plans[task_id] = framework_task_plan
+            framework_inputs = dict(metadata.get("framework_inputs") or {})
             run = self._task_orchestrator.start(
                 framework_task_plan,
                 device_id=device_id,
-                inputs={},
+                inputs=framework_inputs,
                 context={
                     **dict(request.context),
                     "source": request.source,
@@ -1212,7 +1215,7 @@ class LegacyTaskManager:
         result = WorkflowResult(
             status=result_status,
             steps=tuple(attempts),
-            outputs=dict(run.context),
+            outputs=dict(run.outputs),
             error_code=str((run.error or {}).get("code") or ""),
             message=("Workflow completed." if status == TaskStatus.COMPLETED.value else "Workflow waiting." if status == TaskStatus.WAITING_FOR_DECISION.value else "Workflow running." if status == TaskStatus.RUNNING.value else "Workflow failed."),
         )
@@ -1222,7 +1225,7 @@ class LegacyTaskManager:
             revision=run.revision,
             current_step=run.current_state,
             completed_steps=tuple(sorted(completed & set(state_by_id))),
-            outputs=dict(run.context),
+            outputs=dict(run.outputs),
             context={key: value for key, value in run.context.items() if key != "lease_token"},
             attempts={attempt.action_id: sum(1 for item in run.attempts if item.action_id == attempt.action_id) for attempt in run.attempts},
             error_code=str((run.error or {}).get("code") or ""),

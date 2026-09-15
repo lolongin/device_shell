@@ -177,6 +177,8 @@ class TaskCreate(ProtocolModel):
                 device_id=str(raw_target.get("device_id") or ""),
                 session_id=str(raw_target.get("session_id") or ""),
                 protocol=str(raw_target.get("protocol") or "auto"),
+                host=str(raw_target.get("host") or ""),
+                port=int(raw_target.get("port") or 0),
             ),
             source=str(payload.get("source") or "unknown"),
             context=dict(payload.get("context") or {}),

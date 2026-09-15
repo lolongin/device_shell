@@ -142,3 +142,68 @@ def test_activity_executor_runs_preparation_and_rechecks_guard() -> None:
 
     assert result.status == ActivityStatus.SUCCEEDED
     assert state["view"] == "user"
+
+
+def test_activity_executor_fails_when_precondition_probe_is_not_registered() -> None:
+    class Main:
+        activity_id = "file.transfer"
+
+        async def execute(self, invocation, context, report):
+            raise AssertionError("precondition must stop dispatch")
+
+    executor = ActivityExecutor(
+        definitions={
+            "file.transfer:1": ActivityDefinition(
+                id="file.transfer",
+                preconditions=(GuardSpec(
+                    id="required_session",
+                    probe="session.status",
+                    predicate={"equals": "connected"},
+                ),),
+            ),
+        },
+        handlers={"file.transfer": Main()},
+    )
+    invocation = ActivityInvocation("file.transfer", "inv-1", "run-1")
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "device-1"), invocation)
+
+    result = asyncio.run(executor.execute(invocation, context, lambda event: event))
+
+    assert result.status == ActivityStatus.FAILED
+    assert result.error == {
+        "code": "precondition_probe_missing",
+        "guard_id": "required_session",
+        "probe": "session.status",
+        "class": "configuration",
+    }
+
+
+def test_activity_executor_keeps_status_output_when_a_precondition_fails() -> None:
+    class Probe:
+        probe_id = "session.status"
+
+        async def probe(self, specification, context):
+            del specification, context
+            return {"value": "disconnected"}
+
+    executor = ActivityExecutor(
+        definitions={
+            "script.run:1": ActivityDefinition(
+                id="script.run",
+                preconditions=(GuardSpec(
+                    id="required_session",
+                    probe="session.status",
+                    predicate={"equals": "connected"},
+                ),),
+            ),
+        },
+        handlers={"script.run": Handler()},
+        probes={"session.status": Probe()},
+    )
+    invocation = ActivityInvocation("script.run", "inv-1", "run-1")
+    context = ActivityContext(WorkflowRun("run-1", "wf", "1", "device-1"), invocation)
+
+    result = asyncio.run(executor.execute(invocation, context, lambda event: event))
+
+    assert result.status == ActivityStatus.FAILED
+    assert result.outputs == {"status": "failed"}

@@ -116,6 +116,8 @@ class DeviceExecutionTool:
                 recovery_target = DeviceTarget(
                     device_id=target.device_id,
                     protocol=recovery_protocol,
+                    host=target.host,
+                    port=target.port,
                 )
             timeout = max(1, min(int(params.get("timeout_seconds") or 180), 3_600))
             deadline = asyncio.get_running_loop().time() + timeout

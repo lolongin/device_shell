@@ -1,6 +1,6 @@
 """Desktop composition of framework contracts and shipped Workflow plugins."""
 
-from device_tui.application.device_control import DeviceControlService
+from device_tui.application.device_control import DeviceControlService, DeviceTarget
 from device_tui.application.tasking.execution import DeviceExecutionTool
 from device_tui.framework import (
     ActivityDefinition,
@@ -21,6 +21,8 @@ from ..workflow_plugins.utility import (
     ExpressionActivityHandler,
     ForEachActivityHandler,
     ResultSaveActivityHandler,
+    TerminalWaitActivityHandler,
+    UntilActivityHandler,
     VariableSetActivityHandler,
     WaitActivityHandler,
 )
@@ -31,6 +33,28 @@ from ..workflow_plugins.generic import build_default_activity_workflow_providers
 from ..workflow_plugins.vendor_adapter import DeviceVendorActivityHandler
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.activity_adapter import HuaweiVrpDeviceVendorAdapter
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.workflow_adapter import HuaweiVrpWorkflowAdapter
+
+
+class _SessionStatusProbe:
+    probe_id = "session.status"
+
+    def __init__(self, control: DeviceControlService) -> None:
+        self._control = control
+
+    async def probe(self, specification, context):
+        del specification
+        values = dict(context.invocation.context.get("target") or {})
+        for key in ("device_id", "session_id", "protocol", "host", "port"):
+            if key in context.invocation.inputs:
+                values[key] = context.invocation.inputs[key]
+        target = DeviceTarget(
+            device_id=str(values.get("device_id") or context.workflow_run.device_id),
+            session_id=str(values.get("session_id") or ""),
+            protocol=str(values.get("protocol") or "auto"),
+            host=str(values.get("host") or ""),
+            port=int(values.get("port") or 0),
+        )
+        return self._control.session_status(target)
 
 
 def build_default_workflow_registry() -> WorkflowRegistry:
@@ -55,6 +79,7 @@ def build_default_activity_executor(
     *,
     adapters: AdapterRegistry | None = None,
     transfers: object | None = None,
+    terminal_hub: object | None = None,
 ) -> ActivityExecutor:
     """Build built-in Activities, optionally including device transfers.
 
@@ -63,6 +88,16 @@ def build_default_activity_executor(
     services have been constructed.
     """
     executor = ActivityExecutor()
+    session_preconditions: tuple[GuardSpec, ...] = ()
+    if control is not None and callable(getattr(control, "session_status", None)):
+        executor.register_probe(_SessionStatusProbe(control))
+        session_preconditions = (
+            GuardSpec(
+                id="session.connected",
+                probe="session.status",
+                predicate={"equals": "connected"},
+            ),
+        )
     for activity_id in ("script.run", "artifact.build"):
         executor.register_definition(ActivityDefinition(
             id=activity_id,
@@ -77,6 +112,8 @@ def build_default_activity_executor(
         executor.register_handler(ProcessActivityHandler(activity_id))
     executor.register_definition(ActivityDefinition(id="utility.wait"))
     executor.register_handler(WaitActivityHandler())
+    executor.register_definition(ActivityDefinition(id="terminal.wait"))
+    executor.register_handler(TerminalWaitActivityHandler(terminal_hub))
     executor.register_definition(ActivityDefinition(id="result.save"))
     executor.register_handler(ResultSaveActivityHandler())
     executor.register_definition(ActivityDefinition(id="device.select"))
@@ -86,33 +123,28 @@ def build_default_activity_executor(
     executor.register_definition(ActivityDefinition(id="expression.evaluate"))
     executor.register_handler(ExpressionActivityHandler())
     executor.register_definition(ActivityDefinition(id="loop.for_each"))
-    if execution is None:
-        executor.register_handler(ForEachActivityHandler())
-    else:
-        async def run_child(action_id, inputs, parent_context, report):
-            invocation = ActivityInvocation(
-                activity_id=str(action_id),
-                invocation_id=f"loop:{uuid4().hex}",
-                workflow_run_id=parent_context.workflow_run.id,
-                inputs=dict(inputs),
-                context=dict(parent_context.invocation.context),
-            )
-            result = await executor.execute(invocation, ActivityContext(parent_context.workflow_run, invocation), report)
-            if str(result.status) != "succeeded":
-                raise RuntimeError((result.error or {}).get("message", "loop child failed"))
-            return {**result.outputs, "status": str(result.status)}
-        executor.register_handler(ForEachActivityHandler(run_child))
+    executor.register_definition(ActivityDefinition(id="loop.until"))
+
+    async def run_child(action_id, inputs, parent_context, report):
+        invocation = ActivityInvocation(
+            activity_id=str(action_id),
+            invocation_id=f"loop:{uuid4().hex}",
+            workflow_run_id=parent_context.workflow_run.id,
+            inputs=dict(inputs),
+            context=dict(parent_context.invocation.context),
+        )
+        result = await executor.execute(invocation, ActivityContext(parent_context.workflow_run, invocation), report)
+        if str(result.status) != "succeeded":
+            raise RuntimeError((result.error or {}).get("message", "loop child failed"))
+        return {**result.outputs, "status": str(result.status)}
+
+    executor.register_handler(ForEachActivityHandler(run_child))
+    executor.register_handler(UntilActivityHandler(run_child))
     if control is not None:
         executor.register_definition(ActivityDefinition(
             id="file.transfer",
             preparation=("managed_transfer.dispatch",),
-            preconditions=(
-                GuardSpec(
-                    id="session.connected",
-                    probe="session.status",
-                    predicate={"equals": "connected"},
-                ),
-            ),
+            preconditions=session_preconditions,
             exchanges=(
                 ExchangeSpec(
                     id="transfer.started",
@@ -140,7 +172,7 @@ def build_default_activity_executor(
             if activity_id == "device.reboot":
                 definition = ActivityDefinition(
                     id=activity_id,
-                    preconditions=(GuardSpec(id="session.connected", probe="session.status", predicate={"equals": "connected"}),),
+                    preconditions=session_preconditions,
                     exchanges=(ExchangeSpec(id="reboot.dispatched", send="reboot", accepted_signals=("disconnect_observed",), failure_signals=("command_failed",)),),
                     idempotency=IdempotencyPolicy.UNSAFE,
                 )
@@ -153,11 +185,7 @@ def build_default_activity_executor(
             elif activity_id in {"terminal.command", "terminal.batch"}:
                 definition = ActivityDefinition(
                     id=activity_id,
-                    preconditions=(GuardSpec(
-                        id="session.connected",
-                        probe="session.status",
-                        predicate={"equals": "connected"},
-                    ),),
+                    preconditions=session_preconditions,
                 )
             elif activity_id == "operation.wait":
                 definition = ActivityDefinition(
@@ -173,7 +201,7 @@ def build_default_activity_executor(
             else:
                 definition = ActivityDefinition(
                     id=activity_id,
-                    preconditions=(GuardSpec(id="session.connected", probe="session.status", predicate={"equals": "connected"}),),
+                    preconditions=session_preconditions,
                     exchanges=(ExchangeSpec(id="version.probe", send="version_query", accepted_signals=("probe.completed",), failure_signals=("probe.failed",)),),
                 )
             executor.register_definition(definition)
@@ -205,11 +233,7 @@ def build_default_activity_executor(
                     if activity_id == "device.verify_artifact"
                     else IdempotencyPolicy.CONDITIONAL
                 ),
-                preconditions=(GuardSpec(
-                    id="session.connected",
-                    probe="session.status",
-                    predicate={"equals": "connected"},
-                ),),
+                preconditions=session_preconditions,
             ))
             executor.register_handler(
                 DeviceVendorActivityHandler(vendor, activity_id),

@@ -105,6 +105,7 @@ class ActivityExecutor:
             self._emit(report, "activity.preconditions.failed", invocation, precondition_error)
             return ActivityResult(
                 status=ActivityStatus.FAILED,
+                outputs={"status": ActivityStatus.FAILED.value},
                 error=precondition_error,
             )
         self._emit(report, "activity.preconditions.checked", invocation, {
@@ -130,6 +131,7 @@ class ActivityExecutor:
         except Exception as exc:
             return ActivityResult(
                 status=ActivityStatus.FAILED,
+                outputs={"status": ActivityStatus.FAILED.value},
                 error={
                     "code": getattr(exc, "code", "activity_failed"),
                     "message": str(exc),
@@ -177,11 +179,13 @@ class ActivityExecutor:
     ) -> dict[str, Any] | None:
         for guard in definition.preconditions:
             probe = self._probes.get(guard.probe)
-            # Missing probes are allowed for compatibility adapters. They
-            # still receive lifecycle events and can perform the check inside
-            # their transport implementation.
             if probe is None:
-                continue
+                return {
+                    "code": "precondition_probe_missing",
+                    "guard_id": guard.id,
+                    "probe": guard.probe,
+                    "class": "configuration",
+                }
             try:
                 observed = await probe.probe(guard, context)
             except Exception as exc:

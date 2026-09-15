@@ -109,3 +109,44 @@ def test_transfer_activity_can_skip_when_a_prior_probe_proves_destination_exists
     assert "transfer.operation.queued" not in [event.type for event in events]
     assert "transfer.completed" in [event.type for event in events]
     assert adapter.prepared is False
+
+
+def test_transfer_adapter_exceptions_keep_structured_outputs_for_each_stage():
+    class BrokenTransfer(FakeTransfer):
+        def __init__(self, stage):
+            super().__init__()
+            self.stage = stage
+
+        async def check_preconditions(self, invocation):
+            if self.stage == "precondition":
+                raise RuntimeError("session probe unavailable")
+            return await super().check_preconditions(invocation)
+
+        async def prepare(self, invocation, report):
+            if self.stage == "prepare":
+                raise RuntimeError("dispatch preparation failed")
+            await super().prepare(invocation, report)
+
+        async def start(self, invocation, report):
+            if self.stage == "start":
+                raise RuntimeError("queue rejected")
+            return await super().start(invocation, report)
+
+        async def monitor(self, handle, invocation, report):
+            if self.stage == "monitor":
+                raise RuntimeError("operation status unavailable")
+            return await super().monitor(handle, invocation, report)
+
+        async def verify(self, handle, observation, invocation):
+            if self.stage == "verify":
+                raise RuntimeError("target readback failed")
+            return await super().verify(handle, observation, invocation)
+
+    for stage in ("precondition", "prepare", "start", "monitor", "verify"):
+        result, _ = _execute(BrokenTransfer(stage))
+
+        assert result.status == ActivityStatus.FAILED
+        assert result.error["code"] == f"transfer_{stage}_failed"
+        assert result.outputs["status"] == "failed"
+        assert result.outputs["output"] == ""
+        assert result.outputs["operation_id"] in {"", "transfer-1"}

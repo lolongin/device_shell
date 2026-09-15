@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.application.workflow_studio import build_action_catalog
 from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowNode, WorkflowVersion
 from device_tui.interfaces.desktop_api.routers.workflow_definitions import _compile_task_plan
 from device_tui.application.errors import UnsupportedOperationError
@@ -43,6 +44,31 @@ def test_workflow_action_catalog_is_exposed_for_studio_clients() -> None:
         assert "required" in actions["device.command"]["input_schema"]
 
 
+def test_workflow_action_catalog_exposes_referenceable_outputs() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        response = client.get("/api/v1/workflow-definitions/actions")
+
+    assert response.status_code == 200
+    actions = {item["id"]: item for item in response.json()["actions"]}
+    expected_fields = {
+        "device.command": {"output", "status"},
+        "device.info": {"device_id", "name", "address", "model", "output", "status", "software_version"},
+        "device.connect": {"session_id", "device_id", "status", "cli_status"},
+        "device.ssh": {"session_id", "device_id", "status", "cli_status"},
+        "device.telnet": {"session_id", "device_id", "status", "cli_status"},
+        "terminal.wait": {"output", "status", "matched", "sequence", "session_id"},
+        "variable.set": {"name", "value", "matched", "source"},
+        "expression.evaluate": {"value", "status"},
+        "loop.for_each": {"items", "results", "count"},
+        "loop.until": {"status", "matched", "iterations", "result", "results"},
+        "result.save": {"key", "value", "status"},
+    }
+    for action_id, fields in expected_fields.items():
+        schema = actions[action_id]["output_schema"]
+        assert schema["type"] == "object"
+        assert fields <= set(schema["properties"])
+
+
 def test_workflow_definition_can_test_run_current_draft() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post(
@@ -57,6 +83,90 @@ def test_workflow_definition_can_test_run_current_draft() -> None:
         response = client.post(f"/api/v1/workflow-definitions/{workflow_id}/run", json={"device_id": "sim-1", "protocol": "simulated", "draft": True})
         assert response.status_code == 200
         assert response.json()["task"]["workflow_id"] == workflow_id
+
+
+def test_workflow_run_exposes_device_reference_context() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Device context",
+                "nodes": [
+                    {
+                        "id": "value",
+                        "action_id": "variable.set",
+                        "config": {"name": "device_name", "value": "${device.name}"},
+                    }
+                ],
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+
+        response = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={"device_id": "sim-1", "protocol": "simulated", "draft": True},
+        )
+
+        assert response.status_code == 200
+        context = response.json()["task"]["context"]
+        assert context["device"]["id"] == "sim-1"
+        if "version" in context["device"]:
+            assert context["device"]["software_version"] == context["device"]["version"]
+        assert "password" not in context["device"]
+        assert "ssh_password" not in context["device"]
+
+
+def test_workflow_batch_runs_keep_device_context_per_target() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Batch device context",
+                "nodes": [
+                    {
+                        "id": "value",
+                        "action_id": "variable.set",
+                        "config": {"name": "device_id", "value": "${device.id}"},
+                    }
+                ],
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+
+        response = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={
+                "device_ids": ["sim-1", "sim-2"],
+                "protocol": "simulated",
+                "draft": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert [task["context"]["device"]["id"] for task in response.json()["tasks"]] == ["sim-1", "sim-2"]
+
+
+def test_workflow_run_rejects_invalid_definition_before_creating_task() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Invalid draft",
+                "nodes": [{"id": "command", "action_id": "device.command", "config": {}}],
+                "edges": [],
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+
+        response = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={"device_id": "sim-1", "protocol": "simulated", "draft": True, "dry_run": True},
+        )
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"]["details"]["errors"][0]["code"] == "missing_required_config"
+        assert body["error"]["details"]["errors"][0]["node_id"] == "command"
 
 
 def test_workflow_definition_requires_explicit_draft_run_before_publish() -> None:
@@ -310,6 +420,74 @@ def test_workflow_definition_compiles_loop_items_from_predecessor_output() -> No
     assert plan.nodes[1].depends_on == ("items",)
 
 
+def test_workflow_definition_compiles_variable_extraction_unchanged() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="variable-extraction",
+        nodes=(
+            WorkflowNode("command", "device.command", {"command": "dir flash:/"}),
+            WorkflowNode(
+                "variable",
+                "variable.set",
+                {
+                    "name": "cc_path",
+                    "value": "${command.output}",
+                    "extract": {"pattern": r"flash:/\S+", "group": 0},
+                },
+            ),
+        ),
+        edges=(WorkflowEdge("command", "variable"),),
+    )
+    plan = _compile_task_plan(version, "router-1")
+    assert plan.nodes[1].workflow_id == "variable.set"
+    assert plan.nodes[1].input_mapping["extract"] == {"pattern": r"flash:/\S+", "group": 0}
+
+
+def test_workflow_definition_normalizes_file_paths_from_input_mapping() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="mapped-transfer",
+        nodes=(
+            WorkflowNode(
+                "upload",
+                "file.upload",
+                {},
+                {"source": "${package_path}", "destination": "flash:/target.cc"},
+            ),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert plan.nodes[0].input_mapping["source_path"] == "${package_path}"
+    assert plan.nodes[0].input_mapping["destination_path"] == "flash:/target.cc"
+    assert "source" not in plan.nodes[0].input_mapping
+    assert "destination" not in plan.nodes[0].input_mapping
+
+
+def test_workflow_definition_execution_order_follows_inserted_dependencies() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="inserted-variable",
+        nodes=(
+            WorkflowNode("command_2", "device.command", {"command": "set current-configuration"}),
+            WorkflowNode("variable", "variable.set", {"name": "cc", "value": "${command_1.output}"}),
+            WorkflowNode("command_1", "device.command", {"command": "display cc"}),
+        ),
+        edges=(
+            WorkflowEdge("command_1", "variable"),
+            WorkflowEdge("variable", "command_2"),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert [node.id for node in plan._ordered_nodes()] == ["command_1", "variable", "command_2"]
+
+
 def test_workflow_definition_compiles_repeat_policy_into_task_step() -> None:
     version = WorkflowVersion("repeat", 0, "Repeat", nodes=(WorkflowNode("command", "device.command", {"command": "display version", "repeat_count": 3}),), edges=())
     plan = _compile_task_plan(version, "router-1")
@@ -347,6 +525,141 @@ def test_workflow_definition_compiles_supported_actions_to_framework_activities(
     assert plan.nodes[4].input_mapping["direction"] == "upload"
     assert plan.nodes[4].input_mapping["source_path"] == "a.cc"
     assert plan.nodes[4].input_mapping["destination_path"] == "flash:/a.cc"
+
+
+def test_workflow_definition_preserves_custom_endpoint_for_connection_node() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="custom-endpoint",
+        nodes=(WorkflowNode("ssh", "device.ssh", {"host": "10.20.30.40", "port": 2222}),),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert plan.nodes[0].input_mapping["host"] == "10.20.30.40"
+    assert plan.nodes[0].input_mapping["port"] == 2222
+
+
+def test_workflow_definition_keeps_protocol_for_connection_node_without_timeout() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="connection-protocol",
+        nodes=(WorkflowNode("telnet", "device.telnet", {"host": "10.20.30.40"}),),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert plan.nodes[0].input_mapping["recovery_protocol"] == "telnet"
+
+
+def test_workflow_definition_keeps_protocol_for_nested_connection_node_without_timeout() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="nested-connection-protocol",
+        nodes=(WorkflowNode(
+            "loop",
+            "loop.for_each",
+            {
+                "items": ["router-1"],
+                "action_id": "device.telnet",
+                "action_inputs": {"host": "10.20.30.40"},
+            },
+        ),),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert plan.nodes[0].input_mapping["action_inputs"]["recovery_protocol"] == "telnet"
+
+
+def test_workflow_definition_normalizes_nested_download_action_inputs() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="nested-download",
+        nodes=(
+            WorkflowNode(
+                "loop",
+                "loop.for_each",
+                {
+                    "items": ["a"],
+                    "action_id": "file.download",
+                    "action_inputs": {
+                        "source": "flash:/a.cc",
+                        "destination": "a.cc",
+                    },
+                },
+            ),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert plan.nodes[0].input_mapping["action_inputs"] == {
+        "direction": "download",
+        "source_path": "flash:/a.cc",
+        "destination_path": "a.cc",
+    }
+
+
+def _minimal_workflow_config(action_id: str) -> dict[str, object]:
+    return {
+        "device.select": {"device_id": "router-1"},
+        "device.connect": {},
+        "device.ssh": {"host": "router-1"},
+        "device.telnet": {"host": "router-1"},
+        "device.info": {},
+        "device.command": {"command": "display version"},
+        "file.upload": {"source": "a.cc", "destination": "flash:/a.cc"},
+        "file.download": {"source": "flash:/a.cc", "destination": "a.cc"},
+        "device.reboot": {},
+        "utility.wait": {"seconds": 0},
+        "terminal.wait": {"pattern": "Huawei", "send_enter": False, "timeout_seconds": 1},
+        "utility.confirm": {"prompt": "确认继续？"},
+        "result.save": {"key": "result"},
+        "variable.set": {"name": "value", "value": "ok"},
+        "expression.evaluate": {"expression": "1 + 1"},
+        "loop.for_each": {"items": ["a"], "action_id": "result.save", "action_inputs": {"key": "${item}"}},
+        "loop.until": {"action_id": "result.save", "condition": "result.status == 'saved'", "max_iterations": 1, "interval_seconds": 0},
+    }[action_id]
+
+
+def test_workflow_definition_compiles_every_executable_catalog_action() -> None:
+    compile_time_only = {"utility.condition"}
+
+    for action in build_action_catalog().list():
+        if action.id in compile_time_only:
+            continue
+        version = WorkflowVersion(
+            workflow_id=f"wf-{action.id}",
+            version=1,
+            name=action.name,
+            nodes=(WorkflowNode("node", action.id, _minimal_workflow_config(action.id)),),
+        )
+
+        plan = _compile_task_plan(version, "router-1")
+
+        assert len(plan.nodes) == 1
+        assert plan.nodes[0].id == "node"
+
+
+def test_workflow_definition_rejects_device_connect_target_mismatch() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="wrong-target",
+        nodes=(WorkflowNode("connect", "device.connect", {"device_id": "router-2"}),),
+    )
+
+    try:
+        _compile_task_plan(version, "router-1")
+    except UnsupportedOperationError as exc:
+        assert "selects device router-2" in str(exc)
+    else:
+        raise AssertionError("device.connect accepted a different target device")
 
 
 def test_workflow_definition_rejects_non_executable_loop_children_at_compile_time() -> None:

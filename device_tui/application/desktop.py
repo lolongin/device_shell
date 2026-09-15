@@ -175,6 +175,7 @@ def build_desktop_application(
         execution,
         adapters=framework_adapters,
         transfers=transfers,
+        terminal_hub=session_manager,
     )
     package_builders = build_package_builder_registry()
     package_builds = PackageBuildService(

@@ -26,10 +26,17 @@ class ProcessActivityHandler:
         inputs = invocation.inputs
         argv = inputs.get("argv")
         if isinstance(argv, str):
-            raise ValueError("process Activity requires argv as an array")
+            return self._invalid_input("process Activity requires argv as an array")
         if not isinstance(argv, (list, tuple)):
-            raise ValueError("process Activity requires argv")
-        timeout = float(inputs.get("timeout_seconds") or 3_600)
+            return self._invalid_input("process Activity requires argv")
+        if not argv or not all(isinstance(item, (str, int, float)) for item in argv):
+            return self._invalid_input("process Activity argv must contain command arguments")
+        try:
+            timeout = float(inputs.get("timeout_seconds") or 3_600)
+        except (TypeError, ValueError):
+            return self._invalid_input("timeout_seconds must be a number")
+        if timeout <= 0:
+            return self._invalid_input("timeout_seconds must be greater than zero")
 
         def output(text: str) -> None:
             report(Event(
@@ -48,15 +55,22 @@ class ProcessActivityHandler:
             source="process.adapter",
             payload={"program": str(argv[0])},
         ))
-        result = await self._adapter.run(
-            invocation.invocation_id,
-            argv,
-            cwd=str(inputs.get("cwd") or "") or None,
-            env=inputs.get("env") if isinstance(inputs.get("env"), dict) else None,
-            timeout_seconds=timeout,
-            max_output_chars=int(inputs.get("max_output_chars") or 1_048_576),
-            on_output=output,
-        )
+        try:
+            result = await self._adapter.run(
+                invocation.invocation_id,
+                argv,
+                cwd=str(inputs.get("cwd") or "") or None,
+                env=inputs.get("env") if isinstance(inputs.get("env"), dict) else None,
+                timeout_seconds=timeout,
+                max_output_chars=int(inputs.get("max_output_chars") or 1_048_576),
+                on_output=output,
+            )
+        except Exception as exc:
+            return ActivityResult(
+                status=ActivityStatus.FAILED,
+                outputs=self._failure_outputs(argv),
+                error={"code": "process_failed", "message": str(exc), "class": "transient"},
+            )
         status = {
             "succeeded": ActivityStatus.SUCCEEDED,
             "failed": ActivityStatus.FAILED,
@@ -108,6 +122,7 @@ class ProcessActivityHandler:
                 "output": result.output,
                 "returncode": result.returncode,
                 "program": str(argv[0]),
+                "status": status.value,
                 **({"artifact_path": artifact_path} if artifact_path else {}),
             },
             evidence=(
@@ -119,6 +134,18 @@ class ProcessActivityHandler:
 
     async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:
         await self._adapter.cancel(invocation.invocation_id)
+
+    @staticmethod
+    def _failure_outputs(argv: Any) -> dict[str, Any]:
+        program = str(argv[0]) if isinstance(argv, (list, tuple)) and argv else ""
+        return {"output": "", "returncode": None, "program": program, "status": "failed"}
+
+    def _invalid_input(self, message: str) -> ActivityResult:
+        return ActivityResult(
+            status=ActivityStatus.FAILED,
+            outputs=self._failure_outputs(()),
+            error={"code": "process_input_invalid", "message": message, "class": "deterministic"},
+        )
 
 
 __all__ = ["ProcessActivityHandler"]
