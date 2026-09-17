@@ -532,6 +532,26 @@ async def delete_workflow_version(workflow_id: str, version: int, ctx=Depends(ge
         raise ApplicationConflictError("该发布版本已被任务引用，不能删除") from exc
 
 
+@router.post("/{workflow_id}/versions/{version}/restore")
+async def restore_workflow_version(workflow_id: str, version: int, ctx=Depends(get_context)) -> dict[str, object]:
+    """Restore an immutable published snapshot into the editable draft."""
+    try:
+        published = ctx.desktop.workflow_definitions.get(workflow_id, version)
+    except KeyError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+    draft = WorkflowDraft.from_dict({
+        **published.to_dict(),
+        "id": workflow_id,
+        "version": "draft",
+        "status": "draft",
+    })
+    try:
+        saved = ctx.desktop.workflow_definitions.save(draft)
+    except KeyError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+    return {"workflow": saved.to_dict(), "restored_version": version}
+
+
 @router.post("/{workflow_id}/validate")
 async def validate_workflow_definition(workflow_id: str, payload: Mapping[str, Any] | None = None, ctx=Depends(get_context)) -> dict[str, object]:
     try:

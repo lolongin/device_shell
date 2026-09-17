@@ -430,7 +430,7 @@ export const desktopApi = {
   workflowDefinitions: (): Promise<WorkflowDefinitionResponse> => request('/api/v1/workflow-definitions'),
   publishedWorkflowDefinitions: (): Promise<PublishedWorkflowDefinitionResponse> => request('/api/v1/workflow-definitions/published'),
   workflowVersions: (id: string): Promise<{ versions: PublishedWorkflowDefinition[] }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions`),
-  exportWorkflowDefinition: (id: string, format: 'yaml' | 'json' = 'yaml'): Promise<{ filename: string; format: string; content: string; workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/export?format=${format}`),
+  exportWorkflowDefinition: (id: string, format: 'yaml' | 'json' = 'yaml', version: string | number = 'draft'): Promise<{ filename: string; format: string; content: string; workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/export?format=${format}&version=${encodeURIComponent(String(version))}`),
   previewWorkflowImport: (filename: string, content: string): Promise<{ filename: string; format: string; workflow: Record<string, unknown>; errors?: Array<{ message: string }>; warnings?: Array<{ message: string }> }> => request('/api/v1/workflow-definitions/import/preview', { method: 'POST', body: JSON.stringify({ filename, content }) }),
   importWorkflowDefinition: (filename: string, content: string, conflictStrategy = 'copy'): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions/import', { method: 'POST', body: JSON.stringify({ filename, content, conflict_strategy: conflictStrategy }) }),
   workflowActions: (): Promise<WorkflowActionCatalogResponse> => request('/api/v1/workflow-definitions/actions'),
@@ -445,6 +445,7 @@ export const desktopApi = {
   validateWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ valid: boolean; errors: Array<{ code: string; message: string; node_id?: string | null }>; warnings: Array<{ code: string; message: string; node_id?: string | null }> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/validate`, { method: 'POST', body: JSON.stringify(payload) }),
   deleteWorkflowDefinition: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   deleteWorkflowVersion: (id: string, version: string | number): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}`, { method: 'DELETE' }),
+  restoreWorkflowVersion: (id: string, version: string | number): Promise<{ workflow: Record<string, unknown>; restored_version: string | number }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/restore`, { method: 'POST' }),
   createTask: (payload: { workflow_id: string; device_id: string; parameters?: Record<string, unknown>; package?: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>
     request('/api/v1/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   workflowPlanValidate: (plan: Record<string, unknown>): Promise<McpResponse<WorkflowPlanValidation>> =>

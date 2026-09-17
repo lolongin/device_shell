@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AlertTriangle, Braces, CheckCircle2, Copy, FileUp, GitBranch, Hand, MousePointer2, Play, Plus, Redo, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
+import { AlertTriangle, Braces, CheckCircle2, Copy, Download, FileUp, GitBranch, Hand, MousePointer2, Play, Plus, Redo, RotateCcw, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { DeviceSummary } from '../types'
@@ -19,7 +19,7 @@ type OutputField = { name: string; label: string }
 type ActionItem = { id: string; label: string; hint: string; tone: string; outputFields: OutputField[] }
 type CommandReference = { reference: string; label: string; hint: string }
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; 'run-published': [] }>()
 const workspace = useWorkspaceStore()
 const workflows = ref<WorkflowItem[]>([])
 const selected = ref<WorkflowItem | null>(null)
@@ -708,6 +708,32 @@ async function removePublishedVersion(version: PublishedVersionItem): Promise<vo
     await desktopApi.deleteWorkflowVersion(selected.value.id, version.version)
     await refreshPublishedVersions(selected.value.id)
     runMessage.value = `已删除发布版本 v${version.version}`
+  } catch (cause) {
+    versionError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function exportPublishedVersion(version: PublishedVersionItem): Promise<void> {
+  if (!selected.value) return
+  try {
+    const result = await desktopApi.exportWorkflowDefinition(selected.value.id, 'yaml', version.version)
+    const filename = result.filename.replace(/\.workflow\.yaml$/i, `.v${version.version}.workflow.yaml`)
+    await window.desktopApi.saveWorkflowFile({ suggestedName: filename, content: result.content })
+    runMessage.value = `已导出发布版本 v${version.version}`
+  } catch (cause) {
+    versionError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function restorePublishedVersion(version: PublishedVersionItem): Promise<void> {
+  if (!selected.value) return
+  if (!window.confirm(`将 v${version.version} 恢复为当前草稿？现有草稿内容会被覆盖。`)) return
+  try {
+    const result = await desktopApi.restoreWorkflowVersion(selected.value.id, version.version)
+    const restored = result.workflow as WorkflowItem
+    workflows.value = workflows.value.map((item) => item.id === restored.id ? restored : item)
+    selectWorkflow(restored)
+    runMessage.value = `已将发布版本 v${version.version} 恢复为草稿`
   } catch (cause) {
     versionError.value = cause instanceof Error ? cause.message : String(cause)
   }
@@ -1457,7 +1483,7 @@ watch(
   <section class="workflow-library" aria-label="Workflow Library">
     <header class="workflow-library-header">
       <div><Workflow :size="18" /><div><strong>Workflow Studio</strong><small>把重复操作变成可复用流程</small></div></div>
-      <button type="button" title="关闭" @click="emit('close')"><X :size="16" /></button>
+      <div class="workflow-library-header-actions"><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" @click="emit('close')"><X :size="16" /></button></div>
     </header>
     <div class="workflow-library-toolbar">
       <div class="toolbar-group toolbar-group-primary">
@@ -1523,7 +1549,11 @@ watch(
                 <small>{{ version.published_at ? new Date(version.published_at).toLocaleString() : '发布时间未知' }}</small>
                 <span>{{ version.referenced ? '已被任务引用' : '未被引用，可删除' }}</span>
               </div>
-              <button type="button" class="icon-toolbar-button workflow-version-delete" :disabled="version.referenced" :title="version.referenced ? '已被任务引用，不能删除' : '删除此发布版本'" :aria-label="version.referenced ? '已被任务引用，不能删除' : `删除发布版本 v${version.version}`" @click.stop="removePublishedVersion(version)"><Trash2 :size="13" /></button>
+              <div class="workflow-version-actions">
+                <button type="button" class="icon-toolbar-button" title="导出此发布版本 YAML" :aria-label="`导出发布版本 v${version.version}`" @click.stop="exportPublishedVersion(version)"><Download :size="13" /></button>
+                <button type="button" class="icon-toolbar-button" title="恢复为当前草稿" :aria-label="`恢复发布版本 v${version.version} 为草稿`" @click.stop="restorePublishedVersion(version)"><RotateCcw :size="13" /></button>
+                <button type="button" class="icon-toolbar-button workflow-version-delete" :disabled="version.referenced" :title="version.referenced ? '已被任务引用，不能删除' : '删除此发布版本'" :aria-label="version.referenced ? '已被任务引用，不能删除' : `删除发布版本 v${version.version}`" @click.stop="removePublishedVersion(version)"><Trash2 :size="13" /></button>
+              </div>
             </div>
           </div>
         </section>
@@ -1776,7 +1806,10 @@ watch(
 .workflow-version-info small, .workflow-version-info span { overflow: hidden; color: rgba(226, 232, 240, .52); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-version-info span { color: #86efac; }
 .workflow-version-row.referenced .workflow-version-info span { color: #fcd34d; }
-.workflow-version-delete { flex: 0 0 auto; }
+.workflow-version-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+.workflow-version-actions .icon-toolbar-button { width: 25px; height: 25px; }
+.workflow-run-header-button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid rgba(96, 165, 250, .45); border-radius: 5px; color: #bfdbfe; background: rgba(37, 99, 235, .16); font-size: 11px; cursor: pointer; }
+.workflow-run-header-button:hover { border-color: rgba(147, 197, 253, .75); background: rgba(37, 99, 235, .28); }
 .workflow-version-error { margin: 0; color: #fca5a5; font-size: 10px; line-height: 1.4; }
 .workflow-modal-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
 .workflow-import-dialog { width: min(520px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 16px 48px rgba(0,0,0,.35); }

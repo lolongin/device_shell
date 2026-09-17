@@ -93,6 +93,34 @@ def test_workflow_published_versions_can_be_listed_and_deleted_until_referenced(
         assert "已被任务引用" in blocked.json()["detail"]
 
 
+def test_workflow_published_version_can_be_exported_and_restored_without_changing_snapshot() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Restore version",
+                "description": "original",
+                "nodes": [{"id": "command", "action_id": "device.command", "config": {"command": "show version"}}],
+                "edges": [],
+            },
+        ).json()["workflow"]
+        workflow_id = created["id"]
+        published = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        client.put(f"/api/v1/workflow-definitions/{workflow_id}", json={"name": "Changed draft", "description": "changed", "nodes": [], "edges": []})
+
+        exported = client.get(f"/api/v1/workflow-definitions/{workflow_id}/export?version={published['version']}&format=json")
+        assert exported.status_code == 200
+        assert exported.json()["workflow"]["workflow"]["description"] == "original"
+        assert exported.json()["workflow"]["workflow"]["steps"][0]["with"]["command"] == "show version"
+
+        restored = client.post(f"/api/v1/workflow-definitions/{workflow_id}/versions/{published['version']}/restore")
+        assert restored.status_code == 200
+        assert restored.json()["workflow"]["version"] == "draft"
+        assert restored.json()["workflow"]["description"] == "original"
+        assert client.get(f"/api/v1/workflow-definitions/{workflow_id}").json()["workflow"]["name"] == "Restore version"
+        assert client.get(f"/api/v1/workflow-definitions/{workflow_id}/export?version={published['version']}").json()["workflow"]["workflow"]["description"] == "original"
+
+
 def test_workflow_action_catalog_is_exposed_for_studio_clients() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         response = client.get("/api/v1/workflow-definitions/actions")

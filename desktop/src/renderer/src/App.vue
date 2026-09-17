@@ -34,6 +34,7 @@ import {
   Sun,
   Trash2,
   UserRound,
+  WandSparkles,
   Workflow,
   X
 } from 'lucide-vue-next'
@@ -1902,7 +1903,7 @@ onBeforeUnmount(() => {
         :aria-pressed="workspace.automationPanelOpen"
         @click="toggleAutomationPanel"
       >
-        <Workflow :size="19" /><span class="sr-only">终端自动化</span>
+        <WandSparkles :size="19" /><span class="sr-only">终端自动化</span>
       </button>
       <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Studio" :aria-pressed="workflowPanelOpen" @click="toggleWorkflowPanel"><Workflow :size="19" /><span class="sr-only">Workflow Studio</span></button>
       <button
@@ -2836,7 +2837,7 @@ onBeforeUnmount(() => {
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" @run-workflow="openWorkflowRunDialog()" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
     <KeepAlive>
-      <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" />
+      <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" />
     </KeepAlive>
     <WorkflowRunDialog
       v-if="workflowRunDialogOpen"
