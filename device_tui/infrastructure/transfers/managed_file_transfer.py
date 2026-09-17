@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import shutil
 from typing import Any
 
 from device_tui.infrastructure.vendor_adapters.huawei_vrp.parsers import PackageFileEntry, parse_dir_entries
@@ -81,6 +82,103 @@ def resolve_shared_root(root: Path) -> Path:
             "文件传输共享路径不是目录。",
         )
     return resolved
+
+
+def _normalize_workflow_relative_path(value: str) -> PurePosixPath:
+    """Normalize a user-entered Workflow path without changing transfer rules."""
+    normalized = value.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or path.is_absolute()
+        or ":" in path.parts[0]
+        or any(part in {"", ".", ".."} for part in normalized.split("/"))
+        or any(ord(character) < 32 or character == "\x7f" for character in normalized)
+    ):
+        raise ManagedTransferError(
+            "transfer_source_outside_root",
+            "源文件路径不能包含空目录、. 或 ..。",
+        )
+    return path
+
+
+def _is_absolute_workflow_path(value: str) -> bool:
+    # PureWindowsPath keeps Windows drive/UNC paths recognizable even when a
+    # portable workflow is validated on a non-Windows host.
+    from pathlib import PureWindowsPath
+
+    return Path(value).is_absolute() or PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+def normalize_workflow_source(root: Path, source_path: str) -> str:
+    """Return a validated shared-directory-relative Workflow source path.
+
+    This helper accepts the forgiving forms shown in the Workflow editor (for
+    example ``.\\packages\\device.cc``) but never permits traversal outside
+    the configured transfer root.
+    """
+    raw = str(source_path or "").strip()
+    if not raw:
+        raise ManagedTransferError("transfer_source_not_found", "请选择要上传的文件。")
+    normalized = raw.replace("\\", "/")
+    if _is_absolute_workflow_path(normalized):
+        source = Path(raw).expanduser()
+        try:
+            resolved_source = source.resolve(strict=True)
+        except OSError as exc:
+            raise ManagedTransferError("transfer_source_not_found", "无法读取所选文件。") from exc
+        resolved_root = resolve_shared_root(root)
+        if source.is_symlink() or not resolved_source.is_file():
+            raise ManagedTransferError("transfer_source_not_found", "所选路径不是文件。")
+        if resolved_source.is_relative_to(resolved_root):
+            relative = resolved_source.relative_to(resolved_root)
+            return _normalize_workflow_relative_path(relative.as_posix()).as_posix()
+        raise ManagedTransferError(
+            "transfer_source_outside_root",
+            "源文件不在共享目录内，请通过 Workflow 运行参数选择文件。",
+        )
+    relative = _normalize_workflow_relative_path(normalized)
+    _path, info = resolve_shared_file(root, relative.as_posix())
+    return info.relative_path
+
+
+def stage_workflow_source(root: Path, source_path: str, *, staging_id: str) -> str:
+    """Normalize a Workflow upload source, staging external files in the root."""
+    raw = str(source_path or "").strip()
+    if not raw:
+        raise ManagedTransferError("transfer_source_not_found", "请选择要上传的文件。")
+    normalized = raw.replace("\\", "/")
+    if not _is_absolute_workflow_path(normalized):
+        return normalize_workflow_source(root, normalized)
+
+    source = Path(raw).expanduser()
+    try:
+        resolved_source = source.resolve(strict=True)
+    except OSError as exc:
+        raise ManagedTransferError("transfer_source_not_found", "无法读取所选文件。") from exc
+    if source.is_symlink() or not resolved_source.is_file():
+        raise ManagedTransferError("transfer_source_not_found", "所选路径不是文件。")
+    resolved_root = resolve_shared_root(root)
+    if resolved_source.is_relative_to(resolved_root):
+        relative = resolved_source.relative_to(resolved_root)
+        return _normalize_workflow_relative_path(relative.as_posix()).as_posix()
+
+    safe_staging_id = str(staging_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", safe_staging_id):
+        raise ManagedTransferError("invalid_request", "暂存标识无效。")
+    staging_dir = resolved_root / ".workflow-staging" / safe_staging_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    destination = (staging_dir / resolved_source.name).resolve()
+    if not destination.is_relative_to(resolved_root):
+        raise ManagedTransferError("transfer_source_outside_root", "暂存文件超出共享目录。")
+    try:
+        shutil.copy2(resolved_source, destination)
+    except OSError as exc:
+        raise ManagedTransferError("transfer_source_not_found", "无法暂存所选文件。") from exc
+    return destination.relative_to(resolved_root).as_posix()
 
 
 def resolve_shared_file(root: Path, source_path: str) -> tuple[Path, SharedFileInfo]:

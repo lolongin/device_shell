@@ -49,6 +49,7 @@ from device_tui.infrastructure.transfers.managed_file_transfer import (
     normalize_terminal_environment,
     resolve_shared_file,
     resolve_shared_root,
+    stage_workflow_source,
     source_fingerprint,
     validate_transfer_device_path,
 )
@@ -537,6 +538,17 @@ class ManagedTransferService:
             size_bytes=info.size_bytes,
             fingerprint=fingerprint,
         )
+
+    def prepare_workflow_source(self, source_path: str, *, staging_id: str) -> str:
+        """Prepare a Workflow upload source as a shared-root-relative path."""
+        try:
+            return stage_workflow_source(
+                Path(str(self._saved_config()["root"])),
+                source_path,
+                staging_id=staging_id,
+            )
+        except ManagedTransferError as exc:
+            raise self._application_error(exc) from exc
 
     async def prepare_upload_source(
         self,

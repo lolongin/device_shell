@@ -4,11 +4,35 @@ from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
 from device_tui.application.workflow_studio import build_action_catalog
 from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowNode, WorkflowVersion
-from device_tui.interfaces.desktop_api.routers.workflow_definitions import _compile_task_plan
+from device_tui.interfaces.desktop_api.routers.workflow_definitions import _compile_task_plan, _prepare_workflow_file_inputs
 from device_tui.application.errors import UnsupportedOperationError
 from device_tui.application.composition.workflows import build_default_activity_executor
 from device_tui.framework import ActivityContext, ActivityInvocation, WorkflowRun
 import asyncio
+
+
+def test_workflow_upload_input_is_prepared_before_plan_compilation() -> None:
+    class Transfers:
+        def prepare_workflow_source(self, value: str, *, staging_id: str) -> str:
+            assert staging_id == "run-1"
+            return ".workflow-staging/run-1/device.cc"
+
+    version = WorkflowVersion(
+        "workflow",
+        1,
+        "Upload",
+        inputs=(),
+        nodes=(WorkflowNode("upload", "file.upload", {"source": "${package_path}", "destination": "flash:/device.cc"}),),
+    )
+    prepared, overrides = _prepare_workflow_file_inputs(
+        version,
+        {"package_path": r"D:\\packages\\device.cc"},
+        Transfers(),
+        staging_id="run-1",
+    )
+
+    assert prepared["package_path"] == ".workflow-staging/run-1/device.cc"
+    assert overrides == {}
 
 
 def test_workflow_definition_lifecycle() -> None:

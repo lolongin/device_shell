@@ -400,6 +400,22 @@ def test_validation_accepts_file_path_aliases_used_by_compiler() -> None:
     assert not issues(draft)
 
 
+def test_validation_accepts_absolute_file_upload_source_path() -> None:
+    draft = WorkflowDraft(
+        "w",
+        "x",
+        nodes=(
+            WorkflowNode(
+                "upload",
+                "file.upload",
+                {"source": r"D:\\packages\\device.cc", "destination": "flash:/device.cc"},
+            ),
+        ),
+    )
+
+    assert "invalid_transfer_source_path" not in {item.code for item in issues(draft)}
+
+
 @pytest.mark.parametrize("action_id", ["device.ssh", "device.telnet"])
 def test_validation_does_not_require_unused_connection_host(action_id: str) -> None:
     draft = WorkflowDraft(

@@ -1,0 +1,13 @@
+name: Test Loop Until with 10 iterations
+description: 测试循环执行 10 次
+nodes:
+  - id: loop1
+    action_id: loop.until
+    config:
+      action_id: device.command
+      action_inputs:
+        command: echo "Iteration test"
+      condition: result.status == 'succeeded'
+      max_iterations: 10
+      interval_seconds: 1
+edges: []

@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { existsSync, statSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { spawn as spawnPty } from 'node-pty'
@@ -576,6 +576,8 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('clipboard:read-text')
   ipcMain.removeHandler('clipboard:write-text')
   ipcMain.removeHandler('file-transfer:save-settings')
+  ipcMain.removeHandler('workflow:read-file')
+  ipcMain.removeHandler('workflow:save-file')
   ipcMain.removeHandler('file-transfer:copy-command')
   ipcMain.removeHandler('window:set-always-on-top')
   ipcMain.removeHandler('window:set-native-theme')
@@ -969,6 +971,28 @@ async function createWindow(): Promise<void> {
       ...(defaultPath ? { defaultPath } : {})
     })
     return selected.canceled ? '' : selected.filePaths[0] || ''
+  })
+
+  ipcMain.handle('workflow:read-file', async (event, filePath: unknown): Promise<string> => {
+    if (event.sender !== mainWindow?.webContents || typeof filePath !== 'string' || !filePath.trim()) {
+      throw new Error('Untrusted workflow file read caller')
+    }
+    const content = await readFile(path.resolve(filePath), 'utf8')
+    if (content.length > 2_000_000) throw new Error('Workflow 文件过大')
+    return content
+  })
+
+  ipcMain.handle('workflow:save-file', async (event, request: unknown): Promise<boolean> => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow || !request || typeof request !== 'object') {
+      throw new Error('Untrusted workflow file save caller')
+    }
+    const payload = request as Record<string, unknown>
+    if (typeof payload.content !== 'string' || payload.content.length > 2_000_000) throw new Error('Invalid workflow export payload')
+    const safeName = String(payload.suggestedName || 'workflow.workflow.yaml').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 160) || 'workflow.workflow.yaml'
+    const selected = await dialog.showSaveDialog(mainWindow, { title: '导出 Workflow', defaultPath: safeName, filters: [{ name: 'Workflow 文件', extensions: ['yaml', 'yml', 'json'] }] })
+    if (selected.canceled || !selected.filePath) return false
+    await writeFile(path.resolve(selected.filePath), payload.content, 'utf8')
+    return true
   })
 
   ipcMain.handle('device-source:choose-import', async (event): Promise<unknown | null> => {

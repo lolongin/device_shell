@@ -20,12 +20,35 @@ from device_tui.infrastructure.transfers.managed_file_transfer import (
     linux_file_size,
     linux_free_space_bytes,
     resolve_shared_file,
+    normalize_workflow_source,
+    stage_workflow_source,
     validate_linux_file_path,
     validate_destination_path,
     validate_transfer_device_path,
 )
 from device_tui.application.transfers import ManagedTransferService
 from device_tui.application.terminal.orchestration import parse_terminal_plan
+
+
+def test_workflow_source_normalizes_dot_slash_and_backslashes(tmp_path: Path) -> None:
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    (packages / "device.cc").write_bytes(b"x")
+
+    assert normalize_workflow_source(tmp_path, r".\packages\device.cc") == "packages/device.cc"
+
+
+def test_workflow_source_stages_external_absolute_file(tmp_path: Path) -> None:
+    source = tmp_path / "outside" / "device.cc"
+    source.parent.mkdir()
+    source.write_bytes(b"x")
+    shared = tmp_path / "shared"
+    shared.mkdir()
+
+    result = stage_workflow_source(shared, str(source), staging_id="task-1")
+
+    assert result == ".workflow-staging/task-1/device.cc"
+    assert (shared / ".workflow-staging" / "task-1" / "device.cc").read_bytes() == b"x"
 
 
 def test_shared_file_catalog_returns_only_relative_metadata(tmp_path: Path) -> None:

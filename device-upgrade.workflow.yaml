@@ -1,0 +1,82 @@
+format: device-tui.workflow
+schema_version: 1
+workflow:
+  name: 设备换大包流程
+  description: 上传大包到设备 Flash，执行启动大包并等待设备恢复
+  inputs:
+    - name: package_path
+      type: string
+      required: true
+      description: 可填写本机绝对路径，也可填写共享目录内相对路径，例如 packages/device.cc
+    - name: package_name
+      type: string
+      required: true
+      description: 设备 Flash 中的大包文件名，例如 device.cc
+    - name: expected_version
+      type: string
+      required: false
+      description: 可选，升级后期望的软件版本
+  steps:
+    - id: upload_package
+      action: file.upload
+      with:
+        source: ${package_path}
+        destination: flash:/${package_name}
+      position:
+        x: 80
+        y: 80
+
+    - id: start_new_package
+      action: device.command
+      with:
+        command: startup sys flash:/${package_name}
+      inputs:
+        package_name: ${package_name}
+      retry:
+        attempts: 2
+        backoff_seconds: 3
+      position:
+        x: 80
+        y: 270
+
+    - id: wait_device_recovery
+      action: terminal.wait
+      with:
+        mode: contains
+        pattern: <HUAWEI>
+        timeout_seconds: 600
+        case_sensitive: false
+        send_enter: true
+      position:
+        x: 80
+        y: 470
+
+    - id: verify_device_version
+      action: device.info
+      with:
+        fields:
+          - name
+          - software_version
+          - status
+      position:
+        x: 80
+        y: 680
+
+    - id: save_upgrade_result
+      action: result.save
+      with:
+        key: upgrade_result
+        value: ${verify_device_version}
+      position:
+        x: 80
+        y: 870
+
+  edges:
+    - from: upload_package
+      to: start_new_package
+    - from: start_new_package
+      to: wait_device_recovery
+    - from: wait_device_recovery
+      to: verify_device_version
+    - from: verify_device_version
+      to: save_upgrade_result

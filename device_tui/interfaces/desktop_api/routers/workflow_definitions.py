@@ -21,6 +21,11 @@ from device_tui.application.workflow_studio import (
     evaluate_expression,
     validate_workflow,
     validate_workflow_inputs,
+    PortableWorkflowError,
+    dump_document,
+    export_document,
+    from_document,
+    parse_document,
 )
 from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
 from device_tui.domain.devices.repository import RepositoryError
@@ -98,7 +103,7 @@ def _device_reference_context(ctx: Any, device_id: str) -> dict[str, Any]:
     return context
 
 
-def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
+def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[str, str] | None = None) -> TaskPlan:
     """Compile the Studio graph into allow-listed Framework activities.
 
     Condition nodes are compile-time control flow. Their visual rules are
@@ -202,6 +207,8 @@ def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
                 params.pop("device_id", None)
         elif node.action_id in {"file.upload", "file.download"}:
             params = _normalize_action_inputs(node.action_id, params)
+            if node.action_id == "file.upload" and source_overrides and node.id in source_overrides:
+                params["source_path"] = source_overrides[node.id]
         elif node.action_id == "expression.evaluate":
             params.setdefault("values", {"inputs": "${inputs}", "outputs": "${outputs}"})
         elif node.action_id in {"loop.for_each", "loop.until"}:
@@ -272,6 +279,36 @@ def _compile_task_plan(version: Any, device_id: str) -> TaskPlan:
     return plan
 
 
+def _prepare_workflow_file_inputs(
+    version: Any,
+    inputs: Mapping[str, Any],
+    transfers: Any,
+    *,
+    staging_id: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Stage upload sources while keeping the executable plan portable."""
+    prepared_inputs = dict(inputs)
+    source_overrides: dict[str, str] = {}
+    prepare = getattr(transfers, "prepare_workflow_source", None)
+    if not callable(prepare):
+        return prepared_inputs, source_overrides
+    for node in getattr(version, "nodes", ()):
+        if node.action_id != "file.upload":
+            continue
+        settings = {**dict(getattr(node, "config", {}) or {}), **dict(getattr(node, "input_mapping", {}) or {})}
+        raw_source = settings.get("source_path", settings.get("source"))
+        if not isinstance(raw_source, str) or not raw_source.strip():
+            continue
+        source_text = raw_source.strip()
+        if source_text.startswith("${") and source_text.endswith("}") and source_text.count("${") == 1:
+            input_name = source_text[2:-1].strip()
+            if input_name in prepared_inputs:
+                prepared_inputs[input_name] = prepare(str(prepared_inputs[input_name]), staging_id=staging_id)
+        elif not source_text.startswith("${"):
+            source_overrides[node.id] = prepare(source_text, staging_id=staging_id)
+    return prepared_inputs, source_overrides
+
+
 def _draft_payload(draft: WorkflowDraft) -> dict[str, Any]:
     return draft.to_dict()
 
@@ -338,6 +375,70 @@ async def get_workflow_definition(workflow_id: str, ctx=Depends(get_context)) ->
     except KeyError as exc:
         raise ResourceNotFoundError(str(exc)) from exc
     return {"workflow": draft.to_dict()}
+
+
+@router.get("/{workflow_id}/export")
+async def export_workflow_definition(workflow_id: str, version: str = "draft", format: str = "yaml", ctx=Depends(get_context)) -> dict[str, object]:
+    if format not in {"yaml", "json"}:
+        raise UnsupportedOperationError("format must be yaml or json")
+    try:
+        workflow = ctx.desktop.workflow_definitions.get(workflow_id, version)
+    except KeyError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+    document = export_document(workflow)
+    return {"filename": f"{workflow.name or workflow_id}.workflow.{format}", "format": format, "content": dump_document(document, fmt=format), "workflow": document}
+
+
+def _portable_preview(content: str, filename: str, ctx: Any) -> dict[str, object]:
+    try:
+        portable = from_document(parse_document(content, filename=filename))
+    except PortableWorkflowError as exc:
+        return {"valid": False, "errors": [{"message": str(exc)}], "warnings": [], "workflow": None, "requirements": {"actions": []}}
+    result = validate_workflow(portable.draft, build_action_catalog())
+    return {
+        "valid": result.valid,
+        "errors": [asdict(item) for item in result.errors],
+        "warnings": [asdict(item) for item in result.warnings] + ([{"message": f"unknown action: {action}"} for action in portable.required_actions if build_action_catalog().get(action) is None]),
+        "workflow": portable.draft.to_dict(),
+        "requirements": {"actions": list(portable.required_actions)},
+    }
+
+
+@router.post("/import/preview")
+async def preview_workflow_import(payload: Mapping[str, Any], ctx=Depends(get_context)) -> dict[str, object]:
+    content = str(payload.get("content") or "")
+    filename = str(payload.get("filename") or "workflow.workflow.yaml")
+    return _portable_preview(content, filename, ctx)
+
+
+@router.post("/import")
+async def import_workflow_definition(payload: Mapping[str, Any], ctx=Depends(get_context)) -> dict[str, object]:
+    content = payload.get("content")
+    filename = str(payload.get("filename") or "workflow.workflow.yaml")
+    if isinstance(content, str):
+        preview = _portable_preview(content, filename, ctx)
+        if not preview["valid"]:
+            return preview
+        portable = from_document(parse_document(content, filename=filename))
+    elif isinstance(payload.get("workflow"), Mapping):
+        portable = from_document(payload["workflow"])
+        preview = _portable_preview(dump_document(payload["workflow"], fmt="json"), "workflow.json", ctx)
+        if not preview["valid"]:
+            return preview
+    else:
+        raise UnsupportedOperationError("content or workflow is required")
+    draft_data = portable.draft.to_dict()
+    draft_data["id"] = str(payload.get("id") or f"workflow_{uuid4().hex[:12]}")
+    name = draft_data["name"]
+    existing_names = {item.name for item in ctx.desktop.workflow_definitions.list()}
+    if name in existing_names and payload.get("conflict_strategy", "create_copy") == "create_copy":
+        draft_data["name"] = f"{name} (导入副本)"
+    draft = WorkflowDraft.from_dict(draft_data)
+    try:
+        saved = ctx.desktop.workflow_definitions.create(draft)
+    except (KeyError, ValueError) as exc:
+        raise UnsupportedOperationError(str(exc)) from exc
+    return {"imported": True, "workflow": saved.to_dict(), "warnings": list(portable.warnings), "requirements": {"actions": list(portable.required_actions)}}
 
 
 @router.put("/{workflow_id}")
@@ -435,7 +536,21 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
             "workflow definition is invalid",
             details={"errors": [asdict(item) for item in definition_issues.errors]},
         )
-    plans = {device_id: _compile_task_plan(version, device_id) for device_id in device_ids}
+    prepared_inputs, source_overrides = (
+        _prepare_workflow_file_inputs(
+            version,
+            inputs,
+            ctx.desktop.transfers,
+            staging_id=f"{workflow_id}-{uuid4().hex[:12]}",
+        )
+        if not bool(payload.get("dry_run"))
+        else (dict(inputs), {})
+    )
+    inputs = prepared_inputs
+    plans = {
+        device_id: _compile_task_plan(version, device_id, source_overrides)
+        for device_id in device_ids
+    }
     if step_id:
         plans = {device_id: _select_plan_from_step(plan, step_id) for device_id, plan in plans.items()}
     plan = plans[device_ids[0]]

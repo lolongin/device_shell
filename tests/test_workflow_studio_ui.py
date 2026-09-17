@@ -109,6 +109,17 @@ def test_workflow_studio_configures_loop_references_retry_backoff_and_batch_sess
     assert "const targetSessionIds = selectedDeviceIds.value" in source
 
 
+def test_loop_until_default_maximum_mode_uses_false_condition() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    default_line = next(
+        line for line in source.splitlines()
+        if "if (actionId === 'loop.until') return" in line
+    )
+
+    assert 'condition: "False"' in default_line
+
+
 def test_workflow_risk_preview_checks_until_loop_child_actions() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
 

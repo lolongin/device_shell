@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AlertTriangle, Braces, CheckCircle2, Copy, GitBranch, Hand, MousePointer2, Play, Plus, Redo, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
+import { AlertTriangle, Braces, CheckCircle2, Copy, FileUp, GitBranch, Hand, MousePointer2, Play, Plus, Redo, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { DeviceSummary } from '../types'
@@ -9,7 +9,7 @@ import { useUndoRedo, useUndoRedoShortcuts } from '../composables/useUndoRedo'
 import { autoLayout } from '../utils/layoutAlgorithms'
 
 type NodeItem = { id: string; action_id: string; config: Record<string, unknown>; input_mapping?: Record<string, unknown>; position?: { x: number; y: number } }
-type WorkflowInput = { name: string; type?: string; required?: boolean; default?: unknown; description?: string }
+type WorkflowInput = { name: string; type?: string; control?: string; required?: boolean; default?: unknown; description?: string }
 type WorkflowEdge = { source: string; target: string; condition?: string; source_handle?: string }
 type WorkflowItem = { id: string; name: string; description?: string; version?: string | number; inputs?: WorkflowInput[]; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; condition?: string; source_handle?: string }> }
 type Issue = { code: string; message: string; node_id?: string }
@@ -32,6 +32,11 @@ const searchQuery = ref('')
 const selectedDeviceId = ref('')
 const selectedDeviceIds = ref<string[]>([])
 const showCreateMenu = ref(false)
+const showImportPreview = ref(false)
+const importing = ref(false)
+const importFilename = ref('')
+const importContent = ref('')
+const importPreview = ref<{ workflow?: Record<string, unknown>; errors?: Array<{ message: string }>; warnings?: Array<{ message: string }> } | null>(null)
 const showRunPreview = ref(false)
 const dryRunning = ref(false)
 const taskGoal = ref('检查设备状态')
@@ -61,6 +66,33 @@ function initializeWorkflowInputValues(workflow: WorkflowItem | null): void {
   workflowInputTouched.value = new Set()
 }
 
+function addWorkflowInput(): void {
+  if (!selected.value) return
+  const inputs = selected.value.inputs || []
+  const names = new Set(inputs.map((input) => String(input.name || '').trim()))
+  let index = inputs.length + 1
+  while (names.has(`input_${index}`)) index += 1
+  selected.value.inputs = [
+    ...inputs,
+    { name: `input_${index}`, type: 'string', required: false, description: '' }
+  ]
+  initializeWorkflowInputValues(selected.value)
+}
+
+function removeWorkflowInput(index: number): void {
+  if (!selected.value) return
+  selected.value.inputs = (selected.value.inputs || []).filter((_, itemIndex) => itemIndex !== index)
+  initializeWorkflowInputValues(selected.value)
+}
+
+function updateWorkflowInputDefinition(index: number, field: keyof WorkflowInput, value: unknown): void {
+  if (!selected.value?.inputs?.[index]) return
+  const inputs = [...selected.value.inputs]
+  inputs[index] = { ...inputs[index], [field]: value }
+  selected.value.inputs = inputs
+  if (field === 'name') initializeWorkflowInputValues(selected.value)
+}
+
 const workflowRuntimeInputs = computed<Record<string, unknown>>(() => {
   const inputs = selected.value?.inputs || []
   return Object.fromEntries(inputs
@@ -83,6 +115,16 @@ function workflowInputDisplay(input: WorkflowInput): string {
   return String(value ?? '')
 }
 
+function isWorkflowFileInput(input: WorkflowInput): boolean {
+  return input.control === 'file' || input.type === 'file' || input.name === 'package_path'
+}
+
+function normalizeWorkflowPath(value: string): string {
+  let normalized = value.trim().replace(/\\/g, '/')
+  while (normalized.startsWith('./')) normalized = normalized.slice(2)
+  return normalized
+}
+
 function updateWorkflowInput(name: string, event: Event): void {
   const input = selected.value?.inputs?.find((item) => item.name === name)
   if (!input) return
@@ -91,6 +133,7 @@ function updateWorkflowInput(name: string, event: Event): void {
     ? (target as HTMLInputElement).checked
     : target.value
   let value: unknown = rawValue
+  if (typeof rawValue === 'string' && isWorkflowFileInput(input)) value = normalizeWorkflowPath(rawValue)
   if (input.type === 'number' || input.type === 'integer') {
     value = target.value === '' ? '' : Number(target.value)
   }
@@ -102,6 +145,25 @@ function updateWorkflowInput(name: string, event: Event): void {
   }
   workflowInputValues.value = { ...workflowInputValues.value, [name]: value }
   workflowInputTouched.value = new Set([...workflowInputTouched.value, name])
+}
+
+async function chooseWorkflowRuntimeFile(input: WorkflowInput): Promise<void> {
+  try {
+    const selectedPath = await window.desktopApi.chooseWorkflowFile({
+      defaultPath: workspace.transferSettings?.root || '',
+      label: input.name === 'package_path' ? '软件包' : 'Workflow 文件',
+      extensions: input.name === 'package_path' ? ['cc'] : [],
+    })
+    if (!selectedPath) return
+    workflowInputValues.value = {
+      ...workflowInputValues.value,
+      [input.name]: normalizeWorkflowPath(selectedPath),
+    }
+    workflowInputTouched.value = new Set([...workflowInputTouched.value, input.name])
+    runMessage.value = `已选择文件：${selectedPath}`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  }
 }
 
 function workflowInputHasIssue(name: string): boolean {
@@ -356,6 +418,46 @@ function insertCommandReference(reference: string): void {
   })
 }
 const loopItemsSourceFields = computed(() => resultSources.value.find((source) => source.id === loopItemsSourceId.value)?.fields || [])
+
+// loop.until 停止条件配置
+const loopUntilStopMode = computed<'output_contains' | 'output_regex' | 'success' | 'failure' | 'max_iterations'>({
+  get: () => {
+    if (selectedNode.value?.action_id !== 'loop.until') return 'max_iterations'
+    const condition = String(selectedNode.value.config.condition || '')
+    if (condition === 'False' || condition === 'false' || condition === '0' || !condition.trim()) return 'max_iterations'
+    if (condition.includes("'succeeded'") || condition.includes('"succeeded"')) return 'success'
+    if (condition.includes("'failed'") || condition.includes('"failed"')) return 'failure'
+    if (condition.includes('.match(') || condition.includes('re.search')) return 'output_regex'
+    if (condition.includes(' in ') || condition.includes('.contains')) return 'output_contains'
+    return 'max_iterations'
+  },
+  set: (mode) => {
+    if (selectedNode.value?.action_id !== 'loop.until') return
+    const pattern = loopUntilPattern.value
+    if (mode === 'success') selectedNode.value.config.condition = "result.status == 'succeeded'"
+    else if (mode === 'failure') selectedNode.value.config.condition = "result.status == 'failed'"
+    else if (mode === 'output_regex') selectedNode.value.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
+    else if (mode === 'output_contains') selectedNode.value.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
+    else if (mode === 'max_iterations') selectedNode.value.config.condition = 'False'
+    else selectedNode.value.config.condition = 'False'
+  }
+})
+
+const loopUntilPattern = computed<string>({
+  get: () => {
+    if (selectedNode.value?.action_id !== 'loop.until') return ''
+    const condition = String(selectedNode.value.config.condition || '')
+    const match = condition.match(/'([^']+)'\s+in\s+result\.output/) || condition.match(/"([^"]+)"\s+in\s+result\.output/)
+    return match ? match[1] : ''
+  },
+  set: (pattern) => {
+    if (selectedNode.value?.action_id !== 'loop.until') return
+    const mode = loopUntilStopMode.value
+    if (mode === 'output_contains' || mode === 'output_regex') {
+      selectedNode.value.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
+    }
+  }
+})
 function setResultField(source: string, field: string): void {
   if (!selectedNode.value) return
   selectedNode.value.config.value = source && field ? `\${${source}.${field}}` : ''
@@ -688,7 +790,7 @@ function defaultConfig(actionId: string): Record<string, unknown> {
   if (actionId === 'variable.set') return { name: '', value: '' }
   if (actionId === 'expression.evaluate') return { expression: '', values: {} }
   if (actionId === 'loop.for_each') return { items: [], action_id: 'result.save', action_inputs: {} }
-  if (actionId === 'loop.until') return { action_id: 'device.info', action_inputs: {}, condition: "result.status == 'succeeded'", max_iterations: 10, interval_seconds: 2 }
+  if (actionId === 'loop.until') return { action_id: 'device.command', action_inputs: { command: 'display version' }, condition: "False", max_iterations: 10, interval_seconds: 2 }
   return {}
 }
 
@@ -727,6 +829,7 @@ function issueText(issue: Issue): string {
   if (issue.code === 'invalid_workflow_input_type') return '流程输入类型不匹配，请按输入定义填写'
   if (issue.code === 'unknown_action') return `${label || '步骤'}：当前动作暂不支持执行`
   if (issue.code === 'invalid_condition') return `${label || '条件判断'}：请配置至少一条完整规则`
+  if (issue.code === 'invalid_transfer_source_path') return `${label || '上传文件'}：请选择文件或填写有效的本机路径`
   if (issue.code === 'invalid_condition_operator') return `${label || '条件判断'}：请选择 AND 或 OR`
   if (issue.code === 'invalid_expression') return `${label || '表达式'}：表达式不合法，请使用受支持的字段和运算符`
   if (issue.code === 'invalid_terminal_match_mode') return `${label || '终端匹配'}：匹配方式只能选择包含文本或正则表达式`
@@ -1093,9 +1196,22 @@ function handleNodePositionChange(nodeId: string, position: { x: number; y: numb
 }
 
 function syncCurrentWorkflowState(): void {
-  if (selectedNode.value?.action_id !== 'utility.condition') return
-  selectedNode.value.config.rules = conditionRules.value
-  selectedNode.value.config.logical_operator = conditionLogicalOperator.value
+  if (!selectedNode.value) return
+
+  // 同步 utility.condition 的特殊状态
+  if (selectedNode.value.action_id === 'utility.condition') {
+    selectedNode.value.config.rules = conditionRules.value
+    selectedNode.value.config.logical_operator = conditionLogicalOperator.value
+  }
+
+  // 确保 selectedNode 的修改同步回 selected.value.nodes
+  // 这对于 v-model 绑定到 selectedNode.config 的情况很重要
+  if (selected.value?.nodes) {
+    const nodeIndex = selected.value.nodes.findIndex(n => n.id === selectedNode.value!.id)
+    if (nodeIndex !== -1) {
+      selected.value.nodes[nodeIndex] = { ...selectedNode.value }
+    }
+  }
 }
 
 async function validate(): Promise<boolean> {
@@ -1166,6 +1282,48 @@ const requiredConfigByAction: Record<string, string[]> = {
   'utility.confirm': ['prompt'],
   'utility.wait': ['seconds'],
   'variable.set': ['name']
+}
+
+async function importWorkflow(): Promise<void> {
+  try {
+    const filePath = await window.desktopApi.chooseWorkflowFile({ label: 'Workflow 文件', extensions: ['workflow.yaml', 'yaml', 'yml', 'json'] })
+    if (!filePath) return
+    importing.value = true
+    importFilename.value = filePath.split(/[\\/]/).pop() || 'workflow.workflow.yaml'
+    importContent.value = await window.desktopApi.readWorkflowFile(filePath)
+    importPreview.value = await desktopApi.previewWorkflowImport(importFilename.value, importContent.value)
+    showImportPreview.value = true
+  } catch (cause) { error.value = String(cause) } finally { importing.value = false }
+}
+
+async function confirmImport(): Promise<void> {
+  if (!importPreview.value || (importPreview.value.errors || []).length) return
+  importing.value = true
+  try {
+    const result = await desktopApi.importWorkflowDefinition(importFilename.value, importContent.value, 'create_copy')
+    showImportPreview.value = false
+    importPreview.value = null
+    await refresh()
+    selectWorkflow(result.workflow as WorkflowItem)
+  } catch (cause) { error.value = String(cause) } finally { importing.value = false }
+}
+
+async function exportWorkflow(format: 'yaml' | 'json'): Promise<void> {
+  if (!selected.value) return
+  try {
+    const result = await desktopApi.exportWorkflowDefinition(selected.value.id, format)
+    await window.desktopApi.saveWorkflowFile({ suggestedName: result.filename, content: result.content })
+  } catch (cause) { error.value = String(cause) }
+}
+
+async function copyAiPrompt(): Promise<void> {
+  if (!selected.value) return
+  try {
+    const exported = await desktopApi.exportWorkflowDefinition(selected.value.id, 'yaml')
+    const prompt = `请生成一个 Device TUI Workflow 配置。要求：使用 device-tui.workflow 格式、schema_version: 1，只输出可导入的 YAML，不要解释。\n\n当前流程参考：\n${exported.content}`
+    await window.desktopApi.writeClipboardText(prompt)
+    runMessage.value = 'AI 提示词已复制到剪贴板'
+  } catch (cause) { error.value = String(cause) }
 }
 
 function nodeSettings(node: NodeItem): Record<string, unknown> {
@@ -1270,6 +1428,10 @@ watch(
       </div>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <div class="toolbar-group">
+        <button type="button" @click="importWorkflow" :disabled="importing"><Braces :size="14" />导入</button>
+        <button type="button" :disabled="!selected" @click="exportWorkflow('yaml')">导出 YAML</button>
+        <button type="button" :disabled="!selected" @click="exportWorkflow('json')">导出 JSON</button>
+        <button type="button" :disabled="!selected" @click="copyAiPrompt">复制 AI 提示词</button>
         <button type="button" :disabled="!selected" @click="duplicateWorkflow"><Copy :size="14" />复制</button>
         <button type="button" class="icon-toolbar-button" :disabled="!workflowHistory.canUndo.value" @click="performUndo" title="撤销 (Ctrl+Z)" aria-label="撤销"><Undo :size="14" /></button>
         <button type="button" class="icon-toolbar-button" :disabled="!workflowHistory.canRedo.value" @click="performRedo" title="重做 (Ctrl+Shift+Z)" aria-label="重做"><Redo :size="14" /></button>
@@ -1288,6 +1450,19 @@ watch(
         <button class="danger-action" type="button" :disabled="!selected" @click="remove"><Trash2 :size="14" />删除</button>
       </div>
     </div>
+    <div v-if="showImportPreview" class="workflow-modal-backdrop" @click.self="showImportPreview = false">
+      <section class="workflow-import-dialog" role="dialog" aria-modal="true" aria-label="导入 Workflow 预览">
+        <header><strong>导入预览</strong><button type="button" title="关闭" @click="showImportPreview = false"><X :size="16" /></button></header>
+        <p class="field-hint">{{ importFilename }} · 将作为新草稿导入</p>
+        <div v-if="importPreview?.workflow" class="workflow-import-summary">
+          <strong>{{ importPreview.workflow.name || '未命名流程' }}</strong>
+          <span>{{ Array.isArray(importPreview.workflow.steps) ? importPreview.workflow.steps.length : (Array.isArray(importPreview.workflow.nodes) ? importPreview.workflow.nodes.length : 0) }} 个步骤</span>
+        </div>
+        <p v-for="issue in importPreview?.errors || []" :key="issue.message" class="workflow-error">{{ issue.message }}</p>
+        <p v-for="warning in importPreview?.warnings || []" :key="warning.message" class="workflow-run-message">{{ warning.message }}</p>
+        <footer><button type="button" @click="showImportPreview = false">取消</button><button type="button" class="primary-action" :disabled="importing || Boolean(importPreview?.errors?.length)" @click="confirmImport">确认导入</button></footer>
+      </section>
+    </div>
     <div v-if="showCreateMenu" class="workflow-create-menu"><strong>开始方式</strong><button type="button" @click="showCreateMenu = false; create()">使用模板：设备检查</button><button type="button" :disabled="!selected" @click="showCreateMenu = false; duplicateWorkflow()">从已有流程复制</button><button type="button" @click="showCreateMenu = false; create(true)">创建空白流程</button></div>
     <p v-if="error" class="workflow-error">{{ error }}</p>
     <p v-if="runMessage" class="workflow-run-message">{{ runMessage }}</p><p v-if="hasBranching" class="workflow-branch-notice"><GitBranch :size="14" />包含条件分支：运行时只执行匹配条件的一侧。</p>
@@ -1300,6 +1475,20 @@ watch(
         <p v-if="!loading && !workflows.length" class="workflow-empty-list">还没有流程<br /><span>点击“新建流程”开始</span></p>
       </aside>
       <main v-if="selected" class="workflow-studio-grid">
+        <section class="workflow-input-editor" aria-label="流程输入定义">
+          <div class="panel-heading"><strong>流程输入</strong><small>定义执行流程时需要填写的参数</small><button type="button" class="icon-toolbar-button" title="添加流程输入" aria-label="添加流程输入" @click="addWorkflowInput"><Plus :size="14" /></button></div>
+          <div v-if="selected.inputs?.length" class="workflow-input-definitions">
+            <div v-for="(input, index) in selected.inputs" :key="`${index}-${input.name}`" class="workflow-input-definition">
+              <label>名称<input :value="input.name" placeholder="例如：package_path" @input="updateWorkflowInputDefinition(index, 'name', ($event.target as HTMLInputElement).value)" /></label>
+              <label>类型<select :value="input.type || 'string'" @change="updateWorkflowInputDefinition(index, 'type', ($event.target as HTMLSelectElement).value)"><option value="string">文本</option><option value="number">数字</option><option value="integer">整数</option><option value="boolean">布尔值</option><option value="array">数组</option><option value="object">对象</option></select></label>
+              <label class="workflow-input-required"><input type="checkbox" :checked="input.required === true" @change="updateWorkflowInputDefinition(index, 'required', ($event.target as HTMLInputElement).checked)" />必填</label>
+              <label>默认值<input :value="input.default == null ? '' : String(input.default)" placeholder="可选" @input="updateWorkflowInputDefinition(index, 'default', ($event.target as HTMLInputElement).value)" /></label>
+              <label class="workflow-input-description">说明<input :value="input.description || ''" placeholder="给执行者的提示" @input="updateWorkflowInputDefinition(index, 'description', ($event.target as HTMLInputElement).value)" /></label>
+              <button type="button" class="icon-toolbar-button workflow-input-delete" title="删除流程输入" aria-label="删除流程输入" @click="removeWorkflowInput(index)"><Trash2 :size="14" /></button>
+            </div>
+          </div>
+          <p v-else class="field-hint">尚未定义输入。点击右上角加号后，执行时会出现运行参数。</p>
+        </section>
         <section v-if="selected.inputs?.length" class="workflow-runtime-inputs" aria-label="运行参数">
           <div class="panel-heading"><strong>运行参数</strong><small>执行流程时使用的输入</small></div>
           <div class="workflow-input-values">
@@ -1318,17 +1507,23 @@ watch(
                 :placeholder="input.type === 'array' ? '例如：[a, b]' : '例如：{key: value}'"
                 @input="updateWorkflowInput(input.name, $event)"
               />
-              <input
-                v-else
-                :data-workflow-input-name="input.name"
-                :type="input.type === 'boolean' ? 'checkbox' : input.type === 'number' || input.type === 'integer' ? 'number' : 'text'"
-                :step="input.type === 'integer' ? '1' : 'any'"
-                :checked="input.type === 'boolean' ? workflowInputValues[input.name] === true : undefined"
-                :value="input.type === 'boolean' ? undefined : workflowInputDisplay(input)"
-                :placeholder="input.default === undefined || input.default === null ? `请输入${input.name}` : ''"
-                @input="updateWorkflowInput(input.name, $event)"
-                @change="updateWorkflowInput(input.name, $event)"
-              />
+              <div v-else class="workflow-runtime-input-row">
+                <input
+                  :data-workflow-input-name="input.name"
+                  :type="input.type === 'boolean' ? 'checkbox' : input.type === 'number' || input.type === 'integer' ? 'number' : 'text'"
+                  :step="input.type === 'integer' ? '1' : 'any'"
+                  :checked="input.type === 'boolean' ? workflowInputValues[input.name] === true : undefined"
+                  :value="input.type === 'boolean' ? undefined : workflowInputDisplay(input)"
+                  :placeholder="isWorkflowFileInput(input) ? '可填写本机绝对路径' : input.default === undefined || input.default === null ? `请输入${input.name}` : ''"
+                  @input="updateWorkflowInput(input.name, $event)"
+                  @change="updateWorkflowInput(input.name, $event)"
+                />
+                <button v-if="isWorkflowFileInput(input)" type="button" class="workflow-file-button" @click="chooseWorkflowRuntimeFile(input)"><FileUp :size="14" />选择文件</button>
+              </div>
+              <small v-if="isWorkflowFileInput(input)" class="field-hint workflow-shared-root-hint">
+                选中文件会自动暂存到共享目录：{{ workspace.transferSettings?.root || '未配置，请先打开文件传输设置' }}
+                <button v-if="!workspace.transferSettings?.root" type="button" class="text-button" @click="workspace.transferPanelOpen = true">打开设置</button>
+              </small>
             </label>
           </div>
         </section>
@@ -1410,15 +1605,35 @@ watch(
           </template>
           <template v-if="selectedNode.action_id === 'expression.evaluate'"><label>表达式<textarea :value="configString('expression')" rows="2" placeholder="例如：inputs.version &lt; 10" @input="updateConfigString('expression', $event)" /></label><label>表达式上下文 JSON<textarea :value="JSON.stringify(selectedNode.config.values || {})" rows="2" @change="updateConfigJson('values', $event)" /></label></template>
           <template v-if="selectedNode.action_id === 'loop.for_each'"><label>列表来源<select v-model="loopItemsMode"><option value="manual">手动输入列表</option><option value="reference">引用前置步骤输出</option></select></label><label v-if="loopItemsMode === 'manual'">遍历列表 JSON<textarea :value="JSON.stringify(selectedNode.config.items || [])" rows="2" @change="updateConfigJson('items', $event)" /></label><template v-else><label>列表来源步骤<select :value="loopItemsSourceId" @change="setLoopItemsSource(($event.target as HTMLSelectElement).value)"><option value="">选择步骤</option><option v-for="source in resultSources" :key="source.id" :value="source.id">{{ source.label }}</option></select></label><label>输出字段<select :value="loopItemsField" @change="setLoopItemsField(($event.target as HTMLSelectElement).value)"><option value="">完整输出</option><option v-for="field in loopItemsSourceFields" :key="`loop-${loopItemsSourceId}-${field.name}`" :value="field.name">{{ fieldLabel(field.name) }}</option></select><small class="field-hint">引用会在运行时解析为列表；适合消费采集、表达式或保存结果步骤的输出。</small></label></template><label>循环动作<select v-model="selectedNode.config.action_id"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label><label>动作参数 JSON<textarea :value="JSON.stringify(selectedNode.config.action_inputs || {})" rows="2" @change="updateConfigJson('action_inputs', $event)" /></label></template>
-          <template v-if="selectedNode.action_id === 'loop.until'"><label>循环动作<select v-model="selectedNode.config.action_id"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label><label>停止条件<textarea :value="configString('condition')" rows="2" placeholder="例如：result.status == 'succeeded'" @input="updateConfigString('condition', $event)" /></label><label>最大循环次数<input v-model.number="selectedNode.config.max_iterations" type="number" min="1" max="100" /></label><label>每轮间隔（秒）<input v-model.number="selectedNode.config.interval_seconds" type="number" min="0" max="86400" step="0.1" /></label><label>循环动作参数 JSON<textarea :value="JSON.stringify(selectedNode.config.action_inputs || {})" rows="2" @change="updateConfigJson('action_inputs', $event)" /></label><small class="field-hint">每轮执行一次动作，将结果放入 result，再用受限表达式判断是否停止。</small></template>
+          <template v-if="selectedNode.action_id === 'loop.until'">
+            <label>循环执行什么？<select v-model="selectedNode.config.action_id"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
+            <div v-if="selectedNode.config.action_id === 'device.command'" class="workflow-command-field">
+              <div class="workflow-command-label-row"><span>命令内容</span></div>
+              <textarea :value="String((selectedNode.config.action_inputs as Record<string, unknown> | undefined)?.command || '')" rows="2" placeholder="例如：display version" @input="(e) => { const node = selectedNode; if (!node) return; if (!node.config.action_inputs || typeof node.config.action_inputs !== 'object') node.config.action_inputs = {}; (node.config.action_inputs as Record<string, unknown>).command = (e.target as HTMLTextAreaElement).value }" />
+            </div>
+            <label>何时停止？<select v-model="loopUntilStopMode">
+              <option value="output_contains">输出包含文本</option>
+              <option value="output_regex">输出匹配正则</option>
+              <option value="success">命令成功</option>
+              <option value="failure">命令失败</option>
+              <option value="max_iterations">达到最大次数</option>
+            </select></label>
+            <label v-if="loopUntilStopMode === 'output_contains' || loopUntilStopMode === 'output_regex'">
+              {{ loopUntilStopMode === 'output_contains' ? '目标文本' : '正则表达式' }}
+              <input v-model="loopUntilPattern" :placeholder="loopUntilStopMode === 'output_contains' ? '例如：READY' : '例如：V\\d+R\\d+'" />
+            </label>
+            <label>最多执行<input v-model.number="selectedNode.config.max_iterations" type="number" min="1" max="100" /> 次</label>
+            <label>每次间隔<input v-model.number="selectedNode.config.interval_seconds" type="number" min="0" max="86400" step="0.1" /> 秒</label>
+            <small class="field-hint">{{ loopUntilStopMode === 'max_iterations' ? '每轮执行一次动作，达到最大次数后停止。' : '每轮执行一次动作并检查停止条件，满足条件或达到最大次数时停止。' }}</small>
+          </template>
           <template v-if="selectedNode.action_id === 'utility.confirm'"><label>确认提示<textarea :value="configString('prompt')" rows="3" placeholder="例如：请确认设备已备份配置" @input="updateConfigString('prompt', $event)" /></label><label>同意按钮文字<input :value="configString('approve_label')" @input="updateConfigString('approve_label', $event)" /></label><label>拒绝按钮文字<input :value="configString('reject_label')" @input="updateConfigString('reject_label', $event)" /></label><small class="field-hint">执行到此步骤会暂停，任务页会显示确认或取消选项。</small></template>
           <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.wait' && selectedNode.action_id !== 'utility.confirm'">失败重试次数<input v-model.number="selectedNode.config.retry_attempts" type="number" min="1" max="5" placeholder="1" /><small class="field-hint">失败后自动重试，最多 5 次。</small></label>
           <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.wait' && selectedNode.action_id !== 'utility.confirm'">失败重试间隔（秒）<input v-model.number="selectedNode.config.retry_backoff_seconds" type="number" min="0" max="60" step="0.1" placeholder="0" /><small class="field-hint">两次重试之间等待的时间，最多 60 秒。</small></label>
           <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.confirm'">并行组（可选）<input :value="configString('parallel_group')" placeholder="例如：信息采集" @input="updateConfigString('parallel_group', $event)" /><small class="field-hint">同一组中互相独立的步骤可并行执行；留空表示按顺序执行。</small></label>
           <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.confirm'">重复执行次数<input v-model.number="selectedNode.config.repeat_count" type="number" min="1" max="20" placeholder="1" /><small class="field-hint">将此步骤最多执行 20 次，适合重复探测和轮询。</small></label>
           <template v-if="selectedNode.action_id === 'file.upload' || selectedNode.action_id === 'file.download'">
-            <label>源文件<input :value="configString('source')" placeholder="本地或设备路径" @input="updateConfigString('source', $event)" /></label>
-            <label>目标路径<input :value="configString('destination')" placeholder="本地或设备路径" @input="updateConfigString('destination', $event)" /></label>
+            <label>源文件<input :value="configString('source')" :placeholder="selectedNode.action_id === 'file.upload' ? '可填写本机绝对路径，或使用运行参数' : '设备上的源路径'" @input="updateConfigString('source', $event)" /><small v-if="selectedNode.action_id === 'file.upload'" class="field-hint">可填写本机绝对路径，或引用运行参数中的文件；系统会自动准备传输。</small></label>
+            <label>目标路径<input :value="configString('destination')" :placeholder="selectedNode.action_id === 'file.upload' ? '设备路径，例如 flash:/device.cc' : '本地共享目录相对路径'" @input="updateConfigString('destination', $event)" /></label>
           </template>
           <label v-if="selectedNode.action_id === 'utility.wait'">等待秒数<input v-model.number="selectedNode.config.seconds" type="number" min="1" max="3600" /></label>
           <div v-else-if="selectedNode.action_id === 'utility.condition'" class="condition-builder"><strong>如果</strong><label>多个条件<select v-model="conditionLogicalOperator"><option value="AND">全部满足（AND）</option><option value="OR">任一满足（OR）</option></select></label><div v-for="(rule, index) in conditionRules" :key="index" class="condition-row"><select v-model="rule.field"><option value="software_version">软件版本</option><option value="status">状态</option><option value="name">名称</option></select><select v-model="rule.operator"><option>等于</option><option>不等于</option><option>包含</option><option>不包含</option><option>大于</option><option>小于</option><option>是否为空</option></select><input v-model="rule.value" placeholder="比较值" /></div><button type="button" class="connect-button" @click="conditionRules.push({ field: 'status', operator: '等于', value: '' })">+ 添加条件</button><label>满足条件时<select :value="conditionTargets.trueTarget" @change="setConditionTarget('true', $event)"><option value="">选择真分支步骤</option><option v-for="node in (selected.nodes || []).filter((item) => item.id !== selectedNode?.id)" :key="node.id" :value="node.id">{{ actions.find((action) => action.id === node.action_id)?.label || node.id }}</option></select></label><label>不满足时<select :value="conditionTargets.falseTarget" @change="setConditionTarget('false', $event)"><option value="">选择假分支步骤</option><option v-for="node in (selected.nodes || []).filter((item) => item.id !== selectedNode?.id)" :key="node.id" :value="node.id">{{ actions.find((action) => action.id === node.action_id)?.label || node.id }}</option></select></label><small>运行时只会执行其中一条分支，后续步骤会沿用分支条件。</small></div>
@@ -1455,6 +1670,21 @@ watch(
   background: rgba(15, 23, 42, .7);
   color: inherit;
 }
+.workflow-input-editor { grid-column: 1 / -1; display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: rgba(15, 23, 42, .22); }
+.workflow-input-editor .panel-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 0; }
+.workflow-input-editor .panel-heading small { flex: 1; }
+.workflow-input-definitions { display: grid; gap: 8px; }
+.workflow-input-definition { display: grid; grid-template-columns: minmax(110px, 1fr) 110px auto minmax(110px, 1fr) minmax(150px, 1.4fr) auto; align-items: end; gap: 8px; padding: 8px; border: 1px solid rgba(100, 116, 139, .3); border-radius: 6px; background: rgba(15, 23, 42, .28); }
+.workflow-input-definition label { display: grid; gap: 4px; color: rgba(226, 232, 240, .7); font-size: 10px; }
+.workflow-input-definition input:not([type='checkbox']), .workflow-input-definition select { min-width: 0; padding: 6px 7px; border: 1px solid var(--workflow-border); border-radius: 4px; background: rgba(15, 23, 42, .7); color: inherit; }
+.workflow-input-definition .workflow-input-required { display: flex; align-items: center; gap: 5px; height: 29px; white-space: nowrap; }
+.workflow-input-delete { align-self: end; }
+.workflow-runtime-input-row { display: flex; align-items: stretch; gap: 6px; }
+.workflow-runtime-input-row > input { min-width: 0; flex: 1; }
+.workflow-file-button { display: inline-flex; align-items: center; gap: 4px; padding: 6px 9px; border: 1px solid var(--workflow-border); border-radius: 4px; background: rgba(30,41,59,.8); color: inherit; cursor: pointer; white-space: nowrap; }
+.workflow-shared-root-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.text-button { padding: 0; border: 0; background: none; color: #93c5fd; cursor: pointer; }
+@media (max-width: 900px) { .workflow-input-definition { grid-template-columns: repeat(2, minmax(0, 1fr)); } .workflow-input-definition .workflow-input-description { grid-column: 1 / -1; } }
 .workflow-run-target select[multiple] { min-height: 68px; }
 .workflow-command-field { position: relative; margin-bottom: 13px; }
 .workflow-command-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; font-size: 12px; }
@@ -1482,6 +1712,11 @@ watch(
 .task-goal { padding: 6px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: rgba(15,23,42,.7); color: inherit; }
 .workflow-create-menu { position: absolute; z-index: 4; top: 96px; left: 20px; display: grid; gap: 6px; width: 220px; padding: 12px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 12px 30px rgba(0,0,0,.3); }
 .workflow-create-menu button { padding: 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: rgba(30,41,59,.7); color: inherit; text-align: left; cursor: pointer; }
+.workflow-modal-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
+.workflow-import-dialog { width: min(520px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
+.workflow-import-dialog header, .workflow-import-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workflow-import-dialog footer { justify-content: flex-end; margin-top: 16px; }
+.workflow-import-summary { display: flex; justify-content: space-between; padding: 12px; margin-top: 12px; border-radius: 6px; background: rgba(15,23,42,.62); }
 .condition-builder { display: grid; gap: 8px; }
 .condition-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
 .condition-row select, .condition-row input { min-width: 0; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 4px; background: rgba(15,23,42,.7); color: inherit; }

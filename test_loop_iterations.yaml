@@ -1,0 +1,13 @@
+name: 测试循环次数
+description: 验证 max_iterations 是否生效
+nodes:
+  - id: loop1
+    action_id: loop.until
+    config:
+      action_id: device.command
+      action_inputs:
+        command: echo "执行中..."
+      condition: "False"  # 永远不满足，应该跑满 max_iterations
+      max_iterations: 3
+      interval_seconds: 0
+edges: []
