@@ -140,6 +140,13 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
         with self._connect() as c: rows = c.execute("SELECT payload FROM workflow_definitions WHERE workflow_id=? AND kind='published' ORDER BY version", (workflow_id,)).fetchall()
         return [WorkflowVersion.from_dict(json.loads(str(row["payload"]))) for row in rows]
 
+    def is_referenced(self, workflow_id: str, version: int | str) -> bool:
+        with self._connect() as c:
+            row = c.execute("SELECT referenced FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).fetchone()
+        if row is None:
+            raise KeyError(f"workflow version not found: {workflow_id}@{version}")
+        return bool(row["referenced"])
+
     def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]:
         with self._connect() as c:
             if latest_only:

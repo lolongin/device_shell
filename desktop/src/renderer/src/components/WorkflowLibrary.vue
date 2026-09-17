@@ -13,6 +13,7 @@ type NodeItem = { id: string; action_id: string; config: Record<string, unknown>
 type WorkflowInput = { name: string; type?: string; control?: string; required?: boolean; default?: unknown; description?: string }
 type WorkflowEdge = { source: string; target: string; condition?: string; source_handle?: string }
 type WorkflowItem = { id: string; name: string; description?: string; version?: string | number; inputs?: WorkflowInput[]; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; condition?: string; source_handle?: string }> }
+type PublishedVersionItem = { id: string; name: string; description?: string; version: string | number; published_at?: string | null; step_count?: number; referenced?: boolean }
 type Issue = { code: string; message: string; node_id?: string }
 type OutputField = { name: string; label: string }
 type ActionItem = { id: string; label: string; hint: string; tone: string; outputFields: OutputField[] }
@@ -50,6 +51,10 @@ const showCommandReferenceMenu = ref(false)
 let workflowClipboard: NodeItem | null = null
 const workflowInputValues = ref<Record<string, unknown>>({})
 const workflowInputTouched = ref(new Set<string>())
+const publishedVersions = ref<PublishedVersionItem[]>([])
+const versionsLoading = ref(false)
+const versionError = ref('')
+let versionsRequestId = 0
 
 function defaultWorkflowInputValue(input: WorkflowInput): unknown {
   if (input.default !== undefined && input.default !== null) return input.default
@@ -665,6 +670,23 @@ async function refresh(): Promise<void> {
   try { workflows.value = (await desktopApi.workflowDefinitions()).workflows as WorkflowItem[] } catch (cause) { error.value = String(cause) } finally { loading.value = false }
 }
 
+async function refreshPublishedVersions(workflowId: string): Promise<void> {
+  const requestId = ++versionsRequestId
+  versionsLoading.value = true
+  versionError.value = ''
+  try {
+    const versions = (await desktopApi.workflowVersions(workflowId)).versions
+    if (requestId === versionsRequestId && selected.value?.id === workflowId) publishedVersions.value = versions
+  } catch (cause) {
+    if (requestId === versionsRequestId && selected.value?.id === workflowId) {
+      publishedVersions.value = []
+      versionError.value = cause instanceof Error ? cause.message : String(cause)
+    }
+  } finally {
+    if (requestId === versionsRequestId) versionsLoading.value = false
+  }
+}
+
 function selectWorkflow(item: WorkflowItem): void {
   normalizeLoopUntilNodes(item.nodes || [])
   selected.value = item
@@ -676,6 +698,19 @@ function selectWorkflow(item: WorkflowItem): void {
   const condition = item.nodes?.find((node) => node.action_id === 'utility.condition')
   if (condition && Array.isArray(condition.config.rules)) conditionRules.value = condition.config.rules as typeof conditionRules.value
   conditionLogicalOperator.value = condition?.config.logical_operator === 'OR' ? 'OR' : 'AND'
+  void refreshPublishedVersions(item.id)
+}
+
+async function removePublishedVersion(version: PublishedVersionItem): Promise<void> {
+  if (!selected.value || version.referenced) return
+  if (!window.confirm(`确定删除 ${selected.value.name} 的 v${version.version} 吗？此操作不可撤销。`)) return
+  try {
+    await desktopApi.deleteWorkflowVersion(selected.value.id, version.version)
+    await refreshPublishedVersions(selected.value.id)
+    runMessage.value = `已删除发布版本 v${version.version}`
+  } catch (cause) {
+    versionError.value = cause instanceof Error ? cause.message : String(cause)
+  }
 }
 
 async function create(blank = false): Promise<void> {
@@ -1262,6 +1297,7 @@ async function publish(): Promise<void> {
   const result = await desktopApi.publishWorkflowDefinition(selected.value.id)
   if (!result.published) issues.value = (result.errors || []).map((item) => ({ code: item.code || 'publish_error', message: item.message, node_id: item.node_id || undefined }))
   await refresh()
+  await refreshPublishedVersions(selected.value.id)
 }
 
 async function remove(): Promise<void> {
@@ -1475,6 +1511,22 @@ watch(
           <strong>{{ item.name }}</strong><small>{{ item.description || '暂无描述' }}</small><em>v{{ item.version || '草稿' }}</em>
         </button>
         <p v-if="!loading && !workflows.length" class="workflow-empty-list">还没有流程<br /><span>点击“新建流程”开始</span></p>
+        <section v-if="selected" class="workflow-version-manager" aria-label="发布版本管理">
+          <div class="workflow-version-heading"><strong>发布版本</strong><small>{{ publishedVersions.length }} 个</small></div>
+          <p v-if="versionsLoading" class="workflow-version-empty">加载版本中…</p>
+          <p v-else-if="versionError" class="workflow-version-error">{{ versionError }}</p>
+          <p v-else-if="!publishedVersions.length" class="workflow-version-empty">尚未发布版本</p>
+          <div v-else class="workflow-version-list">
+            <div v-for="version in publishedVersions" :key="`${version.id}-${version.version}`" class="workflow-version-row" :class="{ referenced: version.referenced }">
+              <div class="workflow-version-info">
+                <strong>v{{ version.version }}</strong>
+                <small>{{ version.published_at ? new Date(version.published_at).toLocaleString() : '发布时间未知' }}</small>
+                <span>{{ version.referenced ? '已被任务引用' : '未被引用，可删除' }}</span>
+              </div>
+              <button type="button" class="icon-toolbar-button workflow-version-delete" :disabled="version.referenced" :title="version.referenced ? '已被任务引用，不能删除' : '删除此发布版本'" :aria-label="version.referenced ? '已被任务引用，不能删除' : `删除发布版本 v${version.version}`" @click.stop="removePublishedVersion(version)"><Trash2 :size="13" /></button>
+            </div>
+          </div>
+        </section>
       </aside>
       <main v-if="selected" class="workflow-studio-grid">
         <section class="workflow-input-editor" aria-label="流程输入定义">
@@ -1714,6 +1766,18 @@ watch(
 .task-goal { padding: 6px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: rgba(15,23,42,.7); color: inherit; }
 .workflow-create-menu { position: absolute; z-index: 4; top: 96px; left: 20px; display: grid; gap: 6px; width: 220px; padding: 12px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 12px 30px rgba(0,0,0,.3); }
 .workflow-create-menu button { padding: 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: rgba(30,41,59,.7); color: inherit; text-align: left; cursor: pointer; }
+.workflow-version-manager { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(100, 116, 139, .28); }
+.workflow-version-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 7px; color: #e2e8f0; font-size: 12px; }
+.workflow-version-heading small, .workflow-version-empty { color: rgba(226, 232, 240, .5); font-size: 10px; }
+.workflow-version-list { display: grid; gap: 5px; }
+.workflow-version-row { display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 7px 6px; border: 1px solid rgba(100, 116, 139, .25); border-radius: 5px; background: rgba(15, 23, 42, .42); }
+.workflow-version-info { min-width: 0; display: grid; gap: 2px; }
+.workflow-version-info strong { color: #bfdbfe; font-size: 11px; }
+.workflow-version-info small, .workflow-version-info span { overflow: hidden; color: rgba(226, 232, 240, .52); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-version-info span { color: #86efac; }
+.workflow-version-row.referenced .workflow-version-info span { color: #fcd34d; }
+.workflow-version-delete { flex: 0 0 auto; }
+.workflow-version-error { margin: 0; color: #fca5a5; font-size: 10px; line-height: 1.4; }
 .workflow-modal-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
 .workflow-import-dialog { width: min(520px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
 .workflow-import-dialog header, .workflow-import-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

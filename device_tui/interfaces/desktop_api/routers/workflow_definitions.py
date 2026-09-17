@@ -27,7 +27,7 @@ from device_tui.application.workflow_studio import (
     from_document,
     parse_document,
 )
-from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
+from device_tui.application.errors import ApplicationConflictError, ResourceNotFoundError, UnsupportedOperationError
 from device_tui.domain.devices.repository import RepositoryError
 
 from ..dependencies import authorize, get_context
@@ -414,6 +414,30 @@ async def get_workflow_definition(workflow_id: str, ctx=Depends(get_context)) ->
     return {"workflow": draft.to_dict()}
 
 
+@router.get("/{workflow_id}/versions")
+async def list_workflow_versions(workflow_id: str, ctx=Depends(get_context)) -> dict[str, object]:
+    try:
+        versions = ctx.desktop.workflow_definitions.list_versions(workflow_id)
+    except KeyError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+    is_referenced = getattr(ctx.desktop.workflow_definitions, "is_referenced", None)
+    return {
+        "versions": [
+            {
+                "id": version.workflow_id,
+                "name": version.name,
+                "description": version.description,
+                "version": version.version,
+                "published_at": version.published_at,
+                "step_count": len(version.nodes),
+                "requires_confirmation": _requires_risk_confirmation(version),
+                "referenced": bool(is_referenced(workflow_id, version.version)) if callable(is_referenced) else False,
+            }
+            for version in reversed(versions)
+        ]
+    }
+
+
 @router.get("/{workflow_id}/export")
 async def export_workflow_definition(workflow_id: str, version: str = "draft", format: str = "yaml", ctx=Depends(get_context)) -> dict[str, object]:
     if format not in {"yaml", "json"}:
@@ -496,6 +520,16 @@ async def delete_workflow_definition(workflow_id: str, ctx=Depends(get_context))
         ctx.desktop.workflow_definitions.delete(workflow_id)
     except KeyError as exc:
         raise ResourceNotFoundError(str(exc)) from exc
+
+
+@router.delete("/{workflow_id}/versions/{version}", status_code=204)
+async def delete_workflow_version(workflow_id: str, version: int, ctx=Depends(get_context)) -> None:
+    try:
+        ctx.desktop.workflow_definitions.delete(workflow_id, version)
+    except KeyError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+    except ValueError as exc:
+        raise ApplicationConflictError("该发布版本已被任务引用，不能删除") from exc
 
 
 @router.post("/{workflow_id}/validate")

@@ -532,6 +532,7 @@ export interface PublishedWorkflowDefinition {
   inputs: WorkflowRuntimeInput[]
   step_count: number
   requires_confirmation: boolean
+  referenced?: boolean
 }
 
 export interface PublishedWorkflowDefinitionResponse {

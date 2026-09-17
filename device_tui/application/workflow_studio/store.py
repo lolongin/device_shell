@@ -15,6 +15,7 @@ class WorkflowDefinitionStore(Protocol):
     def delete(self, workflow_id: str, version: int | str | None = None) -> None: ...
     def publish(self, workflow_id: str) -> WorkflowVersion: ...
     def list_versions(self, workflow_id: str) -> list[WorkflowVersion]: ...
+    def is_referenced(self, workflow_id: str, version: int | str) -> bool: ...
     def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]: ...
 
 
@@ -74,6 +75,9 @@ class MemoryWorkflowDefinitionStore:
 
     def list_versions(self, workflow_id: str) -> list[WorkflowVersion]:
         return [deepcopy(item) for _, item in sorted(self._versions.get(workflow_id, {}).items())]
+
+    def is_referenced(self, workflow_id: str, version: int | str) -> bool:
+        return (workflow_id, int(version)) in self._references
 
     def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]:
         if latest_only:

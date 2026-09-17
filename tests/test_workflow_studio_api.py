@@ -58,6 +58,41 @@ def test_workflow_definition_lifecycle() -> None:
         assert published.json()["workflow"]["version"] == 1
 
 
+def test_workflow_published_versions_can_be_listed_and_deleted_until_referenced() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Version management",
+                "nodes": [{"id": "command", "action_id": "device.command", "config": {"command": "show version"}}],
+                "edges": [],
+            },
+        ).json()["workflow"]
+        workflow_id = created["id"]
+        first = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        second = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+
+        versions = client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions")
+        assert versions.status_code == 200
+        assert [(item["version"], item["referenced"]) for item in versions.json()["versions"]] == [(2, False), (1, False)]
+
+        deleted = client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{second['version']}")
+        assert deleted.status_code == 204
+        missing = client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{second['version']}")
+        assert missing.status_code == 404
+
+        started = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={"device_id": "sim-1", "protocol": "simulated", "version": first["version"]},
+        )
+        assert started.status_code == 200
+        referenced = client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"]
+        assert referenced[0]["referenced"] is True
+        blocked = client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{first['version']}")
+        assert blocked.status_code == 409
+        assert "已被任务引用" in blocked.json()["detail"]
+
+
 def test_workflow_action_catalog_is_exposed_for_studio_clients() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         response = client.get("/api/v1/workflow-definitions/actions")

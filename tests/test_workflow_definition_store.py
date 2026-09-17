@@ -15,7 +15,9 @@ def test_definition_crud_publish_snapshot_and_reference_protection(kind, tmp_pat
     store.save(WorkflowDraft("w1", "Changed"))
     assert store.get("w1", published.version).name == "Demo"
     assert store.publish("w1").version == 2
+    assert store.is_referenced("w1", published.version) is False
     store.mark_referenced("w1", published.version)
+    assert store.is_referenced("w1", published.version) is True
     with pytest.raises(ValueError):
         store.delete("w1", published.version)
 
