@@ -18,3 +18,18 @@ def test_definition_crud_publish_snapshot_and_reference_protection(kind, tmp_pat
     store.mark_referenced("w1", published.version)
     with pytest.raises(ValueError):
         store.delete("w1", published.version)
+
+
+def test_sqlite_list_published_latest_is_grouped_by_workflow(tmp_path: Path):
+    store = SQLiteWorkflowDefinitionStore(tmp_path / "workflow.sqlite3")
+    for workflow_id in ("w1", "w2"):
+        store.create(WorkflowDraft(workflow_id, workflow_id))
+
+    # Publish versions in an interleaved order so a global MAX(version) filter
+    # would incorrectly return an older version for one workflow.
+    assert store.publish("w1").version == 1
+    assert store.publish("w2").version == 1
+    assert store.publish("w1").version == 2
+
+    latest = {(item.workflow_id, int(item.version)) for item in store.list_published()}
+    assert latest == {("w1", 2), ("w2", 1)}

@@ -57,6 +57,18 @@ _ACTION_WORKFLOW_IDS = {
 
 _LOOP_DISALLOWED_ACTIONS = frozenset({"loop.for_each", "loop.until", "utility.condition", "utility.confirm"})
 _HIGH_RISK_WORKFLOW_IDS = frozenset({"device.reboot", "file.transfer"})
+_HIGH_RISK_ACTION_IDS = frozenset({"device.reboot", "file.upload", "file.download"})
+
+
+def _requires_risk_confirmation(version: Any) -> bool:
+    return any(
+        node.action_id in _HIGH_RISK_ACTION_IDS
+        or (
+            node.action_id in {"loop.for_each", "loop.until"}
+            and str(node.config.get("action_id") or "") in _HIGH_RISK_ACTION_IDS
+        )
+        for node in version.nodes
+    )
 
 
 def _normalize_action_inputs(action_id: str, raw_params: Mapping[str, Any]) -> dict[str, Any]:
@@ -366,6 +378,25 @@ async def list_workflow_actions() -> dict[str, object]:
             for item in build_action_catalog().list()
         ]
     }
+
+
+@router.get("/published")
+async def list_published_workflow_definitions(ctx=Depends(get_context)) -> dict[str, object]:
+    workflows = [
+        {
+            "id": version.workflow_id,
+            "name": version.name,
+            "description": version.description,
+            "version": version.version,
+            "published_at": version.published_at,
+            "inputs": [item.to_dict() for item in version.inputs],
+            "step_count": len(version.nodes),
+            "requires_confirmation": _requires_risk_confirmation(version),
+        }
+        for version in ctx.desktop.workflow_definitions.list_published(latest_only=True)
+    ]
+    workflows.sort(key=lambda item: (str(item["name"]).casefold(), str(item["id"])))
+    return {"workflows": workflows}
 
 
 @router.get("/{workflow_id}")

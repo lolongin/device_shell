@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  Box,
   Cable,
   ChevronDown,
   ChevronRight,
@@ -16,10 +15,12 @@ import {
   Globe2,
   Plug,
   KeyRound,
+  ListChecks,
   LogIn,
   LogOut,
   MonitorDot,
   PanelLeftClose,
+  Play,
   Pencil,
   Pin,
   Plus,
@@ -46,6 +47,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import SessionManager from './components/SessionManager.vue'
 import TerminalSplitWorkspace from './components/TerminalSplitWorkspace.vue'
 import WorkflowLibrary from './components/WorkflowLibrary.vue'
+import WorkflowRunDialog from './components/WorkflowRunDialog.vue'
 import { useWorkspaceStore } from './stores/workspace'
 import {
   aggregateSessionHealth,
@@ -151,6 +153,8 @@ const showSessionSidebar = computed(() =>
 const settingsPanelOpen = ref(false)
 const helpPanelOpen = ref(false)
 const workflowPanelOpen = ref(false)
+const workflowRunDialogOpen = ref(false)
+const workflowRunDeviceId = ref('')
 const selectedProfileId = ref('')
 const editingProfile = ref<ConnectionProfileSummary | null>(null)
 const dialogType = ref<ProfileType | ''>('')
@@ -1592,6 +1596,18 @@ function toggleWorkflowPanel(): void {
   }
 }
 
+function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId): void {
+  closeAppContextMenus()
+  workflowRunDeviceId.value = deviceId
+  workflowRunDialogOpen.value = true
+}
+
+function openWorkflowStudioFromRunner(): void {
+  workflowRunDialogOpen.value = false
+  workspace.upgradePanelOpen = false
+  workflowPanelOpen.value = true
+}
+
 function toggleResourceNavigator(): void {
   if (navigatorVisible.value && !operationPanelOpen.value) setNavigatorVisible(false)
   else setSection(activeSection.value)
@@ -1903,11 +1919,11 @@ onBeforeUnmount(() => {
         class="rail-button"
         :class="{ active: workspace.upgradePanelOpen }"
         type="button"
-        title="升级任务"
+        title="任务中心"
         :aria-pressed="workspace.upgradePanelOpen"
         @click="toggleUpgradePanel"
       >
-        <Box :size="19" /><span class="sr-only">升级任务</span>
+        <ListChecks :size="19" /><span class="sr-only">任务中心</span>
       </button>
       <button
         class="rail-button"
@@ -2426,6 +2442,12 @@ onBeforeUnmount(() => {
                 :title="workspace.selectedDevice.can_release ? '释放设备' : '只有我的占用设备可释放'"
                 @click="workspace.runDeviceAction('release')"
               >释放</button>
+              <button
+                class="secondary-button device-workflow-action"
+                type="button"
+                title="运行已发布 Workflow"
+                @click="openWorkflowRunDialog(workspace.selectedDeviceId)"
+              ><Play :size="13" />运行 Workflow</button>
             </section>
             <section class="device-connection-panel" aria-label="当前设备连接">
               <header>
@@ -2722,6 +2744,12 @@ onBeforeUnmount(() => {
           title="打开串口"
           @click="openDeviceContextSession('serial')"
         >打开串口</button>
+        <button
+          type="button"
+          role="menuitem"
+          title="运行已发布 Workflow"
+          @click="openWorkflowRunDialog(deviceContextMenu.device.id)"
+        >运行 Workflow</button>
         <template v-if="canSplitDevice(deviceContextMenu.device.id)">
           <hr />
           <button type="button" role="menuitem" @click="splitDeviceById(deviceContextMenu.device.id, 'left'); closeDeviceContextMenu()">分屏到左侧</button>
@@ -2805,11 +2833,17 @@ onBeforeUnmount(() => {
 
     <AutomationWorkspace v-if="workspace.automationPanelOpen" />
     <TransferWorkspace v-if="workspace.transferPanelOpen" />
-    <UpgradeWorkspace v-if="workspace.upgradePanelOpen" />
+    <UpgradeWorkspace v-if="workspace.upgradePanelOpen" @run-workflow="openWorkflowRunDialog()" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
     <KeepAlive>
       <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" />
     </KeepAlive>
+    <WorkflowRunDialog
+      v-if="workflowRunDialogOpen"
+      :initial-device-id="workflowRunDeviceId"
+      @close="workflowRunDialogOpen = false"
+      @open-studio="openWorkflowStudioFromRunner"
+    />
     <div
       v-if="operationPanelOpen && !workflowPanelOpen"
       class="navigator-resize-handle operation-panel-resize-handle"

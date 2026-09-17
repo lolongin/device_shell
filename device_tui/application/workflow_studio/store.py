@@ -15,6 +15,7 @@ class WorkflowDefinitionStore(Protocol):
     def delete(self, workflow_id: str, version: int | str | None = None) -> None: ...
     def publish(self, workflow_id: str) -> WorkflowVersion: ...
     def list_versions(self, workflow_id: str) -> list[WorkflowVersion]: ...
+    def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]: ...
 
 
 class MemoryWorkflowDefinitionStore:
@@ -67,12 +68,20 @@ class MemoryWorkflowDefinitionStore:
         draft = self.get(workflow_id)
         versions = self._versions.setdefault(workflow_id, {})
         number = max(versions, default=0) + 1
-        version = WorkflowVersion(workflow_id, number, draft.name, draft.inputs, draft.nodes, draft.edges, datetime.now(UTC).isoformat())
+        version = WorkflowVersion(workflow_id=workflow_id, version=number, name=draft.name, inputs=draft.inputs, nodes=draft.nodes, edges=draft.edges, published_at=datetime.now(UTC).isoformat(), description=draft.description)
         versions[number] = version
         return deepcopy(version)
 
     def list_versions(self, workflow_id: str) -> list[WorkflowVersion]:
         return [deepcopy(item) for _, item in sorted(self._versions.get(workflow_id, {}).items())]
+
+    def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]:
+        if latest_only:
+            versions = [items[max(items)] for items in self._versions.values() if items]
+        else:
+            versions = [item for items in self._versions.values() for item in items.values()]
+        versions.sort(key=lambda item: (item.published_at or "", item.workflow_id, int(item.version)), reverse=True)
+        return [deepcopy(item) for item in versions[: max(0, limit)]]
 
     def mark_referenced(self, workflow_id: str, version: int | str) -> None:
         self._references.add((workflow_id, int(version)))

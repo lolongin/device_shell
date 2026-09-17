@@ -128,7 +128,7 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
         draft = self.get(workflow_id)
         with self._connect() as c:
             number = int(c.execute("SELECT COALESCE(MAX(version),0)+1 FROM workflow_definitions WHERE workflow_id=? AND kind='published'", (workflow_id,)).fetchone()[0])
-            version = WorkflowVersion(workflow_id, number, draft.name, draft.inputs, draft.nodes, draft.edges, datetime.now(UTC).isoformat())
+            version = WorkflowVersion(workflow_id=workflow_id, version=number, name=draft.name, inputs=draft.inputs, nodes=draft.nodes, edges=draft.edges, published_at=datetime.now(UTC).isoformat(), description=draft.description)
             c.execute("INSERT INTO workflow_definitions VALUES (?, ?, 'published', 0, ?)", (workflow_id, number, json.dumps(version.to_dict(), ensure_ascii=False, separators=(",", ":"))))
         return version
 
@@ -138,6 +138,31 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
 
     def list_versions(self, workflow_id: str) -> list[WorkflowVersion]:
         with self._connect() as c: rows = c.execute("SELECT payload FROM workflow_definitions WHERE workflow_id=? AND kind='published' ORDER BY version", (workflow_id,)).fetchall()
+        return [WorkflowVersion.from_dict(json.loads(str(row["payload"]))) for row in rows]
+
+    def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]:
+        with self._connect() as c:
+            if latest_only:
+                rows = c.execute(
+                    """
+                    SELECT current.payload
+                    FROM workflow_definitions AS current
+                    JOIN (
+                        SELECT workflow_id, MAX(version) AS version
+                        FROM workflow_definitions
+                        WHERE kind='published'
+                        GROUP BY workflow_id
+                    ) AS latest
+                      ON latest.workflow_id = current.workflow_id
+                     AND latest.version = current.version
+                    WHERE current.kind='published'
+                    ORDER BY current.rowid DESC
+                    LIMIT ?
+                    """,
+                    (max(0, limit),),
+                ).fetchall()
+            else:
+                rows = c.execute("SELECT payload FROM workflow_definitions WHERE kind='published' ORDER BY rowid DESC LIMIT ?", (max(0, limit),)).fetchall()
         return [WorkflowVersion.from_dict(json.loads(str(row["payload"]))) for row in rows]
 
     def _migrate(self) -> None:

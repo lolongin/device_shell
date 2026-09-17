@@ -89,10 +89,11 @@ class WorkflowVersion:
     nodes: tuple[WorkflowNode, ...] = ()
     edges: tuple[WorkflowEdge, ...] = ()
     published_at: str | None = None
+    description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"workflow_id": self.workflow_id, "version": self.version, "name": self.name, "inputs": [i.to_dict() for i in self.inputs], "nodes": [n.to_dict() for n in self.nodes], "edges": [e.to_dict() for e in self.edges], "published_at": self.published_at}
+        return {"workflow_id": self.workflow_id, "version": self.version, "name": self.name, "inputs": [i.to_dict() for i in self.inputs], "nodes": [n.to_dict() for n in self.nodes], "edges": [e.to_dict() for e in self.edges], "published_at": self.published_at, "description": self.description}
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowVersion":
-        return cls(str(payload.get("workflow_id", payload.get("id", ""))), payload.get("version", 1), str(payload.get("name", "")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), payload.get("published_at"))
+        return cls(str(payload.get("workflow_id", payload.get("id", ""))), payload.get("version", 1), str(payload.get("name", "")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), payload.get("published_at"), str(payload.get("description", "")))

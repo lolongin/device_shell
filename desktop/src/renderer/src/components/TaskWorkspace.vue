@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, Copy, FileArchive, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
+import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, Copy, FileArchive, Play, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
 import { desktopApi } from '../transport/api'
 import type { TaskDecisionActionPayload, TaskRecord, TaskStepState, WorkflowParameterDescriptor } from '../types'
 
 const workspace = useWorkspaceStore()
+const emit = defineEmits<{ runWorkflow: [] }>()
 const taskMode = ref<'upgrade' | 'plan'>('upgrade')
 const workflowId = ref('')
 const workflowParameters = ref<Record<string, unknown>>({})
@@ -546,13 +547,13 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
 <template>
   <section class="task-ui" aria-labelledby="task-ui-title">
     <header class="task-ui-header">
-      <div class="task-ui-title"><span class="task-ui-icon"><Workflow :size="18" /></span><div><p class="eyebrow">BACKEND TASK</p><h3 id="task-ui-title">任务工作区</h3></div></div>
-      <button class="icon-button" type="button" aria-label="关闭任务面板" @click="workspace.upgradePanelOpen = false"><X :size="15" /></button>
+      <div class="task-ui-title"><span class="task-ui-icon"><Workflow :size="18" /></span><div><p class="eyebrow">BACKEND TASK</p><h3 id="task-ui-title">任务中心</h3></div></div>
+      <div class="task-ui-header-actions"><button class="secondary-button" type="button" @click="emit('runWorkflow')"><Play :size="14" />运行 Workflow</button><button class="icon-button" type="button" aria-label="关闭任务面板" @click="workspace.upgradePanelOpen = false"><X :size="15" /></button></div>
     </header>
 
     <div class="task-ui-create">
       <div class="task-mode-tabs" role="tablist" aria-label="任务类型">
-        <button type="button" :class="{ active: taskMode === 'upgrade' }" @click="taskMode = 'upgrade'"><RotateCcw :size="13" />Workflow</button>
+        <button type="button" :class="{ active: taskMode === 'upgrade' }" @click="taskMode = 'upgrade'"><RotateCcw :size="13" />内置任务</button>
         <button type="button" :class="{ active: taskMode === 'plan' }" @click="taskMode = 'plan'"><Workflow :size="13" />制定任务</button>
       </div>
       <label><span>设备</span><select :value="workspace.selectedDeviceRowId" @change="onDeviceChange"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.row_id" :value="device.row_id">{{ device.name }} · {{ device.id }}</option></select></label>

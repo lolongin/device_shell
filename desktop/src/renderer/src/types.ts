@@ -515,6 +515,29 @@ export interface WorkflowCatalogResponse {
   workflows: WorkflowDescriptor[]
 }
 
+export interface WorkflowRuntimeInput {
+  name: string
+  type: string
+  required: boolean
+  default?: unknown
+  description?: string
+}
+
+export interface PublishedWorkflowDefinition {
+  id: string
+  name: string
+  description: string
+  version: number | string
+  published_at: string | null
+  inputs: WorkflowRuntimeInput[]
+  step_count: number
+  requires_confirmation: boolean
+}
+
+export interface PublishedWorkflowDefinitionResponse {
+  workflows: PublishedWorkflowDefinition[]
+}
+
 export interface TaskResponse {
   api_version: number
   task: TaskRecord
