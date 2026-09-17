@@ -6,7 +6,7 @@ import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { PublishedWorkflowDefinition, WorkflowRuntimeInput } from '../types'
 
-const props = defineProps<{ initialDeviceId?: string }>()
+const props = defineProps<{ initialDeviceId?: string; initialWorkflowId?: string; initialVersion?: string | number }>()
 const emit = defineEmits<{ close: []; openStudio: [] }>()
 const workspace = useWorkspaceStore()
 const dialog = ref<HTMLElement | null>(null)
@@ -86,6 +86,17 @@ async function loadCatalog(): Promise<void> {
   error.value = ''
   try {
     workflows.value = (await desktopApi.publishedWorkflowDefinitions()).workflows
+    if (props.initialWorkflowId) {
+      const catalogItem = workflows.value.find((item) => item.id === props.initialWorkflowId)
+      if (props.initialVersion !== undefined) {
+        const versions = (await desktopApi.workflowVersions(props.initialWorkflowId)).versions
+        const target = versions.find((item) => String(item.version) === String(props.initialVersion))
+        if (target) {
+          workflows.value = [target, ...workflows.value.filter((item) => item.id !== target.id)]
+          selectWorkflow(target)
+        }
+      } else if (catalogItem) selectWorkflow(catalogItem)
+    }
     if (!selectedId.value && workflows.value[0]) selectWorkflow(workflows.value[0])
     else if (selectedWorkflow.value) resetInputs(selectedWorkflow.value)
   } catch (cause) {

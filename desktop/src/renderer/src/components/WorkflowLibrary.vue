@@ -19,7 +19,7 @@ type OutputField = { name: string; label: string }
 type ActionItem = { id: string; label: string; hint: string; tone: string; outputFields: OutputField[] }
 type CommandReference = { reference: string; label: string; hint: string }
 
-const emit = defineEmits<{ close: []; 'run-published': [] }>()
+const emit = defineEmits<{ close: []; 'run-published': []; 'run-version': [payload: { workflowId: string; version: string | number }] }>()
 const workspace = useWorkspaceStore()
 const workflows = ref<WorkflowItem[]>([])
 const selected = ref<WorkflowItem | null>(null)
@@ -1571,6 +1571,7 @@ watch(
                 <span>{{ version.referenced ? '已被任务引用' : '未被引用，可删除' }}</span>
               </div>
               <div class="workflow-version-actions">
+                <button type="button" class="icon-toolbar-button" title="运行此发布版本" :aria-label="`运行发布版本 v${version.version}`" @click.stop="emit('run-version', { workflowId: version.id, version: version.version })"><Play :size="13" /></button>
                 <button type="button" class="icon-toolbar-button" title="导出此发布版本 YAML" :aria-label="`导出发布版本 v${version.version}`" @click.stop="exportPublishedVersion(version)"><Download :size="13" /></button>
                 <button type="button" class="icon-toolbar-button" title="恢复为当前草稿" :aria-label="`恢复发布版本 v${version.version} 为草稿`" @click.stop="restorePublishedVersion(version)"><RotateCcw :size="13" /></button>
                 <button type="button" class="icon-toolbar-button workflow-version-delete" :disabled="version.referenced" :title="version.referenced ? '已被任务引用，不能删除' : '删除此发布版本'" :aria-label="version.referenced ? '已被任务引用，不能删除' : `删除发布版本 v${version.version}`" @click.stop="removePublishedVersion(version)"><Trash2 :size="13" /></button>

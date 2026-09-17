@@ -157,6 +157,8 @@ const workflowPanelOpen = ref(false)
 const workflowLibraryRef = ref<InstanceType<typeof WorkflowLibrary> | null>(null)
 const workflowRunDialogOpen = ref(false)
 const workflowRunDeviceId = ref('')
+const workflowRunWorkflowId = ref('')
+const workflowRunVersion = ref<string | number | undefined>(undefined)
 const selectedProfileId = ref('')
 const editingProfile = ref<ConnectionProfileSummary | null>(null)
 const dialogType = ref<ProfileType | ''>('')
@@ -1606,9 +1608,11 @@ function closeWorkflowPanel(): boolean {
   return true
 }
 
-function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId): void {
+function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId, workflowId = '', version?: string | number): void {
   closeAppContextMenus()
   workflowRunDeviceId.value = deviceId
+  workflowRunWorkflowId.value = workflowId
+  workflowRunVersion.value = version
   workflowRunDialogOpen.value = true
 }
 
@@ -2846,11 +2850,13 @@ onBeforeUnmount(() => {
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" @run-workflow="openWorkflowRunDialog()" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
     <KeepAlive>
-      <WorkflowLibrary ref="workflowLibraryRef" v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" />
+      <WorkflowLibrary ref="workflowLibraryRef" v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" @run-version="openWorkflowRunDialog(workspace.selectedDeviceId, $event.workflowId, $event.version)" />
     </KeepAlive>
     <WorkflowRunDialog
       v-if="workflowRunDialogOpen"
       :initial-device-id="workflowRunDeviceId"
+      :initial-workflow-id="workflowRunWorkflowId"
+      :initial-version="workflowRunVersion"
       @close="workflowRunDialogOpen = false"
       @open-studio="openWorkflowStudioFromRunner"
     />
