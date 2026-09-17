@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+import subprocess
 
 
 APP = Path("desktop/src/renderer/src/App.vue")
@@ -118,6 +120,35 @@ def test_loop_until_default_maximum_mode_uses_false_condition() -> None:
     )
 
     assert 'condition: "False"' in default_line
+
+
+def test_loop_until_migrates_historical_true_condition_without_changing_explicit_modes() -> None:
+    module = Path("desktop/src/renderer/src/utils/loopUntil.ts").resolve().as_uri()
+    script = f"""
+      import {{ normalizeLoopUntilNodes }} from {json.dumps(module)}
+      const nodes = [
+        {{ action_id: 'loop.until', config: {{ condition: 'True' }} }},
+        {{ action_id: 'loop.until', config: {{ condition: ' true ' }} }},
+        {{ action_id: 'loop.until', config: {{ condition: "result.status == 'succeeded'" }} }},
+        {{ action_id: 'utility.condition', config: {{ condition: 'True' }} }},
+      ]
+      normalizeLoopUntilNodes(nodes)
+      process.stdout.write(JSON.stringify(nodes.map(node => node.config.condition)))
+    """
+
+    result = subprocess.run(
+        ["node", "--experimental-strip-types", "--input-type=module", "--eval", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == [
+        "False",
+        "False",
+        "result.status == 'succeeded'",
+        "True",
+    ]
 
 
 def test_workflow_risk_preview_checks_until_loop_child_actions() -> None:

@@ -353,6 +353,18 @@ class UntilActivityHandler:
                 return ActivityResult(ActivityStatus.SUCCEEDED, outputs={"status": "matched", "matched": True, "iterations": iteration, "result": child_result, "results": results}, evidence=({"kind": "until", "iterations": iteration},))
             if iteration < max_iterations and interval_seconds:
                 await asyncio.sleep(interval_seconds)
+        if condition.lower() in {"false", "0"}:
+            return ActivityResult(
+                ActivityStatus.SUCCEEDED,
+                outputs={
+                    "status": "max_iterations",
+                    "matched": False,
+                    "iterations": max_iterations,
+                    "result": results[-1] if results else {},
+                    "results": results,
+                },
+                evidence=({"kind": "until", "iterations": max_iterations},),
+            )
         return ActivityResult(ActivityStatus.FAILED, outputs={"status": "exhausted", "matched": False, "iterations": max_iterations, "result": results[-1] if results else {}, "results": results}, error={"code": "loop_until_exhausted", "message": "loop.until reached max_iterations without matching condition", "class": "timeout"})
 
     async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:

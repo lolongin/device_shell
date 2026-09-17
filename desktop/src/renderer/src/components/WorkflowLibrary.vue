@@ -7,6 +7,7 @@ import type { DeviceSummary } from '../types'
 import WorkflowCanvas from './WorkflowCanvas.vue'
 import { useUndoRedo, useUndoRedoShortcuts } from '../composables/useUndoRedo'
 import { autoLayout } from '../utils/layoutAlgorithms'
+import { normalizeLoopUntilNodes } from '../utils/loopUntil'
 
 type NodeItem = { id: string; action_id: string; config: Record<string, unknown>; input_mapping?: Record<string, unknown>; position?: { x: number; y: number } }
 type WorkflowInput = { name: string; type?: string; control?: string; required?: boolean; default?: unknown; description?: string }
@@ -665,6 +666,7 @@ async function refresh(): Promise<void> {
 }
 
 function selectWorkflow(item: WorkflowItem): void {
+  normalizeLoopUntilNodes(item.nodes || [])
   selected.value = item
   selectedNode.value = item.nodes?.[0] || null
   initializeWorkflowInputValues(item)

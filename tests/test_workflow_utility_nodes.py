@@ -414,8 +414,40 @@ def test_until_activity_runs_until_max_iterations_when_condition_is_false() -> N
     )
 
     assert len(calls) == 20
+    assert result.status == ActivityStatus.SUCCEEDED
     assert result.outputs["iterations"] == 20
+    assert result.outputs["status"] == "max_iterations"
     assert result.outputs["matched"] is False
+    assert result.error is None
+
+
+def test_until_activity_still_fails_when_a_real_condition_never_matches() -> None:
+    async def child_runner(action_id, inputs, context, report):
+        return {"status": "succeeded"}
+
+    invocation = ActivityInvocation(
+        "loop.until",
+        "inv-1",
+        "run-1",
+        inputs={
+            "action_id": "device.command",
+            "condition": "iteration > 10",
+            "max_iterations": 2,
+            "interval_seconds": 0,
+        },
+    )
+    context = ActivityContext(
+        WorkflowRun("run-1", "wf", "1", "device-1"), invocation
+    )
+
+    result = asyncio.run(
+        UntilActivityHandler(child_runner).execute(
+            invocation, context, lambda _event: None
+        )
+    )
+
+    assert result.status == ActivityStatus.FAILED
+    assert result.error["code"] == "loop_until_exhausted"
 
 
 def test_until_activity_resolves_iteration_local_action_inputs() -> None:
