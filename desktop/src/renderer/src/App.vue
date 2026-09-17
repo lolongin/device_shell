@@ -154,6 +154,7 @@ const showSessionSidebar = computed(() =>
 const settingsPanelOpen = ref(false)
 const helpPanelOpen = ref(false)
 const workflowPanelOpen = ref(false)
+const workflowLibraryRef = ref<InstanceType<typeof WorkflowLibrary> | null>(null)
 const workflowRunDialogOpen = ref(false)
 const workflowRunDeviceId = ref('')
 const selectedProfileId = ref('')
@@ -1519,7 +1520,7 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
-  workflowPanelOpen.value = false
+  if (!closeWorkflowPanel()) return
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
   workspace.packageBuildPanelOpen = false
@@ -1535,7 +1536,7 @@ function toggleAutomationPanel(): void {
   if (workspace.automationPanelOpen) {
     workspace.closeAutomationPanel()
   } else {
-    workflowPanelOpen.value = false
+    if (!closeWorkflowPanel()) return
     workspace.automationPanelOpen = true
     workspace.transferPanelOpen = false
     workspace.upgradePanelOpen = false
@@ -1545,7 +1546,7 @@ function toggleAutomationPanel(): void {
 }
 
 function openSessionAutomation(sessionId: string): void {
-  workflowPanelOpen.value = false
+  if (!closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.automationPanelOpen = true
   workspace.transferPanelOpen = false
@@ -1556,7 +1557,7 @@ function openSessionAutomation(sessionId: string): void {
 
 function openSessionTransfer(sessionId: string): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
-  workflowPanelOpen.value = false
+  if (!closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.transferPanelOpen = true
   workspace.upgradePanelOpen = false
@@ -1566,7 +1567,7 @@ function openSessionTransfer(sessionId: string): void {
 
 function openSessionUpgrade(sessionId: string): void {
   if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
-  workflowPanelOpen.value = false
+  if (!closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.upgradePanelOpen = true
   workspace.transferPanelOpen = false
@@ -1577,9 +1578,9 @@ function openSessionUpgrade(sessionId: string): void {
 function toggleTransferPanel(): void {
   const open = !workspace.transferPanelOpen
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  if (open && !closeWorkflowPanel()) return
   workspace.transferPanelOpen = open
   if (open) {
-    workflowPanelOpen.value = false
     workspace.upgradePanelOpen = false
     workspace.packageBuildPanelOpen = false
   }
@@ -1587,6 +1588,7 @@ function toggleTransferPanel(): void {
 
 function toggleWorkflowPanel(): void {
   const open = !workflowPanelOpen.value
+  if (!open && !closeWorkflowPanel()) return
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workflowPanelOpen.value = open
   if (open) {
@@ -1595,6 +1597,13 @@ function toggleWorkflowPanel(): void {
     workspace.packageBuildPanelOpen = false
     workspace.aiPanelOpen = false
   }
+}
+
+function closeWorkflowPanel(): boolean {
+  if (!workflowPanelOpen.value) return true
+  if (workflowLibraryRef.value && !workflowLibraryRef.value.requestClose()) return false
+  workflowPanelOpen.value = false
+  return true
 }
 
 function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId): void {
@@ -1621,9 +1630,9 @@ function openLocalTerminal(): void {
 function toggleUpgradePanel(): void {
   const open = !workspace.upgradePanelOpen
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  if (open && !closeWorkflowPanel()) return
   workspace.upgradePanelOpen = open
   if (open) {
-    workflowPanelOpen.value = false
     workspace.transferPanelOpen = false
     workspace.packageBuildPanelOpen = false
   }
@@ -1632,9 +1641,9 @@ function toggleUpgradePanel(): void {
 function togglePackageBuildPanel(): void {
   const open = !workspace.packageBuildPanelOpen
   if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
+  if (open && !closeWorkflowPanel()) return
   workspace.packageBuildPanelOpen = open
   if (open) {
-    workflowPanelOpen.value = false
     workspace.transferPanelOpen = false
     workspace.upgradePanelOpen = false
   }
@@ -2837,7 +2846,7 @@ onBeforeUnmount(() => {
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" @run-workflow="openWorkflowRunDialog()" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
     <KeepAlive>
-      <WorkflowLibrary v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" />
+      <WorkflowLibrary ref="workflowLibraryRef" v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" />
     </KeepAlive>
     <WorkflowRunDialog
       v-if="workflowRunDialogOpen"

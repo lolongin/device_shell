@@ -56,6 +56,13 @@ const versionsLoading = ref(false)
 const versionError = ref('')
 let versionsRequestId = 0
 
+function workflowSnapshot(workflow: WorkflowItem | null): string {
+  return workflow ? JSON.stringify(workflow) : ''
+}
+
+const savedWorkflowSnapshot = ref('')
+const hasUnsavedChanges = computed(() => Boolean(selected.value && workflowSnapshot(selected.value) !== savedWorkflowSnapshot.value))
+
 function defaultWorkflowInputValue(input: WorkflowInput): unknown {
   if (input.default !== undefined && input.default !== null) return input.default
   if (input.type === 'boolean') return false
@@ -687,9 +694,11 @@ async function refreshPublishedVersions(workflowId: string): Promise<void> {
   }
 }
 
-function selectWorkflow(item: WorkflowItem): void {
+function selectWorkflow(item: WorkflowItem, force = false): void {
+  if (!force && selected.value?.id !== item.id && hasUnsavedChanges.value && !window.confirm('当前流程有未保存修改，切换后将丢失这些修改。确定继续吗？')) return
   normalizeLoopUntilNodes(item.nodes || [])
   selected.value = item
+  savedWorkflowSnapshot.value = workflowSnapshot(item)
   selectedNode.value = item.nodes?.[0] || null
   initializeWorkflowInputValues(item)
   issues.value = []
@@ -732,7 +741,7 @@ async function restorePublishedVersion(version: PublishedVersionItem): Promise<v
     const result = await desktopApi.restoreWorkflowVersion(selected.value.id, version.version)
     const restored = result.workflow as WorkflowItem
     workflows.value = workflows.value.map((item) => item.id === restored.id ? restored : item)
-    selectWorkflow(restored)
+    selectWorkflow(restored, true)
     runMessage.value = `已将发布版本 v${version.version} 恢复为草稿`
   } catch (cause) {
     versionError.value = cause instanceof Error ? cause.message : String(cause)
@@ -1294,6 +1303,7 @@ async function persistCurrentWorkflow(): Promise<boolean> {
     const result = await desktopApi.saveWorkflowDefinition(selected.value.id, selected.value as unknown as Record<string, unknown>)
     const saved = result.workflow as WorkflowItem
     selected.value = saved
+    savedWorkflowSnapshot.value = workflowSnapshot(saved)
     selectedNode.value = saved.nodes?.find((node) => node.id === selectedNodeId) || saved.nodes?.[0] || null
     return true
   } catch (cause) {
@@ -1328,11 +1338,22 @@ async function publish(): Promise<void> {
 
 async function remove(): Promise<void> {
   if (!selected.value) return
+  if (hasUnsavedChanges.value && !window.confirm('当前流程有未保存修改，删除后无法恢复。确定继续吗？')) return
+  if (!window.confirm(`确定删除流程“${selected.value.name}”吗？`)) return
   await desktopApi.deleteWorkflowDefinition(selected.value.id)
   selected.value = null
   selectedNode.value = null
+  savedWorkflowSnapshot.value = ''
   await refresh()
 }
+
+function requestClose(): boolean {
+  if (hasUnsavedChanges.value && !window.confirm('当前流程有未保存修改，关闭后将丢失这些修改。确定关闭吗？')) return false
+  emit('close')
+  return true
+}
+
+defineExpose({ hasUnsavedChanges, requestClose })
 
 const requiredConfigByAction: Record<string, string[]> = {
   'device.command': ['command'],
@@ -1483,7 +1504,7 @@ watch(
   <section class="workflow-library" aria-label="Workflow Library">
     <header class="workflow-library-header">
       <div><Workflow :size="18" /><div><strong>Workflow Studio</strong><small>把重复操作变成可复用流程</small></div></div>
-      <div class="workflow-library-header-actions"><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" @click="emit('close')"><X :size="16" /></button></div>
+      <div class="workflow-library-header-actions"><span v-if="hasUnsavedChanges" class="workflow-dirty-state">未保存修改</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" @click="requestClose"><X :size="16" /></button></div>
     </header>
     <div class="workflow-library-toolbar">
       <div class="toolbar-group toolbar-group-primary">
@@ -1810,6 +1831,7 @@ watch(
 .workflow-version-actions .icon-toolbar-button { width: 25px; height: 25px; }
 .workflow-run-header-button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid rgba(96, 165, 250, .45); border-radius: 5px; color: #bfdbfe; background: rgba(37, 99, 235, .16); font-size: 11px; cursor: pointer; }
 .workflow-run-header-button:hover { border-color: rgba(147, 197, 253, .75); background: rgba(37, 99, 235, .28); }
+.workflow-dirty-state { color: #fcd34d; font-size: 10px; white-space: nowrap; }
 .workflow-version-error { margin: 0; color: #fca5a5; font-size: 10px; line-height: 1.4; }
 .workflow-modal-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
 .workflow-import-dialog { width: min(520px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
