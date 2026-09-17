@@ -336,3 +336,20 @@ def test_task_workspace_localizes_workflow_input_resolution_errors() -> None:
     assert "unresolved_task_input" in source
     assert "流程输入引用无效" in source
     assert "请检查节点依赖和输出字段配置" in source
+
+
+def test_task_records_keep_position_when_a_snapshot_is_refreshed() -> None:
+    source = Path("desktop/src/renderer/src/stores/workspace.ts").read_text(encoding="utf-8")
+    task_workspace = Path("desktop/src/renderer/src/components/TaskWorkspace.vue").read_text(encoding="utf-8")
+
+    assert "function updateTaskSnapshot(task: TaskRecord, moveToFront = false)" in source
+    assert "tasks.value.splice(index, 1, task)" in source
+
+    get_task_start = source.index("async function getTask(")
+    get_task_end = source.index("\n  async function syncTaskSession", get_task_start)
+    get_task_source = source[get_task_start:get_task_end]
+    assert "updateTaskSnapshot(response.task)" in get_task_source
+    assert "tasks.value = [response.task, ...tasks.value.filter" not in get_task_source
+
+    assert '@keydown.space.prevent="chooseTask(task)"' in task_workspace
+    assert ":aria-current=\"task.id === workspace.activeTaskId ? 'true' : undefined\"" in task_workspace

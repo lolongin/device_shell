@@ -1415,6 +1415,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  function updateTaskSnapshot(task: TaskRecord, moveToFront = false): void {
+    const index = tasks.value.findIndex((item) => item.id === task.id)
+    if (index < 0) {
+      tasks.value = moveToFront ? [task, ...tasks.value] : [...tasks.value, task]
+      return
+    }
+    if (moveToFront) {
+      tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)]
+    } else {
+      // Keep refreshed records at their current visual position.
+      tasks.value.splice(index, 1, task)
+    }
+  }
+
   async function createNamedWorkflowTask(workflowId: string, parameters: Record<string, unknown>): Promise<boolean> {
     const deviceId = selectedDeviceId.value
     if (!deviceId || !workflowId) return false
@@ -1424,7 +1438,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       const response = await desktopApi.createTask({ workflow_id: workflowId, device_id: deviceId, parameters, source: 'desktop' })
       activeTaskId.value = response.task.id
-      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== response.task.id)]
+      updateTaskSnapshot(response.task, true)
       await syncTaskSession(response.task)
       taskDecision.value = null
       notice.value = 'Workflow Task 已创建'
@@ -1469,7 +1483,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       const started = await desktopApi.workflowRunPlan(result.plan_id, result.plan_hash)
       activeTaskId.value = started.data.task.id
-      tasks.value = [started.data.task, ...tasks.value.filter((item) => item.id !== started.data.task.id)]
+      updateTaskSnapshot(started.data.task, true)
       await syncTaskSession(started.data.task)
       taskDecision.value = null
       notice.value = '计划任务已创建'
@@ -1486,7 +1500,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function getTask(taskId: string, focus = true): Promise<TaskRecord | null> {
     try {
       const response = await desktopApi.getTask(taskId)
-      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      updateTaskSnapshot(response.task)
       if (taskId === activeTaskId.value) await syncTaskSession(response.task, focus)
       if (taskId === activeTaskId.value && ['waiting_for_decision', 'waiting_for_user'].includes(response.task.status)) {
         taskDecision.value = (await desktopApi.getTaskDecision(taskId)).decision
@@ -1527,7 +1541,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     taskBusy.value = true
     try {
       const response = await desktopApi.pauseTask(taskId)
-      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      updateTaskSnapshot(response.task)
     } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
   }
 
@@ -1536,7 +1550,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     taskBusy.value = true
     try {
       const response = await desktopApi.resumeTask(taskId, stepId)
-      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      updateTaskSnapshot(response.task)
       startTaskPolling()
     } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
   }
@@ -1546,7 +1560,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     taskBusy.value = true
     try {
       const response = await desktopApi.cancelTask(taskId)
-      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== taskId)]
+      updateTaskSnapshot(response.task)
       taskDecision.value = null
     } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
   }
@@ -1601,7 +1615,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     taskBusy.value = true
     try {
       const response = await desktopApi.applyTaskDecision(activeTaskId.value, { action, expected_revision: taskDecision.value.checkpoint_revision, reason })
-      tasks.value = [response.task, ...tasks.value.filter((item) => item.id !== response.task.id)]
+      updateTaskSnapshot(response.task)
       taskDecision.value = null
       startTaskPolling()
     } catch (cause) { taskError.value = cause instanceof Error ? cause.message : String(cause) } finally { taskBusy.value = false }
