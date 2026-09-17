@@ -277,6 +277,33 @@ def test_workflow_run_requires_confirmation_for_direct_and_looped_high_risk_acti
             assert accepted.status_code == 200
 
 
+def test_published_workflow_directory_marks_loop_risk_from_input_mapping() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Mapped risk",
+                "nodes": [
+                    {
+                        "id": "loop",
+                        "action_id": "loop.for_each",
+                        "config": {"items": [1]},
+                        "input_mapping": {"action_id": "device.reboot", "action_inputs": {}},
+                    }
+                ],
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+        published = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish")
+        assert published.status_code == 200
+
+        directory = client.get("/api/v1/workflow-definitions/published")
+
+    assert directory.status_code == 200
+    item = next(item for item in directory.json()["workflows"] if item["id"] == workflow_id)
+    assert item["requires_confirmation"] is True
+
+
 def test_workflow_definition_compiles_manual_confirmation_step() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post(

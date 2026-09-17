@@ -40,6 +40,15 @@ def test_workflow_studio_requires_explicit_draft_and_risk_confirmation() -> None
     assert "send_enter" in source
 
 
+def test_quick_workflow_runner_preserves_typed_input_defaults() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowRunDialog.vue").read_text(encoding="utf-8")
+
+    assert "JSON.stringify(input.default, null, 2)" in source
+    assert "Number.isFinite(parsed)" in source
+    assert "Number.isInteger(parsed)" in source
+    assert "input.type === 'number' ? 'any'" in source
+
+
 def test_workflow_run_paths_persist_the_current_canvas_before_execution() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
 

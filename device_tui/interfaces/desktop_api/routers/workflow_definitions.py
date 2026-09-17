@@ -65,7 +65,13 @@ def _requires_risk_confirmation(version: Any) -> bool:
         node.action_id in _HIGH_RISK_ACTION_IDS
         or (
             node.action_id in {"loop.for_each", "loop.until"}
-            and str(node.config.get("action_id") or "") in _HIGH_RISK_ACTION_IDS
+            and str(
+                {
+                    **dict(getattr(node, "config", {}) or {}),
+                    **dict(getattr(node, "input_mapping", {}) or {}),
+                }.get("action_id")
+                or ""
+            ) in _HIGH_RISK_ACTION_IDS
         )
         for node in version.nodes
     )

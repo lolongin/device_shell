@@ -31,18 +31,30 @@ const selectedDevice = computed(() => workspace.devices.find((item) => item.id =
 const canRun = computed(() => Boolean(selectedWorkflow.value && selectedDevice.value && !running.value && (!selectedWorkflow.value.requires_confirmation || confirmedRisks.value) && !invalidInput.value))
 const invalidInput = computed(() => Boolean(selectedWorkflow.value?.inputs.some((input) => {
   const value = values[input.name]
-  if (input.required && (value === undefined || value === null || value === '')) return true
+  if (input.required && (value === undefined || value === null || (typeof value === 'string' && !value.trim()))) return true
+  if ((input.type === 'integer' || input.type === 'number') && value !== undefined && value !== '') {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || (input.type === 'integer' && !Number.isInteger(parsed))) return true
+  }
   if ((input.type === 'array' || input.type === 'object') && value !== undefined && value !== '') {
-    try { JSON.parse(String(value)) } catch { return true }
+    try {
+      const parsed = JSON.parse(String(value))
+      if (input.type === 'array' ? !Array.isArray(parsed) : !parsed || Array.isArray(parsed) || typeof parsed !== 'object') return true
+    } catch { return true }
   }
   return false
 })))
 
 function inputLabel(input: WorkflowRuntimeInput): string { return input.name.replaceAll('_', ' ') }
+function initialInputValue(input: WorkflowRuntimeInput): unknown {
+  if (input.default === undefined || input.default === null) return input.type === 'boolean' ? false : ''
+  if (input.type === 'array' || input.type === 'object') return JSON.stringify(input.default, null, 2)
+  return input.default
+}
 function resetInputs(workflow: PublishedWorkflowDefinition | null): void {
   for (const key of Object.keys(values)) delete values[key]
   for (const input of workflow?.inputs || []) {
-    values[input.name] = input.default ?? (input.type === 'boolean' ? false : '')
+    values[input.name] = initialInputValue(input)
   }
   confirmedRisks.value = false
 }
@@ -141,7 +153,7 @@ onMounted(() => { void loadCatalog() })
             <div class="workflow-run-summary"><div><strong>{{ selectedWorkflow.name }}</strong><small>{{ selectedWorkflow.description || '已发布版本，可直接执行' }}</small></div><span>v{{ selectedWorkflow.version }} · {{ selectedWorkflow.step_count }} 步</span></div>
             <label class="workflow-run-field"><span>目标设备</span><select v-model="selectedDeviceId"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.row_id" :value="device.id">{{ device.name }} · {{ device.id }}</option></select></label>
             <div v-if="selectedWorkflow.inputs.length" class="workflow-run-inputs">
-              <label v-for="input in selectedWorkflow.inputs" :key="input.name" class="workflow-run-field"><span>{{ inputLabel(input) }}<em v-if="input.required">必填</em></span><small v-if="input.description">{{ input.description }}</small><button v-if="input.type === 'file' || input.name === 'package_path'" class="workflow-run-file" type="button" @click="chooseFile(input)"><FileUp :size="14" />{{ values[input.name] ? String(values[input.name]) : '选择文件' }}</button><textarea v-else-if="input.type === 'array' || input.type === 'object'" v-model="values[input.name]" rows="3" :placeholder="input.type === 'array' ? '[...]' : '{...}'" /><input v-else-if="input.type === 'boolean'" v-model="values[input.name]" type="checkbox" /><input v-else v-model="values[input.name]" :type="inputType(input)" /></label>
+              <label v-for="input in selectedWorkflow.inputs" :key="input.name" class="workflow-run-field"><span>{{ inputLabel(input) }}<em v-if="input.required">必填</em></span><small v-if="input.description">{{ input.description }}</small><button v-if="input.type === 'file' || input.name === 'package_path'" class="workflow-run-file" type="button" @click="chooseFile(input)"><FileUp :size="14" />{{ values[input.name] ? String(values[input.name]) : '选择文件' }}</button><textarea v-else-if="input.type === 'array' || input.type === 'object'" v-model="values[input.name]" rows="3" :placeholder="input.type === 'array' ? '[...]' : '{...}'" /><input v-else-if="input.type === 'boolean'" v-model="values[input.name]" type="checkbox" /><input v-else v-model="values[input.name]" :type="inputType(input)" :step="input.type === 'number' ? 'any' : input.type === 'integer' ? '1' : undefined" /></label>
             </div>
             <label v-if="selectedWorkflow.requires_confirmation" class="workflow-run-risk"><input v-model="confirmedRisks" type="checkbox" /><ShieldAlert :size="16" /><span>此 Workflow 包含高风险动作，确认后执行</span></label>
             <p v-if="error" class="workflow-run-error" role="alert"><CircleAlert :size="15" />{{ error }}</p>
