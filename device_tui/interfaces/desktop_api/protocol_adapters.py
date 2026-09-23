@@ -12,6 +12,7 @@ from device_tui.infrastructure.transports.session_protocol import (
 )
 from device_tui.infrastructure.transports.simulated_session import SimulatedTerminalSession
 from device_tui.infrastructure.transports.telnet_session import HuaweiTelnetSession, TelnetSessionError
+from device_tui.infrastructure.vendor_adapters.huawei_vrp.commands import HuaweiVrpCommandSet
 
 
 class TerminalAdapter(Protocol):
@@ -152,6 +153,10 @@ class TelnetAdapter:
                 credential.password,
                 login_timeout_seconds=3.0 if self._serial_mode else 12.0,
                 require_prompt=not self._serial_mode,
+                # Huawei VRP paginates directory output by default. Disable
+                # the pager before the interactive terminal is exposed so
+                # commands such as ``dir flash:/`` are delivered in full.
+                setup_command=HuaweiVrpCommandSet.disable_paging(),
                 term_size=term_size,
             )
         except (TelnetSessionError, OSError) as exc:

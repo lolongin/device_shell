@@ -427,4 +427,39 @@ class ResultSaveActivityHandler:
         del invocation, context
 
 
-__all__ = ["DeviceSelectActivityHandler", "ExpressionActivityHandler", "ForEachActivityHandler", "ResultSaveActivityHandler", "TerminalWaitActivityHandler", "UntilActivityHandler", "VariableSetActivityHandler", "WaitActivityHandler"]
+class WorkflowOutputsActivityHandler:
+    """Project a child Workflow's declared outputs onto its call node."""
+
+    activity_id = "workflow.outputs"
+
+    async def execute(self, invocation: ActivityInvocation, context: ActivityContext, report: Any) -> ActivityResult:
+        del context, report
+        raw_values = invocation.inputs.get("values")
+        values = dict(raw_values) if isinstance(raw_values, Mapping) else {}
+        workflow_id = str(invocation.inputs.get("workflow_id") or "")
+        try:
+            version = int(invocation.inputs.get("version"))
+        except (TypeError, ValueError):
+            return ActivityResult(
+                ActivityStatus.FAILED,
+                outputs={"status": "failed", "workflow_id": workflow_id, "version": 0, "outputs": {}},
+                error={"code": "workflow_outputs_invalid", "message": "workflow output version must be an integer", "class": "deterministic"},
+            )
+        projected = {
+            "status": "succeeded",
+            "workflow_id": workflow_id,
+            "version": version,
+            "outputs": values,
+            **values,
+        }
+        return ActivityResult(
+            ActivityStatus.SUCCEEDED,
+            outputs=projected,
+            evidence=({"kind": "workflow_outputs", "workflow_id": workflow_id, "version": version},),
+        )
+
+    async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:
+        del invocation, context
+
+
+__all__ = ["DeviceSelectActivityHandler", "ExpressionActivityHandler", "ForEachActivityHandler", "ResultSaveActivityHandler", "TerminalWaitActivityHandler", "UntilActivityHandler", "VariableSetActivityHandler", "WaitActivityHandler", "WorkflowOutputsActivityHandler"]

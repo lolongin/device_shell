@@ -33,6 +33,53 @@ def test_process_activity_returns_output_and_exit_code() -> None:
     assert events[0].payload["program"] == sys.executable
 
 
+def test_script_run_passes_json_input_and_parses_result() -> None:
+    result, _ = _run(ProcessActivityHandler("script.run"), {
+        "language": "python",
+        "script": (
+            "import json, os, sys\n"
+            "print('warning', file=sys.stderr)\n"
+            "payload = json.loads(os.environ['DEVICE_TUI_INPUT_JSON'])\n"
+            "print(json.dumps({'device_id': payload['device_id'], 'mode': os.environ['MODE']}))\n"
+        ),
+        "input_json": {"device_id": "router-1"},
+        "env": {"MODE": "check"},
+    })
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["stdout"].strip().endswith('{"device_id": "router-1", "mode": "check"}')
+    assert result.outputs["stderr"].strip() == "warning"
+    assert result.outputs["result"] == {"device_id": "router-1", "mode": "check"}
+    assert result.outputs["exit_code"] == 0
+
+
+def test_script_run_invokes_python_main_with_typed_inputs() -> None:
+    result, _ = _run(ProcessActivityHandler("script.run"), {
+        "language": "python",
+        "entrypoint": "main",
+        "script": (
+            "def main(name: str, count: int = 2) -> dict:\n"
+            "    return {'message': name * count}\n"
+        ),
+        "input_json": {"name": "ok"},
+    })
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["result"] == {"message": "okok"}
+
+
+def test_script_run_rejects_invalid_json_before_execution() -> None:
+    result, _ = _run(ProcessActivityHandler("script.run"), {
+        "language": "python",
+        "script": "raise RuntimeError('should not run')",
+        "input_json": "{invalid",
+    })
+
+    assert result.status == ActivityStatus.FAILED
+    assert result.error["code"] == "process_input_invalid"
+    assert "valid JSON" in result.error["message"]
+
+
 def test_process_activity_reports_nonzero_exit_as_failed() -> None:
     result, _ = _run(ProcessActivityHandler("script.run"), {
         "argv": [sys.executable, "-c", "raise SystemExit(3)"],

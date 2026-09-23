@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import asyncio
+import json
 import re
 from typing import Any, Callable, Mapping, Protocol
 from uuid import uuid4
@@ -539,6 +540,11 @@ class TaskOrchestrator:
             )
         outputs = dict(task.outputs)
         node_runs = dict(task.node_runs)
+        continued_failures = {
+            str(item)
+            for item in task.context.get("continued_failures", ())
+            if str(item)
+        }
         try:
             self._validate_input_dependencies(plan)
             parallel_batches = {batch[0].id: batch for batch in plan.execution_batches() if len(batch) > 1}
@@ -560,7 +566,16 @@ class TaskOrchestrator:
                     results = await asyncio.gather(*(
                         self._execute_parallel_node(task, item, outputs, record_child) for item in batch
                     ))
-                    failures = [result for result in results if result[1] not in {RunStatus.SUCCEEDED.value, "skipped"}]
+                    nodes_by_id = {item.id: item for item in batch}
+                    for node_id, status, output, _error, _child_id in results:
+                        if status not in {RunStatus.SUCCEEDED.value, "skipped"} and self._continues_after_failure(nodes_by_id[node_id]):
+                            continued_failures.add(node_id)
+                            outputs[node_id] = dict(output or {"status": status})
+                    failures = [
+                        result for result in results
+                        if result[1] not in {RunStatus.SUCCEEDED.value, "skipped"}
+                        and not self._continues_after_failure(nodes_by_id[result[0]])
+                    ]
                     if failures:
                         for node_id, _status, output, _error, _child_id in results:
                             if output:
@@ -577,17 +592,24 @@ class TaskOrchestrator:
                                         continue
                         first = failures[0]
                         return self._save(replace(task, status=self._aggregate_child_status(first[1]), outputs=outputs, error=first[3], context={key: value for key, value in task.context.items() if key != "parallel_batch"}))
-                    for node_id, _status, output, _error, child_id in results:
+                    for node_id, result_status, output, _error, child_id in results:
                         if child_id:
                             node_runs[node_id] = child_id
-                        outputs[node_id] = output or {"status": "skipped", "reason": "condition_false"}
+                        outputs[node_id] = dict(output) if output else (
+                            {"status": "skipped", "reason": "condition_false"}
+                            if result_status == "skipped"
+                            else {"status": result_status}
+                        )
                         self._record_variable_output(outputs, next(item for item in batch if item.id == node_id), outputs[node_id])
                         task = replace(
                             task,
                             context=self._context_with_target_output(task.context, outputs[node_id]),
                         )
                         parallel_completed.add(node_id)
-                    task = self._save(replace(task, node_runs=dict(node_runs), outputs=dict(outputs), status=TaskRunStatus.RUNNING, context={key: value for key, value in task.context.items() if key != "parallel_batch"}))
+                    parallel_context = {key: value for key, value in task.context.items() if key != "parallel_batch"}
+                    if continued_failures:
+                        parallel_context["continued_failures"] = sorted(continued_failures)
+                    task = self._save(replace(task, node_runs=dict(node_runs), outputs=dict(outputs), status=TaskRunStatus.RUNNING, context=parallel_context))
                     continue
                 if node.id in node_runs:
                     child = self.runtime.runs.get(node_runs[node.id])
@@ -600,6 +622,17 @@ class TaskOrchestrator:
                         projected = self._project_node_outputs(child.outputs)
                         if projected:
                             outputs[node.id] = projected
+                        if node.id in continued_failures or (
+                            self._continues_after_failure(node)
+                            and aggregate in {TaskRunStatus.FAILED, TaskRunStatus.CANCELLED, TaskRunStatus.UNKNOWN}
+                        ):
+                            continued_failures.add(node.id)
+                            outputs.setdefault(node.id, {"status": child_status})
+                            task = replace(
+                                task,
+                                context={**task.context, "continued_failures": sorted(continued_failures)},
+                            )
+                            continue
                         if aggregate in {TaskRunStatus.FAILED, TaskRunStatus.CANCELLED, TaskRunStatus.UNKNOWN}:
                             return self._save(replace(
                                 task,
@@ -626,6 +659,7 @@ class TaskOrchestrator:
                 max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
                 backoff_seconds = max(0.0, min(60.0, float(node.retry_policy.get("backoff_seconds", 0) or 0)))
                 child = None
+                failure_continued = False
                 for _iteration in range(max_iterations):
                     for _attempt in range(max_attempts):
                         if _attempt > 0:
@@ -660,6 +694,20 @@ class TaskOrchestrator:
                             projected = self._project_node_outputs(child.outputs)
                             if projected:
                                 outputs[node.id] = projected
+                            if (
+                                self._continues_after_failure(node)
+                                and aggregate in {TaskRunStatus.FAILED, TaskRunStatus.CANCELLED, TaskRunStatus.UNKNOWN}
+                            ):
+                                continued_failures.add(node.id)
+                                outputs.setdefault(node.id, {"status": child_status})
+                                task = self._save(replace(
+                                    task,
+                                    outputs=dict(outputs),
+                                    status=TaskRunStatus.RUNNING,
+                                    context={**task.context, "continued_failures": sorted(continued_failures)},
+                                ))
+                                failure_continued = True
+                                break
                             return self._save(replace(
                                 task,
                                 status=aggregate,
@@ -668,6 +716,8 @@ class TaskOrchestrator:
                                 if aggregate in {TaskRunStatus.FAILED, TaskRunStatus.UNKNOWN}
                                 else task.error,
                             ))
+                    if failure_continued:
+                        break
                     assert child is not None
                     projected = self._project_node_outputs(child.outputs)
                     outputs[node.id] = projected
@@ -680,6 +730,8 @@ class TaskOrchestrator:
                         status=TaskRunStatus.RUNNING,
                         context=self._context_with_target_output(task.context, projected),
                     ))
+                if failure_continued:
+                    continue
             return self._save(replace(task, status=TaskRunStatus.SUCCEEDED, outputs=outputs))
         except (TaskInputResolutionError, TaskInputDependencyError) as exc:
             for child_id in node_runs.values():
@@ -765,6 +817,10 @@ class TaskOrchestrator:
             RunStatus.FAILED.value: TaskRunStatus.FAILED,
         }
         return mapping.get(status, TaskRunStatus.WAITING_CHILD)
+
+    @staticmethod
+    def _continues_after_failure(node: WorkflowNode) -> bool:
+        return str(node.retry_policy.get("on_failure") or "stop").strip().casefold() == "continue"
 
     @classmethod
     def _resolve_node_inputs(
@@ -901,6 +957,15 @@ class TaskOrchestrator:
                 return tuple(resolve(item, container_path) for item in expression)
             if not isinstance(expression, str):
                 return expression
+            if container_path and container_path[-1] == "input_json":
+                try:
+                    parsed = json.loads(expression)
+                except json.JSONDecodeError:
+                    # The process activity reports malformed JSON with its
+                    # existing input error; do not mask that message here.
+                    parsed = None
+                else:
+                    return resolve(parsed, container_path)
             if expression.startswith("${") and expression.endswith("}"):
                 return resolve_reference(expression, container_path)
             if container_path and container_path[-1] == "command" and reference_pattern.search(expression):

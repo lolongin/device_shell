@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Mapping
 
 from device_tui.application.device_control import (
     ControlContext,
@@ -46,7 +47,7 @@ class TerminalTransferAdapter(TransferAdapter):
         session_id = str(target.get("session_id") or "").strip()
         direction = str(inputs.get("direction") or "upload").strip().casefold()
         source = str(inputs.get("source_path") or "").strip()
-        destination = str(inputs.get("destination_path") or "").strip()
+        destination = self._effective_destination(inputs)
         if not device_id or direction not in {"upload", "download"}:
             return False
         if not source or not destination:
@@ -95,14 +96,23 @@ class TerminalTransferAdapter(TransferAdapter):
             device_id = resolved.device_id
             protocol = resolved.protocol
         direction = str(inputs.get("direction") or "upload").strip().casefold()
+        destination_path = self._effective_destination(inputs)
+        terminal_environment = str(inputs.get("terminal_environment") or "auto").strip().casefold() or "auto"
+        if direction == "upload" and terminal_environment in {"auto", "vrp"}:
+            source_name = PurePosixPath(str(inputs.get("source_path") or "").replace("\\", "/")).name
+            # Legacy Studio definitions used the Flash storage label rather
+            # than a full destination. Expand only these unambiguous aliases;
+            # preserve explicit file paths and Linux environment selection.
+            if destination_path in {"flash", "flash:", "flash:/"}:
+                destination_path = f"flash:/{source_name}"
         operation = self._control.transfer(
             DeviceTarget(device_id=device_id, session_id=session_id, protocol=protocol),
             TransferRequest(
                 direction=direction,
                 source_path=str(inputs.get("source_path") or ""),
-                destination_path=str(inputs.get("destination_path") or ""),
+                destination_path=destination_path,
                 overwrite=bool(inputs.get("overwrite", False)),
-                terminal_environment=str(inputs.get("terminal_environment") or "auto"),
+                terminal_environment=terminal_environment,
                 command_mode=str(inputs.get("command_mode") or "vrp"),
                 interaction_profile={
                     str(key): str(value)
@@ -113,6 +123,17 @@ class TerminalTransferAdapter(TransferAdapter):
         )
         report(self._event("transfer.operation.queued", invocation, self._operation_payload(operation)))
         return TransferHandle(operation.operation_id, metadata={"direction": direction})
+
+    @staticmethod
+    def _effective_destination(inputs: Mapping[str, Any]) -> str:
+        """Default Huawei VRP uploads to flash using the source filename."""
+        destination = str(inputs.get("destination_path") or "").strip()
+        direction = str(inputs.get("direction") or "upload").strip().casefold()
+        environment = str(inputs.get("terminal_environment") or "auto").strip().casefold() or "auto"
+        if direction != "upload" or environment not in {"auto", "vrp"} or destination:
+            return destination
+        source_name = PurePosixPath(str(inputs.get("source_path") or "").replace("\\", "/")).name
+        return f"flash:/{source_name}" if source_name else ""
 
     async def monitor(
         self,

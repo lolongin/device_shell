@@ -966,12 +966,12 @@ class TerminalExecutionRunner:
                 "failed",
                 matched=found[0],
                 error_code="response_limit_exceeded",
-                message=f"自动响应超过上限: {rule.match}",
+                message=f"交互响应超过上限: {rule.match}",
             )
             self._finish_locked(
                 "failed",
                 error_code="response_limit_exceeded",
-                message=f"步骤 {self.current_step} 自动响应超过上限。",
+                message=f"步骤 {self.current_step} 交互响应超过上限。",
             )
             return
         try:

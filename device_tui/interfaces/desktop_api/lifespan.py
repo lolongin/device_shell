@@ -20,7 +20,6 @@ def build_lifespan(ctx: BackendContext):
         await ctx.desktop.upgrades.close()
         await ctx.desktop.package_builds.close()
         await ctx.desktop.transfers.close()
-        await ctx.desktop.automation.close()
         ctx.terminal_executor.close()
         await ctx.desktop.sessions.close_all()
         ctx.hub.shutdown_logging()

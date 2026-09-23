@@ -30,6 +30,15 @@ class Handler:
         })
 
 
+def test_script_input_json_resolves_nested_complete_references() -> None:
+    resolved = TaskOrchestrator._resolve_inputs(
+        {"input_json": '{"message":"${inputs.name}","count":2}'},
+        {"inputs": {"name": "router-1"}},
+    )
+
+    assert resolved["input_json"] == {"message": "router-1", "count": 2}
+
+
 class FlakyHandler:
     def __init__(self) -> None:
         self.calls = 0
@@ -369,6 +378,73 @@ def test_parallel_group_failure_keeps_outputs_from_completed_siblings():
     assert result.status == TaskRunStatus.FAILED
     assert result.outputs["bad"]["value"] == "rejected"
     assert result.outputs["good"]["value"] == "accepted"
+
+
+def test_task_orchestrator_continues_after_configured_serial_failure() -> None:
+    actions = ActionRegistry()
+    actions.register(ParallelFailureHandler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan("continue-serial", nodes=(
+        WorkflowNode(
+            "bad",
+            "test.action",
+            input_mapping={"value": "bad"},
+            retry_policy={"on_failure": "continue"},
+        ),
+        WorkflowNode("after", "test.action", depends_on=("bad",), input_mapping={"value": "after"}),
+    ))
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert result.outputs["bad"]["status"] == RunStatus.FAILED.value
+    assert result.outputs["after"]["run"]["value"] == "after"
+    assert result.context["continued_failures"] == ["bad"]
+
+
+def test_task_orchestrator_stops_after_failure_by_default() -> None:
+    actions = ActionRegistry()
+    actions.register(ParallelFailureHandler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan("stop-serial", nodes=(
+        WorkflowNode("bad", "test.action", input_mapping={"value": "bad"}),
+        WorkflowNode("after", "test.action", depends_on=("bad",), input_mapping={"value": "after"}),
+    ))
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.FAILED
+    assert "after" not in result.node_runs
+
+
+def test_task_orchestrator_continues_after_parallel_failure_and_resumes_safely() -> None:
+    actions = ActionRegistry()
+    actions.register(ParallelFailureHandler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    plan = TaskPlan("continue-parallel", nodes=(
+        WorkflowNode(
+            "bad",
+            "test.action",
+            input_mapping={"value": "bad"},
+            retry_policy={"on_failure": "continue"},
+            parallel_group="checks",
+        ),
+        WorkflowNode("good", "test.action", input_mapping={"value": "good"}, parallel_group="checks"),
+        WorkflowNode("after", "test.action", depends_on=("bad", "good"), input_mapping={"value": "after"}),
+    ))
+    task = orchestrator.start(plan, device_id="d1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+    resumed = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert resumed.status == TaskRunStatus.SUCCEEDED
+    assert result.outputs["bad"]["status"] == RunStatus.FAILED.value
+    assert result.outputs["good"]["run"]["value"] == "good"
+    assert result.outputs["after"]["run"]["value"] == "after"
+    assert resumed.node_runs == result.node_runs
 
 
 def test_parallel_node_keeps_retry_policy():

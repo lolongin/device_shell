@@ -16,11 +16,6 @@ import type {
   CommandWorkspaceResponse,
   CommandSuggestionResponse,
   CommandDispatchResponse,
-  AutoResponseRulePayload,
-  QuickSendButtonPayload,
-  AutomationDispatchResponse,
-  AutomationPreviewResponse,
-  AutomationWorkspaceResponse,
   TransferSettings,
   TransferServiceLogResponse,
   TransferNetworkAddressesResponse,
@@ -42,6 +37,7 @@ import type {
   TaskDecisionResponse,
   TaskDecisionActionPayload,
   WorkflowCatalogResponse,
+  WorkflowScript,
   PublishedWorkflowDefinition,
   PublishedWorkflowDefinitionResponse,
   AiPlanResponse,
@@ -56,6 +52,9 @@ import type {
 
 export interface WorkflowDefinitionResponse { workflows: Array<Record<string, unknown>> }
 export interface WorkflowActionCatalogResponse { actions: Array<Record<string, unknown>> }
+export interface WorkflowCustomActionResponse { actions: Array<Record<string, unknown>> }
+export interface WorkflowTemplateResponse { templates: Array<Record<string, unknown>> }
+export interface WorkflowScriptResponse { scripts: WorkflowScript[] }
 
 let runtimePromise: Promise<BackendRuntime> | null = null
 
@@ -262,87 +261,6 @@ export const desktopApi = {
       method: 'POST',
       body: JSON.stringify({ command })
     }),
-  automationWorkspace: (): Promise<AutomationWorkspaceResponse> =>
-    request('/api/v1/automation/workspace'),
-  previewAutomationRule: (
-    rule: AutoResponseRulePayload,
-    sessionId = '',
-    sampleOutput = ''
-  ): Promise<AutomationPreviewResponse> =>
-    request('/api/v1/automation/preview', {
-      method: 'POST',
-      body: JSON.stringify({
-        rule,
-        session_id: sessionId,
-        sample_output: sampleOutput,
-        max_steps: 200
-      })
-    }),
-  createAutomationRule: (
-    rule: AutoResponseRulePayload
-  ): Promise<AutomationWorkspaceResponse> =>
-    request('/api/v1/automation/rules', {
-      method: 'POST',
-      body: JSON.stringify({ rule })
-    }),
-  updateAutomationRule: (
-    ruleId: string,
-    rule: AutoResponseRulePayload
-  ): Promise<AutomationWorkspaceResponse> =>
-    request(`/api/v1/automation/rules/${encodeURIComponent(ruleId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ rule })
-    }),
-  cloneAutomationRule: (ruleId: string): Promise<AutomationWorkspaceResponse> =>
-    request(`/api/v1/automation/rules/${encodeURIComponent(ruleId)}/clone`, {
-      method: 'POST'
-    }),
-  setAutomationRuleEnabled: (
-    ruleId: string,
-    enabled: boolean
-  ): Promise<AutomationWorkspaceResponse> =>
-    request(`/api/v1/automation/rules/${encodeURIComponent(ruleId)}/enabled`, {
-      method: 'PUT',
-      body: JSON.stringify({ enabled })
-    }),
-  deleteAutomationRule: (ruleId: string): Promise<void> =>
-    request(`/api/v1/automation/rules/${encodeURIComponent(ruleId)}`, {
-      method: 'DELETE'
-    }),
-  triggerAutomationRule: (
-    ruleId: string,
-    sessionId: string
-  ): Promise<AutomationDispatchResponse> =>
-    request(`/api/v1/automation/rules/${encodeURIComponent(ruleId)}/trigger`, {
-      method: 'POST',
-      body: JSON.stringify({ session_id: sessionId })
-    }),
-  cancelSessionAutomation: (sessionId: string): Promise<AutomationDispatchResponse> =>
-    request(`/api/v1/automation/sessions/${encodeURIComponent(sessionId)}/cancel`, {
-      method: 'POST'
-    }),
-  createQuickSendButton: (button: QuickSendButtonPayload): Promise<AutomationWorkspaceResponse> =>
-    request('/api/v1/automation/quick-send-buttons', {
-      method: 'POST',
-      body: JSON.stringify(button)
-    }),
-  updateQuickSendButton: (
-    buttonId: string,
-    button: QuickSendButtonPayload
-  ): Promise<AutomationWorkspaceResponse> =>
-    request(`/api/v1/automation/quick-send-buttons/${encodeURIComponent(buttonId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(button)
-    }),
-  deleteQuickSendButton: (buttonId: string): Promise<void> =>
-    request(`/api/v1/automation/quick-send-buttons/${encodeURIComponent(buttonId)}`, {
-      method: 'DELETE'
-    }),
-  sendQuickSendButton: (buttonId: string, sessionId: string): Promise<void> =>
-    request(`/api/v1/automation/quick-send-buttons/${encodeURIComponent(buttonId)}/send`, {
-      method: 'POST',
-      body: JSON.stringify({ session_id: sessionId })
-    }),
   transferSettings: (): Promise<TransferSettings> =>
     request('/api/v1/file-transfer/settings'),
   updateTransferSettings: (
@@ -434,6 +352,18 @@ export const desktopApi = {
   previewWorkflowImport: (filename: string, content: string): Promise<{ filename: string; format: string; workflow: Record<string, unknown>; errors?: Array<{ message: string }>; warnings?: Array<{ message: string }> }> => request('/api/v1/workflow-definitions/import/preview', { method: 'POST', body: JSON.stringify({ filename, content }) }),
   importWorkflowDefinition: (filename: string, content: string, conflictStrategy = 'copy'): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions/import', { method: 'POST', body: JSON.stringify({ filename, content, conflict_strategy: conflictStrategy }) }),
   workflowActions: (): Promise<WorkflowActionCatalogResponse> => request('/api/v1/workflow-definitions/actions'),
+  workflowScripts: (): Promise<WorkflowScriptResponse> => request('/api/v1/workflow-definitions/scripts'),
+  createWorkflowScript: (payload: Partial<WorkflowScript>): Promise<{ script: WorkflowScript }> => request('/api/v1/workflow-definitions/scripts', { method: 'POST', body: JSON.stringify(payload) }),
+  saveWorkflowScript: (id: string, payload: Partial<WorkflowScript>): Promise<{ script: WorkflowScript }> => request(`/api/v1/workflow-definitions/scripts/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteWorkflowScript: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/scripts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testWorkflowScript: (id: string, payload: { device_id: string; protocol?: 'simulated' | 'auto' | 'ssh' | 'telnet' | 'serial'; inputs?: Record<string, unknown>; confirmed_risks?: boolean }): Promise<{ task?: TaskRecord; tasks?: TaskRecord[]; target_count?: number }> => request(`/api/v1/workflow-definitions/scripts/${encodeURIComponent(id)}/test`, { method: 'POST', body: JSON.stringify(payload) }),
+  workflowCustomActions: (): Promise<WorkflowCustomActionResponse> => request('/api/v1/workflow-definitions/custom-actions'),
+  createWorkflowCustomAction: (payload: Record<string, unknown>): Promise<{ action: Record<string, unknown> }> => request('/api/v1/workflow-definitions/custom-actions', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteWorkflowCustomAction: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/custom-actions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  workflowTemplates: (): Promise<WorkflowTemplateResponse> => request('/api/v1/workflow-definitions/templates'),
+  createWorkflowTemplate: (payload: Record<string, unknown>): Promise<{ template: Record<string, unknown> }> => request('/api/v1/workflow-definitions/templates', { method: 'POST', body: JSON.stringify(payload) }),
+  instantiateWorkflowTemplate: (id: string, payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown>; template_id: string }> => request(`/api/v1/workflow-definitions/templates/${encodeURIComponent(id)}/instantiate`, { method: 'POST', body: JSON.stringify(payload) }),
+  deleteWorkflowTemplate: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/templates/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createWorkflowDefinition: (payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions', { method: 'POST', body: JSON.stringify(payload) }),
   saveWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   publishWorkflowDefinition: (id: string): Promise<{ published: boolean; errors?: Array<{ code?: string; message: string; node_id?: string | null }>; workflow?: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/publish`, { method: 'POST' }),

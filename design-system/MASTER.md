@@ -68,7 +68,7 @@ without redefining the shared palette.
 
 - Home owns the complete device pool, search, filters, and selected-device detail.
 - Terminal mode uses compact session navigation and maximizes terminal space.
-- Tool workspaces for transfer, upgrade, automation, and AI retain the current
+- Tool workspaces for transfer, upgrade, workflow, and AI retain the current
   device/session context.
 - Dialogs must fit common laptop displays and scroll internally when content grows.
 - Split panes preserve practical minimum terminal sizes and keyboard navigation.

@@ -15,7 +15,6 @@ import {
   X
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
-import TerminalQuickToolbar from './TerminalQuickToolbar.vue'
 import {
   announceContextMenuOpen,
   clampContextMenuElement,
@@ -722,7 +721,6 @@ onBeforeUnmount(() => {
       @keydown="handleCommandPanelResizeKeydown"
       @dblclick="resetCommandPanelHeight"
     ><span aria-hidden="true"></span></div>
-    <div v-if="!workspace.commandPanelOpen" class="command-quick-send-row"><TerminalQuickToolbar /></div>
     <div v-if="!workspace.commandPanelOpen" class="command-collapsed-bar">
       <button class="command-collapsed-trigger" type="button" title="展开常用命令" @click="workspace.commandPanelOpen = true">
         <span><BookOpenText :size="14" />常用命令 <strong>{{ currentGroup?.name || '终端' }}</strong></span>
@@ -730,7 +728,6 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <template v-else>
-      <div class="command-quick-send-row"><TerminalQuickToolbar /></div>
       <header class="command-header" @click="closeCommandGroupContextMenu">
         <div class="command-tabs" role="tablist">
           <div

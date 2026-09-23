@@ -507,7 +507,6 @@ def test_transfer_legacy_password_moves_to_secret_store_without_sqlite_plaintext
         SessionHub(),
         profile_store=store,
         command_store=store,
-        automation_store=store,
         transfer_store=store,
         secret_store=secrets,
         transfer_root=share,

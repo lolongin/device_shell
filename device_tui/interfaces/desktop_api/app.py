@@ -12,14 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from device_tui.application import (
     ConnectionProfileStore,
-    AutomationStore,
     TransferStore,
     CommandStore,
     AiApplicationService,
     KeyringSecretStore,
     MemoryConnectionProfileStore,
     MemoryCommandStore,
-    MemoryAutomationStore,
     MemoryTransferStore,
     MemorySecretStore,
     WorkflowCatalog,
@@ -66,7 +64,6 @@ from .routers.devices import router as devices_router
 from .routers.profiles import router as profiles_router
 from .routers.sessions import router as sessions_router
 from .routers.commands import router as commands_router
-from .routers.automation import router as automation_router
 from .routers.transfers import router as transfers_router
 from .routers.auth import router as auth_router
 from .routers.ws_tickets import router as ws_tickets_router
@@ -168,7 +165,6 @@ def create_app(
     secret_store: SecretStore | None = None,
     legacy_state_path: Path | None = None,
     command_store: CommandStore | None = None,
-    automation_store: AutomationStore | None = None,
     transfer_store: TransferStore | None = None,
     transfer_root: Path | None = None,
     imported_device_store: ImportedDeviceStore | None = None,
@@ -189,7 +185,6 @@ def create_app(
         and (
             profile_store is None
             or command_store is None
-            or automation_store is None
             or transfer_store is None
         )
     )
@@ -300,8 +295,6 @@ def create_app(
         profile_store = desktop_store or MemoryConnectionProfileStore()
     if command_store is None:
         command_store = desktop_store or MemoryCommandStore()
-    if automation_store is None:
-        automation_store = desktop_store or MemoryAutomationStore()
     if transfer_store is None:
         transfer_store = desktop_store or MemoryTransferStore()
     if transfer_root is None:
@@ -315,7 +308,6 @@ def create_app(
         profile_store=profile_store,
         secret_store=secret_store,
         command_store=command_store,
-        automation_store=automation_store,
         transfer_store=transfer_store,
         operation_store=desktop_store,
         settings_store=settings_store,
@@ -387,11 +379,6 @@ def create_app(
         if should_import_legacy and legacy_state_path is not None
         else {"groups": 0, "history": 0}
     )
-    legacy_automation_import = (
-        desktop.automation.import_legacy_state(legacy_state_path)
-        if should_import_legacy and legacy_state_path is not None
-        else {"rules": 0, "secrets": 0}
-    )
     legacy_transfer_import = (
         desktop.transfers.import_legacy_state(legacy_state_path)
         if should_import_legacy and legacy_state_path is not None
@@ -419,7 +406,6 @@ def create_app(
         import_previews=import_previews,
         legacy_import=legacy_import,
         legacy_command_import=legacy_command_import,
-        legacy_automation_import=legacy_automation_import,
         legacy_transfer_import=legacy_transfer_import,
         log_policy=log_policy,
         data_root=data_root,
@@ -436,7 +422,6 @@ def create_app(
     app.state.desktop_application = desktop
     app.state.legacy_profile_import = legacy_import
     app.state.legacy_command_import = legacy_command_import
-    app.state.legacy_automation_import = legacy_automation_import
     app.state.legacy_transfer_import = legacy_transfer_import
     app.state.persistence_status = persistence_status
     app.state.log_policy = log_policy
@@ -463,7 +448,6 @@ def create_app(
     app.include_router(profiles_router)
     app.include_router(sessions_router)
     app.include_router(commands_router)
-    app.include_router(automation_router)
     app.include_router(transfers_router)
     app.include_router(auth_router)
     app.include_router(ws_tickets_router)

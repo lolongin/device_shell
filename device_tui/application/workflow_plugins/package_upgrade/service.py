@@ -185,7 +185,7 @@ class PackageUpgradeService:
             if command == MANUAL_PASSWORD_PLACEHOLDER:
                 payload = password
                 self._sessions.protect_sensitive_output(session_id, password, ttl_seconds=30.0)
-            await self._sessions.write(session_id, f"{payload}\r", origin="automation")
+            await self._sessions.write(session_id, f"{payload}\r", origin="package_upgrade")
             if safe_interval and index < len(commands) - 1:
                 await asyncio.sleep(safe_interval / 1000)
         return len(commands)

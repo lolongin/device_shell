@@ -12,7 +12,7 @@ INSTRUCTIONS = (
     "Operate the running OdyTerm application through its policy-controlled "
     "application control plane. Discover the available resources with "
     "app.capabilities. The public MCP surface includes app, device, session, "
-    "source, profile, command, automation, transfer, and namespaced "
+    "source, profile, command, transfer, and namespaced "
     "Task/Workflow/Decision "
     "capabilities: task.create, task.get, task.list, task.resume, task.cancel, "
     "workflow.list, workflow.plan.validate, workflow.plan.get, "

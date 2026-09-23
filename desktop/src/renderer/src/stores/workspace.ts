@@ -8,14 +8,6 @@ import type {
   CommandGroup,
   CommandHistoryItem,
   CommandWorkspaceResponse,
-  AutoResponseRulePayload,
-  AutomationActivityRecord,
-  AutomationPreviewResponse,
-  AutomationRuleRecord,
-  AutomationSessionStatus,
-  AutomationWorkspaceResponse,
-  QuickSendButtonPayload,
-  QuickSendButtonRecord,
   OperationRecord,
   SharedTransferFile,
   TransferSettings,
@@ -68,15 +60,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const commandPanelOpen = ref(localStorage.getItem('odyterm.desktop-v2.commands-open') === '1')
   const commandSuggestions = ref<string[]>([])
   const commandBusy = ref(false)
-  const automationRules = ref<AutomationRuleRecord[]>([])
-  const quickSendButtons = ref<QuickSendButtonRecord[]>([])
-  const automationSessions = ref<AutomationSessionStatus[]>([])
-  const automationActivity = ref<AutomationActivityRecord[]>([])
-  const automationPanelOpen = ref(
-    localStorage.getItem('odyterm.desktop-v2.automation-open') === '1'
-  )
-  const automationBusy = ref(false)
-  let automationCloseGuard: (() => boolean) | null = null
   const transferSettings = ref<TransferSettings | null>(null)
   const transferServiceLog = ref<string[]>([])
   const transferClientCommand = ref('')
@@ -158,9 +141,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const notice = ref('')
   let eventSocket: WebSocket | null = null
   let eventReconnectTimer: ReturnType<typeof setTimeout> | null = null
-  let automationRefreshTimer: ReturnType<typeof setTimeout> | null = null
-  let automationRefreshPromise: Promise<void> | null = null
-  let automationRefreshQueued = false
   let lastEventSequence = 0
   let eventStreamWanted = false
   let eventConnectedOnce = false
@@ -188,9 +168,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   )
   const connectedSessions = computed(() =>
     sessions.value.filter((session) => session.status === 'connected')
-  )
-  const activeAutomationStatus = computed(() =>
-    automationSessions.value.find((status) => status.session_id === activeSessionId.value) || null
   )
   const ownedDeviceIdSet = computed(() => new Set(ownedDeviceIds.value))
   const deviceFilterIndex = computed(() => new Map(
@@ -295,13 +272,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     sessions.value[index] = { ...current, ...session }
   }
 
-  function applyAutomationWorkspace(response: AutomationWorkspaceResponse): void {
-    automationRules.value = response.rules
-    automationSessions.value = response.sessions
-    quickSendButtons.value = response.quick_send_buttons
-    automationActivity.value = response.activity || []
-  }
-
   async function initialize(): Promise<void> {
     loading.value = true
     error.value = ''
@@ -321,7 +291,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         localSessionResponse,
         profileResponse,
         commandResponse,
-        automationResponse,
         transferSettingsResponse,
         transferLogResponse,
         operationResponse,
@@ -333,7 +302,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         window.desktopApi.listLocalTerminals(),
         desktopApi.connectionProfiles(),
         desktopApi.commandWorkspace(),
-        desktopApi.automationWorkspace(),
         desktopApi.transferSettings(),
         desktopApi.transferServiceLog(),
         desktopApi.operations('managed_file_transfer'),
@@ -350,7 +318,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       profiles.value = profileResponse.profiles
       profileGroups.value = profileResponse.groups
       applyCommandWorkspace(commandResponse)
-      applyAutomationWorkspace(automationResponse)
       transferSettings.value = transferSettingsResponse
       transferServiceLog.value = transferLogResponse.entries
       transferClientCommand.value = transferLogResponse.client_command
@@ -555,18 +522,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       notice.value = 'AI operation completed'
       return
     }
-    if (event.type.startsWith('automation.')) {
-      const name = typeof data.name === 'string' ? data.name : '自动化规则'
-      if (event.type === 'automation.rule.started') notice.value = `自动化已启动: ${name}`
-      else if (event.type === 'automation.rule.completed') notice.value = `自动化已完成: ${name}`
-      else if (event.type === 'automation.rule.waiting') notice.value = `自动化等待下一步输出: ${name}`
-      else if (event.type === 'automation.rule.failed') {
-        const message = typeof data.message === 'string' ? data.message.trim() : ''
-        error.value = `自动化执行失败: ${name}${message ? ` · ${message}` : ''}`
-      }
-      else if (event.type === 'automation.rule.cancelled') notice.value = `自动化已取消: ${name}`
-      scheduleAutomationRefresh()
-    }
   }
 
   async function connectApplicationEvents(): Promise<void> {
@@ -607,8 +562,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       eventStreamWanted = false
       if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
       eventReconnectTimer = null
-      if (automationRefreshTimer) clearTimeout(automationRefreshTimer)
-      automationRefreshTimer = null
       eventSocket?.close()
       eventSocket = null
     }
@@ -961,222 +914,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return false
     } finally {
       commandBusy.value = false
-    }
-  }
-
-  function scheduleAutomationRefresh(): void {
-    if (automationRefreshTimer) clearTimeout(automationRefreshTimer)
-    automationRefreshTimer = setTimeout(() => {
-      automationRefreshTimer = null
-      void refreshAutomation()
-    }, 40)
-  }
-
-  async function refreshAutomation(): Promise<void> {
-    if (automationRefreshTimer) clearTimeout(automationRefreshTimer)
-    automationRefreshTimer = null
-    if (automationRefreshPromise) {
-      automationRefreshQueued = true
-      return automationRefreshPromise
-    }
-    automationRefreshPromise = (async () => {
-      do {
-        automationRefreshQueued = false
-        try {
-          applyAutomationWorkspace(await desktopApi.automationWorkspace())
-        } catch (cause) {
-          error.value = cause instanceof Error ? cause.message : String(cause)
-        }
-      } while (automationRefreshQueued)
-    })()
-    try {
-      await automationRefreshPromise
-    } finally {
-      automationRefreshPromise = null
-    }
-  }
-
-  function registerAutomationCloseGuard(guard: () => boolean): () => void {
-    automationCloseGuard = guard
-    return () => {
-      if (automationCloseGuard === guard) automationCloseGuard = null
-    }
-  }
-
-  function closeAutomationPanel(): boolean {
-    if (!automationPanelOpen.value) return true
-    if (automationCloseGuard && !automationCloseGuard()) return false
-    automationPanelOpen.value = false
-    return true
-  }
-
-  async function saveAutomationRule(
-    rule: AutoResponseRulePayload,
-    ruleId = ''
-  ): Promise<AutomationRuleRecord | null> {
-    automationBusy.value = true
-    error.value = ''
-    try {
-      const response = ruleId
-        ? await desktopApi.updateAutomationRule(ruleId, rule)
-        : await desktopApi.createAutomationRule(rule)
-      applyAutomationWorkspace(response)
-      return ruleId
-        ? automationRules.value.find((record) => record.id === ruleId) || null
-        : automationRules.value.at(-1) || null
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return null
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function previewAutomationRule(
-    rule: AutoResponseRulePayload,
-    sampleOutput = ''
-  ): Promise<AutomationPreviewResponse | null> {
-    automationBusy.value = true
-    error.value = ''
-    try {
-      return await desktopApi.previewAutomationRule(
-        rule,
-        activeSessionId.value,
-        sampleOutput
-      )
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return null
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function setAutomationRuleEnabled(ruleId: string, enabled: boolean): Promise<void> {
-    automationBusy.value = true
-    error.value = ''
-    try {
-      applyAutomationWorkspace(await desktopApi.setAutomationRuleEnabled(ruleId, enabled))
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function cloneAutomationRule(ruleId: string): Promise<AutomationRuleRecord | null> {
-    automationBusy.value = true
-    error.value = ''
-    const previousIds = new Set(automationRules.value.map((record) => record.id))
-    try {
-      applyAutomationWorkspace(await desktopApi.cloneAutomationRule(ruleId))
-      const cloned = automationRules.value.find((record) => !previousIds.has(record.id)) || null
-      if (cloned) notice.value = `已创建停用副本: ${cloned.rule.name}`
-      return cloned
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return null
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function deleteAutomationRule(ruleId: string): Promise<boolean> {
-    automationBusy.value = true
-    error.value = ''
-    try {
-      await desktopApi.deleteAutomationRule(ruleId)
-      automationRules.value = automationRules.value.filter((record) => record.id !== ruleId)
-      return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function triggerAutomationRule(ruleId: string): Promise<boolean> {
-    if (!activeSessionId.value) return false
-    automationBusy.value = true
-    error.value = ''
-    notice.value = ''
-    try {
-      await desktopApi.triggerAutomationRule(ruleId, activeSessionId.value)
-      notice.value = '自动化流程已启动'
-      await refreshAutomation()
-      return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function cancelActiveAutomation(): Promise<void> {
-    if (!activeSessionId.value) return
-    automationBusy.value = true
-    error.value = ''
-    try {
-      await desktopApi.cancelSessionAutomation(activeSessionId.value)
-      notice.value = '当前会话的自动化已停止'
-      await refreshAutomation()
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function saveQuickSendButton(
-    payload: QuickSendButtonPayload,
-    buttonId = ''
-  ): Promise<boolean> {
-    automationBusy.value = true
-    error.value = ''
-    try {
-      const response = buttonId
-        ? await desktopApi.updateQuickSendButton(buttonId, payload)
-        : await desktopApi.createQuickSendButton(payload)
-      applyAutomationWorkspace(response)
-      return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function deleteQuickSendButton(buttonId: string): Promise<boolean> {
-    automationBusy.value = true
-    error.value = ''
-    try {
-      await desktopApi.deleteQuickSendButton(buttonId)
-      quickSendButtons.value = quickSendButtons.value.filter((button) => button.id !== buttonId)
-      return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      automationBusy.value = false
-    }
-  }
-
-  async function sendQuickSendButton(buttonId: string): Promise<boolean> {
-    if (!activeSessionId.value) return false
-    automationBusy.value = true
-    error.value = ''
-    try {
-      await desktopApi.sendQuickSendButton(buttonId, activeSessionId.value)
-      notice.value = '快捷内容已发送'
-      return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      automationBusy.value = false
     }
   }
 
@@ -1870,9 +1607,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   watch(commandPanelOpen, (open) => {
     localStorage.setItem('odyterm.desktop-v2.commands-open', open ? '1' : '0')
   })
-  watch(automationPanelOpen, (open) => {
-    localStorage.setItem('odyterm.desktop-v2.automation-open', open ? '1' : '0')
-  })
   watch(transferPanelOpen, (open) => {
     localStorage.setItem('odyterm.desktop-v2.transfer-open', open ? '1' : '0')
     if (open) transferError.value = ''
@@ -1900,12 +1634,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     commandPanelOpen,
     commandSuggestions,
     commandBusy,
-    automationRules,
-    quickSendButtons,
-    automationSessions,
-    automationActivity,
-    automationPanelOpen,
-    automationBusy,
     transferSettings,
     transferServiceLog,
     transferClientCommand,
@@ -1970,7 +1698,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeSession,
     currentCommandGroup,
     connectedSessions,
-    activeAutomationStatus,
     filteredDevices,
     deviceDomains,
     deviceStatuses,
@@ -2002,19 +1729,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     setCommandEnterSends,
     fetchCommandSuggestions,
     dispatchCommand,
-    refreshAutomation,
-    registerAutomationCloseGuard,
-    closeAutomationPanel,
-    saveAutomationRule,
-    previewAutomationRule,
-    cloneAutomationRule,
-    setAutomationRuleEnabled,
-    deleteAutomationRule,
-    triggerAutomationRule,
-    cancelActiveAutomation,
-    saveQuickSendButton,
-    deleteQuickSendButton,
-    sendQuickSendButton,
     loadTransferFiles,
     loadTransferServiceLog,
     clearTransferServiceLog,

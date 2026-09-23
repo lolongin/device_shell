@@ -126,7 +126,6 @@ class DesktopMcpService:
                 "profiles": {"read": ["list"], "write": ["save", "delete"]},
                 "connections": {"write": ["open"]},
                 "commands": {"read": ["workspace"], "write": ["group.save", "group.delete", "group.reorder", "preferences"]},
-                "automation": {"read": ["workspace", "preview"], "write": ["rule.save", "rule.delete", "rule.clone", "rule.enable", "rule.trigger", "cancel", "quick_send.save", "quick_send.delete", "quick_send.send"]},
                 "transfers": {"read": ["settings", "files", "operation.get", "operation.wait"], "write": ["settings", "service.start", "service.stop", "service.log.clear", "start", "operation.cancel"]},
                 "device_sources": {"read": ["status", "plugins"], "write": ["switch", "plugin.update", "plugin.test"]},
                 "ai": {"read": ["skills", "result", "approval", "audit"], "write": ["execute", "approval"]},
@@ -303,59 +302,6 @@ class DesktopMcpService:
             self.desktop.commands.set_enter_sends(bool(params["enter_sends"]))
         return await self._tool_command_workspace({})
 
-    async def _tool_automation_workspace(self, _params: dict[str, Any]) -> dict[str, Any]:
-        return {"rules": [self._automation_rule_payload(item) for item in self.desktop.automation.list_rules()], "sessions": [asdict(item) for item in self.desktop.automation.statuses()], "quick_send_buttons": [asdict(item) for item in self.desktop.automation.list_quick_send_buttons()], "activity": [asdict(item) for item in self.desktop.automation.activities(limit=100)]}
-
-    async def _tool_automation_rule_save(self, params: dict[str, Any]) -> dict[str, Any]:
-        raw = params.get("rule")
-        if not isinstance(raw, dict):
-            raise UnsupportedOperationError("rule must be an object")
-        rule = self.desktop.automation.deserialize_rule(raw)
-        rule_id = str(params.get("rule_id") or "").strip()
-        record = self.desktop.automation.update_rule(rule_id, rule) if rule_id else self.desktop.automation.create_rule(rule)
-        return {"rule": self._automation_rule_payload(record)}
-
-    async def _tool_automation_rule_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        rule_id = self._text(params, "rule_id")
-        if not bool(params.get("confirm", False)):
-            raise UnsupportedOperationError("automation.rule.delete requires confirm=true.")
-        self.desktop.automation.delete_rule(rule_id)
-        return {"rule_id": rule_id, "deleted": True}
-
-    async def _tool_automation_rule_clone(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"rule": self._automation_rule_payload(self.desktop.automation.clone_rule(self._text(params, "rule_id")))}
-
-    async def _tool_automation_rule_enable(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"rule": self._automation_rule_payload(self.desktop.automation.set_enabled(self._text(params, "rule_id"), bool(params.get("enabled", True))))}
-
-    async def _tool_automation_rule_trigger(self, params: dict[str, Any]) -> dict[str, Any]:
-        rule_id, session_id = self._text(params, "rule_id"), self._text(params, "session_id")
-        self.desktop.automation.trigger_rule(rule_id, session_id)
-        return {"rule_id": rule_id, "session_id": session_id, "status": "started"}
-
-    async def _tool_automation_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
-        session_id = self._text(params, "session_id")
-        self.desktop.automation.cancel_session(session_id, reason="mcp_cancel")
-        return {"session_id": session_id, "status": "cancelled"}
-
-    async def _tool_automation_quick_send_save(self, params: dict[str, Any]) -> dict[str, Any]:
-        button_id = str(params.get("button_id") or "").strip()
-        values = {key: params[key] for key in ("name", "response_text", "append_enter", "sensitive") if key in params}
-        button = self.desktop.automation.update_quick_send_button(button_id, **values) if button_id else self.desktop.automation.create_quick_send_button(**values)
-        return {"button": asdict(button)}
-
-    async def _tool_automation_quick_send_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        button_id = self._text(params, "button_id")
-        if not bool(params.get("confirm", False)):
-            raise UnsupportedOperationError("automation.quick_send.delete requires confirm=true.")
-        self.desktop.automation.delete_quick_send_button(button_id)
-        return {"button_id": button_id, "deleted": True}
-
-    async def _tool_automation_quick_send_send(self, params: dict[str, Any]) -> dict[str, Any]:
-        button_id, session_id = self._text(params, "button_id"), self._text(params, "session_id")
-        await self.desktop.automation.send_quick_send_button(button_id, session_id)
-        return {"button_id": button_id, "session_id": session_id, "status": "sent"}
-
     async def _tool_transfer_settings(self, _params: dict[str, Any]) -> dict[str, Any]:
         return {"settings": asdict(self.desktop.transfers.settings())}
 
@@ -381,17 +327,6 @@ class DesktopMcpService:
 
     async def _tool_transfer_start(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._tool_file_transfer_start(params)
-
-    async def _tool_automation_preview(self, params: dict[str, Any]) -> dict[str, Any]:
-        raw = params.get("rule")
-        if not isinstance(raw, dict):
-            raise UnsupportedOperationError("rule must be an object")
-        return self.desktop.automation.preview_rule(
-            self.desktop.automation.deserialize_rule(raw),
-            session_id=str(params.get("session_id") or ""),
-            sample_output=str(params.get("sample_output") or ""),
-            max_steps=min(500, max(1, int(params.get("max_steps") or 200))),
-        )
 
     async def _tool_device_list(self, _params: dict[str, Any]) -> dict[str, Any]:
         inventory = self.desktop.devices.list_inventory()
@@ -812,7 +747,6 @@ class DesktopMcpService:
             )
             return {"session": self._session_view_payload(updated)}
         if action == "close":
-            self.desktop.automation.cancel_session(session.id, reason="mcp_close")
             self.desktop.task_service.cancel_session(session.id)
             self.desktop.transfers.cancel_session(session.id)
             await self.desktop.control.close_session(
@@ -1335,16 +1269,6 @@ class DesktopMcpService:
                 if f"{protocol}_password" in params
             },
         )
-
-    def _automation_rule_payload(self, record: Any) -> dict[str, Any]:
-        return {
-            "id": record.id,
-            "rule": self.desktop.automation.serialize_rule(
-                self.desktop.automation.public_rule(record)
-            ),
-            "created_at": record.created_at,
-            "updated_at": record.updated_at,
-        }
 
     @staticmethod
     def _text(params: dict[str, Any], name: str) -> str:

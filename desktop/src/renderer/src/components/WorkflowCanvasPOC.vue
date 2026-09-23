@@ -85,19 +85,16 @@ const { onConnect, onNodeDragStop, onNodeClick } = useVueFlow()
 
 // 连接节点
 onConnect((params) => {
-  console.log('Connect:', params)
   emit('connect', { source: params.source as string, target: params.target as string })
 })
 
 // 拖拽节点
 onNodeDragStop((event) => {
-  console.log('Node drag stop:', event.node.id, event.node.position)
   emit('nodePositionChange', event.node.id, event.node.position)
 })
 
 // 点击节点
 onNodeClick((event) => {
-  console.log('Node click:', event.node.id)
   emit('nodeSelect', event.node.id)
 })
 

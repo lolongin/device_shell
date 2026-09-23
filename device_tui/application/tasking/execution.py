@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from device_tui.application.device_control import (
@@ -87,18 +88,25 @@ class DeviceExecutionTool:
                 "output": result.output,
                 "status": result.status,
                 "execution_id": result.execution_id,
+                "duration_ms": result.duration_ms,
                 "evidence": ({"kind": "terminal_execution", "execution_id": result.execution_id, "steps": list(result.steps)},),
             }
         if action == "upload":
             package = str(params.get("source_path") or params.get("package") or "")
             destination = str(params.get("destination_path") or "")
-            if not package or not destination:
-                raise DeviceWorkflowExecutionError("upload_invalid", "Upload source and destination are required.")
+            if not package:
+                raise DeviceWorkflowExecutionError("upload_invalid", "Upload source is required.")
+            if not destination and str(params.get("terminal_environment") or "auto").strip().casefold() in {"auto", "vrp"}:
+                source_name = PurePosixPath(package.replace("\\", "/")).name
+                destination = f"flash:/{source_name}" if source_name else ""
+            if not destination:
+                raise DeviceWorkflowExecutionError("upload_invalid", "Upload destination could not be inferred from source.")
             operation = self._control.transfer(
                 target,
                 TransferRequest(
                     direction="upload", source_path=package, destination_path=destination,
                     overwrite=bool(params.get("overwrite", False)),
+                    terminal_environment=str(params.get("terminal_environment") or "auto"),
                     command_mode=str(params.get("command_mode") or "vrp"),
                     interaction_profile={
                         str(key): str(value)
@@ -246,6 +254,7 @@ class DeviceExecutionTool:
                 "output": result.output,
                 "status": result.status,
                 "execution_id": result.execution_id,
+                "duration_ms": result.duration_ms,
                 "evidence": ({"kind": "terminal_execution", "execution_id": result.execution_id, "steps": list(result.steps)},),
             }
         if action in {"send", "raw", "send_raw"}:
@@ -291,8 +300,13 @@ class DeviceExecutionTool:
             direction = str(params.get("direction") or ("upload" if action != "download" else "download"))
             source_path = str(params.get("source_path") or "")
             destination_path = str(params.get("destination_path") or "")
-            if not source_path.strip() or not destination_path.strip():
-                raise UnsupportedOperationError("Transfer source_path and destination_path are required.")
+            if not source_path.strip():
+                raise UnsupportedOperationError("Transfer source_path is required.")
+            if direction.casefold() == "upload" and not destination_path.strip() and str(params.get("terminal_environment") or "auto").strip().casefold() in {"auto", "vrp"}:
+                source_name = PurePosixPath(source_path.replace("\\", "/")).name
+                destination_path = f"flash:/{source_name}" if source_name else ""
+            if not destination_path.strip():
+                raise UnsupportedOperationError("Transfer destination_path is required for downloads and non-VRP uploads.")
             operation = self._control.transfer(
                 target,
                 TransferRequest(

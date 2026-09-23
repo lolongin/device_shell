@@ -16,8 +16,14 @@ from device_tui.framework import (
 )
 from device_tui.infrastructure.persistence.sqlite_workflows import (
     SQLiteTaskRunStore,
+    SQLiteWorkflowDefinitionStore,
     SQLiteWorkflowEventStore,
     SQLiteWorkflowRunStore,
+)
+from device_tui.application.workflow_studio import (
+    WorkflowDraft,
+    WorkflowNode as StudioWorkflowNode,
+    WorkflowOutput,
 )
 
 
@@ -72,3 +78,21 @@ def test_sqlite_task_run_store_round_trip_composition_state(tmp_path: Path) -> N
     assert restored.node_runs == {"build": "workflow-1"}
     assert restored.outputs["build"]["package_path"] == "firmware.bin"
     assert restored.context["target"]["session_id"] == "s1"
+
+
+def test_sqlite_workflow_definition_store_preserves_declared_outputs(tmp_path: Path) -> None:
+    path = tmp_path / "device.sqlite3"
+    store = SQLiteWorkflowDefinitionStore(path)
+    draft = WorkflowDraft(
+        "output-workflow",
+        "Output workflow",
+        nodes=(StudioWorkflowNode("value", "variable.set", {"name": "answer", "value": 42}),),
+        outputs=(WorkflowOutput("answer", "${value.value}", "integer", "Computed answer"),),
+    )
+
+    store.create(draft)
+    published = store.publish(draft.id)
+    reopened = SQLiteWorkflowDefinitionStore(path)
+
+    assert reopened.get(draft.id).outputs == draft.outputs
+    assert reopened.get(draft.id, published.version).outputs == draft.outputs

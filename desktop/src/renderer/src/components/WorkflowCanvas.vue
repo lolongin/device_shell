@@ -45,6 +45,10 @@ const canvasRef = ref<HTMLElement | null>(null)
 const dimensionsReady = ref(false)
 let resizeObserver: ResizeObserver | null = null
 
+const NODE_WIDTH = 232
+const NODE_HEIGHT = 112
+const NODE_GAP = 28
+
 function validPosition(position: { x: number; y: number } | undefined, index: number): { x: number; y: number } {
   const x = Number(position?.x)
   const y = Number(position?.y)
@@ -52,6 +56,26 @@ function validPosition(position: { x: number; y: number } | undefined, index: nu
     x: Number.isFinite(x) ? x : 80 + (index % 3) * 260,
     y: Number.isFinite(y) ? y : 70 + Math.floor(index / 3) * 160
   }
+}
+
+function overlaps(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
+  return a.x < b.x + NODE_WIDTH + NODE_GAP
+    && a.x + NODE_WIDTH + NODE_GAP > b.x
+    && a.y < b.y + NODE_HEIGHT + NODE_GAP
+    && a.y + NODE_HEIGHT + NODE_GAP > b.y
+}
+
+function separatedPosition(position: { x: number; y: number }, occupied: Array<{ x: number; y: number }>): { x: number; y: number } {
+  const candidate = { ...position }
+  let attempts = 0
+  while (occupied.some((item) => overlaps(candidate, item)) && attempts < 100) {
+    const row = Math.floor(attempts / 4)
+    const column = attempts % 4
+    candidate.x = position.x + column * (NODE_WIDTH + NODE_GAP)
+    candidate.y = position.y + (row + 1) * (NODE_HEIGHT + NODE_GAP)
+    attempts += 1
+  }
+  return candidate
 }
 
 const emit = defineEmits<{
@@ -67,13 +91,21 @@ const emit = defineEmits<{
 const nodes = computed(() => {
   if (!props.workflow?.nodes) return []
 
+  const occupied: Array<{ x: number; y: number }> = []
   return props.workflow.nodes.map((node, index) => {
     const hasIssue = props.issues?.some(issue => issue.node_id === node.id)
+    // Keep an explicitly saved position exactly where the user dropped it.
+    // Only auto-separate nodes that have never been positioned.
+    const hasPosition = Number.isFinite(Number(node.position?.x)) && Number.isFinite(Number(node.position?.y))
+    const position = hasPosition
+      ? validPosition(node.position, index)
+      : separatedPosition(validPosition(node.position, index), occupied)
+    occupied.push(position)
 
     return {
       id: node.id,
       type: 'custom',
-      position: validPosition(node.position, index),
+      position,
       data: {
         label: node.id,
         action_id: node.action_id,
@@ -202,7 +234,7 @@ onUnmounted(() => {
       :edges="edges"
       :nodes-draggable="props.interactive !== false"
       :nodes-connectable="props.interactive !== false"
-      :pan-on-drag="props.interactive !== false"
+      :pan-on-drag="props.interactive !== false ? [1, 2] : false"
       :default-zoom="1"
       :min-zoom="0.2"
       :max-zoom="4"
@@ -245,106 +277,31 @@ onUnmounted(() => {
   </div>
 </template>
 
+
 <style scoped>
-.workflow-canvas {
-  width: 100%;
-  height: 100%;
-  min-height: 520px;
-  min-width: 0;
-  background: #0b1220;
-  position: relative;
-}
-
-.vue-flow-wrapper {
-  width: 100%;
-  height: 100%;
-  min-height: 520px;
-  border: 0;
-}
-
-.canvas-floating-toolbar {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  min-height: 34px;
-  padding: 4px;
-  border: 1px solid rgba(100, 116, 139, 0.5);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.88);
-  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.28);
-  backdrop-filter: blur(10px);
-}
-
-.canvas-floating-toolbar button {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  color: rgba(226, 232, 240, 0.7);
-  background: transparent;
-  cursor: pointer;
-}
-
-.canvas-floating-toolbar .canvas-fit-button {
-  display: inline-flex;
-  width: auto;
-  padding: 0 8px;
-  gap: 4px;
-  font-size: 10px;
-}
-
-.canvas-floating-toolbar button:hover,
-.canvas-floating-toolbar button.active {
-  color: #dbeafe;
-  background: rgba(59, 130, 246, 0.28);
-}
-
-.workflow-canvas-empty,
-.workflow-canvas-loading {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 9px;
-  color: rgba(226, 232, 240, 0.66);
-  pointer-events: none;
-}
-
-.workflow-canvas-empty strong { color: #dbeafe; font-size: 14px; }
-.workflow-canvas-empty span { color: rgba(226, 232, 240, 0.46); font-size: 11px; }
-.workflow-canvas-empty-icon {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border: 1px dashed rgba(96, 165, 250, 0.65);
-  border-radius: 50%;
-  color: #93c5fd;
-  font-size: 24px;
-  font-weight: 300;
-}
+.workflow-canvas { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; background: var(--workflow-bg, #0b1220); }
+.vue-flow-wrapper { width: 100%; height: 100%; min-height: 0; border: 0; }
+.canvas-floating-toolbar { position: absolute; top: 12px; right: 12px; z-index: 5; display: inline-flex; align-items: center; gap: 2px; min-height: 32px; padding: 3px; border: 1px solid rgba(100,116,139,.42); border-radius: 7px; background: rgba(15,23,42,.88); box-shadow: 0 7px 18px rgba(2,6,23,.24); backdrop-filter: blur(8px); }
+.canvas-floating-toolbar button { display: grid; width: 26px; height: 26px; padding: 0; place-items: center; border: 0; border-radius: 4px; color: rgba(226,232,240,.7); background: transparent; cursor: pointer; }
+.canvas-floating-toolbar .canvas-fit-button { display: inline-flex; width: auto; gap: 4px; padding: 0 8px; font-size: 10px; }
+.canvas-floating-toolbar button:hover { color: #bfdbfe; background: rgba(37,99,235,.24); }
+.workflow-canvas-empty, .workflow-canvas-loading { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--workflow-muted, rgba(226,232,240,.66)); pointer-events: none; }
+.workflow-canvas-empty { margin: 54px; border: 1px dashed rgba(96,165,250,.34); border-radius: 12px; }
+.workflow-canvas-empty strong { color: var(--workflow-text, #dbeafe); font-size: 13px; }
+.workflow-canvas-empty span { color: var(--workflow-subtle, rgba(226,232,240,.46)); font-size: 11px; }
+.workflow-canvas-empty-icon { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid rgba(96,165,250,.6); border-radius: 8px; color: #93c5fd; font-size: 20px; font-weight: 300; }
 .workflow-canvas-loading { font-size: 12px; }
-
-/* Vue Flow 样式覆盖 */
-:deep(.vue-flow__edge-path) {
-  stroke: #64748b;
-  stroke-width: 2;
-}
-
-:deep(.vue-flow__edge.selected .vue-flow__edge-path) {
-  stroke: #3b82f6;
-}
-
-:deep(.vue-flow__edge-text) {
-  fill: #fcd34d;
-}
-
+:deep(.vue-flow__background pattern circle) { fill: rgba(100,116,139,.34); }
+:deep(.vue-flow__edge-path) { stroke: #64748b; stroke-width: 1.6; }
+:deep(.vue-flow__edge.selected .vue-flow__edge-path) { stroke: #4f9cf9; stroke-width: 2; }
+:deep(.vue-flow__edge-text) { fill: #fcd34d; font-size: 10px; }
+:global(:root[data-theme="light"]) .workflow-canvas { background: #f8fafc; }
+:global(:root[data-theme="light"]) .canvas-floating-toolbar { border-color: #cbd5e1; background: rgba(255,255,255,.94); box-shadow: 0 7px 18px rgba(15,23,42,.12); }
+:global(:root[data-theme="light"]) .canvas-floating-toolbar button { color: #475569; }
+:global(:root[data-theme="light"]) .canvas-floating-toolbar button:hover { color: #1d4ed8; background: #eaf2ff; }
+:global(:root[data-theme="light"]) .workflow-canvas-empty, :global(:root[data-theme="light"]) .workflow-canvas-loading { color: #64748b; }
+:global(:root[data-theme="light"]) .workflow-canvas-empty strong { color: #172033; }
+:global(:root[data-theme="light"]) .workflow-canvas-empty span { color: #718096; }
+:global(:root[data-theme="light"]) :deep(.vue-flow__edge-path) { stroke: #94a3b8; }
+:global(:root[data-theme="light"]) :deep(.vue-flow__edge.selected .vue-flow__edge-path) { stroke: #2563eb; }
 </style>

@@ -5,20 +5,10 @@ APP_VUE = Path("desktop/src/renderer/src/App.vue")
 STYLES_CSS = Path("desktop/src/renderer/src/styles.css")
 TERMINAL_PANE = Path("desktop/src/renderer/src/components/TerminalPane.vue")
 TERMINAL_SPLIT_WORKSPACE = Path("desktop/src/renderer/src/components/TerminalSplitWorkspace.vue")
-TERMINAL_QUICK_TOOLBAR = Path(
-    "desktop/src/renderer/src/components/TerminalQuickToolbar.vue"
-)
 SESSION_MANAGER = Path("desktop/src/renderer/src/components/SessionManager.vue")
 SESSION_STATUS = Path("desktop/src/renderer/src/sessionStatus.ts")
 CONTEXT_MENU = Path("desktop/src/renderer/src/contextMenu.ts")
 COMMAND_WORKSPACE = Path("desktop/src/renderer/src/components/CommandWorkspace.vue")
-AUTOMATION_WORKSPACE = Path("desktop/src/renderer/src/components/AutomationWorkspace.vue")
-AUTOMATION_STEP_EDITOR = Path(
-    "desktop/src/renderer/src/components/AutomationStepEditor.vue"
-)
-AUTOMATION_ACTION_LIST = Path(
-    "desktop/src/renderer/src/components/AutomationActionList.vue"
-)
 UPGRADE_WORKSPACE = Path("desktop/src/renderer/src/components/UpgradeWorkspace.vue")
 SETTINGS_PANEL = Path("desktop/src/renderer/src/components/SettingsPanel.vue")
 HELP_PANEL = Path("desktop/src/renderer/src/components/HelpPanel.vue")
@@ -126,42 +116,23 @@ def test_product_profile_hides_developer_source_controls() -> None:
     assert "DEVICE_TUI_PRODUCT_MODE" in backend
 
 
-def test_electron_terminal_quick_toolbar_keeps_persistent_send_workflow() -> None:
-    toolbar = TERMINAL_QUICK_TOOLBAR.read_text(encoding="utf-8")
-    command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
-    split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
+def test_terminal_automation_surface_is_removed() -> None:
+    app = APP_VUE.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
-    transport = Path("desktop/src/renderer/src/transport/api.ts").read_text(
-        encoding="utf-8"
-    )
+    api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    for label in (
-        "新增快捷发送",
-        "敏感内容",
-        "发送后追加 Enter",
-        "替换敏感内容",
+    for component in (
+        "AutomationWorkspace.vue",
+        "AutomationStepEditor.vue",
+        "AutomationActionList.vue",
+        "TerminalQuickToolbar.vue",
     ):
-        assert label in toolbar
-
-    assert 'data-testid="terminal-quick-toolbar"' in toolbar
-    assert ':data-quick-send-id="button.id"' in toolbar
-    assert 'data-testid="quick-send-add"' in toolbar
-    assert 'data-testid="quick-send-name"' in toolbar
-    assert 'data-testid="quick-send-response"' in toolbar
-    assert 'data-testid="quick-send-save"' in toolbar
-    assert "workspace.sendQuickSendButton(button.id)" in toolbar
-    assert "odyterm.desktop-v2.quick-toolbar-collapsed" in toolbar
-    assert ':aria-label="`编辑 ${button.name}`"' in toolbar
-    assert "import TerminalQuickToolbar from './TerminalQuickToolbar.vue'" in command
-    assert command.count("<TerminalQuickToolbar />") == 2
-    assert 'class="command-quick-send-row"' in command
-    assert "TerminalQuickToolbar" not in split
-
-    assert "quickSendButtons" in store
-    assert "saveQuickSendButton" in store
-    assert "deleteQuickSendButton" in store
-    assert "sendQuickSendButton" in store
-    assert "/api/v1/automation/quick-send-buttons" in transport
+        assert not Path("desktop/src/renderer/src/components", component).exists()
+    for source in (app, store, api, styles):
+        assert "automationPanelOpen" not in source
+        assert "/api/v1/automation" not in source
+        assert "quick-send" not in source
 
 
 def test_electron_activity_rail_does_not_expose_ai_tab() -> None:
@@ -245,149 +216,6 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
         "sessionManagerLivesInRightSidebar",
     ):
         assert check in smoke
-
-
-def test_electron_advanced_automation_editor_covers_python_action_model() -> None:
-    workspace = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    assert "runActionHint" in workspace
-    assert "activeSessionConnected" in workspace
-    assert "automation-rule-count" in workspace
-    steps = AUTOMATION_STEP_EDITOR.read_text(encoding="utf-8")
-    actions = AUTOMATION_ACTION_LIST.read_text(encoding="utf-8")
-    types = TYPES_TS.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-
-    for label in ("基础响应", "分步流程", "动作流"):
-        assert label in workspace
-    assert "automationTargets" in workspace
-    assert "session-id:${session.id}" in workspace
-    assert "timeout_ms" in types
-    assert "automation-step-timeout" in steps
-    assert "等待超时（ms，0=不限）" in steps
-    assert "let pendingSteps: AutoResponseStep[] | null = null" in steps
-    assert "function commitSteps" in steps
-    assert "pendingSteps || props.steps" in steps
-    assert "let pendingActions: AutoResponseAction[] | null = null" in actions
-    assert "function commitActions" in actions
-    assert "pendingActions || props.actions" in actions
-    assert "normalizeSteps" in workspace
-    assert "normalizeActions" in workspace
-    assert "validateActions" in workspace
-    assert "protectedAdvancedStructure" in workspace
-    assert "<AutomationStepEditor" in workspace
-    assert "<AutomationActionList" in workspace
-
-    for field in (
-        "response_targets",
-        "response_delays",
-        "response_append_enters",
-    ):
-        assert field in steps
-        assert field in types
-    for label in (
-        "添加步骤",
-        "添加响应",
-        "发送目标",
-        "发送前延迟（ms）",
-        "发送后追加 Enter",
-    ):
-        assert label in steps
-
-    for kind in ("send", "wait", "loop", "condition", "exit"):
-        assert f'data-action-kind="{kind}"' in actions
-    for label in (
-        "执行次数（0=持续循环）",
-        "每轮间隔（ms）",
-        "条件文本",
-        "条件匹配",
-        "退出范围",
-        "退出当前循环",
-        "停止整个规则",
-    ):
-        assert label in actions
-    for field in (
-        "repeat_count",
-        "interval_ms",
-        "condition_pattern",
-        "condition_match_type",
-        "exit_pattern",
-        "exit_scope",
-    ):
-        assert field in actions
-        assert field in types
-
-    assert "AutomationActionList" in actions
-    assert 'data-action-kind="set"' in actions
-    assert "变量名" in actions
-    assert "变量值" in actions
-    assert "{{loop.index}}" in actions
-    assert "variable_operation" in workspace
-    assert "variable_name" in types
-    assert "const expandedIndexes" in actions
-    assert "expandedIndexes.value = new Set([next.length - 1])" in actions
-    assert ": new Set([index])" in actions
-    assert "function actionSummary" in actions
-    assert "function actionMeta" in actions
-    assert ':aria-expanded="isExpanded(index)"' in actions
-    assert 'v-show="isExpanded(index)"' in actions
-    assert "点击动作展开参数" in actions
-    assert ".automation-action-summary" in styles
-    assert ".automation-action-details" in styles
-    assert ".automation-step-editor" in styles
-    assert ".automation-action-card.kind-loop" in styles
-    assert ".automation-action-card.kind-condition" in styles
-    assert ".automation-action-card.kind-exit" in styles
-    smoke = MAIN_TS.read_text(encoding="utf-8")
-    assert "advancedAutomationStepEditorPersistsAndRuns" in smoke
-    assert "advancedAutomationActionEditorPersistsNestedFlow" in smoke
-    assert "automationModeSwitchPreservesDraftWithoutDialog" in smoke
-    assert "automationLivePreviewTracksDraftWithoutDispatch" in smoke
-    assert 'data-testid="automation-preview"' in workspace
-    assert 'data-testid="automation-live-preview"' in workspace
-    assert "schedulePreview" in workspace
-    assert "previewGeneration" in workspace
-    assert "desktopApi.previewAutomationRule" in workspace
-    assert "automation-preview-panel" not in workspace
-    assert ".automation-live-preview" in styles
-    assert ".automation-preview-steps" in styles
-    assert "切换编辑模式会将现有高级结构转换" not in workspace
-    assert "cachedSteps" in workspace
-    assert "cachedActions" in workspace
-
-
-def test_terminal_automation_is_a_non_modal_current_session_sidebar() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
-    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-    main = MAIN_TS.read_text(encoding="utf-8")
-
-    assert "workspace.automationPanelOpen || workspace.transferPanelOpen" in app
-    assert 'class="automation-workspace"' in automation
-    assert 'role="region"' in automation
-    assert ':data-active-session-id="workspace.activeSessionId"' in automation
-    assert 'aria-modal="true"' not in automation
-    backdrop_start = styles.index("\n.automation-backdrop {") + 1
-    backdrop = styles[backdrop_start:styles.index(".automation-workspace", backdrop_start)]
-    assert "position: fixed" not in backdrop
-    assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
-    assert ".automation-body { min-height: 0; display: grid; grid-template-rows:" in styles
-    assert ".automation-rule-list" in styles
-    assert "overflow-x: auto" in styles
-    assert "terminalAutomationKeepsTerminalVisibleAndInteractive" in main
-    assert "leftOperationWorkbenchWidthResizePersists" in main
-    assert "odyterm:focus-terminal" in automation
-    assert "odyterm:focus-terminal" in terminal
-    assert "handleTerminalFocusRequest" in terminal
-    assert "document.querySelector('.automation-workspace')" in terminal
-    assert "runSelectedRule" in automation
-    assert "保存并运行" in automation
-    assert "await workspace.saveAutomationRule" in automation
-    assert "await workspace.triggerAutomationRule(record.id)" in automation
-    assert 'v-if="selectedRecord"\n                class="secondary-button"\n                type="button"\n                data-testid="automation-run"' not in automation
-    assert "cancelAutomationAndFocusTerminal" in automation
-    assert "terminalFocusedAfterAutomationRun" in main
-    assert "terminalClipboardShortcutsPreserveTerminalInput" in main
 
 
 def test_electron_restores_renderer_focus_and_accepts_native_keyboard_input() -> None:
@@ -502,7 +330,7 @@ def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
     assert "TaskWorkspace" in upgrade
     assert "workflow_view" in Path("desktop/src/renderer/src/components/TaskWorkspace.vue").read_text(encoding="utf-8")
     assert "transferFileToolsRect.bottom <= firstTransferFileRect.top + 1" in main
-    assert ".navigator, .automation-backdrop, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
+    assert ".navigator, .transfer-backdrop, .upgrade-backdrop { grid-column: 2;" in styles
     assert ".workspace-stage { grid-column: 3;" in styles
     assert ".session-sidebar { grid-column: 4;" in styles
     transfer_start = styles.index("\n.transfer-backdrop {") + 1
@@ -1010,7 +838,6 @@ def test_electron_terminal_context_menu_uses_clear_scoped_actions() -> None:
         "粘贴",
         "清空终端显示",
         "搜索终端",
-        "管理自动响应",
         "查看会话日志",
         "在系统中打开日志文件",
         "开始新的日志文件",
@@ -1167,7 +994,6 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     )[1].split("</footer>", 1)[0]
     for title in (
         "查看会话日志",
-        "打开当前会话自动响应",
         "托管传输当前设备",
         "升级当前设备系统包",
         "搜索终端 (Ctrl+F)",
@@ -1198,7 +1024,6 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert "grid-template-rows: minmax(0, 1fr)" in styles
     assert ".terminal-workspace-stack.split > .terminal-quick-toolbar" not in styles
     assert ".terminal-bottom-spacer" in styles
-    assert ".command-quick-send-row" in styles
     assert ".device-session-tabs" in styles
     assert ".session-child-tabs" in styles
     assert "TERMINAL_OUTPUT_BATCH_MS = 8" in terminal
@@ -1209,31 +1034,15 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert "terminal?.write(event.data)" not in terminal
 
 
-def test_electron_realtime_automation_refreshes_are_coalesced() -> None:
-    store = WORKSPACE_STORE.read_text(encoding="utf-8")
-
-    assert "function scheduleAutomationRefresh" in store
-    assert "let automationRefreshPromise: Promise<void> | null = null" in store
-    assert "let automationRefreshQueued = false" in store
-    assert "scheduleAutomationRefresh()" in store
-    assert "void refreshAutomation()" in store
-    assert "if (automationRefreshPromise)" in store
-    assert "const deviceFilterIndex = computed" in store
-    assert "const ownedDeviceIdSet = computed" in store
-    assert "ownedDeviceIdSet.value.has(device.id)" in store
-
-
 def test_electron_secondary_workspaces_are_lazy_loaded() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
 
     assert "defineAsyncComponent" in app
     for component in (
-        "AutomationWorkspace",
         "TransferWorkspace",
         "UpgradeWorkspace",
     ):
         assert f"const {component} = defineAsyncComponent" in app
-    assert '<AutomationWorkspace v-if="workspace.automationPanelOpen" />' in app
     assert '<TransferWorkspace v-if="workspace.transferPanelOpen" />' in app
     assert '<UpgradeWorkspace v-if="workspace.upgradePanelOpen" />' in app
 
@@ -1670,8 +1479,6 @@ def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
     assert "openCurrentSessionLog(props.session.id)" in terminal
     assert "新建日志" in terminal
     assert "打开当前会话日志" in terminal
-    assert "打开当前会话自动响应" in terminal
-    assert "openSessionAutomation" in app
     assert ".session-sidebar .session-manager" in STYLES_CSS.read_text(encoding="utf-8")
     assert "session-rail-toggle" in SESSION_MANAGER.read_text(encoding="utf-8")
     assert "展开右侧会话栏" in SESSION_MANAGER.read_text(encoding="utf-8")
@@ -1714,13 +1521,12 @@ def test_electron_modal_dialogs_share_keyboard_focus_management() -> None:
     help_panel = HELP_PANEL.read_text(encoding="utf-8")
     profile = PROFILE_DIALOG.read_text(encoding="utf-8")
     group = GROUP_DIALOG.read_text(encoding="utf-8")
-    quick_toolbar = TERMINAL_QUICK_TOOLBAR.read_text(encoding="utf-8")
 
     assert "export function useDialogFocus" in focus
     assert "event.key !== 'Tab'" in focus
     assert "restoreTarget" in focus
     assert "target?.isConnected" in focus
-    for component in (settings, help_panel, profile, group, quick_toolbar):
+    for component in (settings, help_panel, profile, group):
         assert "useDialogFocus" in component
         assert '@keydown="handleDialogKeydown"' in component
         assert "data-dialog-initial-focus" in component
@@ -1841,155 +1647,6 @@ def test_electron_transfer_files_are_height_bounded_and_show_loading_feedback() 
     assert ".transfer-file-loading" in styles
 
 
-def test_electron_automation_workspace_keeps_runtime_feedback() -> None:
-    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    store = WORKSPACE_STORE.read_text(encoding="utf-8")
-    app = APP_VUE.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-
-    assert "event.type.startsWith('automation.')" in store
-    assert "void refreshAutomation()" in store
-    for message in (
-        "自动化已启动",
-        "自动化已完成",
-        "自动化等待下一步输出",
-        "自动化执行失败",
-        "自动化已取消",
-    ):
-        assert message in store
-    assert "typeof data.message === 'string'" in store
-
-    assert "const activeTriggeredIds = computed" in automation
-    assert "const activeWaitingIds = computed" in automation
-    assert "const runningRuleNames = computed" in automation
-    assert "const waitingRuleNames = computed" in automation
-    assert "const triggeredRuleNames = computed" in automation
-    assert "const automationStatusText = computed" in automation
-    assert "当前会话暂无运行中的自动响应" in automation
-    assert "已触发" in automation
-    assert "automation-session-status" in automation
-    assert "data-state=\"running\"" in styles
-    assert "data-state=\"waiting\"" in styles
-    assert "data-state=\"triggered\"" in styles
-
-    assert 'class="global-status-bar"' in app
-    assert 'data-role="notice"' in app
-    assert 'data-role="idle"' in app
-    assert 'role="status"' in app
-    assert "const noticeRequiresAttention = computed" in app
-    assert "function clearWorkspaceNotice" in app
-    assert "setTimeout" in app
-    assert 'title="关闭通知"' in app
-    assert 'class="action-notice"' not in app
-    assert 'workspace.error && !backendFailure' in app
-    assert 'role="alert"' in app
-    assert "async function retryWorkspaceRecovery" in app
-    assert 'title="立即重试工作区"' in app
-    assert "workspaceRecoveryBusy" in app
-    assert 'data-state="backend"' in app
-    assert ".global-status-bar" in styles
-    assert '.global-status-bar[data-state="attention"]' in styles
-    assert "grid-template-rows: minmax(0, 1fr) 24px" in styles
-    assert "grid-column: 1 / -1; grid-row: 2" in styles
-    assert ".system-banner > button" in styles
-
-
-def test_electron_automation_editor_protects_unsaved_drafts() -> None:
-    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    store = WORKSPACE_STORE.read_text(encoding="utf-8")
-    app = APP_VUE.read_text(encoding="utf-8")
-    smoke = MAIN_TS.read_text(encoding="utf-8")
-
-    assert "const isDirty = computed" in automation
-    assert "const creatingNew = ref(false)" in automation
-    assert "record.id === loadedRuleId.value && isDirty.value" in automation
-    assert "当前规则有未保存修改" in automation
-    assert "registerAutomationCloseGuard(prepareClose)" in automation
-    assert "window.addEventListener('beforeunload', warnBeforeUnload)" in automation
-    assert 'class="automation-draft-state"' in automation
-
-    assert "function registerAutomationCloseGuard" in store
-    assert "function closeAutomationPanel(): boolean" in store
-    assert "automationCloseGuard && !automationCloseGuard()" in store
-    assert "workspace.closeAutomationPanel()" in app
-
-    assert "automationUnsavedDraftGuardsClose" in smoke
-    assert "unsavedCloseStayedOpen" in smoke
-    assert "confirmedCloseSucceeded" in smoke
-
-
-def test_electron_automation_rule_list_supports_search_and_status_filters() -> None:
-    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-    smoke = MAIN_TS.read_text(encoding="utf-8")
-
-    assert "const ruleQuery = ref('')" in automation
-    assert "const filteredAutomationRules = computed" in automation
-    assert "ruleStatusFilter.value === 'active'" in automation
-    assert "v-for=\"record in filteredAutomationRules\"" in automation
-    assert 'aria-label="搜索自动化规则"' in automation
-    assert 'aria-label="筛选自动化规则状态"' in automation
-    assert "event.key.toLocaleLowerCase() === 'f'" in automation
-    assert "ruleSearchInput.value?.focus()" in automation
-    assert "没有匹配的规则" in automation
-
-    assert ".automation-rule-tools" in styles
-    assert ".automation-rule-search:focus-within" in styles
-    assert "automationRuleSearchAndFilter" in smoke
-    assert "automationEscapeClearedSearch" in smoke
-
-
-def test_electron_automation_rules_can_be_safely_cloned() -> None:
-    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    store = WORKSPACE_STORE.read_text(encoding="utf-8")
-    api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
-    backend = Path(
-        "device_tui/interfaces/desktop_api/routers/automation.py"
-    ).read_text(encoding="utf-8")
-    smoke = MAIN_TS.read_text(encoding="utf-8")
-
-    assert 'data-testid="automation-clone"' in automation
-    assert "async function cloneSelected" in automation
-    assert "workspace.cloneAutomationRule(record.id)" in automation
-    assert "创建默认停用的独立副本" in automation
-
-    assert "async function cloneAutomationRule" in store
-    assert "desktopApi.cloneAutomationRule(ruleId)" in store
-    assert "cloneAutomationRule: (ruleId: string)" in api
-    assert 'prefix="/api/v1"' in backend
-    assert '"/automation/rules/{rule_id}/clone"' in backend
-
-    assert "automationCloneCreatesDisabledIndependentRule" in smoke
-    assert "cloneSmokeAssertions" in smoke
-
-
-def test_electron_automation_workspace_shows_recent_execution_activity() -> None:
-    automation = AUTOMATION_WORKSPACE.read_text(encoding="utf-8")
-    store = WORKSPACE_STORE.read_text(encoding="utf-8")
-    types = TYPES_TS.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-    backend = Path("device_tui/interfaces/desktop_api/serializers.py").read_text(
-        encoding="utf-8"
-    )
-    smoke = MAIN_TS.read_text(encoding="utf-8")
-
-    assert "interface AutomationActivityRecord" in types
-    assert "activity: AutomationActivityRecord[]" in types
-    assert "const automationActivity = ref<AutomationActivityRecord[]>([])" in store
-    assert "automationActivity.value = response.activity || []" in store
-
-    assert "const recentActivity = computed" in automation
-    assert 'class="automation-activity-panel"' in automation
-    assert 'class="automation-activity-row"' in automation
-    assert "function activityLabel" in automation
-    assert "function activityTarget" in automation
-    assert ".automation-activity-list" in styles
-    assert '.automation-activity-row[data-event="failed"]' in styles
-
-    assert "desktop.automation.activities(limit=100)" in backend
-    assert "automationActivityShowsLifecycle" in smoke
-
-
 def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
     app = APP_VUE.read_text(encoding="utf-8")
     package = PACKAGE_JSON.read_text(encoding="utf-8")
@@ -2077,11 +1734,9 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
         "sessionTabSideLayoutAppliesAndPersists",
         "sessionTabCollapsedPreferenceAppliesAndPersists",
         "collapsedSessionRailRemainsAccessibleAndRestorable",
-        "terminalAutomationQuickAccessTargetsCurrentSession",
         "settingsLogDirectoryAndRotationPersist",
         "settingsUnsavedLogChangesAreVisible",
         "settingsActionsRemainVisibleOutsideScrollRegion",
-        "quickSendDialogManagesKeyboardFocus",
         "helpPanelIsFunctional",
         "modalPanelsKeepKeyboardFocusContained",
         "terminalCurrentLogNativeOpenWorks",

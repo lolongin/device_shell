@@ -41,7 +41,6 @@ class BackendContext:
     )
     legacy_import: dict[str, Any] = field(default_factory=dict)
     legacy_command_import: dict[str, Any] = field(default_factory=dict)
-    legacy_automation_import: dict[str, Any] = field(default_factory=dict)
     legacy_transfer_import: dict[str, Any] = field(default_factory=dict)
     log_policy: dict[str, int] = field(default_factory=dict)
     data_root: Path | None = None

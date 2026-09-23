@@ -4,8 +4,19 @@ import asyncio
 
 from device_tui.application.composition.workflows import build_default_activity_workflow_providers
 from device_tui.application.workflow_studio import build_action_catalog
-from device_tui.application.workflow_plugins.utility import ResultSaveActivityHandler, VariableSetActivityHandler
-from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowNode as StudioNode, WorkflowVersion
+from device_tui.application.workflow_plugins.utility import (
+    ResultSaveActivityHandler,
+    VariableSetActivityHandler,
+    WorkflowOutputsActivityHandler,
+)
+from device_tui.application.workflow_plugins.shell import ShellCommandActivityHandler
+from device_tui.application.workflow_studio.models import (
+    WorkflowEdge,
+    WorkflowInput,
+    WorkflowNode as StudioNode,
+    WorkflowOutput,
+    WorkflowVersion,
+)
 from device_tui.framework import (
     ActionRegistry,
     ActivityActionHandler,
@@ -22,8 +33,11 @@ from device_tui.framework import (
     WorkflowRuntime,
     WorkflowRun,
 )
-from device_tui.interfaces.desktop_api.routers.workflow_definitions import _compile_task_plan
-from device_tui.interfaces.desktop_api.routers.workflow_definitions import _ACTION_WORKFLOW_IDS
+from device_tui.interfaces.desktop_api.routers.workflow_definitions import (
+    _ACTION_WORKFLOW_IDS,
+    _compile_task_plan,
+    _expand_subworkflows,
+)
 
 
 class _ActivityBuilder:
@@ -62,11 +76,21 @@ class _CommandActivity:
 
 def _build_activity_orchestrator(command_handler: object | None = None) -> TaskOrchestrator:
     executor = ActivityExecutor()
-    for activity_id in ("terminal.command", "variable.set", "result.save", "loop.for_each", "loop.until"):
+    for activity_id in (
+        "terminal.command",
+        "shell.command",
+        "variable.set",
+        "result.save",
+        "workflow.outputs",
+        "loop.for_each",
+        "loop.until",
+    ):
         executor.register_definition(ActivityDefinition(id=activity_id))
     executor.register_handler(command_handler or _CommandActivity())
+    executor.register_handler(ShellCommandActivityHandler())
     executor.register_handler(VariableSetActivityHandler())
     executor.register_handler(ResultSaveActivityHandler())
+    executor.register_handler(WorkflowOutputsActivityHandler())
 
     async def run_child(action_id, inputs, parent_context, report):
         from device_tui.framework import ActivityContext, ActivityInvocation
@@ -93,13 +117,30 @@ def _build_activity_orchestrator(command_handler: object | None = None) -> TaskO
     executor.register_handler(UntilActivityHandler(run_child))
 
     actions = ActionRegistry()
-    for activity_id in ("terminal.command", "variable.set", "result.save", "loop.for_each", "loop.until"):
+    for activity_id in (
+        "terminal.command",
+        "shell.command",
+        "variable.set",
+        "result.save",
+        "workflow.outputs",
+        "loop.for_each",
+        "loop.until",
+    ):
         actions.register(ActivityActionHandler(executor, activity_id), item_id=activity_id)
     runtime = WorkflowRuntime(actions=actions)
 
     workflows = WorkflowRegistry()
     for provider in build_default_activity_workflow_providers():
-        if provider.id in {"terminal.command", "variable.set", "result.save", "loop.for_each", "loop.until", "utility.confirm"}:
+        if provider.id in {
+            "terminal.command",
+            "shell.command",
+            "variable.set",
+            "result.save",
+            "workflow.outputs",
+            "loop.for_each",
+            "loop.until",
+            "utility.confirm",
+        }:
             workflows.register(provider)
     return TaskOrchestrator(runtime, workflows)
 
@@ -276,6 +317,87 @@ def test_failed_compiled_node_stops_downstream_node_with_structured_error() -> N
     assert "save" not in result.node_runs
 
 
+def test_command_output_extracts_converts_and_selects_condition_branch() -> None:
+    import sys
+
+    command = "Write-Output 'count=42'" if sys.platform == "win32" else "printf 'count=42'"
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="command-extract-condition",
+        nodes=(
+            StudioNode("command", "device.command", {"command": command, "execution_mode": "shell"}),
+            StudioNode("count", "variable.set", {
+                "name": "item_count",
+                "value": "${command.stdout}",
+                "extract": {"pattern": r"count=(\d+)", "group": 1, "convert": "integer"},
+            }),
+            StudioNode("condition", "utility.condition", {
+                "rules": [{"field": "value", "operator": "大于", "value": 40}],
+            }),
+            StudioNode("enough", "result.save", {"key": "branch", "value": "enough"}),
+            StudioNode("few", "result.save", {"key": "branch", "value": "few"}),
+        ),
+        edges=(
+            WorkflowEdge("command", "count"),
+            WorkflowEdge("count", "condition"),
+            WorkflowEdge("condition", "enough", condition="true"),
+            WorkflowEdge("condition", "few", condition="false"),
+        ),
+    )
+    plan = _compile_task_plan(version, "router-1")
+    orchestrator = _build_activity_orchestrator()
+    task = orchestrator.start(plan, device_id="router-1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status.value == "succeeded"
+    assert result.outputs["command"]["exitCode"] == 0
+    assert result.outputs["command"]["exit_code"] == 0
+    assert result.outputs["count"]["value"] == 42
+    assert result.outputs["item_count"] == 42
+    assert result.outputs["enough"]["value"] == "enough"
+    assert result.outputs["few"]["status"] == "skipped"
+
+
+def test_failed_command_can_continue_and_expose_structured_error() -> None:
+    class FailingCommand(_CommandActivity):
+        async def execute(self, invocation, context, report) -> ActivityResult:
+            del invocation, context, report
+            return ActivityResult(
+                ActivityStatus.FAILED,
+                outputs={"output": "permission denied", "status": "failed"},
+                error={"code": "command_failed", "message": "command rejected", "class": "deterministic"},
+            )
+
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="continue-with-error",
+        nodes=(
+            StudioNode("command", "device.command", {
+                "command": "fail",
+                "failure_strategy": "continue",
+            }),
+            StudioNode("save", "variable.set", {
+                "name": "failure_code",
+                "value": "${command.error.code}",
+            }),
+        ),
+        edges=(WorkflowEdge("command", "save"),),
+    )
+    plan = _compile_task_plan(version, "router-1")
+    orchestrator = _build_activity_orchestrator(FailingCommand())
+    task = orchestrator.start(plan, device_id="router-1")
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status.value == "succeeded"
+    assert result.outputs["command"]["error"]["code"] == "command_failed"
+    assert result.outputs["save"]["value"] == "command_failed"
+    assert result.context["continued_failures"] == ["command"]
+
+
 def test_task_context_keeps_custom_connection_endpoint_from_node_output() -> None:
     context = {"target": {"device_id": "router-1", "protocol": "ssh"}}
 
@@ -372,11 +494,104 @@ def test_rejected_confirmation_is_projected_to_parent_task_outputs() -> None:
 def test_workflow_catalog_actions_have_compile_and_provider_coverage() -> None:
     catalog_ids = {item.id for item in build_action_catalog().list()}
     provider_ids = {provider.id for provider in build_default_activity_workflow_providers()}
+    compile_time_only = {"utility.condition", "workflow.call"}
 
-    assert catalog_ids - {"utility.condition"} <= set(_ACTION_WORKFLOW_IDS)
+    assert catalog_ids - compile_time_only <= set(_ACTION_WORKFLOW_IDS)
     assert {
         _ACTION_WORKFLOW_IDS[action_id]
         for action_id in catalog_ids
-        if action_id != "utility.condition"
+        if action_id not in compile_time_only
     } <= provider_ids
     assert "utility.condition" not in provider_ids
+    assert "workflow.call" not in _ACTION_WORKFLOW_IDS
+
+
+def test_subworkflow_expansion_executes_bound_inputs_and_projects_outputs() -> None:
+    child = WorkflowVersion(
+        "child",
+        1,
+        "Child",
+        inputs=(WorkflowInput("topic", required=True),),
+        nodes=(
+            StudioNode("command", "device.command", {"command": "show ${inputs.topic}"}),
+        ),
+        outputs=(WorkflowOutput("text", "${command.output}", "string"),),
+    )
+    parent = WorkflowVersion(
+        "parent",
+        1,
+        "Parent",
+        inputs=(WorkflowInput("topic", required=True),),
+        nodes=(
+            StudioNode(
+                "call",
+                "workflow.call",
+                {"workflow_id": "child", "version": 1, "inputs": {"topic": "${inputs.topic}"}},
+            ),
+            StudioNode("save", "result.save", {"key": "child_text", "value": "${call.text}"}),
+        ),
+        edges=(WorkflowEdge("call", "save"),),
+    )
+
+    expanded = _expand_subworkflows(parent, lambda workflow_id, version: child)
+    assert [node.id for node in expanded.nodes] == ["call__command", "call", "save"]
+    assert expanded.nodes[0].config["command"] == "show ${inputs.topic}"
+
+    plan = _compile_task_plan(expanded, "router-1")
+    assert plan.nodes[1].depends_on == ("call__command",)
+    assert plan.nodes[2].depends_on == ("call",)
+    orchestrator = _build_activity_orchestrator()
+    task = orchestrator.start(plan, device_id="router-1", inputs={"topic": "version"})
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status.value == "succeeded"
+    assert result.outputs["call__command"]["output"] == "result for show version"
+    assert result.outputs["call"]["outputs"] == {"text": "result for show version"}
+    assert result.outputs["call"]["text"] == "result for show version"
+    assert result.outputs["save"]["value"] == "result for show version"
+
+
+def test_nested_subworkflow_expansion_namespaces_every_child_level() -> None:
+    leaf = WorkflowVersion(
+        "leaf",
+        1,
+        "Leaf",
+        nodes=(StudioNode("value", "variable.set", {"name": "answer", "value": 42}),),
+        outputs=(WorkflowOutput("answer", "${value.value}", "integer"),),
+    )
+    middle = WorkflowVersion(
+        "middle",
+        2,
+        "Middle",
+        nodes=(
+            StudioNode("leaf_call", "workflow.call", {"workflow_id": "leaf", "version": 1}),
+        ),
+        outputs=(WorkflowOutput("answer", "${leaf_call.answer}", "integer"),),
+    )
+    parent = WorkflowVersion(
+        "parent",
+        3,
+        "Parent",
+        nodes=(
+            StudioNode("middle_call", "workflow.call", {"workflow_id": "middle", "version": 2}),
+        ),
+    )
+    versions = {("leaf", 1): leaf, ("middle", 2): middle}
+
+    expanded = _expand_subworkflows(
+        parent,
+        lambda workflow_id, version: versions[(workflow_id, version)],
+    )
+
+    assert [node.id for node in expanded.nodes] == [
+        "middle_call__leaf_call__value",
+        "middle_call__leaf_call",
+        "middle_call",
+    ]
+    assert expanded.nodes[1].config["values"] == {
+        "answer": "${middle_call__leaf_call__value.value}",
+    }
+    assert expanded.nodes[2].config["values"] == {
+        "answer": "${middle_call__leaf_call.answer}",
+    }

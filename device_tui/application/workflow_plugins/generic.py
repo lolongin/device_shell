@@ -71,6 +71,7 @@ def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvide
     return (
         ActivityWorkflowProvider("script.run"),
         ActivityWorkflowProvider("artifact.build"),
+        ActivityWorkflowProvider("shell.command"),
         ActivityWorkflowProvider("file.transfer", required_capabilities=("file.transfer",)),
         ActivityWorkflowProvider("device.reboot", required_capabilities=("device.reboot",)),
         ActivityWorkflowProvider("device.wait_online"),
@@ -87,6 +88,7 @@ def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvide
         ActivityWorkflowProvider("device.select"),
         ActivityWorkflowProvider("variable.set"),
         ActivityWorkflowProvider("expression.evaluate"),
+        ActivityWorkflowProvider("workflow.outputs"),
         ActivityWorkflowProvider("loop.for_each"),
         ActivityWorkflowProvider("loop.until"),
         ActivityWorkflowProvider("device.verify_artifact"),

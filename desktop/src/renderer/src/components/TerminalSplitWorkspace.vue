@@ -36,7 +36,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   activate: [sessionId: string]
   status: [sessionId: string, status: string, sequence: number]
-  automation: [sessionId: string]
   transfer: [sessionId: string]
   upgrade: [sessionId: string]
   close: [sessionId: string]
@@ -556,7 +555,6 @@ defineExpose({ splitSession, splitDeviceGroup, resetSplit })
         :protocol-actions="protocolActionsBySession[session.id] || []"
         :split-available="sessions.length > 1"
         @status="(sessionId, status, sequence) => emit('status', sessionId, status, sequence)"
-        @automation="emit('automation', $event)"
         @transfer="emit('transfer', $event)"
         @upgrade="emit('upgrade', $event)"
         @open-protocol="emit('openProtocol', session.id, $event)"

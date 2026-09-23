@@ -13,6 +13,8 @@ class ProcessExecutionResult:
     status: str
     returncode: int | None
     output: str
+    stdout: str = ""
+    stderr: str = ""
     timed_out: bool = False
     cancelled: bool = False
 
@@ -42,38 +44,57 @@ class LocalProcessAdapter:
             cwd=str(Path(cwd).resolve()) if cwd else None,
             env=dict(env) if env is not None else None,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.PIPE,
         )
         self._processes[invocation_id] = process
-        chunks: list[str] = []
+        streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        stream_lengths = {"stdout": 0, "stderr": 0}
+        output_limit = max(1, int(max_output_chars))
+
+        async def collect_stream(name: str, stream: asyncio.StreamReader | None) -> None:
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(16_384)
+                if not chunk:
+                    return
+                text = chunk.decode("utf-8", errors="replace")
+                streams[name].append(text)
+                stream_lengths[name] += len(text)
+                if stream_lengths[name] > output_limit:
+                    streams[name] = ["".join(streams[name])[-output_limit:]]
+                    stream_lengths[name] = len(streams[name][0])
+                if on_output is not None:
+                    on_output(text)
+
         try:
-            async def collect() -> None:
-                assert process.stdout is not None
-                while True:
-                    chunk = await process.stdout.read(16_384)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    chunks.append(text)
-                    if sum(len(item) for item in chunks) > max_output_chars:
-                        joined = "".join(chunks)
-                        chunks[:] = [joined[-max_output_chars:]]
-                    if on_output is not None:
-                        on_output(text)
+            async def collect_all() -> None:
+                await asyncio.gather(
+                    collect_stream("stdout", process.stdout),
+                    collect_stream("stderr", process.stderr),
+                )
                 await process.wait()
 
-            await asyncio.wait_for(collect(), timeout=max(0.01, timeout_seconds))
+            await asyncio.wait_for(collect_all(), timeout=max(0.01, timeout_seconds))
+            stdout = "".join(streams["stdout"])
+            stderr = "".join(streams["stderr"])
             return ProcessExecutionResult(
                 status="succeeded" if process.returncode == 0 else "failed",
                 returncode=process.returncode,
-                output="".join(chunks),
+                output=stdout + stderr,
+                stdout=stdout,
+                stderr=stderr,
             )
         except asyncio.TimeoutError:
             await self.cancel(invocation_id)
-            return ProcessExecutionResult("unknown", process.returncode, "".join(chunks), timed_out=True)
+            stdout = "".join(streams["stdout"])
+            stderr = "".join(streams["stderr"])
+            return ProcessExecutionResult("unknown", process.returncode, stdout + stderr, stdout, stderr, timed_out=True)
         except asyncio.CancelledError:
             await self.cancel(invocation_id)
-            return ProcessExecutionResult("cancelled", process.returncode, "".join(chunks), cancelled=True)
+            stdout = "".join(streams["stdout"])
+            stderr = "".join(streams["stderr"])
+            return ProcessExecutionResult("cancelled", process.returncode, stdout + stderr, stdout, stderr, cancelled=True)
         finally:
             self._processes.pop(invocation_id, None)
 

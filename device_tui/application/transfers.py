@@ -550,6 +550,17 @@ class ManagedTransferService:
         except ManagedTransferError as exc:
             raise self._application_error(exc) from exc
 
+    def cleanup_workflow_source(self, staging_id: str) -> None:
+        """Remove a workflow's private staging directory after its task ends."""
+        safe_staging_id = str(staging_id or "").strip()
+        if not safe_staging_id or "/" in safe_staging_id or "\\" in safe_staging_id or safe_staging_id in {".", ".."}:
+            return
+        root = resolve_shared_root(Path(str(self._saved_config()["root"])))
+        staging_dir = (root / ".workflow-staging" / safe_staging_id).resolve()
+        if not staging_dir.is_relative_to(root / ".workflow-staging"):
+            return
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
     async def prepare_upload_source(
         self,
         session: SessionRecord,
@@ -919,6 +930,9 @@ class ManagedTransferService:
                 source_path=str(operation.data["source_path"]),
                 destination_path=destination,
                 source_size=source_size,
+                # Older queued operations do not carry the optional flag;
+                # keep the generic transfer API conservative in that case.
+                overwrite=bool(operation.data.get("overwrite", False)),
                 username_secret_ref=username_ref,
                 password_secret_ref=password_ref,
                 terminal_environment=terminal_environment,
@@ -1310,6 +1324,19 @@ class ManagedTransferService:
                 {
                     "type": "expect",
                     "success": ["device_prompt"],
+                    # Huawei VRP paginates ``dir`` output by default.  The
+                    # managed-transfer inspection plan must consume every
+                    # page before parsing the capacity footer; otherwise the
+                    # device waits at ``---- More ----`` and may close the
+                    # Telnet session while the workflow is still waiting.
+                    "responses": [
+                        {
+                            "match": "pagination_prompt",
+                            "control": "space",
+                            "append_enter": False,
+                            "max_matches": 100,
+                        }
+                    ],
                     "failures": ["Unrecognized command", "Unknown command"],
                     "timeout_seconds": 30,
                     "label": "等待目录输出",

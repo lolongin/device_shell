@@ -18,7 +18,7 @@ npm run build
 
 Electron + Vue is the sole desktop presentation layer. Electron Main supervises a
 loopback-only FastAPI process and exposes a narrow preload API to the renderer.
-Python owns device data, sessions, credentials, automation, transfers, upgrades,
+Python owns device data, sessions, credentials, transfers, upgrades, workflows,
 persistence, and MCP integration.
 
 ```text
@@ -28,7 +28,7 @@ Vue renderer
       -> authenticated loopback HTTP/WebSocket
         -> device_tui/interfaces/desktop_api
           -> device_tui/application
-            -> repositories, session hub, transfers, automation
+            -> repositories, session hub, transfers, workflows
 ```
 
 Do not add PySide/PyQt desktop code or move privileged behavior into Vue.
@@ -54,12 +54,12 @@ Passwords use the operating-system credential vault. Website cookies and one-tim
 credentials stay in backend memory. Backend tokens stay in Electron Main. Never
 put secrets in renderer state, SQLite, logs, terminal replay, or MCP results.
 
-### Automation and transfers
+### Command workflows and transfers
 
-Automation rules and execution live in Python application services. Managed
-FTP/SFTP servers, device command generation, transfer verification, and package
-upgrade gates also remain backend-owned. UI components should call the existing
-API rather than reimplement these workflows.
+Workflow command execution lives in Python application services. Managed FTP/SFTP
+servers, device command generation, transfer verification, and package upgrade
+gates also remain backend-owned. UI components should call the existing API rather
+than reimplement these workflows.
 
 ### Persistence
 

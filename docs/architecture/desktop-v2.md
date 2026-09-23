@@ -70,7 +70,7 @@ startup/shutdown cleanup.
 ### Application Layer
 
 Application services are UI-independent. They coordinate devices, credentials,
-sessions, commands, automation, transfers, upgrades, events, and operations. They
+sessions, commands, workflows, transfers, upgrades, events, and operations. They
 must remain importable in test and service processes without Electron.
 
 ### Infrastructure
@@ -105,7 +105,7 @@ same session API. Reconnect and close actions remain backend-authoritative.
 
 ## Long-running Operations
 
-Transfers, upgrades, automation, and AI-driven terminal execution are represented
+Transfers, upgrades, workflows, and AI-driven terminal execution are represented
 as backend operations with IDs, status, events, cancellation, and audit metadata.
 The UI observes operation state instead of holding transport objects.
 

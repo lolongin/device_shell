@@ -2,6 +2,7 @@
 
 from device_tui.application.device_control import DeviceControlService, DeviceTarget
 from device_tui.application.tasking.execution import DeviceExecutionTool
+from device_tui.application.workflow_runtime.output_contract import COMMAND_OUTPUT_SCHEMA
 from device_tui.framework import (
     ActivityDefinition,
     ActivityExecutor,
@@ -14,6 +15,7 @@ from device_tui.framework.plugins import AdapterRegistry, WorkflowRegistry
 
 from ..workflow_plugins.package_upgrade.workflow import HuaweiVrpPackageUpgradeProvider
 from ..workflow_plugins.process import ProcessActivityHandler
+from ..workflow_plugins.shell import ShellCommandActivityHandler
 from ..workflow_plugins.terminal_transfer import TerminalTransferAdapter
 from ..workflow_plugins.device_activity import DeviceActivityHandler
 from ..workflow_plugins.utility import (
@@ -25,6 +27,7 @@ from ..workflow_plugins.utility import (
     UntilActivityHandler,
     VariableSetActivityHandler,
     WaitActivityHandler,
+    WorkflowOutputsActivityHandler,
 )
 from device_tui.framework import ActivityContext, ActivityInvocation
 from uuid import uuid4
@@ -110,6 +113,11 @@ def build_default_activity_executor(
             },
         ))
         executor.register_handler(ProcessActivityHandler(activity_id))
+    executor.register_definition(ActivityDefinition(
+        id="shell.command",
+        output_schema=COMMAND_OUTPUT_SCHEMA,
+    ))
+    executor.register_handler(ShellCommandActivityHandler())
     executor.register_definition(ActivityDefinition(id="utility.wait"))
     executor.register_handler(WaitActivityHandler())
     executor.register_definition(ActivityDefinition(id="terminal.wait"))
@@ -122,6 +130,8 @@ def build_default_activity_executor(
     executor.register_handler(VariableSetActivityHandler())
     executor.register_definition(ActivityDefinition(id="expression.evaluate"))
     executor.register_handler(ExpressionActivityHandler())
+    executor.register_definition(ActivityDefinition(id="workflow.outputs"))
+    executor.register_handler(WorkflowOutputsActivityHandler())
     executor.register_definition(ActivityDefinition(id="loop.for_each"))
     executor.register_definition(ActivityDefinition(id="loop.until"))
 

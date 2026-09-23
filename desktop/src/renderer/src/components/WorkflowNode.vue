@@ -10,7 +10,8 @@ import {
   Clock,
   GitBranch,
   Repeat,
-  AlertCircle
+  AlertCircle,
+  Code2
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -27,36 +28,38 @@ const props = defineProps<{
 // 节点类别和元数据
 interface NodeMeta {
   label: string
-  category: 'execution' | 'control' | 'coordination'
-  tone: 'blue' | 'purple' | 'amber'
+  category: 'flow-control' | 'device' | 'transfer' | 'data' | 'workflow' | 'script'
+  tone: 'blue' | 'purple' | 'amber' | 'teal'
   icon: any
 }
 
 const ACTION_META: Record<string, NodeMeta> = {
-  'device.select': { label: '选择设备', category: 'execution', tone: 'blue', icon: CheckCircle2 },
-  'device.ssh': { label: 'SSH 连接', category: 'execution', tone: 'blue', icon: Terminal },
-  'device.telnet': { label: 'Telnet 连接', category: 'execution', tone: 'blue', icon: Terminal },
-  'device.info': { label: '获取设备信息', category: 'execution', tone: 'blue', icon: CheckCircle2 },
-  'device.command': { label: '执行命令', category: 'execution', tone: 'blue', icon: Terminal },
-  'device.reboot': { label: '重启设备', category: 'execution', tone: 'blue', icon: RotateCw },
-  'device.connect': { label: '连接设备', category: 'execution', tone: 'blue', icon: CheckCircle2 },
-  'file.upload': { label: '上传文件', category: 'execution', tone: 'blue', icon: Upload },
-  'file.download': { label: '下载文件', category: 'execution', tone: 'blue', icon: Upload },
-  'utility.condition': { label: '如果 / 否则', category: 'control', tone: 'purple', icon: GitBranch },
-  'loop.for_each': { label: '循环 FOR', category: 'control', tone: 'purple', icon: Repeat },
-  'loop.until': { label: '循环直到满足', category: 'control', tone: 'purple', icon: Repeat },
-  'utility.wait': { label: '等待', category: 'coordination', tone: 'amber', icon: Clock },
-  'terminal.wait': { label: '等待终端输出', category: 'coordination', tone: 'amber', icon: Terminal },
-  'utility.confirm': { label: '人工确认', category: 'coordination', tone: 'amber', icon: AlertCircle },
-  'result.save': { label: '保存结果', category: 'coordination', tone: 'blue', icon: CheckCircle2 },
-  'variable.set': { label: '设置变量', category: 'coordination', tone: 'blue', icon: CheckCircle2 },
-  'expression.evaluate': { label: '计算表达式', category: 'control', tone: 'purple', icon: GitBranch },
+  'device.select': { label: '选择设备', category: 'device', tone: 'blue', icon: CheckCircle2 },
+  'device.ssh': { label: 'SSH 连接', category: 'device', tone: 'blue', icon: Terminal },
+  'device.telnet': { label: 'Telnet 连接', category: 'device', tone: 'blue', icon: Terminal },
+  'device.info': { label: '获取设备信息', category: 'device', tone: 'blue', icon: CheckCircle2 },
+  'device.command': { label: '执行命令', category: 'device', tone: 'blue', icon: Terminal },
+  'script.run': { label: '执行脚本', category: 'script', tone: 'teal', icon: Code2 },
+  'device.reboot': { label: '重启设备', category: 'device', tone: 'blue', icon: RotateCw },
+  'device.connect': { label: '连接设备', category: 'device', tone: 'blue', icon: CheckCircle2 },
+  'file.upload': { label: '上传文件', category: 'transfer', tone: 'blue', icon: Upload },
+  'file.download': { label: '下载文件', category: 'transfer', tone: 'blue', icon: Upload },
+  'utility.condition': { label: '如果 / 否则', category: 'flow-control', tone: 'purple', icon: GitBranch },
+  'loop.for_each': { label: '循环 FOR', category: 'flow-control', tone: 'purple', icon: Repeat },
+  'loop.until': { label: '循环直到满足', category: 'flow-control', tone: 'purple', icon: Repeat },
+  'utility.wait': { label: '等待', category: 'flow-control', tone: 'amber', icon: Clock },
+  'terminal.wait': { label: '等待终端输出', category: 'flow-control', tone: 'amber', icon: Terminal },
+  'utility.confirm': { label: '人工确认', category: 'flow-control', tone: 'amber', icon: AlertCircle },
+  'result.save': { label: '保存结果', category: 'data', tone: 'blue', icon: CheckCircle2 },
+  'variable.set': { label: '设置变量', category: 'data', tone: 'blue', icon: CheckCircle2 },
+  'expression.evaluate': { label: '计算表达式', category: 'data', tone: 'purple', icon: GitBranch },
+  'workflow.call': { label: '调用子流程', category: 'workflow', tone: 'blue', icon: GitBranch },
 }
 
 const nodeMeta = computed<NodeMeta>(() => {
   return ACTION_META[props.data.action_id] || {
     label: props.data.action_id,
-    category: 'execution',
+    category: 'device',
     tone: 'blue',
     icon: Terminal
   }
@@ -82,6 +85,12 @@ const configSummary = computed(() => {
   if (actionId === 'device.command') {
     const cmd = config.command as string
     return cmd ? (cmd.length > 30 ? cmd.substring(0, 30) + '...' : cmd) : '(未配置)'
+  }
+
+  if (actionId === 'script.run') {
+    const language = String(config.language || 'python')
+    const script = String(config.script || '').trim()
+    return script ? `${language} · ${script.split(/\r?\n/)[0].slice(0, 24)}` : '(未配置)'
   }
 
   if (actionId === 'utility.wait') {
@@ -130,8 +139,11 @@ const configSummary = computed(() => {
 
     <!-- 分类标签 -->
     <div class="node-category-badge">
-      {{ nodeMeta.category === 'execution' ? '执行' :
-         nodeMeta.category === 'control' ? '控制' : '协调' }}
+      {{ nodeMeta.category === 'flow-control' ? '流程控制' :
+         nodeMeta.category === 'device' ? '设备操作' :
+         nodeMeta.category === 'transfer' ? '文件传输' :
+         nodeMeta.category === 'data' ? '变量与结果' :
+         nodeMeta.category === 'script' ? '脚本执行' : '子流程' }}
     </div>
 
     <!-- 输出连接点 -->
@@ -150,224 +162,75 @@ const configSummary = computed(() => {
   </div>
 </template>
 
+
 <style scoped>
 .workflow-node {
-  padding: 14px 16px;
-  border-radius: 10px;
-  background: rgba(17, 27, 45, 0.96);
-  border: 2px solid rgba(100, 116, 139, 0.4);
-  min-width: 200px;
-  cursor: pointer;
-  transition: all 0.2s ease;
   position: relative;
-  backdrop-filter: blur(8px);
-  box-shadow: 0 8px 22px rgba(2, 6, 23, 0.24);
+  box-sizing: border-box;
+  width: 232px;
+  min-width: 232px;
+  max-width: 232px;
+  min-height: 112px;
+  padding: 11px 13px 10px 15px;
+  border: 1px solid rgba(100,116,139,.46);
+  border-radius: 8px;
+  color: var(--workflow-text, #e2e8f0);
+  background: color-mix(in srgb, var(--workflow-surface, #0f172a) 94%, #07111f);
+  cursor: pointer;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+  box-shadow: 0 5px 14px rgba(2,6,23,.2);
 }
-
-.workflow-node::before {
-  content: '';
-  position: absolute;
-  inset: 9px auto 9px 0;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: #60a5fa;
-  opacity: 0.9;
-}
-
-.workflow-node:hover {
-  border-color: rgba(59, 130, 246, 0.6);
-  box-shadow: 0 10px 26px rgba(2, 6, 23, 0.36), 0 0 0 1px rgba(96, 165, 250, 0.16);
-  transform: translateY(-2px);
-}
-
+.workflow-node::before { content: ''; position: absolute; inset: 7px auto 7px 0; width: 4px; border-radius: 0 3px 3px 0; background: #4f9cf9; }
+.workflow-node:hover { border-color: rgba(96,165,250,.72); box-shadow: 0 8px 18px rgba(2,6,23,.3); }
 .workflow-node:active { cursor: grabbing; }
-
-/* 节点分类颜色 */
-.workflow-node.category-execution {
-  border-color: rgba(59, 130, 246, 0.5);
-}
-
-.workflow-node.category-control {
-  border-color: rgba(168, 85, 247, 0.5);
-}
-
-.category-control.workflow-node::before { background: #c084fc; }
-
-.workflow-node.category-coordination {
-  border-color: rgba(251, 191, 36, 0.5);
-}
-
-.category-coordination.workflow-node::before { background: #fbbf24; }
-
-/* 状态样式 */
-.workflow-node.state-attention {
-  border-color: rgba(251, 191, 36, 0.7) !important;
-  background: rgba(180, 83, 9, 0.1);
-}
-
-.state-attention.workflow-node::before { background: #fbbf24; }
-
-/* 节点头部 */
-.node-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(100, 116, 139, 0.2);
-}
-
-.node-icon {
-  color: #94a3b8;
-  flex-shrink: 0;
-}
-
-.tone-blue .node-icon {
-  color: #60a5fa;
-}
-
-.tone-purple .node-icon {
-  color: #c084fc;
-}
-
-.tone-amber .node-icon {
-  color: #fbbf24;
-}
-
-.node-label {
-  flex: 1;
-  font-weight: 600;
-  font-size: 13px;
-  color: #e2e8f0;
-}
-
-.state-icon {
-  flex-shrink: 0;
-}
-
-.state-ready {
-  color: #22c55e;
-}
-
-.state-attention {
-  color: #fbbf24;
-}
-
-/* 节点主体 */
-.node-body {
-  margin-bottom: 8px;
-}
-
-.node-id {
-  font-size: 11px;
-  color: rgba(226, 232, 240, 0.6);
-  margin-bottom: 4px;
-  font-family: monospace;
-}
-
-.node-config {
-  font-size: 11px;
-  color: rgba(226, 232, 240, 0.8);
-  padding: 4px 8px;
-  background: rgba(15, 23, 42, 0.5);
-  border-radius: 4px;
-  font-family: monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 分类标签 */
-.node-category-badge {
-  position: absolute;
-  top: -8px;
-  right: -8px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 9px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  pointer-events: none;
-}
-
-.category-execution .node-category-badge {
-  background: rgba(59, 130, 246, 0.9);
-  color: white;
-}
-
-.category-control .node-category-badge {
-  background: rgba(168, 85, 247, 0.9);
-  color: white;
-}
-
-.category-coordination .node-category-badge {
-  background: rgba(251, 191, 36, 0.9);
-  color: #0f172a;
-}
-
-/* 连接点样式 */
-.node-handle {
-  width: 12px;
-  height: 12px;
-  border: 2px solid #64748b;
-  background: #1e293b;
-  transition: all 0.2s;
-}
-
-.node-handle:hover {
-  width: 16px;
-  height: 16px;
-  border-color: #3b82f6;
-  background: #3b82f6;
-}
-
-.node-handle-target {
-  top: -6px;
-}
-
-.node-handle-source {
-  bottom: -6px;
-}
-
-.node-handle-true,
-.node-handle-false { right: -6px; }
+.workflow-node.category-flow-control::before { background: #a78bfa; }
+.workflow-node.category-data::before { background: #f0b44d; }
+.workflow-node.category-transfer::before { background: #38bdf8; }
+.workflow-node.category-workflow::before { background: #2dd4a3; }
+.workflow-node.category-script::before { background: #2dd4bf; }
+.workflow-node.state-attention { border-color: rgba(240,180,77,.86) !important; background: rgba(161,98,7,.12); }
+.workflow-node.state-attention::before { background: #f0b44d; }
+.node-header { display: flex; align-items: center; gap: 7px; min-height: 22px; margin-bottom: 8px; padding: 0 42px 7px 0; border-bottom: 1px solid rgba(100,116,139,.2); }
+.node-icon { flex: 0 0 auto; color: #60a5fa; }
+.tone-purple .node-icon { color: #a78bfa; }
+.tone-amber .node-icon { color: #f0b44d; }
+.tone-teal .node-icon { color: #2dd4bf; }
+.node-label { min-width: 0; flex: 1; overflow: hidden; color: var(--workflow-text, #e2e8f0); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.state-icon { flex: 0 0 auto; }
+.state-ready { color: #2dd4a3; }
+.state-attention { color: #f0b44d; }
+.node-body { min-width: 0; margin-bottom: 3px; }
+.node-id { overflow: hidden; color: var(--workflow-subtle, rgba(226,232,240,.6)); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.node-config { min-width: 0; margin-top: 6px; padding: 5px 7px; overflow: hidden; border: 1px solid rgba(100,116,139,.18); border-radius: 5px; color: var(--workflow-muted, rgba(226,232,240,.8)); background: rgba(15,23,42,.46); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.node-category-badge { position: absolute; top: 8px; right: 9px; padding: 2px 5px; border: 1px solid currentColor; border-radius: 4px; font-size: 8px; font-weight: 700; line-height: 1.1; opacity: .75; pointer-events: none; }
+.category-device .node-category-badge { color: #93c5fd; background: rgba(37,99,235,.12); }
+.category-flow-control .node-category-badge { color: #c4b5fd; background: rgba(124,58,237,.12); }
+.category-data .node-category-badge { color: #fcd34d; background: rgba(180,83,9,.12); }
+.category-transfer .node-category-badge { color: #7dd3fc; background: rgba(14,116,144,.12); }
+.category-workflow .node-category-badge { color: #6ee7b7; background: rgba(5,150,105,.12); }
+.category-script .node-category-badge { color: #99f6e4; background: rgba(13,148,136,.14); }
+.node-handle { width: 10px; height: 10px; border: 2px solid #64748b; background: #0f172a; transition: border-color .16s ease, background .16s ease; }
+.node-handle:hover { width: 10px; height: 10px; border-color: #60a5fa; background: #60a5fa; }
+.node-handle-target { top: -5px; }
+.node-handle-source { bottom: -5px; }
+.node-handle-true, .node-handle-false { right: -5px; }
 .node-handle-true { top: 38%; }
 .node-handle-false { top: 68%; }
-.branch-label { position: absolute; right: -43px; font-size: 9px; color: #fcd34d; pointer-events: none; }
+.branch-label { position: absolute; right: -40px; color: #fcd34d; font-size: 9px; pointer-events: none; }
 .branch-label-true { top: 30%; }
 .branch-label-false { top: 60%; }
-
-.category-execution .node-handle {
-  border-color: #3b82f6;
-}
-
-.category-control .node-handle {
-  border-color: #a855f7;
-}
-
-.category-coordination .node-handle {
-  border-color: #fbbf24;
-}
-
-/* 选中状态 */
-.workflow-node.selected {
-  border-width: 2px;
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2), 0 12px 30px rgba(2, 6, 23, 0.34);
-}
-
-.category-execution.selected {
-  border-color: #3b82f6 !important;
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2) !important;
-}
-
-.category-control.selected {
-  border-color: #a855f7 !important;
-  box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.2) !important;
-}
-
-.category-coordination.selected {
-  border-color: #fbbf24 !important;
-  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.2) !important;
-}
+.category-device .node-handle { border-color: #4f9cf9; }
+.category-flow-control .node-handle { border-color: #a78bfa; }
+.category-data .node-handle { border-color: #f0b44d; }
+.category-transfer .node-handle { border-color: #38bdf8; }
+.category-workflow .node-handle { border-color: #2dd4a3; }
+.category-script .node-handle { border-color: #2dd4bf; }
+.workflow-node.selected { outline: 2px solid rgba(79,156,249,.82); outline-offset: 3px; box-shadow: 0 0 0 5px rgba(79,156,249,.12), 0 8px 18px rgba(2,6,23,.3); }
+.category-flow-control.workflow-node.selected { outline-color: rgba(167,139,250,.9); box-shadow: 0 0 0 5px rgba(167,139,250,.12), 0 8px 18px rgba(2,6,23,.3); }
+.category-data.workflow-node.selected { outline-color: rgba(240,180,77,.9); box-shadow: 0 0 0 5px rgba(240,180,77,.12), 0 8px 18px rgba(2,6,23,.3); }
+:global(:root[data-theme="light"]) .workflow-node { color: #172033; background: #ffffff; border-color: #cbd5e1; box-shadow: 0 5px 14px rgba(15,23,42,.1); }
+:global(:root[data-theme="light"]) .node-label { color: #172033; }
+:global(:root[data-theme="light"]) .node-id { color: #64748b; }
+:global(:root[data-theme="light"]) .node-config { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
+:global(:root[data-theme="light"]) .node-handle { background: #ffffff; }
 </style>

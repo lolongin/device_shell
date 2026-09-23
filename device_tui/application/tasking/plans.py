@@ -178,7 +178,7 @@ DEFAULT_CAPABILITY_SPECS = {
     "terminal.batch": CapabilitySpec("batch", required_params=("commands",), param_types={"commands": (list, tuple)}, description="Run an ordered terminal command batch."),
     "device.reboot": CapabilitySpec("reboot", description="Reboot the device after confirmation.", risk="high", confirmation_required=True),
     "device.power_off": CapabilitySpec("power_off", description="Power off the device after confirmation.", risk="high", confirmation_required=True),
-    "file.upload": CapabilitySpec("upload", required_params=("source_path", "destination_path"), param_types={"source_path": (str,), "destination_path": (str,)}, description="Upload a file through the managed transfer service.", risk="medium", confirmation_required=True),
+    "file.upload": CapabilitySpec("upload", required_params=("source_path",), param_types={"source_path": (str,), "destination_path": (str,)}, description="Upload a file through the managed transfer service. Destination defaults to flash:/<source filename> for VRP devices.", risk="medium", confirmation_required=True),
     "file.download": CapabilitySpec("download", required_params=("source_path", "destination_path"), param_types={"source_path": (str,), "destination_path": (str,)}, description="Download a file through the managed transfer service."),
     "device.upgrade": CapabilitySpec("device_upgrade", required_params=("package_path",), param_types={"package_path": (str,)}, description="Compile the canonical driver-backed device upgrade workflow.", workflow_id="device_upgrade", risk="high", confirmation_required=True),
     "operation.wait": CapabilitySpec("operation_wait", required_params=("operation_id",), param_types={"operation_id": (str,)}, description="Wait for a registered operation and capture its evidence."),
@@ -353,6 +353,8 @@ class WorkflowPlanCompiler:
             params = dict(item.params)
             if item.capability in {"file.upload", "file.download"}:
                 params["direction"] = "upload" if item.capability == "file.upload" else "download"
+                if item.capability == "file.upload":
+                    params.setdefault("overwrite", True)
             if item.capability == "terminal.command":
                 params["command"] = str(params.get("command") or "")
             if item.capability == "terminal.batch":

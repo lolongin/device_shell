@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .models import WorkflowDraft, WorkflowEdge, WorkflowInput, WorkflowNode
+from .models import WorkflowDraft, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowOutput
 
 FORMAT = "device-tui.workflow"
 SCHEMA_VERSION = 1
@@ -57,6 +57,14 @@ def _as_inputs(values: Any) -> tuple[WorkflowInput, ...]:
     if not isinstance(values, (list, tuple)):
         raise PortableWorkflowError("workflow.inputs must be a list")
     return tuple(WorkflowInput.from_dict(item) for item in values if isinstance(item, Mapping))
+
+
+def _as_outputs(values: Any) -> tuple[WorkflowOutput, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, (list, tuple)):
+        raise PortableWorkflowError("workflow.outputs must be a list")
+    return tuple(WorkflowOutput.from_dict(item) for item in values if isinstance(item, Mapping))
 
 
 def _as_nodes(values: Any) -> tuple[WorkflowNode, ...]:
@@ -119,7 +127,7 @@ def from_document(document: Mapping[str, Any]) -> PortableWorkflow:
     name = str(body.get("name") or "").strip()
     if not name:
         raise PortableWorkflowError("workflow.name is required")
-    draft = WorkflowDraft(id="", name=name, description=str(body.get("description") or ""), inputs=_as_inputs(body.get("inputs")), nodes=nodes, edges=edges)
+    draft = WorkflowDraft(id="", name=name, description=str(body.get("description") or ""), inputs=_as_inputs(body.get("inputs")), nodes=nodes, edges=edges, outputs=_as_outputs(body.get("outputs")))
     return PortableWorkflow(draft=draft, required_actions=tuple(dict.fromkeys(node.action_id for node in nodes)))
 
 
@@ -145,6 +153,7 @@ def export_document(workflow: WorkflowDraft | Any) -> dict[str, Any]:
         "name": workflow.name,
         "description": getattr(workflow, "description", ""),
         "inputs": [item.to_dict() for item in workflow.inputs],
+        "outputs": [item.to_dict() for item in getattr(workflow, "outputs", ())],
         "steps": nodes,
         "edges": [
             {

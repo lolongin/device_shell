@@ -19,13 +19,117 @@ def test_workflow_studio_owns_the_full_workspace_grid() -> None:
     assert ".workflow-library { grid-column: 2 / -1; grid-row: 1;" in styles
 
 
+def test_workflow_surfaces_define_light_theme_tokens_and_overrides() -> None:
+    styles = STYLES.read_text(encoding="utf-8")
+    library = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    assert "--workflow-bg: #f7f9fc" in styles
+    assert "--workflow-surface: #ffffff" in styles
+    assert "--workflow-muted: #475569" in styles
+    assert "--workflow-subtle: #64748b" in styles
+    assert ':root[data-theme="light"] .workflow-node' in styles
+    assert ':root[data-theme="light"] .workflow-action-catalog' in styles
+    assert ':root[data-theme="light"] .workflow-properties input' in styles
+    assert ':root[data-theme="light"] .workflow-script-test-result' in styles
+    assert ':root[data-theme="light"] .workflow-library-body input' in styles
+    assert ':global(:root[data-theme="light"]) .workflow-command-reference-menu' in library
+
+
 def test_workflow_studio_loads_catalog_and_preserves_edges_when_renaming() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
     assert "desktopApi.workflowActions()" in source
     assert "function renameNode" in source
     assert "source: edge.source === previousId ? nextId" in source
-    assert "create(true)" in source
+    assert "openCreateDialog(true)" in source
     assert "loop.for_each" in source
+
+
+def test_workflow_studio_names_new_workflows_and_allows_renaming() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert "async function confirmCreate" in source
+    assert 'v-model="createName"' in source
+    assert ':disabled="!createName.trim() || creating"' in source
+    assert 'v-model="selected.name"' in source
+    assert "selected.value.name.trim()" in source
+
+
+def test_workflow_studio_separates_script_management_and_shows_test_output() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert "workflow-script-studio" in source
+    assert "脚本资源" in source
+    assert "独立脚本编辑器" in source
+    assert "desktopApi.testWorkflowScript" in source
+    assert "desktopApi.getTask" in source
+    assert "scriptTestDetails.stdout" in source
+    assert "scriptTestDetails.stderr" in source
+    assert "scriptTestDetails.exitCode" in source
+    assert "savedScriptSnapshots" in source
+    assert "hasUnsavedScriptChanges.value && !await saveWorkflowScript()" in source
+    assert "保存并测试" in source
+
+
+def test_workflow_script_creation_offers_named_templates() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert "const scriptTemplates: ScriptTemplate[]" in source
+    assert "Python 主函数" in source
+    assert "PowerShell 参数脚本" in source
+    assert "<section class=\"workflow-script-template-grid\"" in source
+    assert "async function confirmCreateWorkflowScript" in source
+    assert "template.input_schema" in source
+
+
+def test_workflow_script_nodes_render_schema_inputs_with_json_escape_hatch() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert "selectedNodeScript" in source
+    assert "scriptNodeInputMode" in source
+    assert "updateScriptNodeInputField" in source
+    assert "updateScriptNodeInputBoolean" in source
+    assert "updateScriptNodeInputJson" in source
+    assert "updateScriptNodeInputJsonEditor" in source
+    assert "hasEmbeddedScriptReference(parsed)" in source
+    assert "变量引用必须单独作为完整值" in source
+    assert "参数表单" in source
+    assert "DEVICE_TUI_INPUT_JSON" in source
+    assert "支持使用 <code>${inputs.xxx}</code> 引用流程输入" in source
+
+
+def test_workflow_studio_panels_keep_independent_scroll_containers() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert ".workflow-script-list { min-height: 0; overflow: auto;" in source
+    assert ".workflow-script-test-panel {" in source
+    assert "min-height: 0; overflow: auto;" in source
+    assert ".workflow-action-catalog, .workflow-properties { min-height: 0; overflow: auto;" in source
+    assert ".workflow-properties { grid-column: 3; grid-row: 5;" in source
+
+    step_rail = source.split(".workflow-studio-grid.step-settings-mode > .workflow-right-rail {", 1)[1].split("}", 1)[0]
+    step_inspector = source.split(".workflow-studio-grid.step-settings-mode > .workflow-right-rail > .workflow-properties {", 1)[1].split("}", 1)[0]
+    assert "display: flex;" in step_rail
+    assert "overflow-y: auto;" in step_rail
+    assert "overflow: visible;" in step_inspector
+
+
+def test_script_step_resource_can_be_edited_from_step_settings() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert "class=\"workflow-script-reference-notice\"" in source
+    assert "aria-label=\"步骤脚本编辑器\"" in source
+    assert "if (script) script.script = value" in source
+    assert "@click=\"saveNodeScriptResource\"" in source
+    assert "selectedNodeScript?.script || configString('script')" in source
+
+
+def test_workflow_studio_manages_user_templates_and_renders_subworkflow_reference() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert "async function deleteWorkflowTemplate(template: WorkflowTemplate)" in source
+    assert "await desktopApi.deleteWorkflowTemplate(template.id)" in source
+    assert "!item.built_in" in source
+    assert "'${' + selectedNode.id + '.输出名}'" in source
+    assert "`${selectedNode.id}.输出名`" not in source
 
 
 def test_workflow_studio_requires_explicit_draft_and_risk_confirmation() -> None:
@@ -47,6 +151,8 @@ def test_quick_workflow_runner_preserves_typed_input_defaults() -> None:
     assert "Number.isFinite(parsed)" in source
     assert "Number.isInteger(parsed)" in source
     assert "input.type === 'number' ? 'any'" in source
+    assert "requestedVersionMissing" in source
+    assert "发布版本 v${props.initialVersion} 不存在或已被删除" in source
 
 
 def test_workflow_run_paths_persist_the_current_canvas_before_execution() -> None:
@@ -108,6 +214,18 @@ def test_workflow_studio_exposes_editable_runtime_inputs() -> None:
     assert "function updateWorkflowInput" in source
     assert "运行参数" in source
     assert "inputs: workflowRuntimeInputs.value" in source
+    assert '<option value="file">本地文件</option>' in source
+    assert "这是本机源文件输入" in source
+    assert "async function chooseUploadSource" in source
+    assert "设备目标路径" in source
+    assert "用户无需关心暂存目录" in source
+
+
+def test_workflow_contract_add_buttons_invoke_their_handlers() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    assert '@click="addWorkflowInput(); workflowInputsExpanded = true"' in source
+    assert '@click="addWorkflowOutput(); workflowOutputsExpanded = true"' in source
 
 
 def test_workflow_studio_configures_loop_references_retry_backoff_and_batch_sessions() -> None:
@@ -200,7 +318,8 @@ def test_workflow_reference_selectors_use_catalog_output_schema() -> None:
     assert "type OutputField" in source
     assert "function outputFieldsFromSchema" in source
     assert "function outputFieldsForAction" in source
-    assert "fields: outputFieldsForAction(item.action_id)" in source
+    assert "function outputFieldsForNode" in source
+    assert "fields: outputFieldsForNode(item)" in source
     assert 'v-for="field in source.fields"' in source
     assert "fieldLabel(field.name)" in source
     assert "`${source.id}-${field.name}`" in source

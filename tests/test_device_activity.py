@@ -53,6 +53,11 @@ def test_device_activity_maps_success_and_keeps_vendor_execution_behind_handler(
 
     assert result.status == ActivityStatus.SUCCEEDED
     assert result.operation_id == "exec-1"
+    assert result.outputs["stdout"] == result.outputs["output"] == "version 1"
+    assert result.outputs["exitCode"] == 0
+    assert result.outputs["exit_code"] == 0
+    assert result.outputs["data"]["execution_id"] == "exec-1"
+    assert result.outputs["error"] is None
     assert backend.calls[0][0] == DeviceTarget(device_id="dev-1", session_id="sess-1", protocol="ssh")
     assert backend.calls[0][1].action == "verify_version"
     assert events[0].type == "device.activity.dispatching"
@@ -199,6 +204,8 @@ def test_reboot_execution_error_is_unknown_until_reconciled():
 
     assert result.status == ActivityStatus.UNKNOWN
     assert result.error["code"] == "terminal_timeout"
+    assert result.outputs["error"] == result.error
+    assert result.outputs["exitCode"] == 1
 
 
 def test_device_activity_cancel_targets_the_bound_session():

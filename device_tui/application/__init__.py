@@ -1,13 +1,5 @@
 """UI-independent application services shared by desktop clients and MCP."""
 
-from .automation import (
-    AutomationActivityRecord,
-    AutomationRuleRecord,
-    AutomationService,
-    AutomationSessionStatus,
-    AutomationStore,
-    MemoryAutomationStore,
-)
 from .commands import (
     CommandGroup,
     CommandService,
@@ -154,11 +146,6 @@ __all__ = [
     "AiPlan",
     "ApplicationConflictError",
     "ApplicationEvent",
-    "AutomationActivityRecord",
-    "AutomationRuleRecord",
-    "AutomationService",
-    "AutomationSessionStatus",
-    "AutomationStore",
     "ConnectionTarget",
     "ConnectionProfile",
     "ConnectionProfileDraft",
@@ -203,7 +190,6 @@ __all__ = [
     "MemorySettingsStore",
     "MemoryConnectionProfileStore",
     "MemoryCommandStore",
-    "MemoryAutomationStore",
     "MemorySecretStore",
     "MemoryTransferStore",
     "ManagedTransferService",

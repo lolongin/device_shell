@@ -89,6 +89,45 @@ def test_plan_compiler_maps_file_capabilities_to_transfer_workflow() -> None:
     node = result.task_plan.nodes[0]
     assert node.workflow_id == "file.transfer"
     assert node.input_mapping["direction"] == "upload"
+    assert node.input_mapping["overwrite"] is True
+
+
+def test_plan_compiler_preserves_explicit_upload_no_overwrite() -> None:
+    plan = WorkflowPlan(
+        "upload-no-overwrite",
+        "upload artifact without replacement",
+        {"device_id": "d1"},
+        (
+            PlanStep(
+                "upload",
+                "file.upload",
+                {
+                    "source_path": "a.cc",
+                    "destination_path": "flash:/a.cc",
+                    "overwrite": False,
+                },
+            ),
+        ),
+    )
+
+    result = WorkflowPlanCompiler().validate(plan)
+
+    assert result.task_plan is not None
+    assert result.task_plan.nodes[0].input_mapping["overwrite"] is False
+
+
+def test_plan_compiler_accepts_upload_without_destination_path() -> None:
+    plan = WorkflowPlan(
+        "upload-default-destination",
+        "upload artifact",
+        {"device_id": "d1"},
+        (PlanStep("upload", "file.upload", {"source_path": r"D:\\packages\\a.cc"}),),
+    )
+
+    result = WorkflowPlanCompiler().validate(plan)
+
+    assert result.status == "requires_confirmation"
+    assert result.task_plan is not None
 
 
 def test_plan_compiler_publishes_capability_contracts_and_validates_params() -> None:

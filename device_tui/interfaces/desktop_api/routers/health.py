@@ -27,7 +27,6 @@ async def diagnostics(ctx=Depends(get_context)) -> DiagnosticsResponse:
         legacy_imports={
             "profiles": dict(ctx.legacy_import or {}),
             "commands": dict(ctx.legacy_command_import or {}),
-            "automation": dict(ctx.legacy_automation_import or {}),
             "transfers": dict(ctx.legacy_transfer_import or {}),
         },
         log_policy=dict(ctx.log_policy or {}),

@@ -94,7 +94,6 @@ async def disconnect_session(session_id: str, ctx=Depends(get_context)) -> Sessi
 @router.delete("/sessions/{session_id}", status_code=204)
 async def close_session(session_id: str, ctx=Depends(get_context)) -> None:
     desktop = ctx.desktop
-    desktop.automation.cancel_session(session_id, reason="session_closed")
     desktop.task_service.cancel_session(session_id)
     desktop.transfers.cancel_session(session_id)
     record = next((item for item in desktop.sessions.list_sessions() if item.id == session_id), None)

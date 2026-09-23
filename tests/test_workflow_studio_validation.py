@@ -130,6 +130,48 @@ def test_validation_accepts_generic_variable_extraction() -> None:
     assert not issues(draft)
 
 
+def test_validation_accepts_variable_extraction_conversion() -> None:
+    draft = WorkflowDraft(
+        "w",
+        "x",
+        nodes=(WorkflowNode(
+            "variable",
+            "variable.set",
+            {
+                "name": "count",
+                "value": "count= 42 ",
+                "extract": {
+                    "pattern": r"=(.+)",
+                    "group": 1,
+                    "convert": "integer",
+                    "trim": True,
+                },
+            },
+        ),),
+    )
+
+    assert not issues(draft)
+
+
+def test_validation_rejects_invalid_variable_extraction_conversion() -> None:
+    draft = WorkflowDraft(
+        "w",
+        "x",
+        nodes=(WorkflowNode(
+            "variable",
+            "variable.set",
+            {
+                "name": "count",
+                "value": "count=42",
+                "extract": {"pattern": r"=(.+)", "convert": "decimal", "trim": "yes"},
+            },
+        ),),
+    )
+
+    codes = {item.code for item in issues(draft)}
+    assert {"invalid_variable_extract_conversion", "invalid_variable_extract_trim"} <= codes
+
+
 def test_validation_allows_variable_interpolation_in_command_text() -> None:
     draft = WorkflowDraft(
         "w",
@@ -416,6 +458,16 @@ def test_validation_accepts_absolute_file_upload_source_path() -> None:
     assert "invalid_transfer_source_path" not in {item.code for item in issues(draft)}
 
 
+def test_validation_accepts_upload_without_device_destination() -> None:
+    draft = WorkflowDraft(
+        "w",
+        "x",
+        nodes=(WorkflowNode("upload", "file.upload", {"source": r"D:\\packages\\device.cc"}),),
+    )
+
+    assert not issues(draft)
+
+
 @pytest.mark.parametrize("action_id", ["device.ssh", "device.telnet"])
 def test_validation_does_not_require_unused_connection_host(action_id: str) -> None:
     draft = WorkflowDraft(
@@ -441,6 +493,51 @@ def test_validation_rejects_values_that_runtime_handlers_cannot_execute() -> Non
 
     assert "invalid_config_type" in codes
     assert "invalid_loop_items" in codes
+
+
+def test_validation_requires_script_input_references_to_be_complete_values() -> None:
+    embedded = WorkflowDraft(
+        "script-embedded",
+        "x",
+        nodes=(
+            WorkflowNode(
+                "script",
+                "script.run",
+                {
+                    "script": "print('ok')",
+                    "input_json": '{"message":"prefix-${inputs.name}"}',
+                },
+            ),
+        ),
+    )
+    exact = WorkflowDraft(
+        "script-exact",
+        "x",
+        inputs=(WorkflowInput("name", type="string"),),
+        nodes=(
+            WorkflowNode(
+                "script",
+                "script.run",
+                {
+                    "script": "print('ok')",
+                    "input_json": '{"message":"${inputs.name}"}',
+                },
+            ),
+        ),
+    )
+
+    assert "embedded_variable_ref" in {item.code for item in issues(embedded)}
+    assert "embedded_variable_ref" not in {item.code for item in issues(exact)}
+
+
+def test_validation_rejects_invalid_script_input_json() -> None:
+    draft = WorkflowDraft(
+        "script-invalid-json",
+        "x",
+        nodes=(WorkflowNode("script", "script.run", {"script": "print('ok')", "input_json": "{"}),),
+    )
+
+    assert "invalid_script_input_json" in {item.code for item in issues(draft)}
 
 
 def test_validation_requires_supported_condition_branch_labels() -> None:
@@ -537,3 +634,115 @@ def test_catalog_marks_confirmation_prompt_as_required() -> None:
 
     assert spec is not None
     assert "prompt" in spec.required_inputs
+
+
+def test_subworkflow_validation_accepts_bound_inputs_and_declared_outputs() -> None:
+    child = WorkflowVersion(
+        "child",
+        1,
+        "Child",
+        inputs=(WorkflowInput("message", required=True),),
+        nodes=(
+            WorkflowNode("capture", "variable.set", {"name": "captured", "value": "${inputs.message}"}),
+        ),
+        outputs=(WorkflowOutput("echo", "${capture.value}", "string"),),
+    )
+    parent = WorkflowDraft(
+        "parent",
+        "Parent",
+        inputs=(WorkflowInput("message", required=True),),
+        nodes=(
+            WorkflowNode(
+                "call",
+                "workflow.call",
+                {"workflow_id": "child", "version": 1, "inputs": {"message": "${inputs.message}"}},
+            ),
+            WorkflowNode("save", "result.save", {"value": "${call.echo}"}),
+        ),
+        edges=(WorkflowEdge("call", "save"),),
+    )
+
+    result = validate_workflow(parent, CATALOG, lambda workflow_id, version: child)
+
+    assert result.valid
+
+
+@pytest.mark.parametrize(
+    ("config", "expected_code"),
+    (
+        ({"workflow_id": "child", "version": "draft", "inputs": {}}, "invalid_config_type"),
+        ({"workflow_id": "child", "version": 1, "inputs": {}}, "missing_subworkflow_input"),
+        ({"workflow_id": "missing", "version": 1, "inputs": {}}, "unknown_workflow_version"),
+    ),
+)
+def test_subworkflow_validation_rejects_invalid_targets_and_input_bindings(
+    config: dict[str, object],
+    expected_code: str,
+) -> None:
+    child = WorkflowVersion(
+        "child",
+        1,
+        "Child",
+        inputs=(WorkflowInput("message", required=True),),
+        nodes=(WorkflowNode("capture", "variable.set", {"name": "captured", "value": "ok"}),),
+    )
+
+    def resolve(workflow_id: str, version: int | str | None) -> WorkflowVersion:
+        if workflow_id != "child" or version != 1:
+            raise KeyError(workflow_id)
+        return child
+
+    draft = WorkflowDraft(
+        "parent",
+        "Parent",
+        nodes=(WorkflowNode("call", "workflow.call", config),),
+    )
+
+    assert expected_code in {item.code for item in validate_workflow(draft, CATALOG, resolve).errors}
+
+
+def test_subworkflow_validation_rejects_direct_and_indirect_recursion() -> None:
+    direct = WorkflowDraft(
+        "parent",
+        "Parent",
+        nodes=(WorkflowNode("call", "workflow.call", {"workflow_id": "parent", "version": 1}),),
+    )
+    child = WorkflowVersion(
+        "child",
+        1,
+        "Child",
+        nodes=(WorkflowNode("back", "workflow.call", {"workflow_id": "parent", "version": 1}),),
+    )
+    published_parent = WorkflowVersion(
+        "parent",
+        1,
+        "Parent",
+        nodes=(WorkflowNode("call", "workflow.call", {"workflow_id": "child", "version": 1}),),
+    )
+    versions = {("parent", 1): published_parent, ("child", 1): child}
+
+    assert "recursive_workflow_call" in {
+        item.code for item in validate_workflow(direct, CATALOG, lambda workflow_id, version: published_parent).errors
+    }
+    nested = validate_workflow(
+        published_parent,
+        CATALOG,
+        lambda workflow_id, version: versions[(workflow_id, int(version or 0))],
+    )
+    assert "invalid_subworkflow" in {item.code for item in nested.errors}
+
+
+def test_workflow_call_cannot_be_used_as_a_loop_child() -> None:
+    draft = WorkflowDraft(
+        "parent",
+        "Parent",
+        nodes=(
+            WorkflowNode(
+                "loop",
+                "loop.for_each",
+                {"items": ["one"], "action_id": "workflow.call", "action_inputs": {}},
+            ),
+        ),
+    )
+
+    assert "invalid_loop_action" in {item.code for item in issues(draft)}

@@ -26,10 +26,6 @@ from device_tui.domain.devices.repository import (
 
 from .data_migration import PersistenceMigrationStatus
 from .models import (
-    AutomationActivityModel,
-    AutomationRuleModel,
-    AutomationSessionStatusModel,
-    AutomationWorkspaceResponse,
     CommandGroupModel,
     CommandHistoryModel,
     CommandWorkspaceResponse,
@@ -46,7 +42,6 @@ from .models import (
     PluginConfigFieldModel,
     PluginConfigOptionModel,
     ProfileEndpointModel,
-    QuickSendButtonModel,
     SessionLogSettingsModel,
     SessionSummary,
     TaskModel,
@@ -262,39 +257,6 @@ def command_workspace(desktop: DesktopApplication) -> CommandWorkspaceResponse:
                 last_used_at=item.last_used_at,
             )
             for item in desktop.commands.history(limit=200)
-        ],
-    )
-
-
-def automation_workspace(desktop: DesktopApplication) -> AutomationWorkspaceResponse:
-    return AutomationWorkspaceResponse(
-        rules=[
-            AutomationRuleModel(
-                id=record.id,
-                rule=desktop.automation.serialize_rule(
-                    desktop.automation.public_rule(record)
-                ),
-                created_at=record.created_at,
-                updated_at=record.updated_at,
-            )
-            for record in desktop.automation.list_rules()
-        ],
-        sessions=[
-            AutomationSessionStatusModel(
-                session_id=status.session_id,
-                running_rule_ids=list(status.running_rule_ids),
-                waiting_rule_ids=list(status.waiting_rule_ids),
-                triggered_rule_ids=list(status.triggered_rule_ids),
-            )
-            for status in desktop.automation.statuses()
-        ],
-        quick_send_buttons=[
-            QuickSendButtonModel(**asdict(record))
-            for record in desktop.automation.list_quick_send_buttons()
-        ],
-        activity=[
-            AutomationActivityModel(**asdict(record))
-            for record in desktop.automation.activities(limit=100)
         ],
     )
 

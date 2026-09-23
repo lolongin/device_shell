@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from device_tui.domain.devices.repository import DeviceRepository
-from .automation import AutomationService, AutomationStore, MemoryAutomationStore
 from .credentials import CredentialResolver, RepositoryCredentialResolver
 from .commands import CommandService, CommandStore, MemoryCommandStore
 from .devices import DeviceService
@@ -70,7 +69,6 @@ class DesktopApplication:
     profiles: ConnectionProfileService
     secrets: SecretStore
     commands: CommandService
-    automation: AutomationService
     operations: OperationManager
     transfers: ManagedTransferService
     upgrades: PackageUpgradeService
@@ -99,7 +97,6 @@ def build_desktop_application(
     profile_store: ConnectionProfileStore | None = None,
     secret_store: SecretStore | None = None,
     command_store: CommandStore | None = None,
-    automation_store: AutomationStore | None = None,
     transfer_store: TransferStore | None = None,
     operation_store: OperationStore | None = None,
     settings_store: SettingsStore | None = None,
@@ -127,13 +124,6 @@ def build_desktop_application(
         profiles,
     )
     sessions = SessionService(devices, credentials, session_manager, events)
-    automation = AutomationService(
-        automation_store or MemoryAutomationStore(),
-        sessions,
-        secrets,
-        events,
-    )
-    automation.bind_event_source(session_manager)
     operations = OperationManager(
         events,
         operation_store or MemoryOperationStore(),
@@ -219,6 +209,7 @@ def build_desktop_application(
         operation_status=lambda operation_id: control.get_operation(operation_id).status,
         framework_workflows=framework_workflows,
         event_bus=events,
+        workflow_staging_cleanup=transfers.cleanup_workflow_source,
     )
     return DesktopApplication(
         devices=devices,
@@ -229,7 +220,6 @@ def build_desktop_application(
         profiles=profiles,
         secrets=secrets,
         commands=CommandService(command_store or MemoryCommandStore(), sessions),
-        automation=automation,
         operations=operations,
         transfers=transfers,
         upgrades=upgrades,

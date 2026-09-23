@@ -26,6 +26,31 @@ class WorkflowInput:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowOutput:
+    name: str
+    value: Any = None
+    type: str = "any"
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "value": self.value,
+            "type": self.type,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowOutput":
+        return cls(
+            str(payload.get("name", "")),
+            payload.get("value"),
+            str(payload.get("type", "any")),
+            str(payload.get("description", "")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowNode:
     id: str
     action_id: str
@@ -71,13 +96,14 @@ class WorkflowDraft:
     nodes: tuple[WorkflowNode, ...] = ()
     edges: tuple[WorkflowEdge, ...] = ()
     status: str = "draft"
+    outputs: tuple[WorkflowOutput, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "description": self.description, "version": self.version, "inputs": [item.to_dict() for item in self.inputs], "nodes": [item.to_dict() for item in self.nodes], "edges": [item.to_dict() for item in self.edges], "status": self.status}
+        return {"id": self.id, "name": self.name, "description": self.description, "version": self.version, "inputs": [item.to_dict() for item in self.inputs], "outputs": [item.to_dict() for item in self.outputs], "nodes": [item.to_dict() for item in self.nodes], "edges": [item.to_dict() for item in self.edges], "status": self.status}
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowDraft":
-        return cls(str(payload.get("id", "")), str(payload.get("name", "")), str(payload.get("description", "")), str(payload.get("version", "draft")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), str(payload.get("status", "draft")))
+        return cls(str(payload.get("id", "")), str(payload.get("name", "")), str(payload.get("description", "")), str(payload.get("version", "draft")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), str(payload.get("status", "draft")), tuple(WorkflowOutput.from_dict(v) for v in payload.get("outputs", ()) if isinstance(v, Mapping)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,10 +116,11 @@ class WorkflowVersion:
     edges: tuple[WorkflowEdge, ...] = ()
     published_at: str | None = None
     description: str = ""
+    outputs: tuple[WorkflowOutput, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {"workflow_id": self.workflow_id, "version": self.version, "name": self.name, "inputs": [i.to_dict() for i in self.inputs], "nodes": [n.to_dict() for n in self.nodes], "edges": [e.to_dict() for e in self.edges], "published_at": self.published_at, "description": self.description}
+        return {"workflow_id": self.workflow_id, "version": self.version, "name": self.name, "inputs": [i.to_dict() for i in self.inputs], "outputs": [i.to_dict() for i in self.outputs], "nodes": [n.to_dict() for n in self.nodes], "edges": [e.to_dict() for e in self.edges], "published_at": self.published_at, "description": self.description}
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowVersion":
-        return cls(str(payload.get("workflow_id", payload.get("id", ""))), payload.get("version", 1), str(payload.get("name", "")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), payload.get("published_at"), str(payload.get("description", "")))
+        return cls(str(payload.get("workflow_id", payload.get("id", ""))), payload.get("version", 1), str(payload.get("name", "")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), payload.get("published_at"), str(payload.get("description", "")), tuple(WorkflowOutput.from_dict(v) for v in payload.get("outputs", ()) if isinstance(v, Mapping)))

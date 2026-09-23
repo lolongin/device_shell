@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from device_tui.application.device_control import ControlContext, DeviceTarget
 from device_tui.application.tasking.execution import DeviceExecutionTool, DeviceWorkflowExecutionError
 from device_tui.application.tasking.models import WorkflowStep
+from device_tui.application.workflow_runtime.output_contract import normalize_command_output
 from device_tui.framework import (
     ActionResult,
     ActionSpec,
@@ -91,25 +92,28 @@ class DeviceActivityHandler:
                 if operation in self._UNCERTAIN_OPERATIONS
                 else ActivityStatus.FAILED
             )
+            activity_error = {
+                "code": exc.code,
+                "message": str(exc),
+                "class": exc.error_class,
+                "retryable": exc.retryable,
+            }
             error_outputs = self._normalize_outputs(
                 dict(exc.details),
                 operation=operation,
                 target_values=target_values,
                 status=status.value,
+                error=activity_error,
             )
             return ActivityResult(
                 status=status,
                 outputs=error_outputs,
                 evidence=({"kind": "device_activity_error", "operation": operation, "code": exc.code},),
-                error={
-                    "code": exc.code,
-                    "message": str(exc),
-                    "class": exc.error_class,
-                    "retryable": exc.retryable,
-                },
+                error=activity_error,
             )
         except Exception as exc:
             status = ActivityStatus.UNKNOWN if operation in self._UNCERTAIN_OPERATIONS else ActivityStatus.FAILED
+            activity_error = {"code": "device_activity_failed", "message": str(exc), "class": "unknown"}
             return ActivityResult(
                 status=status,
                 outputs=self._normalize_outputs(
@@ -117,9 +121,10 @@ class DeviceActivityHandler:
                     operation=operation,
                     target_values=target_values,
                     status=status.value,
+                    error=activity_error,
                 ),
                 evidence=({"kind": "device_activity_error", "operation": operation},),
-                error={"code": "device_activity_failed", "message": str(exc), "class": "unknown"},
+                error=activity_error,
             )
 
         outputs = self._normalize_outputs(
@@ -175,16 +180,25 @@ class DeviceActivityHandler:
             "status": raw_status,
         }))
         self._report_compatibility_events(operation, invocation, outputs, report)
+        activity_error = None if succeeded else {
+            "code": str(outputs.get("error_code") or "device_activity_failed"),
+            "message": str(outputs.get("output") or "device operation failed"),
+            "class": "deterministic",
+        }
+        if activity_error is not None:
+            outputs = self._normalize_outputs(
+                outputs,
+                operation=operation,
+                target_values=target_values,
+                status=raw_status,
+                error=activity_error,
+            )
         return ActivityResult(
             status=ActivityStatus.SUCCEEDED if succeeded else ActivityStatus.FAILED,
             outputs=outputs,
             evidence=tuple(item for item in outputs.get("evidence", ()) if isinstance(item, dict)),
             operation_id=operation_id,
-            error=None if succeeded else {
-                "code": str(outputs.get("error_code") or "device_activity_failed"),
-                "message": str(outputs.get("output") or "device operation failed"),
-                "class": "deterministic",
-            },
+            error=activity_error,
         )
 
     @staticmethod
@@ -194,9 +208,10 @@ class DeviceActivityHandler:
         operation: str,
         target_values: Mapping[str, Any],
         status: str = "completed",
+        error: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Keep the public Activity output contract stable across adapters."""
-        normalized = dict(outputs)
+        normalized = normalize_command_output(outputs, status=status, error=error)
         execution_id = str(
             normalized.get("execution_id")
             or normalized.get("probe_execution_id")
@@ -204,8 +219,6 @@ class DeviceActivityHandler:
             or ""
         )
         operation_id = str(normalized.get("operation_id") or execution_id)
-        normalized.setdefault("output", normalized.get("probe_output", "") or "")
-        normalized.setdefault("status", status)
         normalized.setdefault("execution_id", execution_id)
         normalized.setdefault("operation_id", operation_id)
         normalized.setdefault("session_id", str(target_values.get("session_id") or ""))

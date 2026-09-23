@@ -94,6 +94,7 @@ class TaskService:
         operation_status: Callable[[str], str] | None = None,
         framework_workflows: WorkflowRegistry | None = None,
         event_bus: Any | None = None,
+        workflow_staging_cleanup: Callable[[str], None] | None = None,
     ) -> None:
         self._backend = backend
         self._orchestrator = orchestrator
@@ -101,6 +102,8 @@ class TaskService:
         self._operation_status = operation_status
         self._framework_workflows = framework_workflows
         self._event_bus = event_bus
+        self._workflow_staging_cleanup = workflow_staging_cleanup
+        self._cleaned_workflow_staging: set[str] = set()
         self._plan_jobs: set[Any] = set()
         self._runner_loop: asyncio.AbstractEventLoop | None = None
         self._framework_requests: dict[str, TaskCreate] = {}
@@ -461,6 +464,11 @@ class TaskService:
                     "plan_revision": record.plan_revision,
                 },
             )
+        staging_id = str(run.context.get("workflow_staging_id") or "").strip()
+        if staging_id and str(record.status) in {"completed", "failed", "cancelled"} and staging_id not in self._cleaned_workflow_staging:
+            if self._workflow_staging_cleanup is not None:
+                self._workflow_staging_cleanup(staging_id)
+            self._cleaned_workflow_staging.add(staging_id)
         return record
 
     @staticmethod

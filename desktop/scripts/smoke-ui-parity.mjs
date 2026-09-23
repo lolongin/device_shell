@@ -19,8 +19,6 @@ const captureHelpPath = path.join(captureDir, 'ui-parity-help.png')
 const captureHelpLightPath = path.join(captureDir, 'ui-parity-help-light.png')
 const captureSessionManagerPath = path.join(captureDir, 'ui-parity-session-manager.png')
 const captureSessionManagerLightPath = path.join(captureDir, 'ui-parity-session-manager-light.png')
-const captureAdvancedAutomationPath = path.join(captureDir, 'ui-parity-advanced-automation.png')
-const captureAdvancedAutomationLightPath = path.join(captureDir, 'ui-parity-advanced-automation-light.png')
 const captureTransferServicePath = path.join(captureDir, 'ui-parity-transfer-service.png')
 const captureTransferServiceLightPath = path.join(captureDir, 'ui-parity-transfer-service-light.png')
 const captureManualUpgradePath = path.join(captureDir, 'ui-parity-manual-upgrade.png')
@@ -51,8 +49,6 @@ const env = {
   DEVICE_TUI_CAPTURE_HELP_LIGHT_PATH: captureHelpLightPath,
   DEVICE_TUI_CAPTURE_SESSION_MANAGER_PATH: captureSessionManagerPath,
   DEVICE_TUI_CAPTURE_SESSION_MANAGER_LIGHT_PATH: captureSessionManagerLightPath,
-  DEVICE_TUI_CAPTURE_ADVANCED_AUTOMATION_PATH: captureAdvancedAutomationPath,
-  DEVICE_TUI_CAPTURE_ADVANCED_AUTOMATION_LIGHT_PATH: captureAdvancedAutomationLightPath,
   DEVICE_TUI_CAPTURE_TRANSFER_SERVICE_PATH: captureTransferServicePath,
   DEVICE_TUI_CAPTURE_TRANSFER_SERVICE_LIGHT_PATH: captureTransferServiceLightPath,
   DEVICE_TUI_CAPTURE_MANUAL_UPGRADE_PATH: captureManualUpgradePath,
@@ -173,12 +169,6 @@ if (!existsSync(captureSessionManagerPath)) {
 if (!existsSync(captureSessionManagerLightPath)) {
   throw new Error(`Electron light session-manager parity capture was not written: ${captureSessionManagerLightPath}`)
 }
-if (!existsSync(captureAdvancedAutomationPath)) {
-  throw new Error(`Electron advanced-automation parity capture was not written: ${captureAdvancedAutomationPath}`)
-}
-if (!existsSync(captureAdvancedAutomationLightPath)) {
-  throw new Error(`Electron light advanced-automation parity capture was not written: ${captureAdvancedAutomationLightPath}`)
-}
 if (!existsSync(captureTransferServicePath)) {
   throw new Error(`Electron transfer-service parity capture was not written: ${captureTransferServicePath}`)
 }
@@ -220,8 +210,6 @@ console.log(`HelpCapture=${captureHelpPath}`)
 console.log(`HelpLightCapture=${captureHelpLightPath}`)
 console.log(`SessionManagerCapture=${captureSessionManagerPath}`)
 console.log(`SessionManagerLightCapture=${captureSessionManagerLightPath}`)
-console.log(`AdvancedAutomationCapture=${captureAdvancedAutomationPath}`)
-console.log(`AdvancedAutomationLightCapture=${captureAdvancedAutomationLightPath}`)
 console.log(`TransferServiceCapture=${captureTransferServicePath}`)
 console.log(`TransferServiceLightCapture=${captureTransferServiceLightPath}`)
 console.log(`ManualUpgradeCapture=${captureManualUpgradePath}`)

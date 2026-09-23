@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any, Mapping
 
 
@@ -47,6 +48,11 @@ def _compare(left: Any, right: Any, operator: str) -> bool:
         return right_text.casefold() in left_text.casefold()
     if normalized == "not_contains":
         return right_text.casefold() not in left_text.casefold()
+    if normalized == "regex":
+        try:
+            return re.search(right_text, left_text) is not None
+        except re.error:
+            return False
     if normalized in {"greater_than", "less_than"}:
         try:
             left_value, right_value = Decimal(left_text), Decimal(right_text)
@@ -74,6 +80,9 @@ def _normalize_operator(operator: str) -> str:
         "includes": "contains",
         "不包含": "not_contains",
         "not_contains": "not_contains",
+        "正则匹配": "regex",
+        "regex": "regex",
+        "matches": "regex",
         "大于": "greater_than",
         ">": "greater_than",
         "gt": "greater_than",

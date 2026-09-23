@@ -34,7 +34,6 @@ import {
   Sun,
   Trash2,
   UserRound,
-  WandSparkles,
   Workflow,
   X
 } from 'lucide-vue-next'
@@ -77,7 +76,6 @@ import type {
   DeviceSourceId
 } from './types'
 
-const AutomationWorkspace = defineAsyncComponent(() => import('./components/AutomationWorkspace.vue'))
 const TransferWorkspace = defineAsyncComponent(() => import('./components/TransferWorkspace.vue'))
 const UpgradeWorkspace = defineAsyncComponent(() => import('./components/UpgradeWorkspace.vue'))
 const PackageBuildWorkspace = defineAsyncComponent(() => import('./components/PackageBuildWorkspace.vue'))
@@ -146,7 +144,7 @@ const navigatorVisible = ref(localStorage.getItem(NAVIGATOR_VISIBLE_KEY) !== '0'
 const navigatorWidth = ref(readStoredNavigatorWidth())
 const navigatorResizing = ref(false)
 const operationPanelOpen = computed(() =>
-  workspace.automationPanelOpen || workspace.transferPanelOpen || workspace.upgradePanelOpen || workspace.packageBuildPanelOpen || workflowPanelOpen.value
+  workspace.transferPanelOpen || workspace.upgradePanelOpen || workspace.packageBuildPanelOpen || workflowPanelOpen.value
 )
 const showSessionSidebar = computed(() =>
   !workflowPanelOpen.value && workspace.sessions.length > 0 && sessionTabLayout.value === 'side'
@@ -1521,7 +1519,6 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
 }
 
 function setSection(section: 'devices' | 'temporary' | 'server'): void {
-  if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   if (!closeWorkflowPanel()) return
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
@@ -1534,31 +1531,7 @@ function setSection(section: 'devices' | 'temporary' | 'server'): void {
   }
 }
 
-function toggleAutomationPanel(): void {
-  if (workspace.automationPanelOpen) {
-    workspace.closeAutomationPanel()
-  } else {
-    if (!closeWorkflowPanel()) return
-    workspace.automationPanelOpen = true
-    workspace.transferPanelOpen = false
-    workspace.upgradePanelOpen = false
-    workspace.packageBuildPanelOpen = false
-    workspace.aiPanelOpen = false
-  }
-}
-
-function openSessionAutomation(sessionId: string): void {
-  if (!closeWorkflowPanel()) return
-  workspace.activeSessionId = sessionId
-  workspace.automationPanelOpen = true
-  workspace.transferPanelOpen = false
-  workspace.upgradePanelOpen = false
-  workspace.packageBuildPanelOpen = false
-  workspace.aiPanelOpen = false
-}
-
 function openSessionTransfer(sessionId: string): void {
-  if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   if (!closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.transferPanelOpen = true
@@ -1568,7 +1541,6 @@ function openSessionTransfer(sessionId: string): void {
 }
 
 function openSessionUpgrade(sessionId: string): void {
-  if (workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   if (!closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.upgradePanelOpen = true
@@ -1579,7 +1551,6 @@ function openSessionUpgrade(sessionId: string): void {
 
 function toggleTransferPanel(): void {
   const open = !workspace.transferPanelOpen
-  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   if (open && !closeWorkflowPanel()) return
   workspace.transferPanelOpen = open
   if (open) {
@@ -1591,7 +1562,6 @@ function toggleTransferPanel(): void {
 function toggleWorkflowPanel(): void {
   const open = !workflowPanelOpen.value
   if (!open && !closeWorkflowPanel()) return
-  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   workflowPanelOpen.value = open
   if (open) {
     workspace.transferPanelOpen = false
@@ -1633,7 +1603,6 @@ function openLocalTerminal(): void {
 
 function toggleUpgradePanel(): void {
   const open = !workspace.upgradePanelOpen
-  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   if (open && !closeWorkflowPanel()) return
   workspace.upgradePanelOpen = open
   if (open) {
@@ -1644,7 +1613,6 @@ function toggleUpgradePanel(): void {
 
 function togglePackageBuildPanel(): void {
   const open = !workspace.packageBuildPanelOpen
-  if (open && workspace.automationPanelOpen && !workspace.closeAutomationPanel()) return
   if (open && !closeWorkflowPanel()) return
   workspace.packageBuildPanelOpen = open
   if (open) {
@@ -1907,16 +1875,6 @@ onBeforeUnmount(() => {
     <nav class="activity-rail" aria-label="主功能">
       <button class="rail-button" :class="{ active: navigatorVisible && !operationPanelOpen }" type="button" :title="navigatorVisible && !operationPanelOpen ? '隐藏资源列表' : '显示资源列表'" :aria-pressed="navigatorVisible && !operationPanelOpen" @click="toggleResourceNavigator">
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
-      </button>
-      <button
-        class="rail-button"
-        :class="{ active: workspace.automationPanelOpen }"
-        type="button"
-        title="终端自动化"
-        :aria-pressed="workspace.automationPanelOpen"
-        @click="toggleAutomationPanel"
-      >
-        <WandSparkles :size="19" /><span class="sr-only">终端自动化</span>
       </button>
       <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Studio" :aria-pressed="workflowPanelOpen" @click="toggleWorkflowPanel"><Workflow :size="19" /><span class="sr-only">Workflow Studio</span></button>
       <button
@@ -2845,7 +2803,6 @@ onBeforeUnmount(() => {
       ><span aria-hidden="true"></span></div>
     </aside>
 
-    <AutomationWorkspace v-if="workspace.automationPanelOpen" />
     <TransferWorkspace v-if="workspace.transferPanelOpen" />
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" @run-workflow="openWorkflowRunDialog()" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
@@ -3202,7 +3159,6 @@ onBeforeUnmount(() => {
         @activate="activateSession"
         @open-protocol="openOrActivateDeviceProtocol"
         @status="workspace.updateSessionStatus"
-        @automation="openSessionAutomation"
         @transfer="openSessionTransfer"
         @upgrade="openSessionUpgrade"
         @close="workspace.closeSession"

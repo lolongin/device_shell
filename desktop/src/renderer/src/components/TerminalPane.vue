@@ -24,7 +24,6 @@ import {
   Save,
   Search,
   Unplug,
-  Workflow,
   X
 } from 'lucide-vue-next'
 import { desktopApi, terminalSocketUrl } from '../transport/api'
@@ -57,7 +56,6 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   status: [sessionId: string, status: string, sequence: number]
-  automation: [sessionId: string]
   transfer: [sessionId: string]
   upgrade: [sessionId: string]
   openProtocol: [kind: DeviceProtocolKind]
@@ -510,11 +508,6 @@ function loadLogFromContext(): void {
   closeContextMenu()
 }
 
-function openAutomation(): void {
-  emit('automation', props.session.id)
-  closeContextMenu()
-}
-
 async function openSearch(): Promise<void> {
   searchOpen.value = true
   await nextTick()
@@ -917,7 +910,6 @@ function handleShortcut(event: KeyboardEvent): void {
   if (!pane.value || (!pane.value.contains(target) && !pane.value.contains(document.activeElement))) return
   if (!(event.ctrlKey || event.metaKey)) return
   if (event.key.toLocaleLowerCase() === 'f') {
-    if (document.querySelector('.automation-workspace')) return
     event.preventDefault()
     void openSearch()
   } else if (event.key === '=' || event.key === '+') {
@@ -1098,10 +1090,6 @@ onBeforeUnmount(() => {
         <FileText :size="15" aria-hidden="true" />
         <span class="sr-only">查看会话日志</span>
       </button>
-      <button v-if="!isLocal" class="icon-button" type="button" title="打开当前会话自动响应" @click="openAutomation">
-        <Workflow :size="15" aria-hidden="true" />
-        <span class="sr-only">打开当前会话自动响应</span>
-      </button>
       <button v-if="!isLocal" class="icon-button terminal-operation-button" type="button" title="托管传输当前设备" @click="emit('transfer', session.id)">
         <FileUp :size="15" aria-hidden="true" />
         <span class="sr-only">托管传输当前设备</span>
@@ -1214,7 +1202,6 @@ onBeforeUnmount(() => {
       <hr />
       <button type="button" role="menuitem" @click="openSearch">搜索终端</button>
       <button type="button" role="menuitem" @click="clearTerminal">清空终端显示</button>
-      <button type="button" role="menuitem" @click="openAutomation">管理自动响应</button>
       <hr />
       <template v-if="!isLocal">
         <button type="button" role="menuitem" @click="loadLogFromContext">查看会话日志</button>

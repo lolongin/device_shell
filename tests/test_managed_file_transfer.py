@@ -150,6 +150,12 @@ def test_destination_path_requires_device_absolute_file_path(
     assert error.value.code == "invalid_destination_path"
 
 
+def test_auto_environment_keeps_storage_path_errors_in_vrp_domain() -> None:
+    with pytest.raises(ManagedTransferError) as error:
+        validate_transfer_device_path("flash:/", "auto")
+    assert "设备绝对存储路径" in str(error.value)
+
+
 def test_destination_verification_requires_exact_size() -> None:
     output = """
 Directory of flash:/
@@ -168,6 +174,13 @@ def test_vrp_inspection_reads_destination_directory_for_capacity_footer() -> Non
     plan = ManagedTransferService._inspection_plan("flash:/target.cc", "vrp", "ftp")
 
     assert plan.steps[0].text == "dir flash:/"
+    expect = plan.steps[1]
+    assert any(
+        response.match == "pagination_prompt"
+        and response.control == "space"
+        and response.append_enter is False
+        for response in expect.responses
+    )
 
 
 def test_managed_plan_uses_local_secrets_and_device_side_get() -> None:
@@ -187,6 +200,32 @@ def test_managed_plan_uses_local_secrets_and_device_side_get() -> None:
     assert "put " not in text
     assert "binary" in text
     assert timeout >= 120
+
+
+@pytest.mark.parametrize("overwrite, expected", [(True, True), (False, False)])
+def test_managed_ftp_plan_only_confirms_replacement_when_overwrite_enabled(
+    overwrite: bool,
+    expected: bool,
+) -> None:
+    steps, _ = build_managed_transfer_steps(
+        protocol="ftp",
+        host="192.0.2.10",
+        port=2121,
+        source_path="packages/target.cc",
+        destination_path="flash:/target.cc",
+        source_size=1_024,
+        overwrite=overwrite,
+    )
+
+    responses = [
+        response
+        for step in steps
+        for response in step.get("responses", [])
+        if response.get("match") == "confirmation_prompt"
+    ]
+    assert bool(responses) is expected
+    if expected:
+        assert responses[0]["text"] == "y"
 
 
 def test_managed_ftp_plan_keeps_credential_prompts_in_protocol_order() -> None:

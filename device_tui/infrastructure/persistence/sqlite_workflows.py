@@ -118,17 +118,20 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
     def delete(self, workflow_id: str, version: int | str | None = None) -> None:
         with self._connect() as c:
             if version is None or version == "draft":
-                count = c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind='draft'", (workflow_id,)).rowcount
+                referenced = c.execute("SELECT 1 FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND referenced=1 LIMIT 1", (workflow_id,)).fetchone()
+                if referenced is not None:
+                    raise ValueError(f"workflow has referenced published versions: {workflow_id}")
+                count = c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind IN ('draft','published','deleted')", (workflow_id,)).rowcount
             else:
-                count = c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=? AND referenced=0", (workflow_id, int(version))).rowcount
+                count = c.execute("UPDATE workflow_definitions SET kind='deleted' WHERE workflow_id=? AND kind='published' AND version=? AND referenced=0", (workflow_id, int(version))).rowcount
                 if not count and c.execute("SELECT referenced FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).fetchone() is not None: raise ValueError(f"published workflow version is referenced: {workflow_id}@{version}")
         if not count: raise KeyError(f"workflow not found: {workflow_id}")
 
     def publish(self, workflow_id: str) -> WorkflowVersion:
         draft = self.get(workflow_id)
         with self._connect() as c:
-            number = int(c.execute("SELECT COALESCE(MAX(version),0)+1 FROM workflow_definitions WHERE workflow_id=? AND kind='published'", (workflow_id,)).fetchone()[0])
-            version = WorkflowVersion(workflow_id=workflow_id, version=number, name=draft.name, inputs=draft.inputs, nodes=draft.nodes, edges=draft.edges, published_at=datetime.now(UTC).isoformat(), description=draft.description)
+            number = int(c.execute("SELECT COALESCE(MAX(version),0)+1 FROM workflow_definitions WHERE workflow_id=? AND kind IN ('published','deleted')", (workflow_id,)).fetchone()[0])
+            version = WorkflowVersion(workflow_id=workflow_id, version=number, name=draft.name, inputs=draft.inputs, nodes=draft.nodes, edges=draft.edges, published_at=datetime.now(UTC).isoformat(), description=draft.description, outputs=draft.outputs)
             c.execute("INSERT INTO workflow_definitions VALUES (?, ?, 'published', 0, ?)", (workflow_id, number, json.dumps(version.to_dict(), ensure_ascii=False, separators=(",", ":"))))
         return version
 
@@ -147,6 +150,11 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
             raise KeyError(f"workflow version not found: {workflow_id}@{version}")
         return bool(row["referenced"])
 
+    def referenced_versions(self, workflow_id: str) -> set[int]:
+        with self._connect() as c:
+            rows = c.execute("SELECT version FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND referenced=1", (workflow_id,)).fetchall()
+        return {int(row["version"]) for row in rows}
+
     def list_published(self, *, latest_only: bool = True, limit: int = 500) -> list[WorkflowVersion]:
         with self._connect() as c:
             if latest_only:
@@ -163,13 +171,14 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
                       ON latest.workflow_id = current.workflow_id
                      AND latest.version = current.version
                     WHERE current.kind='published'
+                      AND EXISTS (SELECT 1 FROM workflow_definitions AS draft WHERE draft.workflow_id = current.workflow_id AND draft.kind='draft')
                     ORDER BY current.rowid DESC
                     LIMIT ?
                     """,
                     (max(0, limit),),
                 ).fetchall()
             else:
-                rows = c.execute("SELECT payload FROM workflow_definitions WHERE kind='published' ORDER BY rowid DESC LIMIT ?", (max(0, limit),)).fetchall()
+                rows = c.execute("SELECT payload FROM workflow_definitions AS current WHERE current.kind='published' AND EXISTS (SELECT 1 FROM workflow_definitions AS draft WHERE draft.workflow_id = current.workflow_id AND draft.kind='draft') ORDER BY rowid DESC LIMIT ?", (max(0, limit),)).fetchall()
         return [WorkflowVersion.from_dict(json.loads(str(row["payload"]))) for row in rows]
 
     def _migrate(self) -> None:

@@ -142,138 +142,6 @@ export interface CommandDispatchResponse {
   session_ids: string[]
 }
 
-export interface AutoResponseStep {
-  pattern: string
-  responses: string[]
-  response_texts: string[]
-  response_targets: string[]
-  response_delays: number[]
-  response_append_enters: boolean[]
-  timeout_ms: number
-}
-
-export interface AutoResponseAction {
-  kind: 'send' | 'wait' | 'loop' | 'exit' | 'condition' | 'set'
-  text: string
-  target: string
-  delay_ms: number
-  append_enter: boolean
-  repeat_count: number
-  interval_ms: number
-  exit_pattern: string
-  exit_scope: 'loop' | 'rule'
-  condition_pattern: string
-  condition_match_type: 'contains' | 'regex' | 'expression'
-  variable_name: string
-  variable_value: string
-  variable_operation: 'set' | 'add' | 'subtract' | 'multiply'
-  actions?: AutoResponseAction[]
-}
-
-export interface AutomationTargetOption {
-  value: string
-  label: string
-}
-
-export interface AutoResponseRulePayload {
-  name: string
-  pattern: string
-  response: string
-  response_text: string
-  append_enter: boolean
-  enabled: boolean
-  case_sensitive: boolean
-  once: boolean
-  match_type: 'contains' | 'regex'
-  delay_ms: number
-  max_triggers: number
-  trigger_type: 'match' | 'immediate' | 'connected' | 'delay' | 'manual'
-  trigger_delay_ms: number
-  loop_count: number
-  kind: string
-  allow_startup_trigger: boolean
-  trigger_count: number
-  steps?: AutoResponseStep[]
-  actions?: AutoResponseAction[]
-}
-
-export interface AutomationRuleRecord {
-  id: string
-  rule: AutoResponseRulePayload
-  created_at: string
-  updated_at: string
-}
-
-export interface AutomationSessionStatus {
-  session_id: string
-  running_rule_ids: string[]
-  waiting_rule_ids: string[]
-  triggered_rule_ids: string[]
-}
-
-export interface AutomationActivityRecord {
-  id: string
-  timestamp: string
-  event: 'started' | 'sent' | 'waiting' | 'completed' | 'failed' | 'cancelled'
-  session_id: string
-  rule_id: string
-  name: string
-  message: string
-  target_session_id: string
-}
-
-export interface QuickSendButtonRecord {
-  id: string
-  name: string
-  response_text: string
-  append_enter: boolean
-  sensitive: boolean
-}
-
-export interface QuickSendButtonPayload {
-  name: string
-  response_text: string
-  append_enter: boolean
-  sensitive: boolean
-}
-
-export interface AutomationWorkspaceResponse {
-  api_version: number
-  rules: AutomationRuleRecord[]
-  sessions: AutomationSessionStatus[]
-  quick_send_buttons: QuickSendButtonRecord[]
-  activity: AutomationActivityRecord[]
-}
-
-export interface AutomationPreviewStep {
-  path: string
-  kind: 'send' | 'wait' | 'loop' | 'exit' | 'condition' | 'set'
-  title: string
-  detail: string
-  variables: Record<string, unknown>
-  text?: string
-  target?: string
-  append_enter?: boolean
-  matched?: boolean
-  operation?: string
-}
-
-export interface AutomationPreviewResponse {
-  api_version: number
-  steps: AutomationPreviewStep[]
-  variables: Record<string, unknown>
-  warnings: string[]
-  truncated: boolean
-  sample_output: string
-}
-
-export interface AutomationDispatchResponse {
-  api_version: number
-  rule_id: string
-  session_id: string
-  status: 'started' | 'cancelled'
-}
-
 export interface TransferSettings {
   api_version: number
   protocol: 'ftp'
@@ -515,6 +383,30 @@ export interface WorkflowCatalogResponse {
   workflows: WorkflowDescriptor[]
 }
 
+export type WorkflowScriptInputType = 'string' | 'number' | 'boolean' | 'object' | 'array'
+
+export interface WorkflowScriptInput {
+  name: string
+  type: WorkflowScriptInputType
+  required?: boolean
+  default?: unknown
+  description?: string
+}
+
+export interface WorkflowScript {
+  id: string
+  name: string
+  description: string
+  language: 'python' | 'powershell' | 'bash' | string
+  script: string
+  input_schema: WorkflowScriptInput[]
+  input_schema_source?: 'function' | 'manual' | string
+  entrypoint?: string
+  input_schema_error?: string
+  created_at?: string
+  updated_at?: string
+}
+
 export interface WorkflowRuntimeInput {
   name: string
   type: string
@@ -530,6 +422,7 @@ export interface PublishedWorkflowDefinition {
   version: number | string
   published_at: string | null
   inputs: WorkflowRuntimeInput[]
+  outputs?: Array<{ name: string; value?: unknown; type?: string; description?: string }>
   step_count: number
   requires_confirmation: boolean
   referenced?: boolean

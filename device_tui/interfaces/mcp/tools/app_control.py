@@ -132,61 +132,6 @@ def register_app_control_tools(mcp: Any, gateway: McpGateway) -> None:
         """Update command workspace preferences."""
         return _call(gateway, "command.preferences", current_group_id=current_group_id, enter_sends=enter_sends)
 
-    @mcp.tool(name="automation.workspace")
-    def automation_workspace() -> dict[str, Any]:
-        """Read automation rules, runtime statuses, quick-send buttons, and activity."""
-        return _call(gateway, "automation.workspace")
-
-    @mcp.tool(name="automation.preview")
-    def automation_preview(rule: dict[str, Any], session_id: str = "", sample_output: str = "", max_steps: int = 200) -> dict[str, Any]:
-        """Preview an automation rule without writing to a session."""
-        return _call(gateway, "automation.preview", rule=rule, session_id=session_id, sample_output=sample_output, max_steps=max_steps)
-
-    @mcp.tool(name="automation.rule.save")
-    def automation_rule_save(rule: dict[str, Any], rule_id: str = "") -> dict[str, Any]:
-        """Create or update a validated terminal automation rule."""
-        return _call(gateway, "automation.rule.save", rule=rule, rule_id=rule_id)
-
-    @mcp.tool(name="automation.rule.delete")
-    def automation_rule_delete(rule_id: str, confirm: bool = False) -> dict[str, Any]:
-        """Delete an automation rule after explicit confirmation."""
-        return _call(gateway, "automation.rule.delete", rule_id=rule_id, confirm=confirm)
-
-    @mcp.tool(name="automation.rule.clone")
-    def automation_rule_clone(rule_id: str) -> dict[str, Any]:
-        """Clone an automation rule in disabled state."""
-        return _call(gateway, "automation.rule.clone", rule_id=rule_id)
-
-    @mcp.tool(name="automation.rule.enable")
-    def automation_rule_enable(rule_id: str, enabled: bool) -> dict[str, Any]:
-        """Enable or disable an automation rule."""
-        return _call(gateway, "automation.rule.enable", rule_id=rule_id, enabled=enabled)
-
-    @mcp.tool(name="automation.rule.trigger")
-    def automation_rule_trigger(rule_id: str, session_id: str) -> dict[str, Any]:
-        """Trigger an automation rule for one session."""
-        return _call(gateway, "automation.rule.trigger", rule_id=rule_id, session_id=session_id)
-
-    @mcp.tool(name="automation.cancel")
-    def automation_cancel(session_id: str) -> dict[str, Any]:
-        """Cancel active automation for one session."""
-        return _call(gateway, "automation.cancel", session_id=session_id)
-
-    @mcp.tool(name="automation.quick_send.save")
-    def automation_quick_send_save(button: dict[str, Any], button_id: str = "") -> dict[str, Any]:
-        """Create or update a quick-send button without returning its secret text."""
-        return _call(gateway, "automation.quick_send.save", **button, button_id=button_id)
-
-    @mcp.tool(name="automation.quick_send.delete")
-    def automation_quick_send_delete(button_id: str, confirm: bool = False) -> dict[str, Any]:
-        """Delete a quick-send button after explicit confirmation."""
-        return _call(gateway, "automation.quick_send.delete", button_id=button_id, confirm=confirm)
-
-    @mcp.tool(name="automation.quick_send.send")
-    def automation_quick_send_send(button_id: str, session_id: str) -> dict[str, Any]:
-        """Send a configured quick-send button to a terminal session."""
-        return _call(gateway, "automation.quick_send.send", button_id=button_id, session_id=session_id)
-
     @mcp.tool(name="transfer.settings")
     def transfer_settings() -> dict[str, Any]:
         """Read managed transfer settings without the password."""

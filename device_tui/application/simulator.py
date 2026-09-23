@@ -29,7 +29,7 @@ def create_simulated_device() -> Device:
         site="本机",
         rack="-",
         version="V1.0",
-        notes="本机终端，用于验证自动响应规则。",
+        notes="本机终端，用于验证终端命令交互。",
     )
 
 

@@ -2,7 +2,7 @@
 
 Electron + Vue desktop application for device inventory, terminal sessions,
 occupancy management, managed file transfer, package upgrades, and MCP-driven
-automation. Python runs as a headless local backend; Electron is the only desktop
+workflows. Python runs as a headless local backend; Electron is the only desktop
 UI.
 
 ## Architecture
@@ -27,7 +27,7 @@ Electron Main or Python backend boundaries.
 - Device search, filters, details, occupancy, and power actions
 - Embedded xterm.js SSH, Telnet, serial-over-Telnet, and simulated terminals
 - Saved servers, temporary connections, multi-session navigation, logs, and replay
-- Command history and terminal automation with variables, loops, conditions, and dry runs
+- Command history plus reusable Workflow command actions with variables and result handling
 - Backend-managed FTP transfer and guarded package upgrade workflows
 - Product-specific device sources: website-only, spreadsheet-only, or universal
 - Local MCP tools for device, session, terminal, transfer, and upgrade operations
@@ -161,7 +161,7 @@ an explicit device-access IP can be configured for VPN and multi-adapter hosts.
 Fixed service passwords use the operating-system credential vault. Per-task
 credentials are memory-only.
 
-## MCP and Automation
+## MCP and Workflows
 
 The desktop starts a loopback-only control API and writes runtime connection data
 under `%LOCALAPPDATA%\DeviceTUI`. Install the Python package and configure the MCP

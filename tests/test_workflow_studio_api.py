@@ -4,7 +4,12 @@ from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
 from device_tui.application.workflow_studio import build_action_catalog
 from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowNode, WorkflowVersion
-from device_tui.interfaces.desktop_api.routers.workflow_definitions import _compile_task_plan, _prepare_workflow_file_inputs
+from device_tui.interfaces.desktop_api.routers.workflow_definitions import (
+    _compile_task_plan,
+    _normalize_action_inputs,
+    _prepare_workflow_file_inputs,
+    _validate_workflow_script_inputs,
+)
 from device_tui.application.errors import UnsupportedOperationError
 from device_tui.application.composition.workflows import build_default_activity_executor
 from device_tui.framework import ActivityContext, ActivityInvocation, WorkflowRun
@@ -35,6 +40,31 @@ def test_workflow_upload_input_is_prepared_before_plan_compilation() -> None:
     assert overrides == {}
 
 
+def test_workflow_upload_defaults_to_overwrite_but_preserves_explicit_false() -> None:
+    assert _normalize_action_inputs("file.upload", {"source": "a.cc"})["overwrite"] is True
+    assert _normalize_action_inputs(
+        "file.upload",
+        {"source": "a.cc", "overwrite": False},
+    )["overwrite"] is False
+
+
+def test_workflow_upload_does_not_stage_device_name_inputs_as_local_files() -> None:
+    class Transfers:
+        def prepare_workflow_source(self, value: str, *, staging_id: str) -> str:
+            raise AssertionError("device name must not be treated as a local file")
+
+    version = WorkflowVersion(
+        "workflow",
+        1,
+        "Upload",
+        inputs=(),
+        nodes=(WorkflowNode("upload", "file.upload", {"source": "${package_name}", "destination": "flash:/device.cc"}),),
+    )
+    prepared, overrides = _prepare_workflow_file_inputs(version, {"package_name": "device.cc"}, Transfers(), staging_id="run-1")
+    assert prepared["package_name"] == "device.cc"
+    assert overrides == {}
+
+
 def test_workflow_definition_lifecycle() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post("/api/v1/workflow-definitions", json={"name": "Check version"})
@@ -56,6 +86,309 @@ def test_workflow_definition_lifecycle() -> None:
         assert published.status_code == 200
         assert published.json()["published"] is True
         assert published.json()["workflow"]["version"] == 1
+
+
+def test_workflow_custom_command_action_crud() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions/custom-actions",
+            json={
+                "name": "检查本机版本",
+                "description": "可复用的版本检查",
+                "action_id": "device.command",
+                "config": {
+                    "execution_mode": "shell",
+                    "command": "tool --version ${inputs.channel}",
+                    "timeout_seconds": 15,
+                    "failure_strategy": "continue",
+                },
+            },
+        )
+        assert created.status_code == 200
+        action = created.json()["action"]
+        assert action["config"]["execution_mode"] == "shell"
+
+        listed = client.get("/api/v1/workflow-definitions/custom-actions")
+        assert listed.status_code == 200
+        assert action in listed.json()["actions"]
+
+        deleted = client.delete(f"/api/v1/workflow-definitions/custom-actions/{action['id']}")
+        assert deleted.status_code == 204
+        assert action["id"] not in {
+            item["id"]
+            for item in client.get("/api/v1/workflow-definitions/custom-actions").json()["actions"]
+        }
+
+
+def test_workflow_script_resource_crud_and_language_validation() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        rejected = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={"name": "Invalid", "language": "ruby", "script": "puts 'no'"},
+        )
+        assert rejected.status_code == 400
+        assert rejected.json()["detail"] == "unsupported script language"
+
+        created = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={
+                "name": "Inspect device",
+                "description": "Reusable diagnostic",
+                "language": "python",
+                "script": "print('first')",
+                "input_schema": [{"name": "mode", "type": "string"}],
+            },
+        )
+        assert created.status_code == 200
+        script = created.json()["script"]
+        assert script["id"].startswith("script_")
+        assert script["input_schema"] == [{"name": "mode", "type": "string", "required": False}]
+        assert script in client.get("/api/v1/workflow-definitions/scripts").json()["scripts"]
+
+        invalid_schema = client.put(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}",
+            json={"input_schema": [{"name": "mode", "type": "string"}, {"name": "mode", "type": "number"}]},
+        )
+        assert invalid_schema.status_code == 400
+        assert "duplicate script input parameter" in invalid_schema.json()["detail"]
+
+        updated = client.put(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}",
+            json={"name": "Inspect device v2", "language": "bash", "script": "printf ok"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["script"]["name"] == "Inspect device v2"
+        assert updated.json()["script"]["script"] == "printf ok"
+
+        deleted = client.delete(f"/api/v1/workflow-definitions/scripts/{script['id']}")
+        assert deleted.status_code == 204
+        assert script["id"] not in {
+            item["id"]
+            for item in client.get("/api/v1/workflow-definitions/scripts").json()["scripts"]
+        }
+
+
+def test_workflow_script_main_signature_generates_input_schema() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={
+                "name": "Function inputs",
+                "language": "python",
+                "script": (
+                    "def main(name: str, count: int = 2, enabled: bool = False, "
+                    "options: dict | None = None, items: list[str] = []):\n"
+                    "    return {'name': name}\n"
+                ),
+            },
+        )
+
+        assert created.status_code == 200
+        script = created.json()["script"]
+        assert script["entrypoint"] == "main"
+        assert script["input_schema_source"] == "function"
+        assert script["input_schema"] == [
+            {"name": "name", "type": "string", "required": True},
+            {"name": "count", "type": "number", "required": False, "default": 2},
+            {"name": "enabled", "type": "boolean", "required": False, "default": False},
+            {"name": "options", "type": "object", "required": False},
+            {"name": "items", "type": "array", "required": False, "default": []},
+        ]
+
+
+def test_workflow_script_reference_validates_publishes_and_resolves_for_dry_run() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        script = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={"name": "Referenced", "language": "python", "script": "print('ok')"},
+        ).json()["script"]
+        workflow = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Referenced script",
+                "nodes": [
+                    {
+                        "id": "script",
+                        "action_id": "script.run",
+                        "config": {"script_id": script["id"]},
+                    }
+                ],
+            },
+        ).json()["workflow"]
+
+        validation = client.post(f"/api/v1/workflow-definitions/{workflow['id']}/validate")
+        assert validation.status_code == 200
+        assert validation.json()["valid"] is True
+        published = client.post(f"/api/v1/workflow-definitions/{workflow['id']}/publish")
+        assert published.status_code == 200
+        assert published.json()["published"] is True
+
+        preview = client.post(
+            f"/api/v1/workflow-definitions/{workflow['id']}/run",
+            json={"device_id": "sim-1", "draft": True, "dry_run": True},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["preview"]["steps"] == [
+            {"id": "script", "action": "script.run", "depends_on": []}
+        ]
+
+
+def test_workflow_script_reference_reports_missing_resource() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        workflow = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Missing script",
+                "nodes": [
+                    {
+                        "id": "script",
+                        "action_id": "script.run",
+                        "config": {"script_id": "script_missing"},
+                    }
+                ],
+            },
+        ).json()["workflow"]
+
+        validation = client.post(f"/api/v1/workflow-definitions/{workflow['id']}/validate")
+        assert validation.status_code == 400
+        assert "script resource not found" in validation.json()["detail"]
+
+
+def test_workflow_script_test_requires_confirmation_and_creates_task() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        script = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={
+                "name": "Testable",
+                "language": "python",
+                "script": "print('ok')",
+                "input_schema": [{"name": "mode", "type": "string"}],
+            },
+        ).json()["script"]
+
+        rejected = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={"device_id": "sim-1", "protocol": "simulated"},
+        )
+        assert rejected.status_code == 400
+        assert rejected.json()["error"]["details"]["code"] == "risk_confirmation_required"
+
+        accepted = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={
+                "device_id": "sim-1",
+                "protocol": "simulated",
+                "inputs": {"mode": "check"},
+                "confirmed_risks": True,
+            },
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["task"]["workflow_id"].startswith("script_test_")
+
+
+def test_workflow_script_test_enforces_input_schema_and_applies_defaults() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        script = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={
+                "name": "Typed inputs",
+                "language": "python",
+                "script": "print('ok')",
+                "input_schema": [
+                    {"name": "mode", "type": "string", "required": True},
+                    {"name": "count", "type": "number", "default": 2},
+                    {"name": "enabled", "type": "boolean", "default": True},
+                    {"name": "options", "type": "object"},
+                    {"name": "items", "type": "array"},
+                ],
+            },
+        ).json()["script"]
+
+        missing = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={"inputs": {}, "confirmed_risks": True},
+        )
+        assert missing.status_code == 400
+        assert missing.json()["error"]["details"] == {
+            "code": "missing_script_input",
+            "name": "mode",
+        }
+
+        unknown = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={"inputs": {"mode": "check", "extra": 1}, "confirmed_risks": True},
+        )
+        assert unknown.status_code == 400
+        assert unknown.json()["error"]["details"]["code"] == "unknown_script_input"
+
+        wrong_number = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={"inputs": {"mode": "check", "count": "2"}, "confirmed_risks": True},
+        )
+        assert wrong_number.status_code == 400
+        assert wrong_number.json()["error"]["details"] == {
+            "code": "invalid_script_input",
+            "name": "count",
+            "type": "number",
+        }
+
+        wrong_object = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={"inputs": {"mode": "check", "options": []}, "confirmed_risks": True},
+        )
+        assert wrong_object.status_code == 400
+
+        wrong_array = client.post(
+            f"/api/v1/workflow-definitions/scripts/{script['id']}/test",
+            json={"inputs": {"mode": "check", "items": {}}, "confirmed_risks": True},
+        )
+        assert wrong_array.status_code == 400
+
+        assert _validate_workflow_script_inputs(script["input_schema"], {"mode": "check"}) == {
+            "mode": "check",
+            "count": 2,
+            "enabled": True,
+        }
+
+
+def test_workflow_definition_compiles_shell_command_controls() -> None:
+    version = WorkflowVersion(
+        "shell-workflow",
+        1,
+        "Shell",
+        nodes=(WorkflowNode("command", "device.command", {
+            "execution_mode": "bash",
+            "command": "printf '%s' '${inputs.value}'",
+            "timeout_seconds": 12,
+            "retry_attempts": 3,
+            "retry_backoff_seconds": 0.25,
+            "failure_strategy": "continue",
+        }),),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert plan.nodes[0].workflow_id == "shell.command"
+    assert plan.nodes[0].input_mapping["execution_mode"] == "bash"
+    assert plan.nodes[0].input_mapping["timeout_seconds"] == 12
+    assert plan.nodes[0].retry_policy == {
+        "max_attempts": 3,
+        "backoff_seconds": 0.25,
+        "on_failure": "continue",
+    }
+
+
+def test_workflow_definition_cannot_be_renamed_to_blank() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post("/api/v1/workflow-definitions", json={"name": "Named workflow"}).json()["workflow"]
+
+        response = client.put(
+            f"/api/v1/workflow-definitions/{created['id']}",
+            json={"name": "   ", "nodes": [], "edges": []},
+        )
+
+        assert response.status_code == 400
+        assert "workflow name is required" in response.json()["detail"]
 
 
 def test_workflow_published_versions_can_be_listed_and_deleted_until_referenced() -> None:
@@ -91,6 +424,24 @@ def test_workflow_published_versions_can_be_listed_and_deleted_until_referenced(
         blocked = client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{first['version']}")
         assert blocked.status_code == 409
         assert "已被任务引用" in blocked.json()["detail"]
+
+
+def test_workflow_version_listing_keeps_runtime_inputs_and_version_numbers_monotonic() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Monotonic versions",
+                "inputs": [{"name": "package_path", "type": "file", "required": True}],
+                "nodes": [{"id": "command", "action_id": "device.command", "config": {"command": "show version"}}],
+            },
+        ).json()["workflow"]
+        workflow_id = created["id"]
+        first = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        assert client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"][0]["inputs"][0]["name"] == "package_path"
+        assert client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{first['version']}").status_code == 204
+        next_version = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        assert next_version["version"] == first["version"] + 1
 
 
 def test_workflow_published_version_can_be_exported_and_restored_without_changing_snapshot() -> None:
@@ -138,7 +489,17 @@ def test_workflow_action_catalog_exposes_referenceable_outputs() -> None:
     assert response.status_code == 200
     actions = {item["id"]: item for item in response.json()["actions"]}
     expected_fields = {
-        "device.command": {"output", "status"},
+        "device.command": {
+            "output",
+            "stdout",
+            "stderr",
+            "exitCode",
+            "exit_code",
+            "status",
+            "duration",
+            "data",
+            "error",
+        },
         "device.info": {"device_id", "name", "address", "model", "output", "status", "software_version"},
         "device.connect": {"session_id", "device_id", "status", "cli_status"},
         "device.ssh": {"session_id", "device_id", "status", "cli_status"},
@@ -725,9 +1086,10 @@ def _minimal_workflow_config(action_id: str) -> dict[str, object]:
         "device.connect": {},
         "device.ssh": {"host": "router-1"},
         "device.telnet": {"host": "router-1"},
-        "device.info": {},
-        "device.command": {"command": "display version"},
-        "file.upload": {"source": "a.cc", "destination": "flash:/a.cc"},
+            "device.info": {},
+            "device.command": {"command": "display version"},
+            "script.run": {"script": "print('ok')"},
+            "file.upload": {"source": "a.cc", "destination": "flash:/a.cc"},
         "file.download": {"source": "flash:/a.cc", "destination": "a.cc"},
         "device.reboot": {},
         "utility.wait": {"seconds": 0},
@@ -742,7 +1104,7 @@ def _minimal_workflow_config(action_id: str) -> dict[str, object]:
 
 
 def test_workflow_definition_compiles_every_executable_catalog_action() -> None:
-    compile_time_only = {"utility.condition"}
+    compile_time_only = {"utility.condition", "workflow.call"}
 
     for action in build_action_catalog().list():
         if action.id in compile_time_only:
@@ -777,7 +1139,7 @@ def test_workflow_definition_rejects_device_connect_target_mismatch() -> None:
 
 
 def test_workflow_definition_rejects_non_executable_loop_children_at_compile_time() -> None:
-    for child_action in ("loop.for_each", "utility.condition", "utility.confirm"):
+    for child_action in ("loop.for_each", "utility.condition", "utility.confirm", "workflow.call"):
         version = WorkflowVersion(
             workflow_id="wf",
             version=1,
@@ -851,3 +1213,276 @@ def test_utility_activities_execute_without_a_device_transport() -> None:
             result = await executor.execute(invocation, context, events.append)
             assert str(result.status) == "succeeded"
     asyncio.run(run())
+
+
+def test_workflow_templates_cover_builtin_and_user_lifecycle() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        listed = client.get("/api/v1/workflow-definitions/templates")
+        assert listed.status_code == 200
+        assert {item["id"] for item in listed.json()["templates"]} >= {
+            "builtin_device_inspection",
+            "builtin_command_result",
+        }
+
+        builtin = client.post(
+            "/api/v1/workflow-definitions/templates/builtin_command_result/instantiate",
+            json={"name": "Inspect from template"},
+        )
+        assert builtin.status_code == 200
+        assert builtin.json()["workflow"]["name"] == "Inspect from template"
+        assert [item["name"] for item in builtin.json()["workflow"]["outputs"]] == [
+            "stdout",
+            "exit_code",
+        ]
+
+        source = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Reusable source",
+                "nodes": [
+                    {"id": "value", "action_id": "variable.set", "config": {"name": "answer", "value": 42}},
+                ],
+                "outputs": [{"name": "answer", "value": "${value.value}", "type": "integer"}],
+            },
+        ).json()["workflow"]
+        created = client.post(
+            "/api/v1/workflow-definitions/templates",
+            json={"name": "Answer template", "workflow_id": source["id"]},
+        )
+        assert created.status_code == 200
+        template = created.json()["template"]
+        assert template["built_in"] is False
+        assert template["workflow"]["outputs"][0]["name"] == "answer"
+
+        instantiated = client.post(
+            f"/api/v1/workflow-definitions/templates/{template['id']}/instantiate",
+            json={"name": "Answer copy"},
+        )
+        assert instantiated.status_code == 200
+        assert instantiated.json()["workflow"]["id"] != source["id"]
+        assert instantiated.json()["workflow"]["name"] == "Answer copy"
+        assert instantiated.json()["workflow"]["outputs"] == template["workflow"]["outputs"]
+
+        assert client.delete(f"/api/v1/workflow-definitions/templates/{template['id']}").status_code == 204
+        assert template["id"] not in {
+            item["id"] for item in client.get("/api/v1/workflow-definitions/templates").json()["templates"]
+        }
+        assert client.delete(
+            "/api/v1/workflow-definitions/templates/builtin_command_result"
+        ).status_code == 400
+
+
+def test_custom_actions_support_catalog_nodes_and_published_workflows() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        wait = client.post(
+            "/api/v1/workflow-definitions/custom-actions",
+            json={
+                "name": "Short wait",
+                "action_id": "utility.wait",
+                "config": {"seconds": 0.25},
+            },
+        )
+        assert wait.status_code == 200
+        assert wait.json()["action"]["action_id"] == "utility.wait"
+        assert "seconds" in wait.json()["action"]["output_schema"]["properties"]
+
+        child = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Published action",
+                "nodes": [
+                    {"id": "value", "action_id": "variable.set", "config": {"name": "answer", "value": 42}},
+                ],
+                "outputs": [{"name": "answer", "value": "${value.value}", "type": "integer"}],
+            },
+        ).json()["workflow"]
+        published = client.post(
+            f"/api/v1/workflow-definitions/{child['id']}/publish"
+        ).json()["workflow"]
+        action_response = client.post(
+            "/api/v1/workflow-definitions/custom-actions",
+            json={
+                "name": "Answer action",
+                "workflow_id": child["id"],
+                "version": published["version"],
+            },
+        )
+        assert action_response.status_code == 200
+        action = action_response.json()["action"]
+        assert action["action_id"] == "workflow.call"
+        assert action["config"] == {
+            "workflow_id": child["id"],
+            "version": published["version"],
+            "inputs": {},
+        }
+        assert action["output_schema"]["properties"]["answer"] == {"type": "integer"}
+        versions = client.get(
+            f"/api/v1/workflow-definitions/{child['id']}/versions"
+        ).json()["versions"]
+        assert versions[0]["referenced"] is True
+        assert client.delete(f"/api/v1/workflow-definitions/custom-actions/{wait.json()['action']['id']}").status_code == 204
+        assert client.delete(f"/api/v1/workflow-definitions/custom-actions/{action['id']}").status_code == 204
+
+
+def test_subworkflow_api_expands_inputs_outputs_and_protects_versions() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        child = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Echo child",
+                "inputs": [{"name": "message", "type": "string", "required": True}],
+                "nodes": [
+                    {
+                        "id": "capture",
+                        "action_id": "variable.set",
+                        "config": {"name": "captured", "value": "${inputs.message}"},
+                    },
+                ],
+                "outputs": [{"name": "echo", "value": "${capture.value}", "type": "string"}],
+            },
+        ).json()["workflow"]
+        child_version = client.post(
+            f"/api/v1/workflow-definitions/{child['id']}/publish"
+        ).json()["workflow"]
+        assert child_version["outputs"][0]["name"] == "echo"
+
+        parent = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Echo parent",
+                "inputs": [{"name": "message", "type": "string", "required": True}],
+                "nodes": [
+                    {
+                        "id": "call",
+                        "action_id": "workflow.call",
+                        "config": {
+                            "workflow_id": child["id"],
+                            "version": child_version["version"],
+                            "inputs": {"message": "${inputs.message}"},
+                        },
+                    },
+                    {
+                        "id": "save",
+                        "action_id": "result.save",
+                        "config": {"key": "echo", "value": "${call.echo}"},
+                    },
+                ],
+                "edges": [{"source": "call", "target": "save"}],
+            },
+        ).json()["workflow"]
+        validation = client.post(f"/api/v1/workflow-definitions/{parent['id']}/validate")
+        assert validation.status_code == 200
+        assert validation.json()["valid"] is True
+
+        preview = client.post(
+            f"/api/v1/workflow-definitions/{parent['id']}/run",
+            json={
+                "device_id": "sim-1",
+                "draft": True,
+                "dry_run": True,
+                "inputs": {"message": "hello"},
+            },
+        )
+        assert preview.status_code == 200
+        steps = preview.json()["preview"]["steps"]
+        assert [(step["id"], step["depends_on"]) for step in steps] == [
+            ("call__capture", []),
+            ("call", ["call__capture"]),
+            ("save", ["call"]),
+        ]
+
+        parent_version = client.post(
+            f"/api/v1/workflow-definitions/{parent['id']}/publish"
+        ).json()["workflow"]
+        child_versions = client.get(
+            f"/api/v1/workflow-definitions/{child['id']}/versions"
+        ).json()["versions"]
+        assert child_versions[0]["referenced"] is True
+
+        started = client.post(
+            f"/api/v1/workflow-definitions/{parent['id']}/run",
+            json={
+                "device_id": "sim-1",
+                "version": parent_version["version"],
+                "inputs": {"message": "hello"},
+            },
+        )
+        assert started.status_code == 200
+        parent_versions = client.get(
+            f"/api/v1/workflow-definitions/{parent['id']}/versions"
+        ).json()["versions"]
+        assert parent_versions[0]["referenced"] is True
+
+
+def test_subworkflow_high_risk_action_requires_parent_confirmation() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        child = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Risky child",
+                "nodes": [{"id": "reboot", "action_id": "device.reboot", "config": {}}],
+            },
+        ).json()["workflow"]
+        child_version = client.post(
+            f"/api/v1/workflow-definitions/{child['id']}/publish"
+        ).json()["workflow"]
+        parent = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Risky parent",
+                "nodes": [
+                    {
+                        "id": "call",
+                        "action_id": "workflow.call",
+                        "config": {
+                            "workflow_id": child["id"],
+                            "version": child_version["version"],
+                        },
+                    },
+                ],
+            },
+        ).json()["workflow"]
+
+        response = client.post(
+            f"/api/v1/workflow-definitions/{parent['id']}/run",
+            json={"device_id": "sim-1", "draft": True},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "high-risk workflow run requires confirmation"
+
+
+def test_workflow_outputs_round_trip_through_publish_export_and_import() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Output round trip",
+                "nodes": [
+                    {"id": "value", "action_id": "variable.set", "config": {"name": "answer", "value": 42}},
+                ],
+                "outputs": [
+                    {
+                        "name": "answer",
+                        "value": "${value.value}",
+                        "type": "integer",
+                        "description": "Computed answer",
+                    },
+                ],
+            },
+        ).json()["workflow"]
+        published = client.post(
+            f"/api/v1/workflow-definitions/{created['id']}/publish"
+        ).json()["workflow"]
+        assert published["outputs"] == created["outputs"]
+
+        exported = client.get(
+            f"/api/v1/workflow-definitions/{created['id']}/export?version={published['version']}&format=json"
+        )
+        imported = client.post(
+            "/api/v1/workflow-definitions/import",
+            json={"filename": "roundtrip.workflow.json", "content": exported.json()["content"]},
+        )
+
+        assert imported.status_code == 200
+        assert imported.json()["workflow"]["outputs"] == created["outputs"]

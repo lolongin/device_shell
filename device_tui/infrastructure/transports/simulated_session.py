@@ -51,7 +51,7 @@ class SimulatedTerminalSession:
         self._transfer_input_timeout = 0.0
         self._transfer_timeout_task: asyncio.Task[None] | None = None
         # VRP emits FTP prompts as separate terminal packets. Keep a small
-        # delay by default so automation is exercised against that timing.
+        # Delay by default so command workflows are exercised against that timing.
         self._transfer_output_delay_seconds = 0.005
         self._transfer_password_delay_seconds = 0.01
         self._send_lock = asyncio.Lock()
@@ -310,7 +310,7 @@ class SimulatedTerminalSession:
             self._transfer_binary = self._transfer_mode == "sftp"
             # Huawei VRP FTP clients expose the peer address and the current
             # local-user context in the username prompt. Keep this shape in
-            # the simulator so transfer automation is tested against the
+            # simulator so transfer workflows are tested against the
             # device prompt users actually see.
             await self._emit_transfer_chunks(
                 "Connected to simulated transfer service.\r\r\n",

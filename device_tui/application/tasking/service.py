@@ -1188,6 +1188,15 @@ class LegacyTaskManager:
         }
         status = status_map.get(str(run.status), str(run.status))
         attempts = []
+        failed_attempt = next(
+            (attempt for attempt in reversed(run.attempts) if str(attempt.status) == FrameworkActionStatus.FAILED.value),
+            None,
+        )
+        failed_error = dict(failed_attempt.error or {}) if failed_attempt is not None else {}
+        run_error = dict(run.error or {})
+        projected_error_code = str(run_error.get("code") or failed_error.get("code") or "")
+        projected_error_message = str(run_error.get("message") or failed_error.get("message") or "")
+        failed_step_id = str(failed_attempt.action_id if failed_attempt is not None else "")
         for attempt in run.attempts:
             facts = dict(attempt.result or {})
             error = dict(attempt.error or {})
@@ -1216,8 +1225,8 @@ class LegacyTaskManager:
             status=result_status,
             steps=tuple(attempts),
             outputs=dict(run.outputs),
-            error_code=str((run.error or {}).get("code") or ""),
-            message=("Workflow completed." if status == TaskStatus.COMPLETED.value else "Workflow waiting." if status == TaskStatus.WAITING_FOR_DECISION.value else "Workflow running." if status == TaskStatus.RUNNING.value else "Workflow failed."),
+            error_code=projected_error_code,
+            message=("Workflow completed." if status == TaskStatus.COMPLETED.value else "Workflow waiting." if status == TaskStatus.WAITING_FOR_DECISION.value else "Workflow running." if status == TaskStatus.RUNNING.value else projected_error_message or "Workflow failed."),
         )
         checkpoint = Checkpoint(
             task_id=task_id,
@@ -1228,8 +1237,9 @@ class LegacyTaskManager:
             outputs=dict(run.outputs),
             context={key: value for key, value in run.context.items() if key != "lease_token"},
             attempts={attempt.action_id: sum(1 for item in run.attempts if item.action_id == attempt.action_id) for attempt in run.attempts},
-            error_code=str((run.error or {}).get("code") or ""),
-            error_message=str((run.error or {}).get("message") or ""),
+            error_code=projected_error_code,
+            error_message=projected_error_message,
+            failed_step_id=failed_step_id,
             step_states=self._framework_step_states(definition, run),
         )
         self._update(

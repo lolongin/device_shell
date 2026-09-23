@@ -1,13 +1,18 @@
 from __future__ import annotations
 from dataclasses import dataclass
+import json
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from .models import WorkflowDraft
 from .catalog import ActionCatalog
 from .expression import validate_expression
 
 
-_LOOP_DISALLOWED_ACTIONS = frozenset({"loop.for_each", "loop.until", "utility.condition", "utility.confirm"})
+_LOOP_DISALLOWED_ACTIONS = frozenset(
+    {"loop.for_each", "loop.until", "utility.condition", "utility.confirm", "workflow.call"}
+)
+_WORKFLOW_OUTPUT_TYPES = frozenset({"any", "string", "file", "number", "integer", "boolean", "object", "array", "null"})
+_RESERVED_WORKFLOW_OUTPUTS = frozenset({"status", "workflow_id", "version", "outputs"})
 
 # 配置字段的修复建议
 _CONFIG_SUGGESTIONS = {
@@ -17,7 +22,7 @@ _CONFIG_SUGGESTIONS = {
     "device.reboot": {},
     "file.upload": {
         "source": "请指定本地文件路径，例如 'C:\\upgrades\\firmware.bin'",
-        "destination": "请指定设备上的目标路径，例如 '/flash/firmware.bin'",
+        "destination": "可选：设备目标路径；留空时默认上传到 flash:/文件名",
     },
     "utility.wait": {
         "seconds": "请输入等待秒数，例如 10",
@@ -31,6 +36,9 @@ _CONFIG_SUGGESTIONS = {
     },
     "terminal.wait": {
         "pattern": "请输入要等待的终端文本，例如 'Password:' 或 'completed'",
+    },
+    "script.run": {
+        "script": "请输入要执行的 Python、PowerShell 或 Bash 脚本",
     },
     "loop.until": {
         "action_id": "请选择每轮要执行的操作",
@@ -85,6 +93,7 @@ def validate_workflow_inputs(workflow: WorkflowDraft, supplied: Mapping[str, Any
             continue
         valid = {
             "string": isinstance(value, str),
+            "file": isinstance(value, str),
             "number": isinstance(value, (int, float)) and not isinstance(value, bool),
             "integer": isinstance(value, int) and not isinstance(value, bool),
             "boolean": isinstance(value, bool),
@@ -181,7 +190,13 @@ def _schemas_compatible(
 _SUPPORTED_BRANCH_LABELS = frozenset({"true", "then", "yes", "1", "真", "是", "false", "else", "no", "0", "假", "否"})
 
 
-def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> ValidationResult:
+def validate_workflow(
+    workflow: WorkflowDraft,
+    catalog: ActionCatalog,
+    workflow_resolver: Callable[[str, int | str | None], Any] | None = None,
+    *,
+    _workflow_stack: tuple[tuple[str, int | str], ...] = (),
+) -> ValidationResult:
     errors: list[ValidationIssue] = []; warnings: list[ValidationIssue] = []
     ids = {n.id for n in workflow.nodes}
     if len(ids) != len(workflow.nodes):
@@ -192,11 +207,30 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
     input_names = [item.name for item in workflow.inputs]
     if len(set(input_names)) != len(input_names):
         errors.append(ValidationIssue("duplicate_input_name", "workflow input names must be unique"))
+    output_names = [item.name for item in workflow.outputs]
+    if len(set(output_names)) != len(output_names):
+        errors.append(ValidationIssue("duplicate_output_name", "workflow output names must be unique"))
+    for item in workflow.outputs:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item.name):
+            errors.append(ValidationIssue("invalid_output_name", f"workflow output name is invalid: {item.name}"))
+        elif item.name in _RESERVED_WORKFLOW_OUTPUTS:
+            errors.append(ValidationIssue("reserved_output_name", f"workflow output name is reserved: {item.name}"))
+        if item.type not in _WORKFLOW_OUTPUT_TYPES:
+            errors.append(ValidationIssue("invalid_output_type", f"workflow output {item.name} has unsupported type: {item.type}"))
+        elif item.type != "any" and not _is_exact_reference(item.value):
+            expected_type = "string" if item.type == "file" else item.type
+            if not _matches_schema_type(item.value, {"type": expected_type}):
+                errors.append(ValidationIssue("invalid_output_value_type", f"workflow output {item.name} must be {item.type}"))
     incoming = {n: 0 for n in ids}; adjacency = {n: [] for n in ids}
 
     def node_settings(node: Any) -> dict[str, Any]:
         return {**dict(node.config), **dict(node.input_mapping)}
 
+    resolved_calls: dict[str, Any] = {}
+    current_identity = (
+        str(getattr(workflow, "workflow_id", "") or getattr(workflow, "id", "")),
+        getattr(workflow, "version", "draft"),
+    )
     for node in workflow.nodes:
         spec = catalog.get(node.action_id)
         if spec is None:
@@ -265,6 +299,47 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
             logical = str(settings.get("logical_operator") or "AND").upper()
             if logical not in {"AND", "OR"}:
                 errors.append(ValidationIssue("invalid_condition_operator", "condition logical operator must be AND or OR", node.id))
+            if isinstance(rules, (list, tuple)):
+                for rule in rules:
+                    if not isinstance(rule, Mapping) or str(rule.get("operator") or "").strip().casefold() not in {"regex", "matches", "正则匹配"}:
+                        continue
+                    try:
+                        re.compile(str(rule.get("value") or ""))
+                    except re.error as exc:
+                        errors.append(ValidationIssue("invalid_condition_regex", f"condition regex is invalid: {exc}", node.id))
+        if node.action_id == "device.command":
+            execution_mode = str(settings.get("execution_mode") or "device").strip().casefold()
+            if execution_mode not in {"device", "shell", "bash"}:
+                errors.append(ValidationIssue("invalid_execution_mode", "execution_mode must be device, shell, or bash", node.id))
+            timeout = settings.get("timeout_seconds", 30)
+            try:
+                timeout_value = float(timeout)
+            except (TypeError, ValueError):
+                errors.append(ValidationIssue("invalid_number", "timeout_seconds must be a number", node.id))
+            else:
+                if timeout_value <= 0 or timeout_value > 86_400:
+                    errors.append(ValidationIssue("number_out_of_range", "timeout_seconds must be between 0 and 86400", node.id))
+            failure_strategy = str(settings.get("failure_strategy") or "stop").strip().casefold()
+            if failure_strategy not in {"stop", "continue"}:
+                errors.append(ValidationIssue("invalid_failure_strategy", "failure_strategy must be stop or continue", node.id))
+        if node.action_id == "script.run":
+            language = str(settings.get("language") or "python").strip().casefold()
+            if language not in {"python", "powershell", "bash"}:
+                errors.append(ValidationIssue("invalid_script_language", "script language must be python, powershell, or bash", node.id))
+            script = settings.get("script")
+            if not isinstance(script, str) or not script.strip():
+                errors.append(ValidationIssue("missing_script", "script content is required", node.id, fix_suggestion=_get_config_suggestion(node.action_id, "script")))
+            timeout = settings.get("timeout_seconds", 300)
+            try:
+                timeout_value = float(timeout)
+            except (TypeError, ValueError):
+                errors.append(ValidationIssue("invalid_number", "script timeout_seconds must be a number", node.id))
+            else:
+                if timeout_value <= 0 or timeout_value > 86_400:
+                    errors.append(ValidationIssue("number_out_of_range", "script timeout_seconds must be between 0 and 86400", node.id))
+            max_output = settings.get("max_output_chars", 1_048_576)
+            if not isinstance(max_output, int) or isinstance(max_output, bool) or max_output < 1_024 or max_output > 16_777_216:
+                errors.append(ValidationIssue("number_out_of_range", "script max_output_chars must be between 1024 and 16777216", node.id))
         if node.action_id == "terminal.wait":
             mode = str(settings.get("mode") or "contains").strip().lower()
             if mode not in {"contains", "regex"}:
@@ -309,6 +384,11 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
                     valid_group = isinstance(raw_group, int) and not isinstance(raw_group, bool) and raw_group >= 0
                     if not valid_group or (compiled is not None and int(raw_group) > compiled.groups):
                         errors.append(ValidationIssue("invalid_variable_extract_group", "variable extraction group is out of range", node.id))
+                    conversion = str(extract.get("convert") or "string").strip().lower()
+                    if conversion not in {"string", "integer", "number", "boolean", "json"}:
+                        errors.append(ValidationIssue("invalid_variable_extract_conversion", "variable extraction conversion is invalid", node.id))
+                    if "trim" in extract and not isinstance(extract.get("trim"), bool):
+                        errors.append(ValidationIssue("invalid_variable_extract_trim", "variable extraction trim must be a boolean", node.id))
         if node.action_id == "expression.evaluate":
             expression = str(settings.get("expression") or "").strip()
             if not expression:
@@ -353,6 +433,42 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
                         errors.append(ValidationIssue("invalid_number", f"{key} must be an integer", node.id))
                     elif number < minimum or number > maximum:
                         errors.append(ValidationIssue("number_out_of_range", f"{key} must be between {minimum} and {maximum}", node.id))
+        if node.action_id == "workflow.call":
+            called_id = str(settings.get("workflow_id") or "").strip()
+            called_version = settings.get("version")
+            supplied_inputs = settings.get("inputs", {})
+            if supplied_inputs is not None and not isinstance(supplied_inputs, Mapping):
+                errors.append(ValidationIssue("invalid_subworkflow_inputs", "sub-workflow inputs must be an object", node.id))
+            if called_id and called_id == current_identity[0]:
+                errors.append(ValidationIssue("recursive_workflow_call", "workflow cannot call itself", node.id))
+            elif called_id and isinstance(called_version, int) and not isinstance(called_version, bool):
+                identity = (called_id, called_version)
+                if identity in _workflow_stack:
+                    errors.append(ValidationIssue("recursive_workflow_call", f"recursive workflow call detected: {called_id}@{called_version}", node.id))
+                elif workflow_resolver is None:
+                    errors.append(ValidationIssue("workflow_resolver_required", "sub-workflow validation requires a workflow resolver", node.id))
+                else:
+                    try:
+                        called = workflow_resolver(called_id, called_version)
+                    except (KeyError, TypeError, ValueError):
+                        errors.append(ValidationIssue("unknown_workflow_version", f"published workflow version not found: {called_id}@{called_version}", node.id))
+                    else:
+                        if str(getattr(called, "version", "draft")) == "draft":
+                            errors.append(ValidationIssue("unpublished_workflow_call", "sub-workflow calls must target a published version", node.id))
+                        else:
+                            resolved_calls[node.id] = called
+                            mapped = dict(supplied_inputs) if isinstance(supplied_inputs, Mapping) else {}
+                            for workflow_input in getattr(called, "inputs", ()):
+                                if workflow_input.required and workflow_input.default is None and workflow_input.name not in mapped:
+                                    errors.append(ValidationIssue("missing_subworkflow_input", f"required sub-workflow input is missing: {workflow_input.name}", node.id))
+                            nested = validate_workflow(
+                                called,
+                                catalog,
+                                workflow_resolver,
+                                _workflow_stack=(*_workflow_stack, current_identity),
+                            )
+                            if nested.errors:
+                                errors.append(ValidationIssue("invalid_subworkflow", f"sub-workflow {called_id}@{called_version} is invalid: {nested.errors[0].message}", node.id))
         for key, upper in (("retry_attempts", 5), ("repeat_count", 20)):
             if key in settings and settings[key] not in (None, ""):
                 try: value = int(settings[key])
@@ -463,6 +579,20 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
 
     def output_schema(root: str) -> Mapping[str, Any] | None:
         node = node_by_id.get(root)
+        called = resolved_calls.get(root)
+        if node is not None and node.action_id == "workflow.call" and called is not None:
+            properties: dict[str, Any] = {
+                "status": {"type": "string"},
+                "workflow_id": {"type": "string"},
+                "version": {"type": "integer"},
+            }
+            declared: dict[str, Any] = {}
+            for item in getattr(called, "outputs", ()):
+                schema = {} if item.type == "any" else {"type": "string" if item.type == "file" else item.type}
+                properties[item.name] = schema
+                declared[item.name] = schema
+            properties["outputs"] = {"type": "object", "properties": declared}
+            return {"type": "object", "properties": properties}
         spec = catalog.get(node.action_id) if node is not None else None
         return spec.output_schema if spec is not None else None
 
@@ -608,7 +738,7 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
 
     def scan(
         value: Any,
-        node_id: str,
+        node_id: str | None,
         visible: set[str],
         expected_schema: Mapping[str, Any] | None = None,
         local_reference_roots: frozenset[str] = frozenset(),
@@ -622,6 +752,7 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
                     allow_embedded_reference
                     or (
                         key == "command"
+                        and node_id is not None
                         and node_by_id.get(node_id) is not None
                         and node_by_id[node_id].action_id == "device.command"
                     )
@@ -704,7 +835,28 @@ def validate_workflow(workflow: WorkflowDraft, catalog: ActionCatalog) -> Valida
                 frozenset(local_refs),
             )
         else:
-            scan(settings, node.id, visible, input_schema)
+            # Script input_json is a JSON document, so validate references
+            # inside its parsed values instead of scanning serialized quotes.
+            settings_to_scan = settings
+            if node.action_id == "script.run" and "input_json" in settings:
+                settings_to_scan = dict(settings)
+                raw_input = settings_to_scan.get("input_json")
+                if isinstance(raw_input, str):
+                    try:
+                        settings_to_scan["input_json"] = json.loads(raw_input)
+                    except json.JSONDecodeError as exc:
+                        errors.append(ValidationIssue(
+                            "invalid_script_input_json",
+                            f"script input_json must be valid JSON: {exc.msg}",
+                            node.id,
+                        ))
+            scan(settings_to_scan, node.id, visible, input_schema)
         for edge in workflow.edges:
             if edge.source == node.id: scan(edge.condition, node.id, visible | {node.id})
+    output_visible = known_inputs | (ids - condition_node_ids) | {
+        alias_name for _source, (alias_name, _node_id) in variable_aliases.items()
+    }
+    for item in workflow.outputs:
+        expected = None if item.type == "any" else {"type": "string" if item.type == "file" else item.type}
+        scan(item.value, None, output_visible, expected)
     return ValidationResult(tuple(errors), tuple(warnings))

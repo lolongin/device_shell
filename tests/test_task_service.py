@@ -221,3 +221,60 @@ def test_framework_task_projection_uses_workflow_outputs_not_execution_context()
     checkpoint = captured["checkpoint"]
     assert result.outputs == run.outputs
     assert checkpoint.outputs == run.outputs
+
+
+def test_framework_task_projection_exposes_latest_failed_transfer() -> None:
+    manager = object.__new__(LegacyTaskManager)
+    manager._framework_definitions = {
+        "task-1": FrameworkWorkflowDefinition(
+            id="framework-wf",
+            version="1",
+            start_state="upload_package",
+            states=(
+                StateNode(
+                    "upload_package",
+                    ActionSpec("upload_package", "file.upload"),
+                    next_state="done",
+                ),
+                StateNode("done", terminal=True),
+            ),
+        ),
+    }
+    captured: dict[str, object] = {}
+    manager._update = lambda task_id, **changes: captured.update(changes)
+    run = WorkflowRun(
+        "child-1",
+        "framework-wf",
+        "1",
+        "device-1",
+        status=RunStatus.FAILED,
+        current_state="upload_package",
+        attempts=(
+            ActionAttempt(
+                "attempt-1",
+                "upload_package",
+                1,
+                status=ActionStatus.FAILED,
+                error={"code": "old_error", "message": "old transfer error"},
+            ),
+            ActionAttempt(
+                "attempt-2",
+                "upload_package",
+                2,
+                status=ActionStatus.FAILED,
+                error={"code": "transfer_failed", "message": "transfer did not complete"},
+            ),
+        ),
+    )
+
+    manager._update_framework_record("task-1", object(), run)
+
+    result = captured["result"]
+    checkpoint = captured["checkpoint"]
+    assert captured["error_code"] == "transfer_failed"
+    assert captured["message"] == "transfer did not complete"
+    assert result.error_code == "transfer_failed"
+    assert result.message == "transfer did not complete"
+    assert checkpoint.failed_step_id == "upload_package"
+    assert checkpoint.error_code == "transfer_failed"
+    assert checkpoint.error_message == "transfer did not complete"

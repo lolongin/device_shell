@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from device_tui.application.workflow_runtime.output_contract import COMMAND_OUTPUT_SCHEMA
+
 @dataclass(frozen=True, slots=True)
 class ActionSpec:
     id: str
@@ -47,8 +49,7 @@ def build_action_catalog() -> ActionCatalog:
         )
 
     execution_outputs = output(
-        output={"type": "string"},
-        status={"type": "string"},
+        **COMMAND_OUTPUT_SCHEMA["properties"],
         execution_id={"type": "string"},
         operation_id={"type": "string"},
         session_id={"type": "string"},
@@ -88,8 +89,48 @@ def build_action_catalog() -> ActionCatalog:
         ),
         a("device.ssh", "SSH 连接", "connection", (), outputs=execution_outputs, host={"type": "string"}, port={"type": "integer"}),
         a("device.telnet", "Telnet 连接", "connection", (), outputs=execution_outputs, host={"type": "string"}, port={"type": "integer"}),
-        a("device.command", "执行命令", "device", ("command",), outputs=execution_outputs, command={"type": "string"}),
-        a("file.upload", "上传文件", "transfer", ("source", "destination"), source={"type": "string"}, destination={"type": "string"}, outputs=transfer_outputs, risk="high"),
+        a(
+            "device.command",
+            "执行命令",
+            "device",
+            ("command",),
+            outputs=execution_outputs,
+            command={"type": "string"},
+            execution_mode={"type": "string", "enum": ["device", "shell", "bash"]},
+            timeout_seconds={"type": "number"},
+            cwd={"type": "string"},
+            env={"type": "object"},
+            retry_attempts={"type": "integer"},
+            retry_backoff_seconds={"type": "number"},
+            failure_strategy={"type": "string", "enum": ["stop", "continue"]},
+        ),
+        a(
+            "script.run",
+            "执行脚本",
+            "script",
+            ("script",),
+            outputs=output(
+                output={"type": "string"},
+                stdout={"type": "string"},
+                stderr={"type": "string"},
+                returncode={"type": ["integer", "null"]},
+                exit_code={"type": ["integer", "null"]},
+                exitCode={"type": ["integer", "null"]},
+                status={"type": "string"},
+                result={},
+            ),
+            language={"type": "string", "enum": ["python", "powershell", "bash"]},
+            script={"type": "string"},
+            input_json={"type": ["string", "object", "array", "number", "boolean", "null"]},
+            cwd={"type": "string"},
+            env={"type": "object"},
+            timeout_seconds={"type": "number"},
+            max_output_chars={"type": "integer"},
+            retry_attempts={"type": "integer"},
+            retry_backoff_seconds={"type": "number"},
+            risk="high",
+        ),
+        a("file.upload", "上传文件", "transfer", ("source",), source={"type": "string"}, destination={"type": "string"}, outputs=transfer_outputs, risk="high"),
         a("file.download", "下载文件", "transfer", ("source", "destination"), source={"type": "string"}, destination={"type": "string"}, outputs=transfer_outputs),
         a("device.reboot", "重启设备", "device", outputs=execution_outputs, risk="high"),
         a("utility.wait", "等待", "control", ("seconds",), outputs=output(seconds={"type": "number"}, status={"type": "string"}), seconds={"type": "number"}),
@@ -111,10 +152,27 @@ def build_action_catalog() -> ActionCatalog:
                     "pattern": {"type": "string"},
                     "group": {"type": "integer", "minimum": 0},
                     "mode": {"type": "string", "enum": ["match", "line"]},
+                    "convert": {"type": "string", "enum": ["string", "integer", "number", "boolean", "json"]},
+                    "trim": {"type": "boolean"},
                 },
             },
         ),
         a("expression.evaluate", "计算表达式", "control", ("expression",), outputs=output(value={}, status={"type": "string"}), expression={"type": "string"}, values={"type": "object"}),
         a("loop.for_each", "循环 FOR", "control", ("items", "action_id"), outputs=output(items={"type": "array"}, results={"type": "array"}, count={"type": "integer"}), items={"type": "array"}, action_id={"type": "string"}, action_inputs={"type": "object"}),
         a("loop.until", "循环直到满足", "control", ("action_id", "condition"), outputs=output(status={"type": "string"}, matched={"type": "boolean"}, iterations={"type": "integer"}, result={"type": "object"}, results={"type": "array"}), action_id={"type": "string"}, action_inputs={"type": "object"}, condition={"type": "string"}, max_iterations={"type": "integer"}, interval_seconds={"type": "number"}),
+        a(
+            "workflow.call",
+            "调用子流程",
+            "workflow",
+            ("workflow_id", "version"),
+            outputs=output(
+                status={"type": "string"},
+                workflow_id={"type": "string"},
+                version={"type": "integer"},
+                outputs={"type": "object"},
+            ),
+            workflow_id={"type": "string"},
+            version={"type": "integer"},
+            inputs={"type": "object"},
+        ),
     ]))

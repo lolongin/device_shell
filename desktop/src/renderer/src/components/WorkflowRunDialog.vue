@@ -20,6 +20,7 @@ const selectedId = ref('')
 const selectedDeviceId = ref(props.initialDeviceId || workspace.selectedDeviceId)
 const values = reactive<Record<string, any>>({})
 const confirmedRisks = ref(false)
+const requestedVersionMissing = ref(false)
 
 const filteredWorkflows = computed(() => {
   const needle = query.value.trim().toLowerCase()
@@ -87,17 +88,23 @@ async function loadCatalog(): Promise<void> {
   try {
     workflows.value = (await desktopApi.publishedWorkflowDefinitions()).workflows
     if (props.initialWorkflowId) {
-      const catalogItem = workflows.value.find((item) => item.id === props.initialWorkflowId)
       if (props.initialVersion !== undefined) {
         const versions = (await desktopApi.workflowVersions(props.initialWorkflowId)).versions
         const target = versions.find((item) => String(item.version) === String(props.initialVersion))
         if (target) {
           workflows.value = [target, ...workflows.value.filter((item) => item.id !== target.id)]
           selectWorkflow(target)
+        } else {
+          requestedVersionMissing.value = true
+          error.value = `发布版本 v${props.initialVersion} 不存在或已被删除，请重新选择版本。`
+          return
         }
-      } else if (catalogItem) selectWorkflow(catalogItem)
+      } else {
+        const catalogItem = workflows.value.find((item) => item.id === props.initialWorkflowId)
+        if (catalogItem) selectWorkflow(catalogItem)
+      }
     }
-    if (!selectedId.value && workflows.value[0]) selectWorkflow(workflows.value[0])
+    if (!selectedId.value && !requestedVersionMissing.value && workflows.value[0]) selectWorkflow(workflows.value[0])
     else if (selectedWorkflow.value) resetInputs(selectedWorkflow.value)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -170,7 +177,7 @@ onMounted(() => { void loadCatalog() })
             <p v-if="error" class="workflow-run-error" role="alert"><CircleAlert :size="15" />{{ error }}</p>
             <footer class="workflow-run-footer"><span v-if="selectedDevice">将使用 {{ selectedDevice.name }} 的现有连接（如可用）</span><button class="secondary-button" type="button" @click="emit('close')">取消</button><button class="primary-button" type="submit" :disabled="!canRun"><LoaderCircle v-if="running" :size="14" class="spin" /><Play v-else :size="14" />{{ running ? '正在提交' : '开始执行' }}</button></footer>
           </template>
-          <div v-else class="workflow-run-state workflow-run-form-empty"><ListChecks :size="22" />从左侧选择一个已发布 Workflow</div>
+          <div v-else class="workflow-run-state workflow-run-form-empty"><CircleAlert v-if="requestedVersionMissing" :size="22" /><ListChecks v-else :size="22" />{{ requestedVersionMissing ? error : '从左侧选择一个已发布 Workflow' }}</div>
         </form>
       </div>
     </section>

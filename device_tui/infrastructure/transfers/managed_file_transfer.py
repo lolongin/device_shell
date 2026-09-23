@@ -376,6 +376,11 @@ def validate_transfer_device_path(path: str, terminal_environment: str) -> str:
         return validate_destination_path(path)
     if environment == "linux":
         return validate_linux_file_path(path)
+    # A storage-qualified value is a VRP path even when malformed (for
+    # example ``flash:/``). Preserve the useful VRP validation error instead
+    # of falling through to a misleading Linux absolute-path error.
+    if re.match(r"^[^/:\s]+:/", str(path or "").strip()):
+        return validate_destination_path(path)
     try:
         return validate_destination_path(path)
     except ManagedTransferError:
@@ -384,7 +389,7 @@ def validate_transfer_device_path(path: str, terminal_environment: str) -> str:
 
 def infer_terminal_environment(path: str, *, session_kind: str = "") -> str:
     raw = path.strip()
-    if _DEVICE_STORAGE_RE.fullmatch(raw):
+    if _DEVICE_STORAGE_RE.fullmatch(raw) or re.match(r"^[^/:\s]+:/", raw):
         return "vrp"
     if raw.startswith("/"):
         return "linux"
@@ -636,6 +641,7 @@ def build_managed_transfer_steps(
     source_path: str,
     destination_path: str,
     source_size: int,
+    overwrite: bool = False,
     username_secret_ref: str = "file_transfer.username",
     password_secret_ref: str = "file_transfer.password",
     terminal_environment: str = "vrp",
@@ -681,6 +687,7 @@ def build_managed_transfer_steps(
         {
             "type": "expect",
             "success": [prompt, "ftp_prompt"],
+            "responses": ([{"match": "confirmation_prompt", "text": "y", "max_matches": 3}] if overwrite else []),
             "failures": [
                 "Error:",
                 "failed",

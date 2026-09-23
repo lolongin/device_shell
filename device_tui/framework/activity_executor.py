@@ -341,6 +341,8 @@ class ActivityActionHandler:
         finally:
             self._active.pop(invocation.invocation_id, None)
         facts = dict(result.outputs)
+        if result.error is not None:
+            facts.setdefault("error", dict(result.error))
         if result.operation_id:
             facts["operation_id"] = result.operation_id
         if result.evidence:
