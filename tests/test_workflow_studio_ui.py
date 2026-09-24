@@ -55,29 +55,34 @@ def test_workflow_studio_names_new_workflows_and_allows_renaming() -> None:
 
 def test_workflow_studio_separates_script_management_and_shows_test_output() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    scripts = Path("desktop/src/renderer/src/composables/useWorkflowScripts.ts").read_text(encoding="utf-8")
+    studio = Path("desktop/src/renderer/src/components/WorkflowScriptStudio.vue").read_text(encoding="utf-8")
 
-    assert "workflow-script-studio" in source
-    assert "脚本资源" in source
-    assert "独立脚本编辑器" in source
-    assert "desktopApi.testWorkflowScript" in source
-    assert "desktopApi.getTask" in source
-    assert "scriptTestDetails.stdout" in source
-    assert "scriptTestDetails.stderr" in source
-    assert "scriptTestDetails.exitCode" in source
+    assert "<WorkflowScriptStudio" in source
+    assert "workflow-script-studio" in studio
+    assert "脚本资源" in studio
+    assert "独立脚本编辑器" in studio
+    assert "desktopApi.testWorkflowScript" in scripts
+    assert "desktopApi.getTask" in scripts
+    assert "controller.scriptTestDetails.value.stdout" in studio
+    assert "controller.scriptTestDetails.value.stderr" in studio
+    assert "controller.scriptTestDetails.value.exitCode" in studio
     assert "savedScriptSnapshots" in source
-    assert "hasUnsavedScriptChanges.value && !await saveWorkflowScript()" in source
-    assert "保存并测试" in source
+    assert "hasUnsavedScriptChanges.value && !await saveWorkflowScript()" in scripts
+    assert "保存并测试" in studio
 
 
 def test_workflow_script_creation_offers_named_templates() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    scripts = Path("desktop/src/renderer/src/composables/useWorkflowScripts.ts").read_text(encoding="utf-8")
+    studio = Path("desktop/src/renderer/src/components/WorkflowScriptStudio.vue").read_text(encoding="utf-8")
 
-    assert "const scriptTemplates: ScriptTemplate[]" in source
-    assert "Python 主函数" in source
-    assert "PowerShell 参数脚本" in source
-    assert "<section class=\"workflow-script-template-grid\"" in source
-    assert "async function confirmCreateWorkflowScript" in source
-    assert "template.input_schema" in source
+    assert "workflowScriptTemplates" in scripts
+    assert "Python 主函数" in scripts
+    assert "PowerShell 参数脚本" in scripts
+    assert "<section class=\"workflow-script-template-grid\"" in studio
+    assert "async function confirmCreateWorkflowScript" in scripts
+    assert "template.input_schema" in scripts
 
 
 def test_workflow_script_nodes_render_schema_inputs_with_json_escape_hatch() -> None:
@@ -98,10 +103,11 @@ def test_workflow_script_nodes_render_schema_inputs_with_json_escape_hatch() -> 
 
 def test_workflow_studio_panels_keep_independent_scroll_containers() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    script_studio_styles = Path("desktop/src/renderer/src/components/WorkflowScriptStudio.css").read_text(encoding="utf-8")
 
-    assert ".workflow-script-list { min-height: 0; overflow: auto;" in source
-    assert ".workflow-script-test-panel {" in source
-    assert "min-height: 0; overflow: auto;" in source
+    assert ".workflow-script-list { min-height: 0; overflow: auto;" in script_studio_styles
+    assert ".workflow-script-test-panel {" in script_studio_styles
+    assert "min-height: 0; overflow: auto;" in script_studio_styles
     assert ".workflow-action-catalog, .workflow-properties { min-height: 0; overflow: auto;" in source
     assert ".workflow-properties { grid-column: 3; grid-row: 5;" in source
 

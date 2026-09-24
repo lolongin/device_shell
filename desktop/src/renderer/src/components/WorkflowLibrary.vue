@@ -3,10 +3,12 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, FileUp, GitBranch, GripVertical, Hand, MousePointer2, Play, Plus, Redo, RotateCcw, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
-import type { DeviceSummary, TaskRecord, WorkflowScript, WorkflowScriptInput, WorkflowScriptInputType } from '../types'
+import type { DeviceSummary, TaskRecord, WorkflowScript, WorkflowScriptInput } from '../types'
 import WorkflowCanvas from './WorkflowCanvas.vue'
 import WorkflowScriptEditor from './WorkflowScriptEditor.vue'
+import WorkflowScriptStudio from './WorkflowScriptStudio.vue'
 import { useUndoRedo, useUndoRedoShortcuts } from '../composables/useUndoRedo'
+import { useWorkflowScripts, workflowScriptSnapshot as scriptSnapshot } from '../composables/useWorkflowScripts'
 import { autoLayout } from '../utils/layoutAlgorithms'
 import { normalizeLoopUntilNodes } from '../utils/loopUntil'
 
@@ -22,16 +24,6 @@ type OutputField = { name: string; label: string }
 type ActionCategory = 'flow-control' | 'device' | 'transfer' | 'data' | 'workflow' | 'script'
 type ActionItem = { id: string; label: string; hint: string; tone: string; category: ActionCategory; outputFields: OutputField[]; preset?: { actionId: string; config: Record<string, unknown>; customActionId: string } }
 type CommandReference = { reference: string; label: string; hint: string }
-type ScriptTestResult = { task?: TaskRecord; message?: string }
-type ScriptTemplate = {
-  id: string
-  name: string
-  description: string
-  language: WorkflowScript['language']
-  script: string
-  input_schema: WorkflowScriptInput[]
-}
-
 const emit = defineEmits<{ close: []; 'run-published': []; 'run-version': [payload: { workflowId: string; version: string | number }] }>()
 const workspace = useWorkspaceStore()
 const workflows = ref<WorkflowItem[]>([])
@@ -39,23 +31,29 @@ const selected = ref<WorkflowItem | null>(null)
 const selectedNode = ref<NodeItem | null>(null)
 const rightRailMode = ref<'workflow' | 'step'>('workflow')
 const studioMode = ref<'flow' | 'scripts'>('flow')
-const scripts = ref<WorkflowScript[]>([])
-const selectedScriptId = ref('')
-const scriptSaving = ref(false)
-const scriptTesting = ref(false)
-const scriptTestConfirmed = ref(false)
-const scriptTestInputs = ref('{}')
-const scriptTestMode = ref<'form' | 'json'>('form')
-const scriptTestValues = ref<Record<string, unknown>>({})
-const scriptTestInputError = ref('')
-const scriptTestResult = ref<ScriptTestResult | null>(null)
+const selectedDeviceId = ref('')
+const workflowScripts = useWorkflowScripts({
+  selectedDeviceId,
+  studioMode,
+  setError: (message) => { error.value = message },
+  setRunMessage: (message) => { runMessage.value = message }
+})
+const {
+  scripts,
+  selectedScript,
+  hasUnsavedScriptChanges,
+  scriptSaving,
+  savedScriptSnapshots,
+  loadWorkflowScripts,
+  openScriptStudio,
+  saveScriptResource,
+  cancelScriptTaskMonitoring,
+  eventValue: scriptEventValue,
+  eventChecked: scriptEventChecked
+} = workflowScripts
+const eventValue = scriptEventValue
+const eventChecked = scriptEventChecked
 const scriptNodeInputMode = ref<'form' | 'json'>('form')
-const savedScriptSnapshots = ref<Record<string, string>>({})
-const showScriptTemplateDialog = ref(false)
-const selectedScriptTemplateId = ref('python-main')
-const scriptCreateName = ref('')
-const scriptCreateDescription = ref('')
-const scriptCreating = ref(false)
 const issues = ref<Issue[]>([])
 const error = ref('')
 const loading = ref(false)
@@ -68,7 +66,6 @@ const flowTestTask = ref<TaskRecord | null>(null)
 const flowTestError = ref('')
 const expandedFlowTestStepIds = ref<string[]>([])
 const searchQuery = ref('')
-const selectedDeviceId = ref('')
 const selectedDeviceIds = ref<string[]>([])
 const showCreateMenu = ref(false)
 const createMenuRef = ref<HTMLElement | null>(null)
@@ -111,7 +108,6 @@ const customActionDescription = ref('')
 const customActionSaving = ref(false)
 const customActionWorkflowVersion = ref<PublishedVersionItem | null>(null)
 let workflowClipboard: NodeItem | null = null
-let scriptTestRequestId = 0
 let flowTestRequestId = 0
 const workflowInputValues = ref<Record<string, unknown>>({})
 const workflowInputTouched = ref(new Set<string>())
@@ -128,255 +124,6 @@ function workflowSnapshot(workflow: WorkflowItem | null): string {
 
 const savedWorkflowSnapshot = ref('')
 const hasUnsavedChanges = computed(() => Boolean(selected.value && workflowSnapshot(selected.value) !== savedWorkflowSnapshot.value))
-const selectedScript = computed(() => scripts.value.find((item) => item.id === selectedScriptId.value) || null)
-const scriptInputTypes: WorkflowScriptInputType[] = ['string', 'number', 'boolean', 'object', 'array']
-const scriptTemplates: ScriptTemplate[] = [
-  {
-    id: 'python-main',
-    name: 'Python 主函数',
-    description: '推荐。参数从 main 函数签名自动生成。',
-    language: 'python',
-    script: 'def main(name: str = "world"):\n    return {"message": f"Hello {name}"}',
-    input_schema: []
-  },
-  {
-    id: 'python-async',
-    name: 'Python 异步函数',
-    description: '适合需要异步调用的脚本，自动等待 main 返回结果。',
-    language: 'python',
-    script: 'import asyncio\n\nasync def main(name: str, delay: float = 0):\n    await asyncio.sleep(delay)\n    return {"message": f"Hello {name}"}',
-    input_schema: []
-  },
-  {
-    id: 'powershell-param',
-    name: 'PowerShell 参数脚本',
-    description: '保留 PowerShell param 区域，参数可在编辑器中继续调整。',
-    language: 'powershell',
-    script: 'param(\n    [string]$Name = "world"\n)\n\nWrite-Output "Hello $Name"',
-    input_schema: [{ name: 'Name', type: 'string', required: false, default: 'world' }]
-  },
-  {
-    id: 'bash-input',
-    name: 'Bash 环境输入',
-    description: '读取 DEVICE_TUI_INPUT_JSON，适合命令行脚本。',
-    language: 'bash',
-    script: '#!/usr/bin/env bash\nprintf \'%s\\n\' "${DEVICE_TUI_INPUT_JSON:-{}}"',
-    input_schema: []
-  },
-  {
-    id: 'blank',
-    name: '空白脚本',
-    description: '从零开始编写，不预置参数。',
-    language: 'python',
-    script: '',
-    input_schema: []
-  }
-]
-const selectedScriptTemplate = computed(() => scriptTemplates.find((item) => item.id === selectedScriptTemplateId.value) || scriptTemplates[0])
-const scriptValidationMessage = computed(() => {
-  const script = selectedScript.value
-  if (!script) return ''
-  if (!script.name.trim()) return '脚本名称不能为空'
-  const names = new Set<string>()
-  for (const parameter of script.input_schema || []) {
-    const name = String(parameter.name || '').trim()
-    if (!name) return '每个输入参数都需要名称'
-    if (names.has(name)) return `输入参数名称重复：${name}`
-    names.add(name)
-    if (!scriptInputTypes.includes(parameter.type)) return `参数“${name}”的类型无效`
-  }
-  return ''
-})
-const hasUnsavedScriptChanges = computed(() => Boolean(
-  selectedScript.value && scriptSnapshot(selectedScript.value) !== savedScriptSnapshots.value[selectedScript.value.id]
-))
-const scriptTestDetails = computed(() => {
-  const task = scriptTestResult.value?.task
-  if (!task) return null
-  return {
-    status: task.status,
-    stdout: taskResultValue(task, ['stdout', 'output']),
-    stderr: taskResultValue(task, ['stderr']),
-    exitCode: taskResultValue(task, ['exitCode', 'exit_code', 'returncode'])
-  }
-})
-
-function scriptSnapshot(script: WorkflowScript): string {
-  return JSON.stringify({
-    name: script.name,
-    description: script.description,
-    language: script.language,
-    script: script.script,
-    input_schema: script.input_schema,
-    entrypoint: script.entrypoint || '',
-    input_schema_source: script.input_schema_source || 'manual'
-  })
-}
-
-function normalizeWorkflowScript(script: WorkflowScript): WorkflowScript {
-  return {
-    ...script,
-    input_schema: (Array.isArray(script.input_schema) ? script.input_schema : []).map((item, index) => ({
-      name: String(item?.name || `input_${index + 1}`),
-      type: scriptInputTypes.includes(item?.type) ? item.type : 'string',
-      ...(item?.required ? { required: true } : {}),
-      ...(Object.prototype.hasOwnProperty.call(item || {}, 'default') ? { default: item.default } : {}),
-      ...(item?.description ? { description: String(item.description) } : {})
-    }))
-  }
-}
-
-function synchronizeScriptTestValues(): void {
-  const script = selectedScript.value
-  if (!script) {
-    scriptTestValues.value = {}
-    scriptTestInputs.value = '{}'
-    return
-  }
-  const previous = scriptTestValues.value
-  const next: Record<string, unknown> = {}
-  for (const parameter of script.input_schema || []) {
-    const name = String(parameter.name || '').trim()
-    if (!name) continue
-    if (Object.prototype.hasOwnProperty.call(previous, name)) next[name] = previous[name]
-    else if (Object.prototype.hasOwnProperty.call(parameter, 'default')) next[name] = parameter.default
-    else next[name] = parameter.type === 'boolean' ? false : ''
-  }
-  scriptTestValues.value = next
-  scriptTestInputs.value = JSON.stringify(next, null, 2)
-  scriptTestInputError.value = ''
-}
-
-watch(selectedScriptId, () => {
-  scriptTestResult.value = null
-  synchronizeScriptTestValues()
-})
-
-function scriptTestValueText(parameter: WorkflowScriptInput): string {
-  const value = scriptTestValues.value[parameter.name]
-  if (value === undefined || value === null) return ''
-  return typeof value === 'string' ? value : JSON.stringify(value)
-}
-
-function scriptDefaultText(parameter: WorkflowScriptInput): string {
-  if (!Object.prototype.hasOwnProperty.call(parameter, 'default')) return ''
-  const value = parameter.default
-  return typeof value === 'string' ? value : JSON.stringify(value)
-}
-
-function eventValue(event: Event): string {
-  return (event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
-}
-
-function eventChecked(event: Event): boolean {
-  return (event.target as HTMLInputElement).checked
-}
-
-function updateScriptInputField(index: number, field: keyof WorkflowScriptInput, value: unknown): void {
-  if (!selectedScript.value?.input_schema[index]) return
-  const schema = [...selectedScript.value.input_schema]
-  schema[index] = { ...schema[index], [field]: value }
-  if (field === 'type') delete schema[index].default
-  selectedScript.value.input_schema = schema
-  if (field === 'name' || field === 'type') synchronizeScriptTestValues()
-}
-
-function updateScriptDefault(index: number, event: Event): void {
-  const parameter = selectedScript.value?.input_schema[index]
-  if (!parameter) return
-  const raw = eventValue(event)
-  let value: unknown = raw
-  if (parameter.type === 'number') value = raw.trim() ? Number(raw) : undefined
-  if (parameter.type === 'boolean') value = eventChecked(event)
-  if (parameter.type === 'object' || parameter.type === 'array') {
-    if (!raw.trim()) value = undefined
-    else {
-      try { value = JSON.parse(raw) } catch { value = raw }
-    }
-  }
-  const schema = [...selectedScript.value.input_schema]
-  schema[index] = { ...schema[index] }
-  if (value === undefined) delete schema[index].default
-  else schema[index].default = value
-  selectedScript.value.input_schema = schema
-  synchronizeScriptTestValues()
-}
-
-function updateScriptTestValue(name: string, value: unknown): void {
-  scriptTestValues.value = { ...scriptTestValues.value, [name]: value }
-  scriptTestInputs.value = JSON.stringify(scriptTestValues.value, null, 2)
-  scriptTestInputError.value = ''
-}
-
-function addScriptInput(): void {
-  if (!selectedScript.value) return
-  const names = new Set((selectedScript.value.input_schema || []).map((item) => item.name))
-  let index = (selectedScript.value.input_schema || []).length + 1
-  while (names.has(`input_${index}`)) index += 1
-  selectedScript.value.input_schema = [
-    ...(selectedScript.value.input_schema || []),
-    { name: `input_${index}`, type: 'string', required: false, description: '' }
-  ]
-  synchronizeScriptTestValues()
-}
-
-function removeScriptInput(index: number): void {
-  if (!selectedScript.value) return
-  selectedScript.value.input_schema = selectedScript.value.input_schema.filter((_, itemIndex) => itemIndex !== index)
-  synchronizeScriptTestValues()
-}
-
-function buildScriptTestInputs(): Record<string, unknown> {
-  const inputs: Record<string, unknown> = {}
-  for (const parameter of selectedScript.value?.input_schema || []) {
-    const name = parameter.name.trim()
-    let value = scriptTestValues.value[name]
-    if (parameter.type === 'object' || parameter.type === 'array') {
-      if (typeof value === 'string' && value.trim()) {
-        try { value = JSON.parse(value) } catch { throw new Error(`参数“${name}”必须是合法 JSON`) }
-      }
-      if (parameter.type === 'array' && value !== '' && value !== undefined && !Array.isArray(value)) throw new Error(`参数“${name}”必须是数组`)
-      if (parameter.type === 'object' && value !== '' && value !== undefined && (typeof value !== 'object' || Array.isArray(value) || value === null)) throw new Error(`参数“${name}”必须是对象`)
-    }
-    if (parameter.type === 'number' && value !== '' && value !== undefined) {
-      value = Number(value)
-      if (!Number.isFinite(value)) throw new Error(`参数“${name}”必须是数字`)
-    }
-    if (parameter.required && (value === '' || value === undefined || value === null)) throw new Error(`请填写必填参数“${name}”`)
-    if (value !== '' && value !== undefined) inputs[name] = value
-  }
-  return inputs
-}
-
-function recordValue(source: unknown, keys: string[], seen = new Set<unknown>()): unknown {
-  if (!source || typeof source !== 'object' || seen.has(source)) return undefined
-  seen.add(source)
-  const record = source as Record<string, unknown>
-  for (const key of keys) {
-    const value = record[key]
-    if (value !== undefined && value !== null && value !== '') return value
-  }
-  for (const key of ['facts', 'data', 'outputs', 'result', 'script']) {
-    const value = recordValue(record[key], keys, seen)
-    if (value !== undefined) return value
-  }
-  return undefined
-}
-
-function taskResultValue(task: TaskRecord, keys: string[]): string {
-  const candidates: unknown[] = [
-    ...(task.result?.steps || []).slice().reverse(),
-    task.result?.outputs,
-    ...(task.checkpoint?.step_states || []).slice().reverse().map((item) => item.result),
-    task.checkpoint?.outputs
-  ]
-  for (const candidate of candidates) {
-    const value = recordValue(candidate, keys)
-    if (value !== undefined) return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
-  }
-  return ''
-}
-
 function defaultWorkflowInputValue(input: WorkflowInput): unknown {
   if (input.default !== undefined && input.default !== null) return input.default
   if (input.type === 'boolean') return false
@@ -393,116 +140,8 @@ function initializeWorkflowInputValues(workflow: WorkflowItem | null): void {
   workflowInputTouched.value = new Set()
 }
 
-async function loadWorkflowScripts(preferredId = ''): Promise<void> {
-  const result = await desktopApi.workflowScripts()
-  scripts.value = result.scripts.map(normalizeWorkflowScript)
-  savedScriptSnapshots.value = Object.fromEntries(result.scripts.map((item) => [item.id, scriptSnapshot(item)]))
-  const nextId = preferredId || selectedScriptId.value
-  selectedScriptId.value = scripts.value.some((item) => item.id === nextId) ? nextId : (scripts.value[0]?.id || '')
-  synchronizeScriptTestValues()
-}
-
-function openScriptStudio(scriptId = selectedScriptId.value): void {
-  studioMode.value = 'scripts'
-  selectedScriptId.value = scriptId || scripts.value[0]?.id || ''
-}
-
-function createWorkflowScript(): void {
-  selectedScriptTemplateId.value = 'python-main'
-  scriptCreateName.value = `新建脚本 ${scripts.value.length + 1}`
-  scriptCreateDescription.value = ''
-  showScriptTemplateDialog.value = true
-}
-
-async function confirmCreateWorkflowScript(): Promise<void> {
-  const template = selectedScriptTemplate.value
-  if (!template || !scriptCreateName.value.trim()) return
-  scriptCreating.value = true
-  try {
-    const result = await desktopApi.createWorkflowScript({
-      name: scriptCreateName.value.trim(),
-      description: scriptCreateDescription.value.trim(),
-      language: template.language,
-      script: template.script,
-      input_schema: template.input_schema
-    })
-    scripts.value = [normalizeWorkflowScript(result.script), ...scripts.value]
-    savedScriptSnapshots.value[result.script.id] = scriptSnapshot(result.script)
-    selectedScriptId.value = result.script.id
-    synchronizeScriptTestValues()
-    showScriptTemplateDialog.value = false
-    studioMode.value = 'scripts'
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    scriptCreating.value = false
-  }
-}
-
-async function duplicateWorkflowScript(): Promise<void> {
-  if (!selectedScript.value) return
-  try {
-    const result = await desktopApi.createWorkflowScript({
-      ...selectedScript.value,
-      id: undefined,
-      name: `${selectedScript.value.name} 副本`
-    })
-    scripts.value = [normalizeWorkflowScript(result.script), ...scripts.value]
-    savedScriptSnapshots.value[result.script.id] = scriptSnapshot(result.script)
-    selectedScriptId.value = result.script.id
-    synchronizeScriptTestValues()
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
-}
-
-async function saveScriptResource(script: WorkflowScript): Promise<boolean> {
-  const invalidParameter = script.input_schema.some((parameter) => !String(parameter.name || '').trim())
-  const validationMessage = !script.name.trim() ? '脚本名称不能为空' : invalidParameter ? '每个输入参数都需要名称' : ''
-  if (validationMessage) {
-    error.value = validationMessage
-    return false
-  }
-  scriptSaving.value = true
-  try {
-    const result = await desktopApi.saveWorkflowScript(script.id, script)
-    const index = scripts.value.findIndex((item) => item.id === result.script.id)
-    if (index >= 0) scripts.value[index] = normalizeWorkflowScript(result.script)
-    savedScriptSnapshots.value[result.script.id] = scriptSnapshot(result.script)
-    runMessage.value = '脚本已保存。'
-    return true
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-    return false
-  } finally {
-    scriptSaving.value = false
-  }
-}
-
-async function saveWorkflowScript(): Promise<boolean> {
-  if (!selectedScript.value || scriptValidationMessage.value) {
-    if (scriptValidationMessage.value) error.value = scriptValidationMessage.value
-    return false
-  }
-  return saveScriptResource(selectedScript.value)
-}
-
 async function saveNodeScriptResource(): Promise<void> {
   if (selectedNodeScript.value) await saveScriptResource(selectedNodeScript.value)
-}
-
-async function deleteWorkflowScript(): Promise<void> {
-  if (!selectedScript.value || !window.confirm(`删除脚本“${selectedScript.value.name}”？`)) return
-  try {
-    const deletedId = selectedScript.value.id
-    await desktopApi.deleteWorkflowScript(deletedId)
-    scripts.value = scripts.value.filter((item) => item.id !== deletedId)
-    delete savedScriptSnapshots.value[deletedId]
-    selectedScriptId.value = scripts.value[0]?.id || ''
-    synchronizeScriptTestValues()
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
 }
 
 function selectScriptForNode(scriptId: string): void {
@@ -518,51 +157,6 @@ function selectScriptForNode(scriptId: string): void {
       if (Object.prototype.hasOwnProperty.call(parameter, 'default')) inputs[parameter.name] = parameter.default
     }
     selectedNode.value.config.input_json = JSON.stringify(inputs, null, 2)
-  }
-}
-
-async function testWorkflowScript(): Promise<void> {
-  if (!selectedScript.value || !selectedDeviceId.value || !scriptTestConfirmed.value) return
-  if (hasUnsavedScriptChanges.value && !await saveWorkflowScript()) return
-  scriptTesting.value = true
-  scriptTestResult.value = null
-  scriptTestInputError.value = ''
-  const requestId = ++scriptTestRequestId
-  try {
-    let inputs: Record<string, unknown>
-    if (scriptTestMode.value === 'json') {
-      try { inputs = JSON.parse(scriptTestInputs.value || '{}') as Record<string, unknown> } catch { throw new Error('测试输入必须是合法 JSON 对象') }
-      if (!inputs || Array.isArray(inputs) || typeof inputs !== 'object') throw new Error('测试输入必须是 JSON 对象')
-    } else {
-      inputs = buildScriptTestInputs()
-    }
-    const result = await desktopApi.testWorkflowScript(selectedScript.value.id, {
-      device_id: selectedDeviceId.value,
-      protocol: 'simulated',
-      inputs,
-      confirmed_risks: true
-    })
-    scriptTestResult.value = result
-    if (!result.task?.id) {
-      runMessage.value = '脚本测试已提交。'
-      return
-    }
-    runMessage.value = `脚本测试任务已创建：${result.task.id}`
-    const terminalStatuses = new Set(['completed', 'success', 'succeeded', 'failed', 'cancelled'])
-    for (let attempt = 0; attempt < 120 && !terminalStatuses.has(String(scriptTestResult.value?.task?.status)); attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 500))
-      if (requestId !== scriptTestRequestId) return
-      const task = (await desktopApi.getTask(result.task.id)).task
-      scriptTestResult.value = { task }
-    }
-    if (!terminalStatuses.has(String(scriptTestResult.value?.task?.status))) {
-      scriptTestResult.value = { ...scriptTestResult.value, message: '任务仍在运行，可稍后重新测试或在任务中心查看。' }
-    }
-  } catch (cause) {
-    scriptTestInputError.value = cause instanceof Error ? cause.message : String(cause)
-    scriptTestResult.value = { message: cause instanceof Error ? cause.message : String(cause) }
-  } finally {
-    scriptTesting.value = false
   }
 }
 
@@ -2291,7 +1885,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleCreateMenuKeyDown)
 })
 onUnmounted(() => {
-  scriptTestRequestId += 1
+  cancelScriptTaskMonitoring()
   flowTestRequestId += 1
   finishWorkflowCatalogResize()
   finishWorkflowPropertiesResize()
@@ -2839,21 +2433,6 @@ watch(
         <footer><button type="button" @click="showCreateDialog = false">取消</button><button type="submit" class="primary-action" :disabled="!createName.trim() || creating">{{ creating ? '创建中…' : '创建流程' }}</button></footer>
       </form>
     </div>
-    <div v-if="showScriptTemplateDialog" class="workflow-modal-backdrop" @click.self="showScriptTemplateDialog = false">
-      <form class="workflow-import-dialog workflow-create-dialog workflow-script-template-dialog" role="dialog" aria-modal="true" aria-label="新建脚本" @submit.prevent="confirmCreateWorkflowScript">
-        <header><strong>新建脚本</strong><button type="button" title="关闭" @click="showScriptTemplateDialog = false"><X :size="16" /></button></header>
-        <label>脚本名称<input v-model="scriptCreateName" autofocus maxlength="120" placeholder="例如：检查设备状态" /></label>
-        <label>脚本说明<textarea v-model="scriptCreateDescription" rows="2" maxlength="400" placeholder="可选，说明脚本用途" /></label>
-        <section class="workflow-script-template-grid" aria-label="脚本模板">
-          <button v-for="template in scriptTemplates" :key="template.id" type="button" class="workflow-script-template-card" :class="{ active: selectedScriptTemplateId === template.id }" @click="selectedScriptTemplateId = template.id">
-            <span class="workflow-script-template-icon"><Code2 :size="15" /></span>
-            <span><strong>{{ template.name }}</strong><small>{{ template.description }}</small><em>{{ template.language }}</em></span>
-          </button>
-        </section>
-        <div class="workflow-script-template-preview"><span>预置内容</span><code>{{ selectedScriptTemplate.script ? `${selectedScriptTemplate.script.split('\n').slice(0, 3).join('\n')}${selectedScriptTemplate.script.split('\n').length > 3 ? '\n…' : ''}` : '空白脚本' }}</code></div>
-        <footer><button type="button" @click="showScriptTemplateDialog = false">取消</button><button type="submit" class="primary-action" :disabled="scriptCreating || !scriptCreateName.trim()">{{ scriptCreating ? '创建中…' : '使用模板创建' }}</button></footer>
-      </form>
-    </div>
     <div v-if="showImportPreview" class="workflow-modal-backdrop" @click.self="showImportPreview = false">
       <section class="workflow-import-dialog" role="dialog" aria-modal="true" aria-label="导入 Workflow 预览">
         <header><strong>导入预览</strong><button type="button" title="关闭" @click="showImportPreview = false"><X :size="16" /></button></header>
@@ -2877,60 +2456,14 @@ watch(
     </div>
     <p v-if="error" class="workflow-error">{{ error }}</p>
     <p v-if="runMessage" class="workflow-run-message">{{ runMessage }}</p><p v-if="hasBranching" class="workflow-branch-notice"><GitBranch :size="14" />包含条件分支：运行时只执行匹配条件的一侧。</p>
-    <div v-if="studioMode === 'scripts'" class="workflow-script-studio">
-      <aside class="workflow-script-list">
-        <div class="workflow-list-title"><span>脚本资源</span><small>{{ scripts.length }} 个</small></div>
-        <div class="workflow-script-list-actions"><button type="button" class="primary-action" @click="createWorkflowScript"><Plus :size="13" />新建脚本</button><button type="button" class="icon-toolbar-button" :disabled="!selectedScript" title="复制脚本" aria-label="复制脚本" @click="duplicateWorkflowScript"><Copy :size="13" /></button></div>
-        <button v-for="script in scripts" :key="script.id" type="button" class="workflow-script-list-item" :class="{ active: script.id === selectedScriptId }" @click="selectedScriptId = script.id">
-          <span class="workflow-script-list-dot" :data-language="script.language"></span><span><strong>{{ script.name }}</strong><small>{{ script.language }} · {{ scriptSnapshot(script) !== savedScriptSnapshots[script.id] ? '未保存' : (script.updated_at ? new Date(script.updated_at).toLocaleDateString() : '未保存') }}</small></span>
-        </button>
-        <p v-if="!scripts.length" class="workflow-empty-list">还没有脚本<br /><span>新建后可单独编辑和测试</span></p>
-      </aside>
-      <main v-if="selectedScript" class="workflow-script-workspace">
-        <section class="workflow-script-editor-panel">
-          <header class="workflow-script-resource-header"><div><span class="workflow-section-kicker">脚本资源</span><input v-model="selectedScript.name" aria-label="脚本名称" maxlength="120" placeholder="输入脚本名称" /><small>{{ selectedScript.id }}<template v-if="hasUnsavedScriptChanges"> · 未保存</template></small><span v-if="scriptValidationMessage" class="workflow-script-validation">{{ scriptValidationMessage }}</span></div><div class="workflow-script-resource-actions"><button type="button" :disabled="scriptSaving || !hasUnsavedScriptChanges || Boolean(scriptValidationMessage)" @click="saveWorkflowScript"><Save :size="14" />{{ scriptSaving ? '保存中…' : '保存' }}</button><button type="button" class="icon-toolbar-button" title="删除脚本" aria-label="删除脚本" @click="deleteWorkflowScript"><Trash2 :size="14" /></button></div></header>
-          <WorkflowScriptEditor v-model="selectedScript.script" :language="selectedScript.language" placeholder="输入脚本内容…" aria-label="独立脚本编辑器" />
-          <section v-if="scriptTestResult" class="workflow-script-run-log" aria-label="脚本运行日志">
-            <header><div><strong>运行日志</strong><small>{{ scriptTestResult.message || (scriptTesting ? '正在执行脚本…' : '测试完成') }}</small></div><code v-if="scriptTestResult.task?.id" :title="scriptTestResult.task.id">{{ scriptTestResult.task.id }}</code></header>
-            <div v-if="scriptTestDetails" class="workflow-script-test-summary"><span>状态</span><b>{{ scriptTestDetails.status }}</b><span>退出码</span><b>{{ scriptTestDetails.exitCode !== '' ? scriptTestDetails.exitCode : '—' }}</b></div>
-            <section v-if="scriptTestDetails?.stdout"><span>stdout</span><pre>{{ scriptTestDetails.stdout }}</pre></section>
-            <section v-if="scriptTestDetails?.stderr"><span>stderr</span><pre>{{ scriptTestDetails.stderr }}</pre></section>
-          </section>
-        </section>
-        <aside class="workflow-script-test-panel">
-          <section class="workflow-script-config-section" aria-label="脚本配置">
-            <div class="workflow-script-side-heading"><div><strong>配置</strong><small>脚本语言、说明和输入参数</small></div></div>
-            <div class="workflow-script-resource-meta"><label>语言<select v-model="selectedScript.language"><option value="python">Python</option><option value="powershell">PowerShell</option><option value="bash">Bash</option></select></label><label>说明<input v-model="selectedScript.description" placeholder="脚本用途说明" /></label></div>
-            <section class="workflow-script-parameters" aria-label="脚本输入参数">
-              <header><div><strong>输入参数</strong><small v-if="selectedScript.entrypoint">由 {{ selectedScript.entrypoint }} 函数签名自动识别；保存脚本后会刷新</small><small v-else>脚本通过 DEVICE_TUI_INPUT_JSON 读取，测试时可直接填入参数</small></div><button v-if="!selectedScript.entrypoint" type="button" class="icon-toolbar-button" title="新增输入参数" aria-label="新增输入参数" @click="addScriptInput"><Plus :size="13" /></button></header>
-              <p v-if="selectedScript.input_schema_error" class="workflow-script-validation">{{ selectedScript.input_schema_error }}；当前保留已有参数定义</p>
-              <div v-if="selectedScript.input_schema.length" class="workflow-script-parameter-list">
-                <article v-for="(parameter, index) in selectedScript.input_schema" :key="`${selectedScript.id}-${index}`" class="workflow-script-parameter-row">
-                  <div class="workflow-script-parameter-main"><input :value="parameter.name" :disabled="Boolean(selectedScript.entrypoint)" aria-label="参数名" placeholder="参数名" @input="updateScriptInputField(index, 'name', eventValue($event))" /><select :value="parameter.type" :disabled="Boolean(selectedScript.entrypoint)" aria-label="参数类型" @change="updateScriptInputField(index, 'type', eventValue($event))"><option v-for="type in scriptInputTypes" :key="type" :value="type">{{ type }}</option></select><label class="workflow-script-required"><input :checked="Boolean(parameter.required)" :disabled="Boolean(selectedScript.entrypoint)" type="checkbox" @change="updateScriptInputField(index, 'required', eventChecked($event))" />必填</label><button v-if="!selectedScript.entrypoint" type="button" class="icon-toolbar-button" title="删除参数" :aria-label="`删除参数 ${parameter.name}`" @click="removeScriptInput(index)"><Trash2 :size="13" /></button></div>
-                  <div class="workflow-script-parameter-details"><input :value="parameter.description || ''" :disabled="Boolean(selectedScript.entrypoint)" aria-label="参数说明" placeholder="参数说明（可选）" @input="updateScriptInputField(index, 'description', eventValue($event))" /><input v-if="parameter.type === 'string'" :value="scriptDefaultText(parameter)" :disabled="Boolean(selectedScript.entrypoint)" aria-label="默认值" placeholder="默认值（可选）" @input="updateScriptDefault(index, $event)" /><input v-else-if="parameter.type === 'number'" :value="scriptDefaultText(parameter)" :disabled="Boolean(selectedScript.entrypoint)" type="number" aria-label="默认值" placeholder="默认值" @input="updateScriptDefault(index, $event)" /><input v-else-if="parameter.type === 'boolean'" :checked="parameter.default === true" :disabled="Boolean(selectedScript.entrypoint)" type="checkbox" aria-label="默认值" @change="updateScriptDefault(index, $event)" /><input v-else :value="scriptDefaultText(parameter)" :disabled="Boolean(selectedScript.entrypoint)" aria-label="默认 JSON 值" placeholder="默认 JSON 值，例如 {} 或 []" @input="updateScriptDefault(index, $event)" /></div>
-                </article>
-              </div>
-              <p v-else class="workflow-script-parameters-empty">暂无参数。新增参数后，独立测试会自动生成对应输入控件。</p>
-            </section>
-          </section>
-          <section class="workflow-script-test-section" aria-label="脚本测试">
-            <div class="workflow-script-side-heading"><div><strong>测试</strong><small>有修改时会先自动保存，再通过后端任务执行</small></div><span class="workflow-risk-chip"><AlertTriangle :size="12" />高风险</span></div>
-            <label>目标设备<select v-model="selectedDeviceId"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">{{ deviceLabel(device) }}</option></select></label>
-            <div class="workflow-script-test-mode" role="tablist" aria-label="测试输入模式"><button type="button" :class="{ active: scriptTestMode === 'form' }" @click="scriptTestMode = 'form'">参数表单</button><button type="button" :class="{ active: scriptTestMode === 'json' }" @click="scriptTestMode = 'json'">JSON</button></div>
-            <div v-if="scriptTestMode === 'form'" class="workflow-script-test-form">
-              <div v-if="selectedScript.input_schema.length" v-for="parameter in selectedScript.input_schema" :key="`test-${parameter.name}`" class="workflow-script-test-field"><label :for="`script-test-${parameter.name}`">{{ parameter.name }}<span v-if="parameter.required">必填</span></label><small v-if="parameter.description">{{ parameter.description }}</small><input v-if="parameter.type === 'string'" :id="`script-test-${parameter.name}`" :value="scriptTestValueText(parameter)" :placeholder="parameter.required ? '请输入' : '留空表示不传入'" @input="updateScriptTestValue(parameter.name, eventValue($event))" /><input v-else-if="parameter.type === 'number'" :id="`script-test-${parameter.name}`" type="number" :value="scriptTestValueText(parameter)" placeholder="数字" @input="updateScriptTestValue(parameter.name, eventValue($event))" /><label v-else-if="parameter.type === 'boolean'" class="workflow-inline-toggle"><input :id="`script-test-${parameter.name}`" type="checkbox" :checked="scriptTestValues[parameter.name] === true" @change="updateScriptTestValue(parameter.name, eventChecked($event))" />启用</label><textarea v-else :id="`script-test-${parameter.name}`" rows="3" :value="scriptTestValueText(parameter)" :placeholder="parameter.type === 'array' ? '例如：[1, 2]' : '例如：{}'" @input="updateScriptTestValue(parameter.name, eventValue($event))" /></div>
-              <p v-else class="workflow-script-parameters-empty">此脚本没有定义输入参数。</p>
-            </div>
-            <label v-else>输入 JSON<textarea v-model="scriptTestInputs" rows="8" placeholder='例如：{"mode":"check"}' /></label>
-            <p v-if="scriptTestInputError" class="workflow-error">{{ scriptTestInputError }}</p>
-            <label class="workflow-inline-toggle"><input v-model="scriptTestConfirmed" type="checkbox" />我已确认脚本将在后端主机执行</label>
-            <button type="button" class="primary-action workflow-script-test-button" :disabled="scriptTesting || scriptSaving || !selectedDeviceId || !scriptTestConfirmed || Boolean(scriptValidationMessage)" @click="testWorkflowScript"><Play :size="14" />{{ scriptTesting ? '测试运行中…' : (hasUnsavedScriptChanges ? '保存并测试' : '测试脚本') }}</button>
-            <p class="field-hint">测试会创建临时 Workflow 任务，不会修改当前 Flow。</p>
-          </section>
-        </aside>
-      </main>
-      <main v-else class="workflow-empty workflow-script-no-selection">选择或新建一个脚本</main>
-    </div>
+    <WorkflowScriptStudio
+      v-if="studioMode === 'scripts'"
+      :selected-device-id="selectedDeviceId"
+      :available-devices="availableDevices"
+      :device-label="deviceLabel"
+      :controller="workflowScripts"
+      @update:selected-device-id="selectedDeviceId = $event"
+    />
     <div v-else class="workflow-library-body">
       <aside class="workflow-list-pane">
         <div class="workflow-list-title"><span>我的流程</span><small>{{ workflows.length }} 个</small></div>
@@ -3315,6 +2848,8 @@ watch(
 </template>
 
 <style scoped>
+
+
 .workflow-run-target {
   display: inline-flex;
   align-items: center;
@@ -3547,20 +3082,6 @@ watch(
 .workflow-create-dialog button { padding: 7px 10px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-muted); color: inherit; cursor: pointer; }
 .workflow-create-dialog .primary-action { color: #fff; background: #2563eb; border-color: #3b82f6; }
 .workflow-create-dialog button:disabled { opacity: .45; cursor: default; }
-.workflow-script-template-dialog { width: min(720px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); overflow-y: auto; scrollbar-gutter: stable; scrollbar-width: thin; }
-.workflow-script-template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.workflow-script-template-card { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: start; gap: 10px; min-width: 0; min-height: 76px; padding: 11px; border: 1px solid var(--workflow-border); border-radius: 6px; color: inherit; background: var(--workflow-surface-muted); text-align: left; }
-.workflow-script-template-card:hover, .workflow-script-template-card.active { border-color: rgba(79, 156, 249, .7); background: rgba(37, 99, 235, .14); }
-.workflow-script-template-card.active { box-shadow: inset 3px 0 0 #3b82f6; }
-.workflow-script-template-card > span:last-child { display: grid; gap: 4px; min-width: 0; }
-.workflow-script-template-card strong { color: var(--workflow-text); font-size: 12px; }
-.workflow-script-template-card small { color: var(--workflow-muted); font-size: 10px; line-height: 1.4; }
-.workflow-script-template-card em { width: fit-content; padding: 2px 5px; border: 1px solid var(--workflow-border); border-radius: 3px; color: var(--workflow-muted); font-size: 9px; font-style: normal; text-transform: uppercase; }
-.workflow-script-template-icon { display: inline-grid; width: 30px; height: 30px; place-items: center; border: 1px solid rgba(45, 212, 191, .36); border-radius: 5px; color: #5eead4; background: rgba(13, 148, 136, .16); }
-.workflow-script-template-card.active .workflow-script-template-icon { border-color: rgba(96, 165, 250, .58); color: #bfdbfe; background: rgba(37, 99, 235, .25); }
-.workflow-script-template-preview { display: grid; gap: 6px; min-width: 0; padding: 10px; border: 1px solid var(--workflow-border); border-radius: 6px; background: rgba(15, 23, 42, .36); }
-.workflow-script-template-preview > span { color: var(--workflow-muted); font-size: 10px; }
-.workflow-script-template-preview code { display: block; max-height: 86px; overflow: auto; color: #bfdbfe; font: 10px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
 .workflow-template-manager { display: grid; gap: 5px; padding: 9px 0; border-top: 1px solid var(--workflow-border); border-bottom: 1px solid var(--workflow-border); }
 .workflow-template-manager > strong { color: var(--workflow-muted); font-size: 11px; font-weight: 500; }
 .workflow-template-manager > div { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; gap: 8px; min-height: 30px; }
@@ -3643,14 +3164,6 @@ watch(
 @media (max-width: 900px) {
   .workflow-run-target { order: 10; width: 100%; margin-left: 0; }
   .workflow-run-target select { flex: 1; max-width: none; }
-  .workflow-script-studio { grid-template-columns: 180px minmax(0, 1fr); }
-  .workflow-script-workspace { grid-template-columns: 1fr; overflow: auto; }
-  .workflow-script-editor-panel { min-height: 520px; }
-  .workflow-script-test-panel { min-height: 280px; border-top: 1px solid var(--workflow-border); border-left: 0; }
-}
-@media (max-width: 560px) {
-  .workflow-script-template-dialog { width: min(calc(100vw - 20px), 720px); max-height: calc(100vh - 20px); padding: 14px; }
-  .workflow-script-template-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 980px) {
   .workflow-studio-grid { height: auto; }
@@ -3659,17 +3172,6 @@ watch(
 :global(:root[data-theme="light"]) .workflow-create-menu,
 :global(:root[data-theme="light"]) .workflow-import-dialog,
 :global(:root[data-theme="light"]) .workflow-preview { color: var(--workflow-text); background: var(--workflow-surface); }
-:global(:root[data-theme="light"]) .workflow-script-template-card { background: #f8fafc; }
-:global(:root[data-theme="light"]) .workflow-script-template-card:hover,
-:global(:root[data-theme="light"]) .workflow-script-template-card.active { background: #eff6ff; }
-:global(:root[data-theme="light"]) .workflow-script-template-card strong { color: #172033; }
-:global(:root[data-theme="light"]) .workflow-script-template-card small,
-:global(:root[data-theme="light"]) .workflow-script-template-card em,
-:global(:root[data-theme="light"]) .workflow-script-template-preview > span { color: #475569; }
-:global(:root[data-theme="light"]) .workflow-script-template-icon { color: #0f766e; background: #ccfbf1; border-color: #99f6e4; }
-:global(:root[data-theme="light"]) .workflow-script-template-card.active .workflow-script-template-icon { color: #1d4ed8; background: #dbeafe; border-color: #93c5fd; }
-:global(:root[data-theme="light"]) .workflow-script-template-preview { background: #f1f5f9; }
-:global(:root[data-theme="light"]) .workflow-script-template-preview code { color: #1e3a8a; }
 :global(:root[data-theme="light"]) .workflow-canvas-container { background: #f1f5f9; border-color: #cbd5e1; }
 :global(:root[data-theme="light"]) .workflow-studio-grid > .workflow-canvas { background: #f8fafc; }
 :global(:root[data-theme="light"]) .canvas-toolbar,
@@ -3723,68 +3225,9 @@ watch(
 .workflow-library-toolbar button { min-height: 30px; padding: 6px 9px; border-radius: 6px; }
 .workflow-library-toolbar .icon-toolbar-button { width: 30px; padding: 0; justify-content: center; }
 .workflow-library-toolbar .studio-mode-active { color: #eff6ff; border-color: rgba(96,165,250,.55); background: rgba(37,99,235,.24); }
-.workflow-script-studio { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 0; flex: 1; overflow: hidden; border-top: 1px solid var(--workflow-border); }
-.workflow-script-list { min-height: 0; overflow: auto; padding: 14px 10px 24px; border-right: 1px solid var(--workflow-border); background: color-mix(in srgb, var(--workflow-surface-muted) 86%, var(--workflow-bg)); scrollbar-gutter: stable; scrollbar-width: thin; }
-.workflow-script-list-actions { display: flex; gap: 6px; padding: 0 7px 10px; }
-.workflow-script-list-actions .primary-action { flex: 1; justify-content: center; }
-.workflow-script-list-item { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 9px; width: 100%; padding: 9px 8px; border: 1px solid transparent; border-radius: 6px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
-.workflow-script-list-item:hover, .workflow-script-list-item.active { border-color: rgba(79,156,249,.34); background: rgba(37,99,235,.14); }
-.workflow-script-list-item span:last-child { min-width: 0; }
-.workflow-script-list-item strong, .workflow-script-list-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-script-list-item strong { font-size: 12px; }
-.workflow-script-list-item small { margin-top: 3px; color: var(--workflow-muted); font-size: 9px; }
-.workflow-script-list-dot { width: 7px; height: 7px; border-radius: 50%; background: #2dd4bf; }
-.workflow-script-list-dot[data-language='powershell'] { background: #60a5fa; }
-.workflow-script-list-dot[data-language='bash'] { background: #a3e635; }
-.workflow-script-workspace { display: grid; grid-template-columns: minmax(460px, 1fr) 340px; min-width: 0; min-height: 0; overflow: hidden; }
-.workflow-script-editor-panel { display: grid; grid-template-rows: auto minmax(260px, 1fr) minmax(150px, .42fr); gap: 10px; min-width: 0; min-height: 0; padding: 16px; overflow: hidden; }
-.workflow-script-resource-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 12px; }
-.workflow-script-resource-header > div:first-child { display: grid; min-width: 0; gap: 3px; }
-.workflow-script-resource-header input { min-width: 0; padding: 0; border: 0; color: var(--workflow-text); background: transparent; font-size: 18px; font-weight: 700; outline: 0; }
-.workflow-script-resource-header input:focus { border-bottom: 1px solid var(--workflow-focus); }
-.workflow-script-resource-header small { color: var(--workflow-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 9px; }
-.workflow-script-validation { color: #fca5a5; font-size: 10px; }
-.workflow-script-resource-actions { display: flex; gap: 6px; }
-.workflow-script-resource-actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 6px 9px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-muted); cursor: pointer; }
-.workflow-script-resource-meta { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 10px; padding-bottom: 12px; }
-.workflow-script-resource-meta label, .workflow-script-test-panel label { display: grid; gap: 5px; color: var(--workflow-muted); font-size: 10px; }
-.workflow-script-resource-meta input, .workflow-script-resource-meta select, .workflow-script-test-panel select, .workflow-script-test-panel textarea { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); }
-.workflow-script-parameters { min-height: 0; max-height: 238px; margin-bottom: 12px; padding: 10px; overflow: auto; border: 1px solid var(--workflow-border); border-radius: 6px; background: var(--workflow-surface-muted); scrollbar-gutter: stable; scrollbar-width: thin; }
-.workflow-script-parameters > header, .workflow-script-test-mode { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.workflow-script-parameters > header { margin-bottom: 8px; }
-.workflow-script-parameters > header strong { display: block; color: var(--workflow-text); font-size: 12px; }
-.workflow-script-parameters > header small { display: block; margin-top: 3px; color: var(--workflow-muted); font-size: 9px; }
-.workflow-script-parameter-list { display: grid; gap: 7px; }
-.workflow-script-parameter-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface); }
-.workflow-script-parameter-main, .workflow-script-parameter-details { display: grid; grid-template-columns: minmax(100px, 1.1fr) 100px auto 28px; align-items: center; gap: 6px; }
-.workflow-script-parameter-details { grid-template-columns: minmax(0, 1fr) minmax(110px, .8fr); }
-.workflow-script-parameter-row input, .workflow-script-parameter-row select { box-sizing: border-box; width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid var(--workflow-border); border-radius: 4px; color: inherit; background: var(--workflow-surface-input); font-size: 10px; }
-.workflow-script-required, .workflow-inline-toggle { display: inline-flex !important; align-items: center; gap: 5px; white-space: nowrap; }
-.workflow-script-required { color: var(--workflow-muted); font-size: 10px; }
-.workflow-script-required input, .workflow-inline-toggle input { width: 13px !important; height: 13px; }
-.workflow-script-parameters-empty { margin: 2px 0; color: var(--workflow-muted); font-size: 10px; }
+.workflow-inline-toggle { display: inline-flex !important; align-items: center; gap: 5px; white-space: nowrap; }
+.workflow-inline-toggle input { width: 13px !important; height: 13px; }
 .workflow-script-editor-panel :deep(.workflow-script-editor) { position: relative; z-index: 1; min-height: 0; height: 100%; pointer-events: auto; }
-.workflow-script-run-log { display: grid; gap: 8px; min-height: 0; padding: 10px; overflow: auto; border: 1px solid var(--workflow-border); border-radius: 6px; color: var(--workflow-text); background: var(--workflow-surface-muted); scrollbar-gutter: stable; scrollbar-width: thin; }
-.workflow-script-run-log header, .workflow-script-side-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.workflow-script-run-log header > div, .workflow-script-side-heading > div { display: grid; gap: 3px; min-width: 0; }
-.workflow-script-run-log header strong, .workflow-script-side-heading strong { color: var(--workflow-text); font-size: 12px; }
-.workflow-script-run-log header small, .workflow-script-side-heading small { color: var(--workflow-muted); font-size: 9px; }
-.workflow-script-run-log header code { max-width: 46%; overflow: hidden; color: var(--workflow-muted); font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-script-run-log .workflow-script-test-summary { padding-top: 7px; }
-.workflow-script-run-log section { display: grid; gap: 4px; min-width: 0; }
-.workflow-script-run-log section > span { color: var(--workflow-muted); font-size: 9px; }
-.workflow-script-run-log pre { box-sizing: border-box; max-height: 150px; margin: 0; padding: 8px; overflow: auto; border: 1px solid var(--workflow-border); border-radius: 4px; color: var(--workflow-text); background: var(--workflow-surface-input); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.workflow-script-test-panel { display: grid; align-content: start; gap: 14px; min-height: 0; overflow: auto; padding: 16px; border-left: 1px solid var(--workflow-border); background: var(--workflow-surface-muted); scrollbar-gutter: stable; scrollbar-width: thin; }
-.workflow-script-config-section, .workflow-script-test-section { display: grid; gap: 10px; min-width: 0; padding-bottom: 14px; border-bottom: 1px solid var(--workflow-border); }
-.workflow-script-test-section { border-bottom: 0; padding-bottom: 0; }
-.workflow-script-config-section .workflow-script-resource-meta { grid-template-columns: 1fr; gap: 8px; padding-bottom: 0; }
-.workflow-script-config-section .workflow-script-parameters { max-height: 300px; margin-bottom: 0; }
-.workflow-script-test-panel .panel-heading { margin-bottom: 18px; }
-.workflow-script-test-panel label { margin-bottom: 14px; }
-.workflow-script-test-panel textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-script-test-mode { justify-content: flex-start; margin: 0 0 12px; padding: 2px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-input); }
-.workflow-script-test-mode button { flex: 1; min-height: 27px; border: 0; border-radius: 3px; color: var(--workflow-muted); background: transparent; font-size: 10px; cursor: pointer; }
-.workflow-script-test-mode button.active { color: var(--workflow-text); background: var(--workflow-surface); box-shadow: 0 1px 2px rgba(15, 23, 42, .18); }
 .workflow-script-node-inputs { display: grid; gap: 9px; margin-bottom: 11px; padding: 10px; border: 1px solid var(--workflow-border); border-radius: 6px; background: var(--workflow-surface-muted); }
 .workflow-script-node-input-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .workflow-script-node-input-heading > div:first-child { display: grid; gap: 2px; min-width: 0; }
@@ -3799,24 +3242,6 @@ watch(
 .workflow-script-node-input-field > input, .workflow-script-node-input-field > textarea { box-sizing: border-box; width: 100%; min-height: 31px; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); }
 .workflow-script-node-input-field > textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .workflow-script-node-input-field > .workflow-inline-toggle { margin: 0; color: var(--workflow-text); }
-.workflow-script-test-form { display: grid; gap: 11px; margin-bottom: 2px; }
-.workflow-script-test-field { display: grid; gap: 4px; }
-.workflow-script-test-field > label:first-child { display: flex; align-items: baseline; justify-content: space-between; margin: 0; color: var(--workflow-text); font-size: 10px; }
-.workflow-script-test-field > label:first-child span { color: #f59e0b; font-size: 9px; }
-.workflow-script-test-field > small { color: var(--workflow-muted); font-size: 9px; }
-.workflow-script-test-field > input, .workflow-script-test-field > textarea { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); }
-.workflow-script-test-field > textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-script-test-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 36px; cursor: pointer; }
-.workflow-script-test-button:disabled { opacity: .45; cursor: default; }
-.workflow-script-test-result { display: grid; gap: 8px; margin-top: 14px; padding: 10px; border: 1px solid rgba(45,212,163,.28); border-radius: 6px; color: #99f6e4; background: rgba(13,148,136,.1); font-size: 11px; }
-.workflow-script-test-result.status-failed, .workflow-script-test-result.status-cancelled { border-color: rgba(248,113,113,.36); color: #fecaca; background: rgba(127,29,29,.16); }
-.workflow-script-test-result code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-script-test-summary { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 5px 8px; padding-top: 7px; border-top: 1px solid currentColor; }
-.workflow-script-test-summary span, .workflow-script-test-result section > span { opacity: .72; }
-.workflow-script-test-summary b { overflow-wrap: anywhere; font-weight: 650; }
-.workflow-script-test-result section { display: grid; gap: 4px; min-width: 0; }
-.workflow-script-test-result pre { box-sizing: border-box; max-height: 220px; margin: 0; padding: 8px; overflow: auto; border: 1px solid rgba(148,163,184,.18); border-radius: 4px; color: #dbeafe; background: rgba(2,6,23,.58); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-gutter: stable; }
-.workflow-script-no-selection { display: grid; place-items: center; color: var(--workflow-muted); }
 .workflow-new-button { color: #eff6ff !important; background: #2563eb !important; border-color: #3b82f6 !important; box-shadow: 0 3px 10px rgba(37,99,235,.22); }
 .workflow-new-button:hover { background: #1d4ed8 !important; }
 .toolbar-group-secondary { padding-left: 2px; }
@@ -3937,34 +3362,6 @@ watch(
   scrollbar-width: thin;
   scrollbar-color: #475569 rgba(15, 23, 42, .35);
 }
-.workflow-studio-grid::-webkit-scrollbar,
-.workflow-action-catalog::-webkit-scrollbar,
-.workflow-properties::-webkit-scrollbar,
-.workflow-input-editor::-webkit-scrollbar,
-.workflow-runtime-inputs::-webkit-scrollbar,
-.workflow-script-template-dialog::-webkit-scrollbar,
-.workflow-script-template-preview code::-webkit-scrollbar { width: 9px; height: 9px; }
-.workflow-studio-grid::-webkit-scrollbar-track,
-.workflow-action-catalog::-webkit-scrollbar-track,
-.workflow-properties::-webkit-scrollbar-track,
-.workflow-input-editor::-webkit-scrollbar-track,
-.workflow-runtime-inputs::-webkit-scrollbar-track,
-.workflow-script-template-dialog::-webkit-scrollbar-track,
-.workflow-script-template-preview code::-webkit-scrollbar-track { background: rgba(15, 23, 42, .28); }
-.workflow-studio-grid::-webkit-scrollbar-thumb,
-.workflow-action-catalog::-webkit-scrollbar-thumb,
-.workflow-properties::-webkit-scrollbar-thumb,
-.workflow-input-editor::-webkit-scrollbar-thumb,
-.workflow-runtime-inputs::-webkit-scrollbar-thumb,
-.workflow-script-template-dialog::-webkit-scrollbar-thumb,
-.workflow-script-template-preview code::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #475569; background-clip: padding-box; }
-.workflow-studio-grid::-webkit-scrollbar-thumb:hover,
-.workflow-action-catalog::-webkit-scrollbar-thumb:hover,
-.workflow-properties::-webkit-scrollbar-thumb:hover,
-.workflow-input-editor::-webkit-scrollbar-thumb:hover,
-.workflow-runtime-inputs::-webkit-scrollbar-thumb:hover,
-.workflow-script-template-dialog::-webkit-scrollbar-thumb:hover,
-.workflow-script-template-preview code::-webkit-scrollbar-thumb:hover { background: #64748b; background-clip: padding-box; }
 .workflow-action-catalog,
 .workflow-properties { scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: #475569 rgba(15, 23, 42, .28); }
 .workflow-input-editor,
@@ -4207,8 +3604,7 @@ watch(
 .workflow-right-rail .workflow-runtime-inputs .workflow-input-values { grid-template-columns: 1fr; gap: 10px; }
 .workflow-right-rail .workflow-script-field { margin: 0; }
 .workflow-right-rail .remove-node-button,
-.workflow-right-rail .connect-button,
-.workflow-right-rail .workflow-script-test-button { min-height: 34px; }
+.workflow-right-rail .connect-button { min-height: 34px; }
 .workflow-studio-grid > .workflow-catalog-resizer {
   position: absolute;
   left: var(--workflow-catalog-width, 224px);
@@ -4375,4 +3771,6 @@ watch(
   overflow: visible;
 }
 :global(:root[data-theme="light"]) .workflow-studio-grid.step-settings-mode > .workflow-right-rail { scrollbar-color: #94a3b8 #e2e8f0; }
+
+
 </style>
