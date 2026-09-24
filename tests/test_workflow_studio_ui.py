@@ -36,9 +36,10 @@ def test_workflow_surfaces_define_light_theme_tokens_and_overrides() -> None:
 
 def test_workflow_studio_loads_catalog_and_preserves_edges_when_renaming() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    editor = Path("desktop/src/renderer/src/composables/useWorkflowEditor.ts").read_text(encoding="utf-8")
     assert "desktopApi.workflowActions()" in source
-    assert "function renameNode" in source
-    assert "source: edge.source === previousId ? nextId" in source
+    assert "function renameNode" in editor
+    assert "source: edge.source === previousId ? nextId" in editor
     assert "openCreateDialog(true)" in source
     assert "loop.for_each" in source
 
@@ -217,13 +218,14 @@ def test_workflow_studio_does_not_persist_invalid_drafts() -> None:
 
 def test_workflow_studio_supports_node_copy_paste_and_delete_shortcuts() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    editor = Path("desktop/src/renderer/src/composables/useWorkflowEditor.ts").read_text(encoding="utf-8")
 
-    assert "function copySelectedNode" in source
-    assert "function pasteNode" in source
-    assert "function handleWorkflowKeyDown" in source
-    assert "event.key === 'Delete'" in source
-    assert "window.addEventListener('keydown', handleWorkflowKeyDown)" in source
-    assert "isEditableTarget" in source
+    assert "function copySelectedNode" in editor
+    assert "function pasteNode" in editor
+    assert "function handleWorkflowKeyDown" in editor
+    assert "event.key === 'Delete'" in editor
+    assert "window.addEventListener('keydown', handleWorkflowKeyDown)" in editor
+    assert "isEditableTarget" in editor
 
 
 def test_task_workspace_uses_clear_workflow_step_labels_and_progress_context() -> None:
@@ -269,7 +271,7 @@ def test_workflow_studio_configures_loop_references_retry_backoff_and_batch_sess
 
 
 def test_loop_until_default_maximum_mode_uses_false_condition() -> None:
-    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    source = Path("desktop/src/renderer/src/composables/useWorkflowEditor.ts").read_text(encoding="utf-8")
 
     default_line = next(
         line for line in source.splitlines()
@@ -394,6 +396,7 @@ def test_variable_node_editor_hides_shared_advanced_controls() -> None:
 
 def test_workflow_canvas_renders_real_edges_and_marks_disconnected_nodes() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    editor = Path("desktop/src/renderer/src/composables/useWorkflowEditor.ts").read_text(encoding="utf-8")
     canvas = Path("desktop/src/renderer/src/components/WorkflowCanvas.vue").read_text(encoding="utf-8")
     styles = STYLES.read_text(encoding="utf-8")
 
@@ -401,9 +404,9 @@ def test_workflow_canvas_renders_real_edges_and_marks_disconnected_nodes() -> No
     assert "const reachableNodeIds" in source
     assert "function hasIncomingEdge" in source
     assert "function isNodeDisconnected" in source
-    assert "function setNodePredecessor" in source
-    assert "function setNodeSuccessor" in source
-    assert "selected.value.edges = [...(selected.value.edges || []), edge]" in source
+    assert "function setNodePredecessor" in editor
+    assert "function setNodeSuccessor" in editor
+    assert "selected.value.edges = [...(selected.value.edges || []), edge]" in editor
     assert "<WorkflowCanvas" in source
     assert "onConnect" in canvas
     assert "onNodeDragStop" in canvas
@@ -416,12 +419,13 @@ def test_workflow_canvas_renders_real_edges_and_marks_disconnected_nodes() -> No
 
 def test_workflow_canvas_drop_inserts_new_node_into_the_dropped_edge() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    editor = Path("desktop/src/renderer/src/composables/useWorkflowEditor.ts").read_text(encoding="utf-8")
     canvas = Path("desktop/src/renderer/src/components/WorkflowCanvas.vue").read_text(encoding="utf-8")
 
-    assert "function findInsertEdge" in source
-    assert "const insertEdge = position ? findInsertEdge(position) : null" in source
-    assert "insertEdge.source" in source
-    assert "insertEdge.target" in source
+    assert "function findInsertEdge" in editor
+    assert "const insertEdge = position ? findInsertEdge(position) : null" in editor
+    assert "insertEdge.source" in editor
+    assert "insertEdge.target" in editor
     assert "emit('nodeAdd', actionId" in canvas
 
 
