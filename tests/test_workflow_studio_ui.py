@@ -175,6 +175,19 @@ def test_workflow_run_panels_are_separate_presentation_components() -> None:
     assert "desktopApi.getTask" in source
 
 
+def test_flow_test_panel_shows_execution_process_without_overlapping_outputs_section() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    panel = Path("desktop/src/renderer/src/components/WorkflowFlowTestPanel.vue").read_text(encoding="utf-8")
+    styles = Path("desktop/src/renderer/src/components/WorkflowFlowTestPanel.css").read_text(encoding="utf-8")
+
+    assert "流程输出" not in panel
+    assert "outputEntries" not in panel
+    assert ":output-entries=" not in source
+    assert "workflow-test-outputs" not in styles
+    assert ".workflow-test-process-section { min-height: 0;" in styles
+    assert "workflow-output-editor" in source
+
+
 def test_quick_workflow_runner_preserves_typed_input_defaults() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowRunDialog.vue").read_text(encoding="utf-8")
 

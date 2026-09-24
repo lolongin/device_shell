@@ -891,35 +891,6 @@ const flowTestInputEntries = computed(() => (selected.value?.inputs || []).map((
   type: input.type || 'string',
   value: workflowInputValues.value[input.name] ?? input.default ?? ''
 })))
-const flowTestOutputEntries = computed(() => {
-  const task = flowTestTask.value
-  const outputs = { ...(task?.checkpoint?.outputs || {}), ...(task?.result?.outputs || {}) }
-  const definitions = selected.value?.outputs || []
-  const resolveOutputValue = (reference: unknown): unknown => {
-    if (typeof reference !== 'string') return reference
-    const match = reference.trim().match(/^\$\{\s*([^}]+)\s*\}$/)
-    if (!match) return reference
-    const [root, ...path] = match[1].split('.').map((part) => part.trim()).filter(Boolean)
-    let value: unknown = root === 'inputs' ? workflowInputValues.value : outputs[root]
-    for (const part of path) {
-      if (!value || typeof value !== 'object') return undefined
-      value = (value as Record<string, unknown>)[part]
-    }
-    return value
-  }
-  const entries = definitions.map((output) => ({
-    name: output.name,
-    type: output.type || 'any',
-    value: Object.prototype.hasOwnProperty.call(outputs, output.name)
-      ? outputs[output.name]
-      : resolveOutputValue(output.value)
-  }))
-  const definedNames = new Set(definitions.map((output) => output.name))
-  for (const [name, value] of Object.entries(outputs)) {
-    if (!definedNames.has(name)) entries.push({ name, type: 'any', value })
-  }
-  return entries.filter((item) => item.value !== undefined)
-})
 const flowTestExecutionOrder = computed(() => {
   const known = new Set<string>()
   const order: string[] = []
@@ -2204,7 +2175,6 @@ watch(
           :error="flowTestError"
           :input-entries="flowTestInputEntries"
           :step-logs="flowTestStepLogs"
-          :output-entries="flowTestOutputEntries"
           :expanded-step-ids="expandedFlowTestStepIds"
           :running="flowTestRunning"
           :step-status-label="flowTestStepStatusLabel"
