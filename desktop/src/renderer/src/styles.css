@@ -2718,6 +2718,88 @@ body.workflow-script-editor-open { overflow: hidden; }
 :global(:root[data-theme="light"]) .workflow-script-line-numbers { color: #5f9b94; border-color: #ccfbf1; }
 :global(:root[data-theme="light"]) .workflow-script-textarea { color: #134e4a; background: #f0fdfa !important; }
 
+/* Workflow Flow Test Panel - Fix text overlap and transparency issues */
+.workflow-right-rail { display: flex; flex-direction: column; min-height: 0; }
+.workflow-flow-test-panel { display: flex; flex-direction: column; gap: 16px; padding: 16px 12px; min-height: 0; overflow-y: auto; }
+.workflow-flow-test-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--workflow-border); }
+.workflow-flow-test-header > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.workflow-flow-test-header strong { font-size: 14px; color: var(--text); }
+.workflow-flow-test-header small { font-size: 11px; color: var(--muted); }
+.workflow-section-kicker { font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--soft); }
+
+.workflow-flow-test-status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--workflow-border); border-radius: 6px; background: rgba(15, 23, 42, .3); }
+.workflow-flow-test-status.status-running { border-color: rgba(59, 130, 246, .4); background: rgba(59, 130, 246, .08); }
+.workflow-flow-test-status.status-success { border-color: rgba(34, 197, 94, .4); background: rgba(34, 197, 94, .08); }
+.workflow-flow-test-status.status-error { border-color: rgba(239, 68, 68, .4); background: rgba(239, 68, 68, .08); }
+.workflow-flow-test-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.status-running .workflow-flow-test-dot { background: #3b82f6; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.status-success .workflow-flow-test-dot { background: #22c55e; }
+.status-error .workflow-flow-test-dot { background: #ef4444; }
+.workflow-flow-test-status strong { font-size: 13px; color: var(--text); }
+.workflow-flow-test-status small { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+.workflow-flow-test-current { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-left: 2px solid #3b82f6; background: rgba(59, 130, 246, .06); border-radius: 4px; }
+.workflow-flow-test-current span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.workflow-flow-test-current strong { font-size: 12px; color: var(--text); }
+
+.workflow-flow-test-section { display: flex; flex-direction: column; gap: 10px; }
+.workflow-flow-test-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workflow-flow-test-section-title strong { font-size: 12px; color: var(--text); }
+.workflow-flow-test-section-title small { font-size: 10px; color: var(--muted); }
+
+.workflow-test-value-list { display: flex; flex-direction: column; gap: 8px; }
+.workflow-test-value-list > div { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--workflow-border); border-radius: 5px; background: rgba(15, 23, 42, .25); }
+.workflow-test-value-list dt { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--text); }
+.workflow-test-value-list dt small { font-size: 9px; font-weight: 400; color: var(--muted); }
+.workflow-test-value-list dd { margin: 0; padding: 8px; border-radius: 4px; background: rgba(15, 23, 42, .4); font-size: 11px; font-family: ui-monospace, monospace; color: rgba(226, 232, 240, .85); white-space: pre-wrap; word-break: break-all; }
+
+.workflow-flow-test-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.workflow-flow-test-log > li { position: relative; display: flex; gap: 10px; }
+.workflow-flow-test-log-mark { flex: 0 0 8px; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--muted); }
+.workflow-flow-test-log > li.log-running .workflow-flow-test-log-mark { background: #3b82f6; }
+.workflow-flow-test-log > li.log-completed .workflow-flow-test-log-mark { background: #22c55e; }
+.workflow-flow-test-log > li.log-failed .workflow-flow-test-log-mark { background: #ef4444; }
+
+.workflow-flow-test-log-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.workflow-flow-step-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 10px 12px; border: 1px solid var(--workflow-border); border-radius: 6px; background: rgba(15, 23, 42, .3); color: inherit; text-align: left; cursor: pointer; transition: all 150ms ease; }
+.workflow-flow-step-toggle:hover { border-color: rgba(148, 163, 184, .3); background: rgba(30, 41, 59, .4); }
+.workflow-flow-step-toggle[aria-expanded="true"] { border-color: rgba(59, 130, 246, .4); background: rgba(59, 130, 246, .08); }
+
+.workflow-flow-step-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.workflow-flow-step-id { padding: 2px 6px; border-radius: 3px; background: rgba(100, 116, 139, .2); font-size: 10px; font-family: ui-monospace, monospace; color: var(--muted); }
+.workflow-flow-step-title { font-size: 12px; font-weight: 500; color: var(--text); }
+.workflow-flow-step-status { margin-left: auto; font-size: 10px; color: var(--muted); }
+.workflow-flow-step-chevron { flex-shrink: 0; transition: transform 150ms ease; }
+.workflow-flow-step-chevron.expanded { transform: rotate(180deg); }
+
+/* Fix: Make details panel solid background to prevent text overlap */
+.workflow-flow-step-details { margin-top: 8px; padding: 12px; border: 1px solid var(--workflow-border); border-radius: 6px; background: rgba(15, 23, 42, .6); backdrop-filter: blur(8px); display: flex; flex-direction: column; gap: 12px; }
+.workflow-flow-command { display: flex; flex-direction: column; gap: 4px; }
+.workflow-flow-command span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.workflow-flow-command code { display: block; padding: 8px; border-radius: 4px; background: rgba(15, 23, 42, .5); font-size: 11px; font-family: ui-monospace, monospace; color: rgba(226, 232, 240, .9); white-space: pre-wrap; word-break: break-all; }
+
+.workflow-flow-step-metrics { display: flex; align-items: center; gap: 12px; }
+.workflow-flow-step-metrics span { font-size: 11px; color: var(--muted); }
+.workflow-flow-step-metrics b { font-weight: 600; color: var(--text); margin-left: 4px; }
+
+.workflow-flow-terminal-output { display: flex; flex-direction: column; gap: 6px; }
+.workflow-flow-terminal-output header { display: flex; align-items: center; justify-content: space-between; }
+.workflow-flow-terminal-output header span { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.workflow-flow-terminal-output pre { margin: 0; padding: 10px; border-radius: 4px; background: rgba(15, 23, 42, .6); font-size: 11px; font-family: ui-monospace, monospace; color: rgba(226, 232, 240, .85); white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
+.workflow-flow-terminal-output.is-error pre { border-left: 2px solid #ef4444; background: rgba(239, 68, 68, .08); color: rgba(252, 165, 165, .9); }
+
+.workflow-flow-step-error { margin: 0; padding: 10px; border-left: 2px solid #ef4444; border-radius: 4px; background: rgba(239, 68, 68, .08); font-size: 11px; color: rgba(252, 165, 165, .9); }
+.workflow-flow-no-output { font-size: 11px; color: var(--muted); font-style: italic; }
+
+.workflow-test-empty { margin: 0; padding: 16px; text-align: center; font-size: 11px; color: var(--muted); }
+.workflow-flow-test-error { margin: 0; padding: 10px; border-left: 2px solid #ef4444; border-radius: 4px; background: rgba(239, 68, 68, .08); font-size: 11px; color: rgba(252, 165, 165, .9); }
+.workflow-flow-test-retry { width: 100%; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 @media (max-width: 980px) {
   .toolbar-divider { display: none; }
   .toolbar-group-actions { margin-left: 0; }
