@@ -1,0 +1,19 @@
+.workflow-modal-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
+.workflow-modal-backdrop { pointer-events: auto; }
+.workflow-modal-backdrop .workflow-create-dialog { position: relative; z-index: 31; pointer-events: auto; }
+.workflow-import-dialog { width: min(520px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
+.workflow-import-dialog header, .workflow-import-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workflow-import-dialog footer { justify-content: flex-end; margin-top: 16px; }
+.workflow-create-dialog { display: grid; gap: 12px; }
+.workflow-create-dialog label { display: grid; gap: 5px; margin: 0; color: var(--workflow-muted); font-size: 11px; }
+.workflow-create-dialog input, .workflow-create-dialog textarea { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-input); color: inherit; font: inherit; }
+.workflow-create-dialog button { padding: 7px 10px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-muted); color: inherit; cursor: pointer; }
+.workflow-create-dialog .primary-action { color: #fff; background: #2563eb; border-color: #3b82f6; }
+.workflow-create-dialog button:disabled { opacity: .45; cursor: default; }
+.workflow-template-manager { display: grid; gap: 5px; padding: 9px 0; border-top: 1px solid var(--workflow-border); border-bottom: 1px solid var(--workflow-border); }
+.workflow-template-manager > strong { color: var(--workflow-muted); font-size: 11px; font-weight: 500; }
+.workflow-template-manager > div { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; gap: 8px; min-height: 30px; }
+.workflow-template-manager span { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-template-manager button { display: inline-grid; width: 30px; height: 30px; padding: 0; place-items: center; color: #fca5a5; }
+.workflow-import-summary { display: flex; justify-content: space-between; padding: 12px; margin-top: 12px; border-radius: 6px; background: rgba(15,23,42,.62); }
+.workflow-run-message { margin: 0; padding: 7px 20px; color: #99f6e4; background: rgba(13, 148, 136, .12); font-size: 12px; }

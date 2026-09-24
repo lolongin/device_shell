@@ -9,6 +9,8 @@ import WorkflowScriptEditor from './WorkflowScriptEditor.vue'
 import WorkflowScriptStudio from './WorkflowScriptStudio.vue'
 import WorkflowFlowTestPanel from './WorkflowFlowTestPanel.vue'
 import WorkflowRunPreview from './WorkflowRunPreview.vue'
+import WorkflowVersionManager from './WorkflowVersionManager.vue'
+import WorkflowManagementDialogs from './WorkflowManagementDialogs.vue'
 import { useUndoRedo, useUndoRedoShortcuts } from '../composables/useUndoRedo'
 import { useWorkflowScripts, workflowScriptSnapshot as scriptSnapshot } from '../composables/useWorkflowScripts'
 import { autoLayout } from '../utils/layoutAlgorithms'
@@ -125,6 +127,11 @@ function workflowSnapshot(workflow: WorkflowItem | null): string {
 }
 
 const savedWorkflowSnapshot = ref('')
+
+const managementState = {
+  showCreateDialog, createTemplateId, createName, createDescription,
+  showImportPreview, importFilename, showCustomActionDialog, customActionName, customActionDescription
+}
 const hasUnsavedChanges = computed(() => Boolean(selected.value && workflowSnapshot(selected.value) !== savedWorkflowSnapshot.value))
 function defaultWorkflowInputValue(input: WorkflowInput): unknown {
   if (input.default !== undefined && input.default !== null) return input.default
@@ -2419,43 +2426,20 @@ watch(
         <button class="danger-action" type="button" :disabled="!selected" @click="remove"><Trash2 :size="14" />删除</button>
       </div>
     </div>
-    <div v-if="showCreateDialog" class="workflow-modal-backdrop" @click.self="showCreateDialog = false">
-      <form class="workflow-import-dialog workflow-create-dialog" role="dialog" aria-modal="true" aria-label="新建流程" @submit.prevent="confirmCreate">
-        <header><strong>新建流程</strong><button type="button" title="关闭" @click="showCreateDialog = false"><X :size="16" /></button></header>
-        <label>开始方式<select :value="createTemplateId" @change="chooseCreateTemplate(($event.target as HTMLSelectElement).value)"><option value="">空白流程</option><option v-for="item in workflowTemplates" :key="item.id" :value="item.id">{{ item.name }}{{ item.built_in ? ' · 内置' : '' }}</option></select></label>
-        <section v-if="workflowTemplates.some((item) => !item.built_in)" class="workflow-template-manager" aria-label="我的流程模板">
-          <strong>我的模板</strong>
-          <div v-for="item in workflowTemplates.filter((template) => !template.built_in)" :key="item.id">
-            <span>{{ item.name }}</span>
-            <button type="button" :disabled="Boolean(deletingTemplateId)" :title="`删除模板 ${item.name}`" :aria-label="`删除模板 ${item.name}`" @click="deleteWorkflowTemplate(item)"><Trash2 :size="13" /></button>
-          </div>
-        </section>
-        <label>流程名称<input v-model="createName" autofocus maxlength="120" placeholder="例如：路由器版本检查" /></label>
-        <label>流程说明<textarea v-model="createDescription" rows="3" placeholder="说明这个流程的用途（可选）" /></label>
-        <footer><button type="button" @click="showCreateDialog = false">取消</button><button type="submit" class="primary-action" :disabled="!createName.trim() || creating">{{ creating ? '创建中…' : '创建流程' }}</button></footer>
-      </form>
-    </div>
-    <div v-if="showImportPreview" class="workflow-modal-backdrop" @click.self="showImportPreview = false">
-      <section class="workflow-import-dialog" role="dialog" aria-modal="true" aria-label="导入 Workflow 预览">
-        <header><strong>导入预览</strong><button type="button" title="关闭" @click="showImportPreview = false"><X :size="16" /></button></header>
-        <p class="field-hint">{{ importFilename }} · 将作为新草稿导入</p>
-        <div v-if="importPreview?.workflow" class="workflow-import-summary">
-          <strong>{{ importPreview.workflow.name || '未命名流程' }}</strong>
-          <span>{{ Array.isArray(importPreview.workflow.steps) ? importPreview.workflow.steps.length : (Array.isArray(importPreview.workflow.nodes) ? importPreview.workflow.nodes.length : 0) }} 个步骤</span>
-        </div>
-        <p v-for="issue in importPreview?.errors || []" :key="issue.message" class="workflow-error">{{ issue.message }}</p>
-        <p v-for="warning in importPreview?.warnings || []" :key="warning.message" class="workflow-run-message">{{ warning.message }}</p>
-        <footer><button type="button" @click="showImportPreview = false">取消</button><button type="button" class="primary-action" :disabled="importing || Boolean(importPreview?.errors?.length)" @click="confirmImport">确认导入</button></footer>
-      </section>
-    </div>
-    <div v-if="showCustomActionDialog" class="workflow-modal-backdrop" @click.self="showCustomActionDialog = false">
-      <form class="workflow-import-dialog workflow-create-dialog" role="dialog" aria-modal="true" aria-label="保存自定义 Action" @submit.prevent="saveCustomAction">
-        <header><strong>保存自定义 Action</strong><button type="button" title="关闭" @click="showCustomActionDialog = false"><X :size="16" /></button></header>
-        <label>名称<input v-model="customActionName" autofocus maxlength="80" placeholder="例如：检查设备版本" /></label>
-        <label>说明<textarea v-model="customActionDescription" rows="3" maxlength="400" placeholder="可选，说明这个命令的用途" /></label>
-        <footer><button type="button" @click="showCustomActionDialog = false">取消</button><button type="submit" class="primary-action" :disabled="customActionSaving || !customActionName.trim()">{{ customActionSaving ? '保存中…' : '保存' }}</button></footer>
-      </form>
-    </div>
+    <WorkflowManagementDialogs
+      :state="managementState"
+      :workflow-templates="workflowTemplates"
+      :import-preview="importPreview"
+      :importing="importing"
+      :creating="creating"
+      :deleting-template-id="deletingTemplateId"
+      :custom-action-saving="customActionSaving"
+      :confirm-create="confirmCreate"
+      :confirm-import="confirmImport"
+      :save-custom-action="saveCustomAction"
+      :choose-create-template="chooseCreateTemplate"
+      :delete-workflow-template="deleteWorkflowTemplate"
+    />
     <p v-if="error" class="workflow-error">{{ error }}</p>
     <p v-if="runMessage" class="workflow-run-message">{{ runMessage }}</p><p v-if="hasBranching" class="workflow-branch-notice"><GitBranch :size="14" />包含条件分支：运行时只执行匹配条件的一侧。</p>
     <WorkflowScriptStudio
@@ -2473,28 +2457,17 @@ watch(
           <strong>{{ item.name }}</strong><small>{{ item.description || '暂无描述' }}</small><em>v{{ item.version || '草稿' }}</em>
         </button>
         <p v-if="!loading && !workflows.length" class="workflow-empty-list">还没有流程<br /><span>点击“新建流程”开始</span></p>
-        <section v-if="selected" class="workflow-version-manager" aria-label="发布版本管理">
-          <div class="workflow-version-heading"><strong>发布版本</strong><small>{{ publishedVersions.length }} 个</small></div>
-          <p v-if="versionsLoading" class="workflow-version-empty">加载版本中…</p>
-          <p v-else-if="versionError" class="workflow-version-error">{{ versionError }}</p>
-          <p v-else-if="!publishedVersions.length" class="workflow-version-empty">尚未发布版本</p>
-          <div v-else class="workflow-version-list">
-            <div v-for="version in publishedVersions" :key="`${version.id}-${version.version}`" class="workflow-version-row" :class="{ referenced: version.referenced }">
-              <div class="workflow-version-info">
-                <strong>v{{ version.version }}</strong>
-                <small>{{ version.published_at ? new Date(version.published_at).toLocaleString() : '发布时间未知' }}</small>
-                <span>{{ version.referenced ? '已被任务引用' : '未被引用，可删除' }}</span>
-              </div>
-              <div class="workflow-version-actions">
-                <button type="button" class="icon-toolbar-button" title="运行此发布版本" :aria-label="`运行发布版本 v${version.version}`" @click.stop="emit('run-version', { workflowId: version.id, version: version.version })"><Play :size="13" /></button>
-                <button type="button" class="icon-toolbar-button" title="导出此发布版本 YAML" :aria-label="`导出发布版本 v${version.version}`" @click.stop="exportPublishedVersion(version)"><Download :size="13" /></button>
-                <button type="button" class="icon-toolbar-button" title="恢复为当前草稿" :aria-label="`恢复发布版本 v${version.version} 为草稿`" @click.stop="restorePublishedVersion(version)"><RotateCcw :size="13" /></button>
-                <button type="button" class="icon-toolbar-button" title="保存为自定义 Action" :aria-label="`将发布版本 v${version.version} 保存为自定义 Action`" @click.stop="openWorkflowCustomActionDialog(version)"><Save :size="13" /></button>
-                <button type="button" class="icon-toolbar-button workflow-version-delete" :disabled="version.referenced" :title="version.referenced ? '已被任务引用，不能删除' : '删除此发布版本'" :aria-label="version.referenced ? '已被任务引用，不能删除' : `删除发布版本 v${version.version}`" @click.stop="removePublishedVersion(version)"><Trash2 :size="13" /></button>
-              </div>
-            </div>
-          </div>
-        </section>
+        <WorkflowVersionManager
+          v-if="selected"
+          :versions="publishedVersions"
+          :loading="versionsLoading"
+          :error="versionError"
+          :on-run="(payload) => emit('run-version', payload)"
+          :on-export="exportPublishedVersion"
+          :on-restore="restorePublishedVersion"
+          :on-save-action="openWorkflowCustomActionDialog"
+          :on-remove="removePublishedVersion"
+        />
       </aside>
       <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step' }" :style="{ '--workflow-catalog-width': `${workflowCatalogWidth}px`, '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
         <aside class="workflow-right-rail">
@@ -2870,6 +2843,7 @@ watch(
 
 
 
+
 .workflow-run-target {
   display: inline-flex;
   align-items: center;
@@ -2991,44 +2965,12 @@ watch(
 .workflow-create-menu button { min-height: 32px; padding: 7px 9px; border: 1px solid rgba(148, 163, 184, .22); border-radius: 5px; background: #202c42; color: #e2e8f0; text-align: left; cursor: pointer; }
 .workflow-create-menu button:hover { border-color: rgba(96, 165, 250, .62); background: #263a5a; }
 .workflow-create-menu button:disabled { opacity: .45; cursor: default; }
-.workflow-version-manager { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(100, 116, 139, .28); }
-.workflow-version-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 7px; color: #e2e8f0; font-size: 12px; }
-.workflow-version-heading small, .workflow-version-empty { color: rgba(226, 232, 240, .5); font-size: 10px; }
-.workflow-version-list { display: grid; gap: 5px; }
-.workflow-version-row { display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 7px 6px; border: 1px solid rgba(100, 116, 139, .25); border-radius: 5px; background: rgba(15, 23, 42, .42); }
-.workflow-version-info { min-width: 0; display: grid; gap: 2px; }
-.workflow-version-info strong { color: #bfdbfe; font-size: 11px; }
-.workflow-version-info small, .workflow-version-info span { overflow: hidden; color: rgba(226, 232, 240, .52); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-version-info span { color: #86efac; }
-.workflow-version-row.referenced .workflow-version-info span { color: #fcd34d; }
-.workflow-version-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; }
-.workflow-version-actions .icon-toolbar-button { width: 25px; height: 25px; }
 .workflow-run-header-button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid rgba(96, 165, 250, .45); border-radius: 5px; color: #bfdbfe; background: rgba(37, 99, 235, .16); font-size: 11px; cursor: pointer; }
 .workflow-run-header-button:hover { border-color: rgba(147, 197, 253, .75); background: rgba(37, 99, 235, .28); }
 .workflow-dirty-state { color: #fcd34d; font-size: 10px; white-space: nowrap; }
-.workflow-version-error { margin: 0; color: #fca5a5; font-size: 10px; line-height: 1.4; }
-.workflow-modal-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
-.workflow-modal-backdrop { pointer-events: auto; }
-.workflow-modal-backdrop .workflow-create-dialog { position: relative; z-index: 31; pointer-events: auto; }
-.workflow-import-dialog { width: min(520px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--workflow-border); border-radius: 8px; background: #172033; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
-.workflow-import-dialog header, .workflow-import-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.workflow-import-dialog footer { justify-content: flex-end; margin-top: 16px; }
-.workflow-create-dialog { display: grid; gap: 12px; }
-.workflow-create-dialog label { display: grid; gap: 5px; margin: 0; color: var(--workflow-muted); font-size: 11px; }
-.workflow-create-dialog input, .workflow-create-dialog textarea { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-input); color: inherit; font: inherit; }
-.workflow-create-dialog button { padding: 7px 10px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-muted); color: inherit; cursor: pointer; }
-.workflow-create-dialog .primary-action { color: #fff; background: #2563eb; border-color: #3b82f6; }
-.workflow-create-dialog button:disabled { opacity: .45; cursor: default; }
-.workflow-template-manager { display: grid; gap: 5px; padding: 9px 0; border-top: 1px solid var(--workflow-border); border-bottom: 1px solid var(--workflow-border); }
-.workflow-template-manager > strong { color: var(--workflow-muted); font-size: 11px; font-weight: 500; }
-.workflow-template-manager > div { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; gap: 8px; min-height: 30px; }
-.workflow-template-manager span { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-template-manager button { display: inline-grid; width: 30px; height: 30px; padding: 0; place-items: center; color: #fca5a5; }
-.workflow-import-summary { display: flex; justify-content: space-between; padding: 12px; margin-top: 12px; border-radius: 6px; background: rgba(15,23,42,.62); }
 .condition-builder { display: grid; gap: 8px; }
 .condition-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
 .condition-row select, .condition-row input { min-width: 0; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 4px; background: rgba(15,23,42,.7); color: inherit; }
-.workflow-run-message { margin: 0; padding: 7px 20px; color: #99f6e4; background: rgba(13, 148, 136, .12); font-size: 12px; }
 .workflow-issues { display: grid; gap: 6px; margin: 0; padding: 10px 20px; border-bottom: 1px solid rgba(248, 113, 113, .25); background: rgba(127, 29, 29, .16); color: #fecaca; font-size: 12px; }
 .workflow-issues > strong { display: flex; align-items: center; gap: 6px; }
 .workflow-issue { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 7px 9px; border: 1px solid rgba(248, 113, 113, .25); border-radius: 5px; background: rgba(127, 29, 29, .2); color: #fee2e2; text-align: left; cursor: pointer; }
@@ -3109,17 +3051,8 @@ watch(
 :global(:root[data-theme="light"]) .field-hint,
 :global(:root[data-theme="light"]) .node-library-hint,
 :global(:root[data-theme="light"]) .catalog-empty { color: #64748b; }
-:global(:root[data-theme="light"]) .workflow-version-heading,
-:global(:root[data-theme="light"]) .workflow-input-definition label,
-:global(:root[data-theme="light"]) .workflow-input-label { color: #334155; }
-:global(:root[data-theme="light"]) .workflow-version-heading small,
-:global(:root[data-theme="light"]) .workflow-version-empty,
-:global(:root[data-theme="light"]) .workflow-version-info small,
-:global(:root[data-theme="light"]) .workflow-version-info span { color: #64748b; }
 :global(:root[data-theme="light"]) .workflow-run-header-button { color: #1d4ed8; background: #eff6ff; border-color: #93c5fd; }
 :global(:root[data-theme="light"]) .workflow-dirty-state { color: #92400e; }
-:global(:root[data-theme="light"]) .workflow-version-row.referenced .workflow-version-info span { color: #92400e; }
-:global(:root[data-theme="light"]) .workflow-version-delete { color: #b91c1c; }
 :global(:root[data-theme="light"]) .workflow-branch-notice { color: #92400e; background: #fffbeb; }
 :global(:root[data-theme="light"]) .canvas-toolbar-title strong { color: #172033; }
 :global(:root[data-theme="light"]) .canvas-interactive-toggle { color: #475569; background: #ffffff; border-color: #cbd5e1; }
@@ -3696,6 +3629,7 @@ watch(
   overflow: visible;
 }
 :global(:root[data-theme="light"]) .workflow-studio-grid.step-settings-mode > .workflow-right-rail { scrollbar-color: #94a3b8 #e2e8f0; }
+
 
 
 

@@ -45,10 +45,11 @@ def test_workflow_studio_loads_catalog_and_preserves_edges_when_renaming() -> No
 
 def test_workflow_studio_names_new_workflows_and_allows_renaming() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    management = Path("desktop/src/renderer/src/components/WorkflowManagementDialogs.vue").read_text(encoding="utf-8")
 
     assert "async function confirmCreate" in source
-    assert 'v-model="createName"' in source
-    assert ':disabled="!createName.trim() || creating"' in source
+    assert 'v-model="state.createName.value"' in management
+    assert ':disabled="!state.createName.value.trim() || creating"' in management
     assert 'v-model="selected.name"' in source
     assert "selected.value.name.trim()" in source
 
@@ -130,10 +131,13 @@ def test_script_step_resource_can_be_edited_from_step_settings() -> None:
 
 def test_workflow_studio_manages_user_templates_and_renders_subworkflow_reference() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    management = Path("desktop/src/renderer/src/components/WorkflowManagementDialogs.vue").read_text(encoding="utf-8")
+    versions = Path("desktop/src/renderer/src/components/WorkflowVersionManager.vue").read_text(encoding="utf-8")
 
     assert "async function deleteWorkflowTemplate(template: WorkflowTemplate)" in source
     assert "await desktopApi.deleteWorkflowTemplate(template.id)" in source
-    assert "!item.built_in" in source
+    assert "!item.built_in" in management
+    assert "workflow-version-manager" in versions
     assert "'${' + selectedNode.id + '.输出名}'" in source
     assert "`${selectedNode.id}.输出名`" not in source
 
