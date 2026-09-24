@@ -140,14 +140,34 @@ def test_workflow_studio_manages_user_templates_and_renders_subworkflow_referenc
 
 def test_workflow_studio_requires_explicit_draft_and_risk_confirmation() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    preview = Path("desktop/src/renderer/src/components/WorkflowRunPreview.vue").read_text(encoding="utf-8")
     assert "function runDraft" in source
     assert "draft: true" in source
     assert "selected.value.version && selected.value.version !== 'draft' ? { version: selected.value.version } : {}" in source
     assert "previewHasRisk" in source
-    assert "confirmedRisks" in source
+    assert "confirmedRisks" in preview
+    assert "hasRisk && !confirmedRisks" in preview
+    assert "update:confirmedRisks" in preview
     assert "confirmed_risks: true" in source
     assert "draft: selected.value.version === 'draft'" in source
     assert "send_enter" in source
+
+
+def test_workflow_run_panels_are_separate_presentation_components() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    flow_panel = Path("desktop/src/renderer/src/components/WorkflowFlowTestPanel.vue").read_text(encoding="utf-8")
+    flow_styles = Path("desktop/src/renderer/src/components/WorkflowFlowTestPanel.css").read_text(encoding="utf-8")
+    preview = Path("desktop/src/renderer/src/components/WorkflowRunPreview.vue").read_text(encoding="utf-8")
+    preview_styles = Path("desktop/src/renderer/src/components/WorkflowRunPreview.css").read_text(encoding="utf-8")
+
+    assert "<WorkflowFlowTestPanel" in source
+    assert "<WorkflowRunPreview" in source
+    assert "workflow-flow-test-panel" in flow_panel
+    assert "workflow-flow-test-log" in flow_styles
+    assert "workflow-preview-backdrop" in preview
+    assert "preview-actions" in preview_styles
+    assert "preview-risk-warning" in STYLES.read_text(encoding="utf-8")
+    assert "desktopApi.getTask" in source
 
 
 def test_quick_workflow_runner_preserves_typed_input_defaults() -> None:

@@ -7,6 +7,8 @@ import type { DeviceSummary, TaskRecord, WorkflowScript, WorkflowScriptInput } f
 import WorkflowCanvas from './WorkflowCanvas.vue'
 import WorkflowScriptEditor from './WorkflowScriptEditor.vue'
 import WorkflowScriptStudio from './WorkflowScriptStudio.vue'
+import WorkflowFlowTestPanel from './WorkflowFlowTestPanel.vue'
+import WorkflowRunPreview from './WorkflowRunPreview.vue'
 import { useUndoRedo, useUndoRedoShortcuts } from '../composables/useUndoRedo'
 import { useWorkflowScripts, workflowScriptSnapshot as scriptSnapshot } from '../composables/useWorkflowScripts'
 import { autoLayout } from '../utils/layoutAlgorithms'
@@ -2496,27 +2498,26 @@ watch(
       </aside>
       <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step' }" :style="{ '--workflow-catalog-width': `${workflowCatalogWidth}px`, '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
         <aside class="workflow-right-rail">
-        <section v-if="flowTestOpen" class="workflow-flow-test-panel" aria-label="Flow 测试运行">
-          <header class="workflow-flow-test-header">
-            <div><span class="workflow-section-kicker">FLOW TEST</span><strong>测试运行</strong><small>{{ selected.name }}</small></div>
-            <button type="button" class="icon-toolbar-button" title="返回步骤设置" aria-label="返回步骤设置" @click="closeFlowTestPanel"><X :size="14" /></button>
-          </header>
-          <div class="workflow-flow-test-status" :class="`status-${flowTestStatus.tone}`"><span class="workflow-flow-test-dot"></span><strong>{{ flowTestStatus.label }}</strong><small v-if="flowTestTask?.progress_percent != null">{{ Math.round(flowTestTask.progress_percent) }}%</small></div>
-          <div v-if="flowTestCurrentStep" class="workflow-flow-test-current"><span>{{ flowTestTaskTerminal ? '最后执行步骤' : '当前步骤' }}</span><strong>{{ flowTestCurrentStep }}</strong></div>
-          <p v-if="flowTestError" class="workflow-error workflow-flow-test-error">{{ flowTestError }}</p>
-          <section class="workflow-flow-test-section workflow-test-data-section" aria-label="本次输入">
-            <div class="workflow-flow-test-section-title"><strong>本次输入</strong><small>{{ flowTestInputEntries.length }} 个参数</small></div>
-            <dl v-if="flowTestInputEntries.length" class="workflow-test-value-list"><div v-for="item in flowTestInputEntries" :key="item.name"><dt>{{ item.name }}<small>{{ item.type }}</small></dt><dd>{{ typeof item.value === 'object' ? JSON.stringify(item.value, null, 2) : String(item.value) }}</dd></div></dl>
-            <p v-else class="workflow-test-empty">此流程没有定义输入参数。</p>
-          </section>
-          <section class="workflow-flow-test-section workflow-test-process-section"><div class="workflow-flow-test-section-title"><strong>执行过程</strong><small>{{ flowTestStepLogs.length }} 个步骤 · 展开查看详情</small></div><ol v-if="flowTestStepLogs.length" class="workflow-flow-test-log"><li v-for="item in flowTestStepLogs" :key="item.id" :class="`log-${item.status}`"><span class="workflow-flow-test-log-mark"></span><div class="workflow-flow-test-log-content"><button type="button" class="workflow-flow-step-toggle" :aria-expanded="expandedFlowTestStepIds.includes(item.id)" @click="toggleFlowTestStep(item.id)"><span class="workflow-flow-step-heading"><span class="workflow-flow-step-id">{{ item.id }}</span><strong class="workflow-flow-step-title">{{ item.label }}</strong></span><span class="workflow-flow-step-status">{{ flowTestStepStatusLabel(item.status) }}</span><ChevronDown :size="14" class="workflow-flow-step-chevron" :class="{ expanded: expandedFlowTestStepIds.includes(item.id) }" /></button><small v-if="item.status === 'pending'">等待任务调度</small><div v-if="expandedFlowTestStepIds.includes(item.id)" class="workflow-flow-step-details"><div v-if="item.command" class="workflow-flow-command"><span>执行命令</span><code>{{ item.command }}</code></div><div v-if="item.script" class="workflow-flow-command"><span>{{ item.script }}</span></div><div v-if="item.exitCode !== undefined || item.resultStatus" class="workflow-flow-step-metrics"><span v-if="item.resultStatus">状态 <b>{{ item.resultStatus }}</b></span><span v-if="item.exitCode !== undefined">退出码 <b>{{ item.exitCode }}</b></span></div><section v-if="item.stdout" class="workflow-flow-terminal-output"><header><span>标准输出</span></header><pre>{{ flowTestOutputText(item.stdout) }}</pre></section><section v-if="item.stderr" class="workflow-flow-terminal-output is-error"><header><span>错误输出</span></header><pre>{{ flowTestOutputText(item.stderr) }}</pre></section><section v-if="item.dataText" class="workflow-flow-terminal-output"><header><span>执行结果</span></header><pre>{{ item.dataText }}</pre></section><section v-if="item.output && !item.stdout && !item.dataText" class="workflow-flow-terminal-output"><header><span>执行输出</span></header><pre>{{ flowTestOutputText(item.output) }}</pre></section><p v-if="item.error && !item.stderr" class="workflow-flow-step-error">{{ item.error }}</p><small v-if="!item.stdout && !item.stderr && !item.dataText && !item.output && !item.error" class="workflow-flow-no-output">此步骤没有返回输出</small></div></div></li></ol><p v-else class="workflow-test-empty">测试开始后会逐步显示各步骤的状态与输出。</p></section>
-          <section class="workflow-flow-test-section workflow-test-data-section workflow-test-outputs" aria-label="流程输出">
-            <div class="workflow-flow-test-section-title"><strong>流程输出</strong><small>{{ flowTestOutputEntries.length }} 项</small></div>
-            <dl v-if="flowTestOutputEntries.length" class="workflow-test-value-list"><div v-for="item in flowTestOutputEntries" :key="item.name"><dt>{{ item.name }}<small>{{ item.type }}</small></dt><dd>{{ typeof item.value === 'object' ? JSON.stringify(item.value, null, 2) : String(item.value) }}</dd></div></dl>
-            <p v-else class="workflow-test-empty">{{ flowTestTaskTerminal ? '本次运行没有产生流程输出。' : '运行完成后，定义的输出会显示在这里。' }}</p>
-          </section>
-          <button v-if="flowTestTask && !flowTestRunning" type="button" class="connect-button workflow-flow-test-retry" @click="flowTestTaskTerminal ? testFlowInEditor() : resumeFlowTestMonitoring()"><Play :size="13" />{{ flowTestTaskTerminal ? '重新测试' : '继续监控' }}</button>
-        </section>
+        <WorkflowFlowTestPanel
+          v-if="flowTestOpen"
+          :selected="selected"
+          :status="flowTestStatus"
+          :task="flowTestTask"
+          :task-terminal="flowTestTaskTerminal"
+          :current-step="flowTestCurrentStep"
+          :error="flowTestError"
+          :input-entries="flowTestInputEntries"
+          :step-logs="flowTestStepLogs"
+          :output-entries="flowTestOutputEntries"
+          :expanded-step-ids="expandedFlowTestStepIds"
+          :running="flowTestRunning"
+          :step-status-label="flowTestStepStatusLabel"
+          :output-text="flowTestOutputText"
+          :on-close="closeFlowTestPanel"
+          :on-toggle-step="toggleFlowTestStep"
+          :on-retry="testFlowInEditor"
+          :on-resume="resumeFlowTestMonitoring"
+        />
         <template v-if="!flowTestOpen">
         <nav class="workflow-right-rail-switcher" aria-label="配置视图">
           <button type="button" :class="{ active: rightRailMode === 'workflow' }" @click="showWorkflowSettings"><Workflow :size="13" />流程设置</button>
@@ -2841,13 +2842,32 @@ watch(
       </main>
       <main v-else class="workflow-empty">选择一个 Workflow 开始编辑</main>
     </div>
-    <div v-if="showRunPreview" class="workflow-preview-backdrop"><div class="workflow-preview"><h3>执行预览</h3><p><b>流程名称：</b>{{ selected?.name }}</p><p><b>目标数量：</b>{{ selectedDeviceIds.length || 1 }} 台</p><p><b>步骤数量：</b>{{ selected?.nodes?.length || 0 }} 步</p><p><b>任务目标：</b>{{ taskGoal }}</p><p v-if="previewParallelGroups.length" class="preview-parallel-summary"><b>并行执行：</b>{{ previewParallelGroups.join('；') }}</p><ol class="preview-step-list"><li v-for="(step, index) in previewSteps" :key="`${step.label}-${index}`">{{ index + 1 }}. {{ step.label }}<small v-if="step.detail">{{ step.detail }}</small></li></ol><p class="preview-check">✓ 目标设备已选择　✓ 必填字段已填写　✓ 条件配置完整</p><p v-if="previewHasRisk" class="preview-risk-warning"><AlertTriangle :size="14" />包含脚本执行、重启或文件传输操作，请确认影响后继续。</p><label v-if="previewHasRisk" class="preview-risk-confirm"><input v-model="confirmedRisks" type="checkbox" />我已确认高风险操作的影响</label><div class="preview-actions"><button type="button" @click="showRunPreview = false">取消</button><button type="button" :disabled="dryRunning" @click="dryRunWorkflow">模拟运行</button><button class="primary-action" type="button" :disabled="previewHasRisk && !confirmedRisks" @click="confirmRunFromPreview">确认开始</button></div></div></div>
+    <WorkflowRunPreview
+      v-if="showRunPreview"
+      :workflow-name="selected?.name || ''"
+      :target-count="selectedDeviceIds.length || 1"
+      :step-count="selected?.nodes?.length || 0"
+      :task-goal="taskGoal"
+      :parallel-groups="previewParallelGroups"
+      :steps="previewSteps"
+      :has-risk="previewHasRisk"
+      :confirmed-risks="confirmedRisks"
+      :dry-running="dryRunning"
+      :on-cancel="() => { showRunPreview = false }"
+      :on-dry-run="dryRunWorkflow"
+      :on-confirm="confirmRunFromPreview"
+      @update:confirmed-risks="confirmedRisks = $event"
+    />
     <div v-if="issues.length" class="workflow-issues" role="alert"><strong><AlertTriangle :size="14" />需要处理的问题</strong><button v-for="issue in issues" :key="`${issue.code}-${issue.node_id || 'workflow'}-${issue.message}`" type="button" class="workflow-issue" @click="focusIssue(issue)"><span>{{ issueText(issue) }}</span><small>点击定位</small></button></div>
     <footer v-if="selected" class="workflow-validation-bar" :class="{ invalid: issues.length, valid: !issues.length }"><span v-if="issues.length"><AlertTriangle :size="15" />还有 {{ issues.length }} 个问题需要处理</span><span v-else><CheckCircle2 :size="15" />流程结构看起来没问题</span><button v-if="issues.length" type="button" @click="validate">重新检查</button></footer>
   </section>
 </template>
 
 <style scoped>
+
+
+
+
 
 
 .workflow-run-target {
@@ -2870,54 +2890,7 @@ watch(
 }
 .flow-test-action { display: inline-flex; align-items: center; gap: 6px; color: #dbeafe; border-color: rgba(96, 165, 250, .48); background: rgba(37, 99, 235, .2); }
 .flow-test-action:hover:not(:disabled) { border-color: #60a5fa; background: rgba(37, 99, 235, .34); }
-.workflow-flow-test-panel { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto auto; align-content: start; gap: 12px; min-width: 0; min-height: 100%; padding: 16px 14px 20px; background: var(--workflow-surface-muted); }
-.workflow-flow-test-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--workflow-border); }
-.workflow-flow-test-header > div { min-width: 0; display: grid; gap: 3px; }
-.workflow-flow-test-header strong { color: var(--workflow-text); font-size: 15px; }
-.workflow-flow-test-header small { overflow: hidden; color: var(--workflow-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.workflow-flow-test-status { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px; border: 1px solid var(--workflow-border); border-radius: 6px; color: var(--workflow-muted); background: var(--workflow-surface); }
-.workflow-flow-test-status strong { font-size: 11px; }
-.workflow-flow-test-status small { margin-left: auto; font: 600 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-flow-test-status.status-running { color: #fcd34d; border-color: rgba(245, 158, 11, .34); }
-.workflow-flow-test-status.status-success { color: #86efac; border-color: rgba(34, 197, 94, .34); }
-.workflow-flow-test-status.status-failed { color: #fca5a5; border-color: rgba(248, 113, 113, .38); }
-.workflow-flow-test-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: currentColor; }
-.status-running .workflow-flow-test-dot { box-shadow: 0 0 0 4px rgba(245, 158, 11, .12); animation: workflow-test-pulse 1.4s ease-in-out infinite; }
 @keyframes workflow-test-pulse { 50% { opacity: .45; transform: scale(.75); } }
-.workflow-flow-test-current { display: grid; gap: 4px; padding: 9px 10px; border-left: 2px solid #60a5fa; background: rgba(37, 99, 235, .1); }
-.workflow-flow-test-current span, .workflow-flow-test-section-title small { color: var(--workflow-muted); font-size: 10px; }
-.workflow-flow-test-current strong { overflow-wrap: anywhere; color: var(--workflow-text); font-size: 11px; }
-.workflow-flow-test-error { margin: 0; }
-.workflow-flow-test-section { display: grid; gap: 9px; min-width: 0; }
-.workflow-test-data-section { gap: 7px; padding-bottom: 11px; border-bottom: 1px solid var(--workflow-border); }
-.workflow-test-process-section { min-height: 150px; align-content: start; }
-.workflow-test-outputs { padding-top: 1px; border-bottom: 0; }
-.workflow-test-value-list { display: grid; gap: 5px; min-width: 0; margin: 0; }
-.workflow-test-value-list > div { display: grid; grid-template-columns: minmax(82px, .7fr) minmax(0, 1.5fr); gap: 8px; align-items: start; padding: 6px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface); }
-.workflow-test-value-list dt { display: grid; gap: 3px; min-width: 0; color: var(--workflow-text); font: 600 10px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
-.workflow-test-value-list dt small { color: var(--workflow-muted); font: 9px ui-sans-serif, system-ui, sans-serif; }
-.workflow-test-value-list dd { min-width: 0; max-height: 96px; margin: 0; overflow: auto; color: var(--workflow-text); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.workflow-test-empty { margin: 0; color: var(--workflow-muted); font-size: 10px; line-height: 1.5; }
-.workflow-flow-test-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.workflow-flow-test-section-title strong { color: var(--workflow-text); font-size: 12px; }
-.workflow-flow-test-log { position: relative; display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.workflow-flow-test-log::before { content: ''; position: absolute; top: 11px; bottom: 11px; left: 12px; width: 1px; background: var(--workflow-border); }
-.workflow-flow-test-log li { position: relative; display: grid; grid-template-columns: 9px minmax(0, 1fr); gap: 9px; min-width: 0; padding: 8px 9px 8px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface); }
-.workflow-flow-test-log-mark { position: relative; z-index: 1; width: 7px; height: 7px; margin-top: 4px; border: 2px solid var(--workflow-surface); border-radius: 50%; background: #64748b; box-shadow: 0 0 0 1px #64748b; }
-.workflow-flow-test-log li.log-running .workflow-flow-test-log-mark { background: #f59e0b; }
-.workflow-flow-test-log li.log-success .workflow-flow-test-log-mark, .workflow-flow-test-log li.log-completed .workflow-flow-test-log-mark { background: #22c55e; }
-.workflow-flow-test-log li.log-failed .workflow-flow-test-log-mark { background: #ef4444; }
-.workflow-flow-test-log li > div { min-width: 0; display: grid; gap: 4px; }
-.workflow-flow-test-log li header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
-.workflow-flow-test-log li header strong { overflow: hidden; color: var(--workflow-text); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.workflow-flow-test-log li header span { flex: 0 0 auto; color: var(--workflow-muted); font-size: 10px; }
-.workflow-flow-test-log li.log-running header span { color: #f59e0b; }
-.workflow-flow-test-log li.log-success header span { color: #22c55e; }
-.workflow-flow-test-log li.log-failed header span { color: #ef4444; }
-.workflow-flow-test-log li small { color: var(--workflow-muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-flow-test-log pre, .workflow-flow-test-output { max-height: 160px; margin: 2px 0 0; padding: 8px; overflow: auto; color: var(--workflow-text); border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-input); font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.workflow-flow-test-output { max-height: 240px; margin: 0; }
-.workflow-flow-test-retry { justify-content: center; }
 .workflow-right-rail-switcher { display: flex; align-items: center; gap: 4px; grid-column: 3; grid-row: 1; min-width: 0; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface); }
 .workflow-right-rail-switcher button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; flex: 1; min-height: 30px; padding: 0 8px; color: var(--workflow-muted); border: 1px solid transparent; border-radius: 5px; background: transparent; cursor: pointer; font-size: 11px; }
 .workflow-right-rail-switcher button:hover:not(:disabled) { color: var(--workflow-text); background: color-mix(in srgb, var(--workflow-focus) 8%, transparent); }
@@ -2935,38 +2908,9 @@ watch(
 @media (max-width: 720px) {
   .workflow-studio-grid.step-settings-mode > .workflow-properties { grid-row: 7; }
 }
-.workflow-flow-test-log-content { min-width: 0; display: grid; gap: 7px; }
-.workflow-flow-test-log-content > header { margin: 0; }
-.workflow-flow-step-toggle { display: grid; grid-template-columns: minmax(0, 1fr) auto 14px; align-items: center; gap: 12px; width: 100%; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
-.workflow-flow-step-toggle:hover .workflow-flow-step-title { color: var(--workflow-focus); }
-.workflow-flow-step-heading { display: grid; gap: 5px; min-width: 0; }
-.workflow-flow-step-chevron { justify-self: end; color: var(--workflow-muted); transition: transform 120ms ease; }
-.workflow-flow-step-chevron.expanded { transform: rotate(180deg); }
-.workflow-flow-step-details { display: grid; gap: 8px; padding-top: 8px; }
-.workflow-flow-no-output { color: var(--workflow-muted); font-size: 10px; }
-.workflow-flow-step-id { min-width: 0; overflow: hidden; color: var(--workflow-muted); text-overflow: ellipsis; white-space: nowrap; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-flow-step-status { justify-self: end; padding: 2px 6px; border-radius: 999px; color: var(--workflow-muted); background: color-mix(in srgb, var(--workflow-muted) 10%, transparent); font-size: 9px; }
-.log-running .workflow-flow-step-status { color: #f59e0b; background: rgba(245, 158, 11, .12); }
-.log-success .workflow-flow-step-status { color: #22c55e; background: rgba(34, 197, 94, .12); }
-.log-failed .workflow-flow-step-status { color: #ef4444; background: rgba(239, 68, 68, .12); }
-.workflow-flow-step-title { color: var(--workflow-text); font-size: 12px; }
-.workflow-flow-command { display: grid; gap: 4px; min-width: 0; padding: 7px 8px; border-left: 2px solid #60a5fa; background: rgba(37, 99, 235, .08); }
-.workflow-flow-command span { color: var(--workflow-muted); font-size: 9px; }
-.workflow-flow-command code { overflow-x: auto; color: var(--workflow-text); font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.workflow-flow-step-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
-.workflow-flow-step-metrics span { padding: 3px 6px; color: var(--workflow-muted); border: 1px solid var(--workflow-border); border-radius: 4px; font-size: 9px; }
-.workflow-flow-step-metrics b { margin-left: 3px; color: var(--workflow-text); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-flow-terminal-output { display: grid; gap: 4px; min-width: 0; }
-.workflow-flow-terminal-output header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #86efac; font-size: 10px; }
-.workflow-flow-terminal-output header small { color: var(--workflow-muted); font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.workflow-flow-terminal-output.is-error header { color: #fca5a5; }
-.workflow-flow-terminal-output pre, .workflow-flow-raw-result pre, .workflow-flow-result-item pre, .workflow-flow-raw-json pre { max-height: 170px; margin: 0; padding: 8px; overflow: auto; color: var(--workflow-text); border: 1px solid var(--workflow-border); border-radius: 5px; background: var(--workflow-surface-input); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.workflow-flow-terminal-output pre { border-color: rgba(34, 197, 94, .22); }
-.workflow-flow-terminal-output.is-error pre { border-color: rgba(239, 68, 68, .28); }
 .workflow-flow-raw-result, .workflow-flow-raw-json { min-width: 0; }
 .workflow-flow-raw-result summary, .workflow-flow-raw-json summary { color: var(--workflow-focus); cursor: pointer; font-size: 10px; }
 .workflow-flow-raw-result pre, .workflow-flow-raw-json pre { margin-top: 6px; }
-.workflow-flow-step-error { margin: 0; color: #fca5a5; font-size: 10px; }
 .workflow-flow-result-list { display: grid; gap: 7px; }
 .workflow-flow-result-item { min-width: 0; padding: 9px; border: 1px solid var(--workflow-border); border-radius: 7px; background: var(--workflow-surface); }
 .workflow-flow-result-item header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
@@ -2981,16 +2925,9 @@ watch(
 .workflow-script-resource-actions-inline > button { min-height: 30px; font-size: 10px; }
 .workflow-properties > .workflow-script-field { flex: 0 0 auto; min-height: 0; overflow: visible; }
 .workflow-properties .workflow-script-editor { flex: 0 0 auto; min-height: 280px; height: 320px; }
-:global(:root[data-theme="light"]) .workflow-flow-command { background: #eff6ff; }
 :global(:root[data-theme="light"]) .workflow-flow-result-item { background: #ffffff; }
 .workflow-studio-grid.flow-test-mode > .workflow-right-rail { display: block; grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; border-left: 1px solid var(--workflow-border); background: var(--workflow-surface-muted); }
-.workflow-studio-grid.flow-test-mode > .workflow-right-rail > .workflow-flow-test-panel { min-height: 100%; box-sizing: border-box; }
-:global(:root[data-theme="light"]) .workflow-flow-test-current { background: #eff6ff; }
-:global(:root[data-theme="light"]) .workflow-test-value-list > div { background: #fff; }
 :global(:root[data-theme="light"]) .flow-test-action { color: #1d4ed8; background: #eff6ff; border-color: #93c5fd; }
-:global(:root[data-theme="light"]) .workflow-flow-test-panel { background: #f1f5f9; }
-:global(:root[data-theme="light"]) .workflow-flow-test-status,
-:global(:root[data-theme="light"]) .workflow-flow-test-log li { background: #ffffff; }
 .workflow-input-editor { grid-column: 1 / -1; display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface-muted); }
 .workflow-metadata-editor { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.4fr); gap: 8px 14px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface); }
 .workflow-metadata-editor label { min-width: 0; margin: 0; color: var(--workflow-muted); font-size: 10px; }
@@ -3091,13 +3028,6 @@ watch(
 .condition-builder { display: grid; gap: 8px; }
 .condition-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
 .condition-row select, .condition-row input { min-width: 0; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 4px; background: rgba(15,23,42,.7); color: inherit; }
-.workflow-preview-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
-.workflow-preview { width: min(420px, calc(100vw - 32px)); padding: 22px; border: 1px solid var(--workflow-border); border-radius: 10px; background: #172033; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
-.preview-step-list { display: grid; gap: 5px; margin: 12px 0; padding-left: 22px; color: rgba(226, 232, 240, .85); font-size: 12px; }
-.preview-step-list small { margin-left: 7px; color: #fcd34d; }
-.preview-parallel-summary { color: #93c5fd; }
-.workflow-preview h3 { margin: 0 0 14px; }
-.preview-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .workflow-run-message { margin: 0; padding: 7px 20px; color: #99f6e4; background: rgba(13, 148, 136, .12); font-size: 12px; }
 .workflow-issues { display: grid; gap: 6px; margin: 0; padding: 10px 20px; border-bottom: 1px solid rgba(248, 113, 113, .25); background: rgba(127, 29, 29, .16); color: #fecaca; font-size: 12px; }
 .workflow-issues > strong { display: flex; align-items: center; gap: 6px; }
@@ -3168,10 +3098,6 @@ watch(
 @media (max-width: 980px) {
   .workflow-studio-grid { height: auto; }
 }
-
-:global(:root[data-theme="light"]) .workflow-create-menu,
-:global(:root[data-theme="light"]) .workflow-import-dialog,
-:global(:root[data-theme="light"]) .workflow-preview { color: var(--workflow-text); background: var(--workflow-surface); }
 :global(:root[data-theme="light"]) .workflow-canvas-container { background: #f1f5f9; border-color: #cbd5e1; }
 :global(:root[data-theme="light"]) .workflow-studio-grid > .workflow-canvas { background: #f8fafc; }
 :global(:root[data-theme="light"]) .canvas-toolbar,
@@ -3194,7 +3120,6 @@ watch(
 :global(:root[data-theme="light"]) .workflow-dirty-state { color: #92400e; }
 :global(:root[data-theme="light"]) .workflow-version-row.referenced .workflow-version-info span { color: #92400e; }
 :global(:root[data-theme="light"]) .workflow-version-delete { color: #b91c1c; }
-:global(:root[data-theme="light"]) .workflow-preview .preview-step-list { color: #334155; }
 :global(:root[data-theme="light"]) .workflow-branch-notice { color: #92400e; background: #fffbeb; }
 :global(:root[data-theme="light"]) .canvas-toolbar-title strong { color: #172033; }
 :global(:root[data-theme="light"]) .canvas-interactive-toggle { color: #475569; background: #ffffff; border-color: #cbd5e1; }
@@ -3771,6 +3696,10 @@ watch(
   overflow: visible;
 }
 :global(:root[data-theme="light"]) .workflow-studio-grid.step-settings-mode > .workflow-right-rail { scrollbar-color: #94a3b8 #e2e8f0; }
+
+
+
+
 
 
 </style>

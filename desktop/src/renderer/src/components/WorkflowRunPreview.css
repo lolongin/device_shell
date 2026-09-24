@@ -1,0 +1,11 @@
+.workflow-preview-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(2,6,23,.62); }
+.workflow-preview { width: min(420px, calc(100vw - 32px)); padding: 22px; border: 1px solid var(--workflow-border); border-radius: 10px; background: #172033; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+.preview-step-list { display: grid; gap: 5px; margin: 12px 0; padding-left: 22px; color: rgba(226, 232, 240, .85); font-size: 12px; }
+.preview-step-list small { margin-left: 7px; color: #fcd34d; }
+.preview-parallel-summary { color: #93c5fd; }
+.workflow-preview h3 { margin: 0 0 14px; }
+.preview-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+:root[data-theme="light"] .workflow-create-menu,
+:root[data-theme="light"] .workflow-import-dialog,
+:root[data-theme="light"] .workflow-preview { color: var(--workflow-text); background: var(--workflow-surface); }
+:root[data-theme="light"] .workflow-preview .preview-step-list { color: #334155; }
