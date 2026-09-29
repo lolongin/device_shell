@@ -16,13 +16,43 @@ class WorkflowInput:
     required: bool = False
     default: Any = None
     description: str = ""
+    source: str = "runtime"
+    presentation: str = ""
+    multiple: bool = False
+    accept: str = ""
+    placeholder: str = ""
+    options: tuple[str, ...] = ()
+    primitive_type: str = ""
+    semantic_type: str = ""
+    scope: str = "input"
+    constraints: dict[str, Any] = field(default_factory=dict)
+    ui_hints: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        legacy_type = str(self.type or "string").casefold()
+        if not self.primitive_type:
+            object.__setattr__(self, "primitive_type", "array" if legacy_type == "devices" else ("string" if legacy_type in {"file", "device"} else legacy_type))
+        if not self.semantic_type:
+            object.__setattr__(self, "semantic_type", {"file": "file", "device": "device", "devices": "device_list"}.get(legacy_type, "text" if legacy_type == "string" else legacy_type))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "type": self.type, "required": self.required, "default": self.default, "description": self.description}
+        primitive_type = self.primitive_type or ("array" if self.type == "devices" else ("string" if self.type in {"file", "device"} else self.type))
+        semantic_type = self.semantic_type or {"file": "file", "device": "device", "devices": "device_list"}.get(self.type, "text" if self.type == "string" else self.type)
+        result = {"name": self.name, "type": self.type, "primitiveType": primitive_type, "semanticType": semantic_type, "scope": self.scope, "required": self.required, "default": self.default, "description": self.description, "source": self.source, "presentation": self.presentation, "multiple": self.multiple}
+        if self.accept: result["accept"] = self.accept
+        if self.placeholder: result["placeholder"] = self.placeholder
+        if self.options: result["options"] = list(self.options)
+        if self.constraints: result["constraints"] = dict(self.constraints)
+        if self.ui_hints: result["uiHints"] = dict(self.ui_hints)
+        return result
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowInput":
-        return cls(str(payload.get("name", "")), str(payload.get("type", "string")), bool(payload.get("required", False)), payload.get("default"), str(payload.get("description", "")))
+        options = payload.get("options") or ()
+        legacy_type = str(payload.get("type", "string"))
+        primitive_type = str(payload.get("primitiveType") or ("array" if legacy_type == "devices" else ("string" if legacy_type in {"file", "device"} else legacy_type)))
+        semantic_type = str(payload.get("semanticType") or {"file": "file", "device": "device", "devices": "device_list"}.get(legacy_type, "text" if legacy_type == "string" else legacy_type))
+        return cls(str(payload.get("name", "")), legacy_type, bool(payload.get("required", False)), payload.get("default"), str(payload.get("description", "")), str(payload.get("source", "runtime")), str(payload.get("presentation", "")), bool(payload.get("multiple", False)), str(payload.get("accept", "")), str(payload.get("placeholder", "")), tuple(str(value) for value in options if value is not None), primitive_type, semantic_type, str(payload.get("scope", "input")), dict(payload.get("constraints") or {}), dict(payload.get("uiHints") or {}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +61,20 @@ class WorkflowOutput:
     value: Any = None
     type: str = "any"
     description: str = ""
+    presentation: str = "text"
+    mime_type: str = ""
+    download_name: str = ""
+    primitive_type: str = ""
+    semantic_type: str = ""
+    scope: str = "output"
+    constraints: dict[str, Any] = field(default_factory=dict)
+    ui_hints: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.primitive_type:
+            object.__setattr__(self, "primitive_type", self.type if self.type != "any" else "object")
+        if not self.semantic_type:
+            object.__setattr__(self, "semantic_type", "file" if self.presentation == "download" else ("json" if self.presentation == "json" else "text"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +82,14 @@ class WorkflowOutput:
             "value": self.value,
             "type": self.type,
             "description": self.description,
+            "presentation": self.presentation,
+            "mime_type": self.mime_type,
+            "download_name": self.download_name,
+            "primitiveType": self.primitive_type,
+            "semanticType": self.semantic_type,
+            "scope": self.scope,
+            "mimeType": self.mime_type,
+            "downloadName": self.download_name,
         }
 
     @classmethod
@@ -47,6 +99,14 @@ class WorkflowOutput:
             payload.get("value"),
             str(payload.get("type", "any")),
             str(payload.get("description", "")),
+            str(payload.get("presentation", "text")),
+            str(payload.get("mime_type", payload.get("mimeType", ""))),
+            str(payload.get("download_name", payload.get("downloadName", ""))),
+            str(payload.get("primitiveType", payload.get("type", "any"))),
+            str(payload.get("semanticType", "file" if payload.get("presentation") == "download" else "text")),
+            str(payload.get("scope", "output")),
+            dict(payload.get("constraints") or {}),
+            dict(payload.get("uiHints") or {}),
         )
 
 

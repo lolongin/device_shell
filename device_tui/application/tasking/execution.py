@@ -6,6 +6,7 @@ import asyncio
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
+from device_tui.application.commands.service import control_key_byte
 from device_tui.application.device_control import (
     CommandRequest,
     ControlContext,
@@ -233,6 +234,19 @@ class DeviceExecutionTool:
             commands = params.get("commands")
             if not isinstance(commands, (list, tuple)):
                 commands = (str(params.get("command") or ""),)
+            if len(commands) == 1 and control_key_byte(str(commands[0])) is not None:
+                sent = await self._control.send_raw(
+                    target,
+                    str(commands[0]),
+                    context=context,
+                )
+                return {
+                    "session_id": sent.session_id,
+                    "device_id": sent.device_id,
+                    "sent": sent.sent,
+                    "output": "",
+                    "status": "completed",
+                }
             if mode != "interactive" and (not commands or not any(str(item).strip() for item in commands)):
                 raise UnsupportedOperationError("Command execution requires a non-empty command.")
             result = await self._control.execute(

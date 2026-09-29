@@ -287,6 +287,30 @@ elif error_type == "package_not_found":
 
 ## 技术域 (Technical Domains)
 
+### Variable Contract（变量契约）
+
+Process 对外公开的输入和输出数据约定。变量契约描述数据类型、业务语义、作用域、约束和呈现提示；它不描述页面布局，也不绑定某个平台的控件实现。
+
+### Primitive Type（基础类型）
+
+变量的结构类型，例如 `string`、`number`、`boolean`、`object` 和 `array`。基础类型负责序列化与值校验。
+
+### Semantic Type（语义类型）
+
+变量在业务中的含义，例如文件、目录、设备、设备列表、枚举和图片。语义类型负责决定用户如何获取或查看变量。
+
+### Variable Scope（变量作用域）
+
+变量可见范围：`input` 是调用参数，`context` 是运行时环境，`internal` 是节点之间的中间值，`output` 是发布版本的公共结果。
+
+### Control Descriptor（控件描述）
+
+由变量契约解析得到的平台无关控件意图，例如文件选择器、设备选择器或枚举选择器。具体平台通过 Adapter 实现控件能力。
+
+### Output Renderer（输出渲染器）
+
+根据输出变量契约呈现运行结果的模块。它关注结果语义，不依赖产生结果的节点类型。
+
 ### Execution Plan（执行计划）
 
 从 Process Blueprint **编译**而来的运行时指令序列。

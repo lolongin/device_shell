@@ -270,7 +270,7 @@ onUnmounted(() => {
       <div v-if="!nodes.length" class="workflow-canvas-empty">
         <div class="workflow-canvas-empty-icon">+</div>
         <strong>把节点拖到这里</strong>
-        <span>从左侧节点库选择一个动作开始搭建流程</span>
+        <span>点击左侧动作查看配置，拖入画布创建步骤</span>
       </div>
     </VueFlow>
     <div v-if="!dimensionsReady" class="workflow-canvas-loading">正在准备画布…</div>

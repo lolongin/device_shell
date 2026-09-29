@@ -109,6 +109,7 @@ def test_default_action_registry_resolves_studio_basic_activity_nodes() -> None:
         "variable.set",
         "expression.evaluate",
         "loop.for_each",
+        "device.for_each",
         "loop.until",
     ):
         handler = registry.resolve(operation)

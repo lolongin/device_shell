@@ -120,6 +120,40 @@ class ForEachActivityHandler:
         del invocation, context
 
 
+class DeviceForEachActivityHandler(ForEachActivityHandler):
+    """Run one action for each device, preserving per-device results."""
+
+    activity_id = "device.for_each"
+
+    async def execute(self, invocation: ActivityInvocation, context: ActivityContext, report: Any) -> ActivityResult:
+        devices = invocation.inputs.get("devices")
+        if not isinstance(devices, (list, tuple)) or not devices:
+            return ActivityResult(ActivityStatus.FAILED, outputs={"devices": [], "results": [], "count": 0, "succeeded": 0, "failed": 0, "status": "failed"}, error={"code": "device_list_invalid", "message": "device.for_each requires a non-empty devices list", "class": "deterministic"})
+        action_id = str(invocation.inputs.get("action_id") or "").strip()
+        if not action_id or self._child_runner is None:
+            return ActivityResult(ActivityStatus.FAILED, outputs={"devices": list(devices), "results": [], "count": 0, "succeeded": 0, "failed": 0, "status": "failed"}, error={"code": "device_action_invalid", "message": "device.for_each requires an executable action", "class": "deterministic"})
+        results = []
+        failed = 0
+        for index, device in enumerate(devices):
+            device_id = str(device.get("device_id") if isinstance(device, Mapping) else device).strip()
+            if not device_id:
+                failed += 1
+                results.append({"device_id": device_id, "status": "failed", "error": {"code": "device_id_invalid"}})
+                continue
+            child_inputs = self._resolve_inputs(dict(invocation.inputs.get("action_inputs") or {}), {"device": device, "device_id": device_id, "index": index})
+            child_inputs["device_id"] = device_id
+            try:
+                result = await self._child_runner(action_id, child_inputs, context, report)
+                results.append({"device_id": device_id, **dict(result)})
+            except Exception as exc:
+                failed += 1
+                results.append({"device_id": device_id, "status": "failed", "error": {"message": str(exc)}})
+                if invocation.inputs.get("failure_strategy", "continue") == "stop":
+                    break
+        succeeded = len(results) - failed
+        return ActivityResult(ActivityStatus.FAILED if failed and invocation.inputs.get("failure_strategy") == "stop" else ActivityStatus.SUCCEEDED, outputs={"devices": list(devices), "results": results, "count": len(results), "succeeded": succeeded, "failed": failed})
+
+
 class WaitActivityHandler:
     """Wait for a bounded duration without occupying a device transport."""
 
@@ -214,7 +248,7 @@ class TerminalWaitActivityHandler:
                 outputs={"status": "failed", "matched": False, "output": "", "sequence": 0, "session_id": session_id},
                 error={"code": "terminal_wait_invalid", "message": "timeout_seconds and after_sequence must be numbers", "class": "deterministic"},
             )
-        if timeout_seconds <= 0 or timeout_seconds > 86_400:
+        if timeout_seconds < 0 or timeout_seconds > 86_400:
             return ActivityResult(
                 ActivityStatus.FAILED,
                 outputs={"status": "failed", "matched": False, "output": "", "sequence": 0, "session_id": session_id},

@@ -84,7 +84,7 @@ function addNode(actionId: string, position?: { x: number; y: number }): void {
   const nodes = selected.value.nodes || []
   const insertEdge = position ? findInsertEdge(position) : null
   const node: NodeItem = {
-    id: `${actualActionId.split('.').pop()}_${Date.now().toString(36)}`,
+    id: nextNodeId(actualActionId),
     action_id: actualActionId,
     config: actionPreset ? JSON.parse(JSON.stringify(actionPreset.config)) : defaultConfig(actualActionId),
     position
@@ -122,20 +122,21 @@ function startActionDrag(event: DragEvent, actionId: string): void {
 
 function defaultConfig(actionId: string): Record<string, unknown> {
   if (actionId === 'device.select') return { device_id: selectedDeviceId.value || '' }
-  if (actionId === 'device.connect') return { device_id: selectedDeviceId.value || '', timeout_seconds: 30 }
+  if (actionId === 'device.connect') return { device_id: selectedDeviceId.value || '', timeout_seconds: 0 }
   if (actionId === 'device.info') return { fields: ['name', 'software_version', 'status'] }
-  if (actionId === 'device.command') return { execution_mode: 'device', command: '', timeout_seconds: 30, retry_attempts: 1, retry_backoff_seconds: 0, failure_strategy: 'stop' }
-  if (actionId === 'script.run') return { language: 'python', script_id: '', script: '', input_json: '{}', cwd: '', env: {}, timeout_seconds: 300, max_output_chars: 1_048_576, retry_attempts: 1, retry_backoff_seconds: 0 }
+  if (actionId === 'device.command') return { execution_mode: 'device', command: '', timeout_seconds: 0, retry_attempts: 1, retry_backoff_seconds: 0, failure_strategy: 'stop' }
+  if (actionId === 'script.run') return { language: 'python', script_id: '', script: '', input_json: '{}', cwd: '', env: {}, timeout_seconds: 0, max_output_chars: 1_048_576, retry_attempts: 1, retry_backoff_seconds: 0 }
   if (actionId === 'file.upload') return { source: '', destination: '', overwrite: true }
   if (actionId === 'file.download') return { source: '', destination: '' }
   if (actionId === 'utility.wait') return { seconds: 1 }
-  if (actionId === 'terminal.wait') return { mode: 'contains', pattern: '', timeout_seconds: 30, case_sensitive: false, send_enter: true }
+  if (actionId === 'terminal.wait') return { mode: 'contains', pattern: '', timeout_seconds: 0, case_sensitive: false, send_enter: true }
   if (actionId === 'utility.confirm') return { prompt: '请确认是否继续执行后续步骤。', approve_label: '确认继续', reject_label: '取消流程' }
   if (actionId === 'utility.condition') return { expression: '', rules: [{ field: 'software_version', operator: '小于', value: '' }], logical_operator: 'AND', true_label: '满足条件', false_label: '不满足条件' }
   if (actionId === 'result.save') return { key: '检查结果' }
   if (actionId === 'variable.set') return { name: '', value: '' }
   if (actionId === 'expression.evaluate') return { expression: '', values: {} }
   if (actionId === 'loop.for_each') return { items: [], action_id: 'result.save', action_inputs: {} }
+  if (actionId === 'device.for_each') return { devices: [], action_id: 'device.command', action_inputs: {}, concurrency: 1, failure_strategy: 'continue' }
   if (actionId === 'loop.until') return { action_id: 'device.command', action_inputs: { command: 'display version' }, condition: "False", max_iterations: 10, interval_seconds: 2 }
   if (actionId === 'workflow.call') return { workflow_id: '', version: '', inputs: {} }
   return {}
@@ -162,16 +163,16 @@ function removeEdgeByTarget(targetId: string): void {
   selected.value.edges = (selected.value.edges || []).filter((edge) => edge.target !== targetId)
 }
 
-function setNodePredecessor(event: Event): void {
+function setNodePredecessor(event: Event | string): void {
   if (!selectedNode.value) return
-  const target = String((event.target as HTMLSelectElement).value || '')
+  const target = String(typeof event === 'string' ? event : (event.target as HTMLSelectElement).value || '')
   removeEdgeByTarget(selectedNode.value.id)
   if (target) addEdge(target, selectedNode.value.id)
 }
 
-function setNodeSuccessor(event: Event): void {
+function setNodeSuccessor(event: Event | string): void {
   if (!selectedNode.value) return
-  const target = String((event.target as HTMLSelectElement).value || '')
+  const target = String(typeof event === 'string' ? event : (event.target as HTMLSelectElement).value || '')
   removeEdgeByTarget(target)
   if (target) addEdge(selectedNode.value.id, target)
 }

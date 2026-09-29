@@ -128,11 +128,11 @@ class ActionSupervisor:
         except (TypeError, ValueError):
             started = now
         elapsed = max(0.0, (now - started).total_seconds())
-        remaining = [action.timeout_seconds - elapsed]
+        remaining = [action.timeout_seconds - elapsed] if action.timeout_seconds > 0 else []
         remaining.extend(
             item.timeout_seconds - elapsed
             for item in action.expectations
-            if item.terminal and item.event_type not in satisfied_events
+            if item.terminal and item.timeout_seconds > 0 and item.event_type not in satisfied_events
         )
         idle_limits = [item.idle_timeout_seconds for item in action.expectations if item.idle_timeout_seconds > 0]
         if idle_limits:
@@ -144,7 +144,7 @@ class ActionSupervisor:
             except (TypeError, ValueError):
                 idle_elapsed = 0.0
             remaining.extend(limit - idle_elapsed for limit in idle_limits)
-        return max(0.0, min(remaining))
+        return max(0.0, min(remaining)) if remaining else 0.25
 
     @staticmethod
     async def _cancel(handler: Any, action: ActionSpec, run: Any, task: asyncio.Task[Any]) -> None:

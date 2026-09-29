@@ -973,6 +973,21 @@ async function createWindow(): Promise<void> {
     return selected.canceled ? '' : selected.filePaths[0] || ''
   })
 
+  ipcMain.handle('workflow:choose-directory', async (event, request?: unknown): Promise<string> => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) {
+      throw new Error('Untrusted workflow directory caller')
+    }
+    const payload = request && typeof request === 'object' ? request as Record<string, unknown> : {}
+    const defaultPath = validDialogDefaultPath(payload.defaultPath)
+    const label = typeof payload.label === 'string' && payload.label.trim() ? payload.label.trim().slice(0, 80) : '选择文件夹'
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: label,
+      properties: ['openDirectory', 'createDirectory'],
+      ...(defaultPath ? { defaultPath } : {})
+    })
+    return selected.canceled ? '' : selected.filePaths[0] || ''
+  })
+
   ipcMain.handle('workflow:read-file', async (event, filePath: unknown): Promise<string> => {
     if (event.sender !== mainWindow?.webContents || typeof filePath !== 'string' || !filePath.trim()) {
       throw new Error('Untrusted workflow file read caller')

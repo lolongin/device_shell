@@ -1094,6 +1094,7 @@ class LegacyTaskManager:
         return {
             "id": definition.id,
             "version": definition.version,
+            "name": str(getattr(definition, "name", "") or ""),
             "states": [
                 {
                     "id": state.id,

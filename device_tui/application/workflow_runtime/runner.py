@@ -36,7 +36,7 @@ async def wait_for_output(
 ) -> MatchResult:
     """Wait for a match while consuming only output after the wait started."""
     matcher = TerminalMatcher(mode, pattern, case_sensitive=case_sensitive)
-    timeout = max(0.01, float(timeout_seconds))
+    timeout = None if float(timeout_seconds) <= 0 else max(0.01, float(timeout_seconds))
     queue, replay = hub.subscribe(session_id, after_sequence=after_sequence)
     output_parts: list[str] = []
     queue_task: asyncio.Task[Any] | None = None
@@ -61,10 +61,10 @@ async def wait_for_output(
             if result is not None:
                 return result
 
-        deadline = monotonic() + timeout
+        deadline = monotonic() + timeout if timeout is not None else None
         while True:
-            remaining = deadline - monotonic()
-            if remaining <= 0:
+            remaining = None if timeout is None else deadline - monotonic()
+            if remaining is not None and remaining <= 0:
                 return MatchResult("timeout", "".join(output_parts), reason="timeout")
             queue_task = asyncio.create_task(queue.get())
             waiters: set[asyncio.Task[Any]] = {queue_task}

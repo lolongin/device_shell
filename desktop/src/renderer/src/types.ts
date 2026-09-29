@@ -333,6 +333,7 @@ export interface TaskWorkflowState {
 export interface TaskWorkflowView {
   id: string
   version: string
+  name?: string
   states: TaskWorkflowState[]
 }
 
@@ -383,6 +384,16 @@ export interface WorkflowCatalogResponse {
   workflows: WorkflowDescriptor[]
 }
 
+export interface WorkflowActionCatalogEntry {
+  id: string
+  name: string
+  category: string
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  risk: string
+  executor_id?: string
+}
+
 export type WorkflowScriptInputType = 'string' | 'number' | 'boolean' | 'object' | 'array'
 
 export interface WorkflowScriptInput {
@@ -413,6 +424,15 @@ export interface WorkflowRuntimeInput {
   required: boolean
   default?: unknown
   description?: string
+  primitiveType?: string
+  semanticType?: string
+  scope?: string
+  source?: string
+  presentation?: string
+  multiple?: boolean
+  constraints?: Record<string, unknown>
+  uiHints?: Record<string, unknown>
+  control?: { id: string; props?: Record<string, unknown> }
 }
 
 export interface PublishedWorkflowDefinition {
@@ -422,7 +442,9 @@ export interface PublishedWorkflowDefinition {
   version: number | string
   published_at: string | null
   inputs: WorkflowRuntimeInput[]
+  input_contract?: WorkflowRuntimeInput[]
   outputs?: Array<{ name: string; value?: unknown; type?: string; description?: string }>
+  output_contract?: Array<{ name: string; value?: unknown; type?: string; description?: string; presentation?: string }>
   step_count: number
   requires_confirmation: boolean
   referenced?: boolean

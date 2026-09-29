@@ -65,11 +65,10 @@ class MemoryWorkflowDefinitionStore:
             self._versions.pop(workflow_id, None)
             self._deleted_versions.pop(workflow_id, None)
             return
-        key = (workflow_id, int(version))
-        if key in self._references:
-            raise ValueError(f"published workflow version is referenced: {workflow_id}@{version}")
         versions = self._versions.get(workflow_id, {})
         if int(version) not in versions:
+            raise KeyError(f"workflow version not found: {workflow_id}@{version}")
+        if int(version) in self._deleted_versions.get(workflow_id, set()):
             raise KeyError(f"workflow version not found: {workflow_id}@{version}")
         self._deleted_versions.setdefault(workflow_id, set()).add(int(version))
 

@@ -506,6 +506,7 @@ class TaskService:
                 return {
                     "id": definition.id,
                     "version": definition.version,
+                    "name": str(getattr(definition, "name", "") or ""),
                     "states": [
                         {
                             "id": state.id,
@@ -536,6 +537,7 @@ class TaskService:
             return {
                 "id": plan.id,
                 "version": plan.version,
+                "name": str(getattr(workflow, "name", "") or ""),
                 "states": [
                     {"id": node.id, "label": node.workflow_id, "terminal": True, "action_id": node.workflow_id, "operation": node.workflow_id}
                     for node in plan.nodes
@@ -558,6 +560,7 @@ class TaskService:
         return {
             "id": str(getattr(workflow, "id", "") or (plan.id if plan is not None else "workflow")),
             "version": str(getattr(workflow, "version", "") or (plan.version if plan is not None else "1")),
+            "name": str(getattr(workflow, "name", "") or ""),
             "states": states,
         }
 
@@ -760,7 +763,9 @@ class TaskService:
                 records.append(self._project_framework_task(task_id))
             except KeyError:
                 continue
-        return sorted(records, key=lambda item: (item.updated_at or item.created_at, item.id), reverse=True)[:max(0, limit)]
+        # History order follows creation time; status updates must not move an
+        # older execution ahead of a newly created task.
+        return sorted(records, key=lambda item: (item.created_at, item.id), reverse=True)[:max(0, limit)]
 
     def get_decision(self, task_id: str) -> DecisionContext | None:
         if task_id in self._framework_requests:

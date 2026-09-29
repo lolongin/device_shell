@@ -97,6 +97,7 @@ interface DesktopApi {
   chooseTransferRoot(): Promise<string>
   choosePackage(defaultPath?: string): Promise<string>
   chooseWorkflowFile(request: { defaultPath?: string; label?: string; extensions?: string[] }): Promise<string>
+  chooseWorkflowDirectory(request: { defaultPath?: string; label?: string }): Promise<string>
   readWorkflowFile(filePath: string): Promise<string>
   saveWorkflowFile(request: { suggestedName: string; content: string }): Promise<boolean>
   saveTransferSettings(request: TransferSettingsSaveRequest): Promise<BackendResponse>

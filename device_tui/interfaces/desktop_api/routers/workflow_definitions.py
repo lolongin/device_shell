@@ -8,6 +8,7 @@ from dataclasses import asdict
 import json
 import re
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -33,6 +34,9 @@ from device_tui.application.workflow_studio import (
     export_document,
     from_document,
     parse_document,
+    input_contract,
+    output_contract,
+    resolve_input_values,
 )
 from device_tui.application.errors import ApplicationConflictError, ResourceNotFoundError, UnsupportedOperationError
 from device_tui.domain.devices.repository import RepositoryError
@@ -60,12 +64,13 @@ _ACTION_WORKFLOW_IDS = {
     "variable.set": "variable.set",
     "expression.evaluate": "expression.evaluate",
     "loop.for_each": "loop.for_each",
+    "device.for_each": "device.for_each",
     "loop.until": "loop.until",
     "workflow.outputs": "workflow.outputs",
 }
 
 _LOOP_DISALLOWED_ACTIONS = frozenset(
-    {"loop.for_each", "loop.until", "utility.condition", "utility.confirm", "workflow.call"}
+    {"loop.for_each", "device.for_each", "loop.until", "utility.condition", "utility.confirm", "workflow.call"}
 )
 _HIGH_RISK_WORKFLOW_IDS = frozenset({"device.reboot", "file.transfer", "script.run"})
 _HIGH_RISK_ACTION_IDS = frozenset({"device.reboot", "file.upload", "file.download", "script.run"})
@@ -138,7 +143,7 @@ def _requires_risk_confirmation(version: Any) -> bool:
     return any(
         node.action_id in _HIGH_RISK_ACTION_IDS
         or (
-            node.action_id in {"loop.for_each", "loop.until"}
+            node.action_id in {"loop.for_each", "device.for_each", "loop.until"}
             and str(
                 {
                     **dict(getattr(node, "config", {}) or {}),
@@ -536,7 +541,7 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
                 params["source_path"] = source_overrides[node.id]
         elif node.action_id == "expression.evaluate":
             params.setdefault("values", {"inputs": "${inputs}", "outputs": "${outputs}"})
-        elif node.action_id in {"loop.for_each", "loop.until"}:
+        elif node.action_id in {"loop.for_each", "device.for_each", "loop.until"}:
             child_action = str(params.get("action_id") or "").strip()
             raw_action_inputs = params.get("action_inputs")
             child_inputs = dict(raw_action_inputs) if isinstance(raw_action_inputs, Mapping) else {}
@@ -546,10 +551,21 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
             if isinstance(raw_action_inputs, Mapping):
                 params["action_inputs"] = _normalize_action_inputs(child_action, raw_action_inputs)
             params["action_id"] = child_workflow_id
+            if node.action_id == "device.for_each":
+                raw_devices = params.get("devices")
+                if isinstance(raw_devices, str) and re.fullmatch(r"\$\{inputs?\.([^}]+)\}", raw_devices.strip()):
+                    input_name = re.fullmatch(r"\$\{inputs?\.([^}]+)\}", raw_devices.strip()).group(1)
+                    params["devices"] = f"${{inputs.{input_name}}}"
+                else:
+                    params["devices"] = _resolve_device_list(raw_devices)
         retry_attempts = params.pop("retry_attempts", None)
         retry_backoff_seconds = params.pop("retry_backoff_seconds", None)
         retry_policy = params.pop("retry_policy", {})
-        raw_failure_strategy = params.pop("failure_strategy", None)
+        # device.for_each consumes this policy inside its per-device loop.
+        # Keep it in the Activity inputs as well as the generic node retry
+        # policy so child failures can be continued/stopped at the right
+        # iteration boundary.
+        raw_failure_strategy = params.get("failure_strategy") if node.action_id == "device.for_each" else params.pop("failure_strategy", None)
         failure_strategy = str(raw_failure_strategy or "stop").strip().casefold()
         repeat_count = params.pop("repeat_count", None)
         repeat_policy = params.pop("repeat_policy", {})
@@ -611,6 +627,18 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
     return plan
 
 
+def _resolve_device_list(raw: Any) -> list[str]:
+    """Normalize an explicit device list into device IDs."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = [part.strip() for part in raw.split(",") if part.strip()]
+    if not isinstance(raw, (list, tuple)):
+        raise UnsupportedOperationError("device.for_each devices must be a list of device IDs")
+    return [str(item.get("device_id") if isinstance(item, Mapping) else item).strip() for item in raw]
+
+
 def _prepare_workflow_file_inputs(
     version: Any,
     inputs: Mapping[str, Any],
@@ -621,6 +649,7 @@ def _prepare_workflow_file_inputs(
     """Stage upload sources while keeping the executable plan portable."""
     prepared_inputs = dict(inputs)
     source_overrides: dict[str, str] = {}
+    staged_inputs: set[str] = set()
     prepare = getattr(transfers, "prepare_workflow_source", None)
     if not callable(prepare):
         return prepared_inputs, source_overrides
@@ -633,14 +662,40 @@ def _prepare_workflow_file_inputs(
             continue
         source_text = raw_source.strip()
         if source_text.startswith("${") and source_text.endswith("}") and source_text.count("${") == 1:
-            input_name = source_text[2:-1].strip()
+            reference = source_text[2:-1].strip()
+            explicit_input = reference.startswith("inputs.")
+            input_name = reference[7:] if explicit_input else reference
             input_def = next((item for item in getattr(version, "inputs", ()) if item.name == input_name), None)
-            is_file_input = input_name == "package_path" or bool(input_def and str(getattr(input_def, "type", "")).casefold() == "file")
-            if is_file_input and input_name in prepared_inputs:
+            input_type = str(getattr(input_def, "type", "")).casefold() if input_def else ""
+            is_file_input = input_name == "package_path" or input_type == "file" or (explicit_input and input_type == "string")
+            if is_file_input and input_name in prepared_inputs and input_name not in staged_inputs:
                 prepared_inputs[input_name] = prepare(str(prepared_inputs[input_name]), staging_id=staging_id)
+                staged_inputs.add(input_name)
         elif not source_text.startswith("${"):
             source_overrides[node.id] = prepare(source_text, staging_id=staging_id)
     return prepared_inputs, source_overrides
+
+def _derive_workflow_convenience_inputs(version: Any, inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Fill legacy package-name inputs from the selected local package path.
+
+    Studio upload nodes only need ``package_path``. Older upgrade workflows
+    may still reference ``package_name`` in the device destination or later
+    commands, so derive that optional value when it was not supplied.
+    """
+    derived = dict(inputs)
+    definitions = {str(item.name): item for item in getattr(version, "inputs", ())}
+    if "package_name" not in definitions:
+        return derived
+    current_name = derived.get("package_name")
+    if current_name not in (None, ""):
+        return derived
+    package_path = derived.get("package_path")
+    if package_path in (None, ""):
+        return derived
+    package_name = PurePosixPath(str(package_path).replace(chr(92), "/")).name
+    if package_name:
+        derived["package_name"] = package_name
+    return derived
 
 
 def _draft_payload(draft: WorkflowDraft) -> dict[str, Any]:
@@ -1278,6 +1333,8 @@ async def list_published_workflow_definitions(ctx=Depends(get_context)) -> dict[
             "published_at": version.published_at,
             "inputs": [item.to_dict() for item in version.inputs],
             "outputs": [item.to_dict() for item in version.outputs],
+            "input_contract": [input_contract(item) for item in version.inputs],
+            "output_contract": [output_contract(item) for item in version.outputs],
             "step_count": len(version.nodes),
             "requires_confirmation": _requires_risk_confirmation(version),
         }
@@ -1315,6 +1372,8 @@ async def list_workflow_versions(workflow_id: str, ctx=Depends(get_context)) -> 
                 "published_at": version.published_at,
                 "inputs": [item.to_dict() for item in version.inputs],
                 "outputs": [item.to_dict() for item in version.outputs],
+                "input_contract": [input_contract(item) for item in version.inputs],
+                "output_contract": [output_contract(item) for item in version.outputs],
                 "step_count": len(version.nodes),
                 "requires_confirmation": _requires_risk_confirmation(version),
                 "referenced": int(version.version) in referenced if callable(referenced_versions) else bool(is_referenced(workflow_id, version.version)) if callable(is_referenced) else False,
@@ -1418,8 +1477,6 @@ async def delete_workflow_version(workflow_id: str, version: int, ctx=Depends(ge
         ctx.desktop.workflow_definitions.delete(workflow_id, version)
     except KeyError as exc:
         raise ResourceNotFoundError(str(exc)) from exc
-    except ValueError as exc:
-        raise ApplicationConflictError("该发布版本已被任务引用，不能删除") from exc
 
 
 @router.post("/{workflow_id}/versions/{version}/restore")
@@ -1512,12 +1569,13 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
     version = _resolve_script_references(version, ctx.desktop.settings)
     step_id = str(payload.get("step_id") or "").strip()
     supplied_inputs = dict(payload.get("inputs") or {})
-    inputs = {
-        item.name: item.default
-        for item in getattr(version, "inputs", ())
-        if item.default is not None
-    }
-    inputs.update(supplied_inputs)
+    inputs, contract_errors = resolve_input_values(getattr(version, "inputs", ()), supplied_inputs)
+    inputs = _derive_workflow_convenience_inputs(version, inputs)
+    if contract_errors:
+        raise UnsupportedOperationError(
+            "workflow inputs are invalid",
+            details={"errors": [{"code": code, "field": name} for name, code in contract_errors.items()]},
+        )
     input_issues = validate_workflow_inputs(version, inputs)  # type: ignore[arg-type]
     if input_issues:
         raise UnsupportedOperationError("workflow inputs are invalid", details={"errors": [asdict(item) for item in input_issues]})
@@ -1598,14 +1656,31 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
     )
     try:
         for target_id in device_ids:
+            # When a device-list workflow is launched for several targets,
+            # each task represents one device. Keep device.for_each compatible
+            # by feeding it only that task's target; otherwise every task
+            # would iterate the entire selected list and execute N×N times.
+            task_inputs = dict(inputs)
+            if len(device_ids) > 1:
+                for input_definition in getattr(version, "inputs", ()):
+                    semantic = str(getattr(input_definition, "semantic_type", "") or "").casefold()
+                    if semantic == "device_list" or str(getattr(input_definition, "type", "")).casefold() == "devices":
+                        task_inputs[str(input_definition.name)] = [target_id]
+            task_workflow = TaskWorkflowDefinition(
+                id=workflow.id,
+                version=workflow.version,
+                name=workflow.name,
+                steps=workflow.steps,
+                metadata={**workflow.metadata, "framework_inputs": task_inputs},
+            )
             task_context = {
-                **inputs,
+                **task_inputs,
                 "device": _device_reference_context(ctx, target_id),
                 "workflow_staging_id": staging_id,
             }
             record = ctx.desktop.task_service.create(
                 TaskCreate(
-                    workflow=workflow,
+                    workflow=task_workflow,
                     framework_plan=plans[target_id],
                     target=DeviceTarget(
                         device_id=target_id,
@@ -1618,8 +1693,8 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
                     context=task_context,
                 )
             )
-            # A version becomes protected only after at least one task was created.
-            # This avoids leaking a permanent reference when task creation fails.
+            # Record references only after at least one task was created.
+            # This avoids showing a reference when task creation fails.
             if str(getattr(version, "version", "draft")) != "draft" and callable(mark_referenced):
                 mark_referenced(workflow_id, version.version)
             if callable(mark_referenced):

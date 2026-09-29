@@ -22,6 +22,7 @@ from ..workflow_plugins.utility import (
     DeviceSelectActivityHandler,
     ExpressionActivityHandler,
     ForEachActivityHandler,
+    DeviceForEachActivityHandler,
     ResultSaveActivityHandler,
     TerminalWaitActivityHandler,
     UntilActivityHandler,
@@ -133,6 +134,7 @@ def build_default_activity_executor(
     executor.register_definition(ActivityDefinition(id="workflow.outputs"))
     executor.register_handler(WorkflowOutputsActivityHandler())
     executor.register_definition(ActivityDefinition(id="loop.for_each"))
+    executor.register_definition(ActivityDefinition(id="device.for_each"))
     executor.register_definition(ActivityDefinition(id="loop.until"))
 
     async def run_child(action_id, inputs, parent_context, report):
@@ -149,6 +151,7 @@ def build_default_activity_executor(
         return {**result.outputs, "status": str(result.status)}
 
     executor.register_handler(ForEachActivityHandler(run_child))
+    executor.register_handler(DeviceForEachActivityHandler(run_child))
     executor.register_handler(UntilActivityHandler(run_child))
     if control is not None:
         executor.register_definition(ActivityDefinition(

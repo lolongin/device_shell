@@ -13,9 +13,30 @@ from device_tui.application.workflow_plugins.utility import (
     ExpressionActivityHandler,
     WaitActivityHandler,
     DeviceSelectActivityHandler,
+    DeviceForEachActivityHandler,
 )
 from device_tui.framework import ActivityContext, ActivityInvocation, ActivityStatus, WorkflowRun
 from device_tui.interfaces.desktop_api.session_hub import TerminalEvent
+
+
+def test_device_for_each_runs_child_per_device_and_continues_after_failure() -> None:
+    calls = []
+    async def child(action_id, inputs, context, report):
+        calls.append((action_id, inputs["device_id"]))
+        if inputs["device_id"] == "router-2":
+            raise RuntimeError("offline")
+        return {"status": "succeeded", "output": inputs["device_id"]}
+
+    invocation = ActivityInvocation("device.for_each", "inv-1", "run-1", inputs={
+        "devices": ["router-1", "router-2", "router-3"], "action_id": "terminal.command",
+        "action_inputs": {"command": "display version"}, "failure_strategy": "continue",
+    })
+    result = asyncio.run(DeviceForEachActivityHandler(child).execute(
+        invocation, ActivityContext(WorkflowRun("run-1", "wf", "1", "router-1"), invocation), lambda _event: None,
+    ))
+    assert calls == [("terminal.command", "router-1"), ("terminal.command", "router-2"), ("terminal.command", "router-3")]
+    assert result.outputs["succeeded"] == 2
+    assert result.outputs["failed"] == 1
 
 
 def test_expression_evaluator_supports_bounded_boolean_expression() -> None:

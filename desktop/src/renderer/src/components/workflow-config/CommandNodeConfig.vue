@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { Save, Trash2, Braces } from 'lucide-vue-next'
 import type { NodeConfigProps, NodeConfigEmits } from './types'
 
@@ -7,7 +7,17 @@ const props = defineProps<NodeConfigProps>()
 const emit = defineEmits<NodeConfigEmits>()
 
 const commandEditor = ref<HTMLTextAreaElement | null>(null)
+const commandReferenceAnchor = ref<HTMLElement | null>(null)
 const showCommandReferenceMenu = ref(false)
+
+function closeCommandReferenceMenuOnOutsideClick(event: PointerEvent): void {
+  if (!commandReferenceAnchor.value?.contains(event.target as Node)) {
+    showCommandReferenceMenu.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('pointerdown', closeCommandReferenceMenuOnOutsideClick))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', closeCommandReferenceMenuOnOutsideClick))
 
 function updateConfig(key: string, value: unknown): void {
   props.node.config[key] = value
@@ -79,46 +89,47 @@ function eventValue(event: Event): string {
     <div class="workflow-command-field">
       <div class="workflow-command-label-row">
         <span>要执行的命令</span>
-        <button
-          class="workflow-command-insert"
-          type="button"
-          :aria-expanded="showCommandReferenceMenu"
-          title="在光标位置插入变量"
-          @mousedown.prevent
-          @click="showCommandReferenceMenu = !showCommandReferenceMenu"
-        >
-          <Braces :size="13" />插入变量
-        </button>
+        <div ref="commandReferenceAnchor" class="workflow-command-insert-anchor">
+          <button
+            class="workflow-command-insert"
+            type="button"
+            :aria-expanded="showCommandReferenceMenu"
+            title="在光标位置插入变量"
+            @mousedown.prevent
+            @click="showCommandReferenceMenu = !showCommandReferenceMenu"
+          >
+            <Braces :size="13" />插入变量
+          </button>
+          <div v-if="showCommandReferenceMenu" class="workflow-command-reference-menu" role="menu" aria-label="选择要插入的变量">
+            <small class="workflow-command-reference-title">选择引用，插入到当前光标位置</small>
+            <button
+              v-for="item in commandReferences"
+              :key="item.reference"
+              type="button"
+              role="menuitem"
+              @mousedown.prevent
+              @click="insertCommandReference(item.reference)"
+            >
+              <span>
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.hint }}</small>
+              </span>
+              <code>${{ '{' }}{{ item.reference }}{{ '}' }}</code>
+            </button>
+            <small v-if="!commandReferences?.length" class="workflow-command-reference-empty">
+              暂无可用变量；请先连接上游步骤或定义流程输入。
+            </small>
+          </div>
+        </div>
       </div>
 
       <textarea
         ref="commandEditor"
         :value="getConfigString('command')"
         rows="3"
-        placeholder="例如：display version"
+        placeholder="例如：display version；控制键可输入 Ctrl+B"
         @input="updateConfigString('command', $event)"
       />
-
-      <div v-if="showCommandReferenceMenu" class="workflow-command-reference-menu" role="menu" aria-label="选择要插入的变量">
-        <small class="workflow-command-reference-title">选择引用，插入到当前光标位置</small>
-        <button
-          v-for="item in commandReferences"
-          :key="item.reference"
-          type="button"
-          role="menuitem"
-          @mousedown.prevent
-          @click="insertCommandReference(item.reference)"
-        >
-          <span>
-            <strong>{{ item.label }}</strong>
-            <small>{{ item.hint }}</small>
-          </span>
-          <code>${{ '{' }}{{ item.reference }}{{ '}' }}</code>
-        </button>
-        <small v-if="!commandReferences?.length" class="workflow-command-reference-empty">
-          暂无可用变量；请先连接上游步骤或定义流程输入。
-        </small>
-      </div>
 
       <div class="workflow-command-preview" :class="{ 'is-runtime': commandPreview.runtimeOnly }">
         <span>实际命令预览</span>
@@ -129,13 +140,14 @@ function eventValue(event: Event): string {
 
     <label>
       超时时间（秒）
-      <input
-        :value="node.config.timeout_seconds || 30"
+        <input
+          :value="node.config.timeout_seconds || ''"
         type="number"
-        min="1"
+          min="0"
         max="86400"
         @input="updateConfig('timeout_seconds', Number(eventValue($event)))"
       />
+        <label class="workflow-inline-toggle"><input type="checkbox" :checked="Number(node.config.timeout_seconds || 0) === 0" @change="updateConfig('timeout_seconds', ($event.target as HTMLInputElement).checked ? 0 : 30)" />永不超时</label>
     </label>
 
     <div v-if="node.config.execution_mode !== 'device'" class="workflow-command-grid">
@@ -156,14 +168,10 @@ function eventValue(event: Event): string {
 
     <div class="workflow-command-result-contract">
       <span>输出</span>
-      <code>stdout</code>
-      <code>stderr</code>
-      <code>exitCode</code>
-      <code>status</code>
-      <code>duration</code>
+      <code v-for="field in actions?.find((item) => item.id === node.action_id)?.outputFields || []" :key="field.name">{{ field.label }}</code>
     </div>
 
-    <small class="field-hint">可直接输入文本，也可用"插入变量"生成 `${变量名}`。</small>
+    <small class="field-hint">可直接输入文本；填写 Ctrl+A 到 Ctrl+Z 时发送控制字节且不附带回车，也可用“插入变量”生成 `${变量名}`。</small>
 
     <label>
       失败后的处理
@@ -198,7 +206,6 @@ function eventValue(event: Event): string {
 .workflow-command-field {
   display: grid;
   gap: 8px;
-  position: relative;
 }
 
 .workflow-command-label-row {
@@ -226,6 +233,10 @@ function eventValue(event: Event): string {
   cursor: pointer;
 }
 
+.workflow-command-insert-anchor {
+  position: relative;
+}
+
 .workflow-command-insert:hover {
   color: var(--workflow-text);
   border-color: rgba(148, 163, 184, .42);
@@ -233,7 +244,7 @@ function eventValue(event: Event): string {
 
 .workflow-command-reference-menu {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 4px);
   right: 0;
   z-index: 10;
   display: grid;
@@ -246,7 +257,7 @@ function eventValue(event: Event): string {
   overflow-y: auto;
   border: 1px solid var(--workflow-border);
   border-radius: 6px;
-  background: var(--workflow-surface);
+  background: #111b2e;
   box-shadow: 0 8px 24px rgba(2, 6, 23, .32);
 }
 

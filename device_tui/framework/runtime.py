@@ -141,7 +141,10 @@ class WorkflowRuntime:
         attempt = ActionAttempt(
             id=str(uuid4()), action_id=state.action.id, attempt=attempt_no,
             status=ActionStatus.RUNNING, started_at=_now(),
-            deadline_at=(_utcnow() + timedelta(seconds=state.action.timeout_seconds)).isoformat(),
+            deadline_at=(
+                (_utcnow() + timedelta(seconds=state.action.timeout_seconds)).isoformat()
+                if state.action.timeout_seconds > 0 else ""
+            ),
             last_progress_at=_now(),
         )
         run = self._save(replace(run, attempts=run.attempts + (attempt,), revision=run.revision + 1))

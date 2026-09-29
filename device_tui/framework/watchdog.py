@@ -34,7 +34,7 @@ class Watchdog:
         started = _parse(attempt.started_at, now)
         elapsed = max(0.0, (now - started).total_seconds())
         expected = {item.event_type for item in action.expectations if item.terminal} - satisfied_events
-        if elapsed >= action.timeout_seconds:
+        if action.timeout_seconds > 0 and elapsed >= action.timeout_seconds:
             return WatchdogIncident(
                 "action_timeout", action.id, "action deadline exceeded", tuple(sorted(expected)), elapsed_seconds=elapsed,
             )
@@ -44,7 +44,7 @@ class Watchdog:
         overdue = sorted(
             item.event_type
             for item in action.expectations
-            if item.terminal and item.event_type not in satisfied_events and elapsed >= item.timeout_seconds
+            if item.terminal and item.timeout_seconds > 0 and item.event_type not in satisfied_events and elapsed >= item.timeout_seconds
         )
         if overdue:
             return WatchdogIncident(

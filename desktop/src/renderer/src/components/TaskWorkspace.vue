@@ -3,27 +3,18 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, Copy, FileArchive, Play, RotateCcw, ShieldAlert, Trash2, Workflow, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
 import { desktopApi } from '../transport/api'
-import type { TaskDecisionActionPayload, TaskRecord, TaskStepState, WorkflowParameterDescriptor } from '../types'
+import type { TaskDecisionActionPayload, TaskRecord, TaskStepState } from '../types'
 
 const workspace = useWorkspaceStore()
 const emit = defineEmits<{ runWorkflow: [] }>()
-const taskMode = ref<'upgrade' | 'plan'>('upgrade')
-const workflowId = ref('')
-const workflowParameters = ref<Record<string, unknown>>({})
-const planObjective = ref('')
-const planCommand = ref('')
 const localError = ref('')
 const copyNotice = ref('')
 const reportBusy = ref(false)
 const decisionInputReason = ref('')
 const selectedTaskIds = ref<Set<string>>(new Set())
-let initializedWorkflowId = ''
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let copyNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
-const workflowOptions = computed(() => workspace.workflows)
-const selectedWorkflow = computed(() => workflowOptions.value.find((item) => item.id === workflowId.value) || workflowOptions.value[0] || null)
-const workflowParametersVisible = computed(() => selectedWorkflow.value?.parameters.filter((item) => !item.advanced) || [])
 const selectedTask = computed(() => workspace.tasks.find((task) => task.id === workspace.activeTaskId) || null)
 const workflowActionLabels: Record<string, string> = {
   'terminal.command': '执行命令',
@@ -118,6 +109,7 @@ function taskCurrentStepLabel(task: TaskRecord | null): string {
 }
 function taskWorkflowLabel(task: TaskRecord): string {
   return workspace.workflows.find((workflow) => workflow.id === task.workflow_id)?.name
+    || task.workflow_view?.name
     || task.workflow_view?.id
     || task.workflow_id
     || '未命名 Workflow'
@@ -291,7 +283,7 @@ function taskStatusLabel(task: TaskRecord | null): string {
   if (task.status === 'paused') return '任务已暂停'
   if (task.status === 'cancelled') return '任务已取消'
   if (task.status === 'completed' || task.status === 'success') return '工作流已完成'
-  if (task.status === 'failed') return errorMessage(task) || '工作流失败'
+  if (task.status === 'failed') return '工作流失败'
   if (task.status === 'waiting_child' || task.status === 'waiting_reconcile') return '等待系统处理'
   if (task.status === 'unknown') return '状态待确认'
   return task.message || '任务处理中'
@@ -315,132 +307,6 @@ function actionRequiresReason(action: TaskDecisionActionPayload & { metadata?: R
 }
 function actionTarget(action: TaskDecisionActionPayload): string {
   return action.target_step || String(action.parameters?.step_id || '')
-}
-function onDeviceChange(event: Event): void {
-  workspace.selectDevice((event.target as HTMLSelectElement).value)
-}
-
-function packageName(value: string): string {
-  return value.split(/[\\/]/).pop() || value
-}
-
-function isLocalPackage(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('/') || value.startsWith('\\\\')
-}
-
-function parameterValue(parameter: WorkflowParameterDescriptor): unknown {
-  return workflowParameters.value[parameter.name]
-}
-
-function parameterLabel(parameter: WorkflowParameterDescriptor): string {
-  return parameter.label || parameter.name
-}
-
-function setParameter(name: string, value: unknown): void {
-  workflowParameters.value = { ...workflowParameters.value, [name]: value }
-}
-
-function initializeWorkflowParameters(workflow = selectedWorkflow.value): void {
-  if (!workflow) return
-  const current = initializedWorkflowId === workflow.id ? workflowParameters.value : {}
-  const next: Record<string, unknown> = {}
-  for (const parameter of workflow.parameters) {
-    const hasCurrent = Object.prototype.hasOwnProperty.call(current, parameter.name)
-    const currentValue = current[parameter.name]
-    if (hasCurrent && !(parameter.control === 'file' && !String(currentValue || '').trim())) {
-      next[parameter.name] = currentValue
-    } else if (parameter.control === 'file') {
-      next[parameter.name] = workflowFiles(parameter)[0]?.relative_path || ''
-    } else if (parameter.default !== undefined) {
-      next[parameter.name] = parameter.default
-    }
-  }
-  workflowParameters.value = next
-  initializedWorkflowId = workflow.id
-}
-
-function workflowParameterOptions(parameter: WorkflowParameterDescriptor): Array<{ value: string; label: string }> {
-  return (parameter.enum || []).map((value) => ({
-    value: String(value),
-    label: parameter.enum_labels?.[String(value)] || String(value),
-  }))
-}
-
-function usesDevicePackage(): boolean {
-  return String(workflowParameters.value.package_source || 'local') === 'device'
-}
-
-function workflowFiles(parameter: WorkflowParameterDescriptor) {
-  const extensions = (parameter.file_extensions || []).map((item) => item.toLowerCase())
-  if (!extensions.length) return workspace.transferFiles
-  return workspace.transferFiles.filter((file) => extensions.some((extension) => file.name.toLowerCase().endsWith(extension)))
-}
-
-function onParameterInput(parameter: WorkflowParameterDescriptor, event: Event): void {
-  const input = event.target as HTMLInputElement | HTMLSelectElement
-  if (parameter.type === 'boolean') {
-    setParameter(parameter.name, (input as HTMLInputElement).checked)
-  } else if (parameter.type === 'integer') {
-    setParameter(parameter.name, Number(input.value))
-  } else {
-    setParameter(parameter.name, input.value)
-  }
-}
-
-async function chooseWorkflowFile(parameter: WorkflowParameterDescriptor): Promise<void> {
-  localError.value = ''
-  try {
-    const selected = await window.desktopApi.chooseWorkflowFile({
-      defaultPath: workspace.transferSettings?.root || '',
-      label: parameterLabel(parameter),
-      // Workflow descriptors are reactive objects. Convert the extension
-      // list to plain data before crossing Electron's structured-clone IPC.
-      extensions: Array.isArray(parameter.file_extensions)
-        ? parameter.file_extensions.map((extension) => String(extension))
-        : [],
-    })
-    if (selected) {
-      setParameter(parameter.name, selected)
-    }
-  } catch (cause) {
-    localError.value = cause instanceof Error ? cause.message : String(cause)
-  }
-}
-
-async function createTask(): Promise<void> {
-  localError.value = ''
-  if (taskMode.value === 'plan') {
-    if (!planObjective.value.trim() || !planCommand.value.trim()) {
-      localError.value = '请输入任务目标和第一步命令。'
-      return
-    }
-    await workspace.createWorkflowPlanTask(planObjective.value, planCommand.value)
-    return
-  }
-  if (!workspace.selectedDeviceId) {
-    localError.value = '请选择设备。'
-    return
-  }
-  if (!selectedWorkflow.value) {
-    localError.value = 'Workflow 目录尚未加载。'
-    return
-  }
-  const missing = selectedWorkflow.value.parameters.find((parameter) => {
-    if (!parameter.required) return false
-    const value = workflowParameters.value[parameter.name]
-    return value === undefined || value === null || String(value).trim() === ''
-  })
-  if (missing) {
-    localError.value = `请填写${parameterLabel(missing)}。`
-    return
-  }
-  if (selectedWorkflow.value.parameters.some((item) => item.name === 'expected_version')) {
-    workflowParameters.value = {
-      ...workflowParameters.value,
-      expected_version: workflowParameters.value.expected_version || workspace.selectedDevice?.version || '',
-    }
-  }
-  await workspace.createNamedWorkflowTask(selectedWorkflow.value.id, workflowParameters.value)
 }
 async function applyAction(action: TaskDecisionActionPayload): Promise<void> {
   const option = action as TaskDecisionActionPayload & { metadata?: Record<string, unknown> }
@@ -524,7 +390,6 @@ function openLatestTask(): void {
 onMounted(async () => {
   await workspace.refreshTasks()
   await workspace.refreshWorkflows()
-  initializeWorkflowParameters()
   refreshTimer = setInterval(() => { void workspace.refreshTasks() }, 1000)
   openLatestTask()
 })
@@ -533,11 +398,6 @@ onBeforeUnmount(() => {
   if (copyNoticeTimer) clearTimeout(copyNoticeTimer)
 })
 
-watch(selectedWorkflow, (workflow) => {
-  if (workflow && workflowId.value !== workflow.id) workflowId.value = workflow.id
-  initializeWorkflowParameters(workflow)
-}, { immediate: true })
-watch(() => workspace.transferFiles, () => initializeWorkflowParameters(), { deep: true })
 watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })), (items) => {
   const available = new Set(items.filter((item) => isTerminalStatus(item.status)).map((item) => item.id))
   selectedTaskIds.value = new Set([...selectedTaskIds.value].filter((id) => available.has(id)))
@@ -551,63 +411,22 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
       <div class="task-ui-header-actions"><button class="secondary-button" type="button" @click="emit('runWorkflow')"><Play :size="14" />运行 Workflow</button><button class="icon-button" type="button" aria-label="关闭任务面板" @click="workspace.upgradePanelOpen = false"><X :size="15" /></button></div>
     </header>
 
-    <div class="task-ui-create">
-      <div class="task-mode-tabs" role="tablist" aria-label="任务类型">
-        <button type="button" :class="{ active: taskMode === 'upgrade' }" @click="taskMode = 'upgrade'"><RotateCcw :size="13" />内置任务</button>
-        <button type="button" :class="{ active: taskMode === 'plan' }" @click="taskMode = 'plan'"><Workflow :size="13" />制定任务</button>
-      </div>
-      <label><span>设备</span><select :value="workspace.selectedDeviceRowId" @change="onDeviceChange"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.row_id" :value="device.row_id">{{ device.name }} · {{ device.id }}</option></select></label>
-      <template v-if="taskMode === 'upgrade'">
-        <label><span>Workflow</span><select v-model="workflowId"><option v-for="workflow in workflowOptions" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option></select></label>
-        <p v-if="selectedWorkflow?.description" class="task-workflow-description">{{ selectedWorkflow.description }}</p>
-        <div class="task-upgrade-options task-workflow-parameters">
-          <label v-for="parameter in workflowParametersVisible" :key="parameter.name">
-            <span>{{ parameterLabel(parameter) }}</span>
-            <div v-if="parameter.control === 'file' && parameter.name === 'package_path' && usesDevicePackage()" class="task-device-package-input">
-              <input type="text" :value="String(parameterValue(parameter) ?? '')" placeholder="例如 flash:/S5735-V200R023C00.cc" @input="onParameterInput(parameter, $event)" />
-            </div>
-            <div v-else-if="parameter.control === 'file'" class="task-package-picker">
-              <select :value="String(parameterValue(parameter) || '')" @change="onParameterInput(parameter, $event)">
-                <option value="" disabled>选择{{ parameterLabel(parameter) }}</option>
-                <option v-if="parameterValue(parameter) && !workflowFiles(parameter).some((file) => file.relative_path === parameterValue(parameter))" :value="String(parameterValue(parameter))">{{ packageName(String(parameterValue(parameter))) }}</option>
-                <option v-for="file in workflowFiles(parameter)" :key="file.relative_path" :value="file.relative_path">{{ file.name }}</option>
-              </select>
-              <button class="secondary-button" type="button" :title="`从本机选择${parameterLabel(parameter)}`" @click="chooseWorkflowFile(parameter)"><FileArchive :size="13" />选择文件</button>
-            </div>
-            <select v-else-if="parameter.control === 'select'" :value="String(parameterValue(parameter) ?? '')" @change="onParameterInput(parameter, $event)">
-              <option v-for="option in workflowParameterOptions(parameter)" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-            <div v-else-if="parameter.type === 'boolean'" class="task-toggle" :class="{ 'is-on': Boolean(parameterValue(parameter)) }">
-              <input type="checkbox" :checked="Boolean(parameterValue(parameter))" @change="onParameterInput(parameter, $event)" />
-              <span class="task-toggle-track" aria-hidden="true"><i></i></span>
-              <b>{{ Boolean(parameterValue(parameter)) ? '已开启' : '已关闭' }}</b>
-            </div>
-            <input v-else :type="parameter.type === 'integer' ? 'number' : 'text'" :value="String(parameterValue(parameter) ?? '')" @input="onParameterInput(parameter, $event)" />
-            <small v-if="parameter.control === 'file' && parameter.name === 'package_path' && usesDevicePackage()" class="task-package-hint">使用设备已有包，不启动本地 FTP 传输</small>
-            <small v-else-if="parameter.control === 'file' && parameterValue(parameter) && isLocalPackage(String(parameterValue(parameter)))" class="task-package-hint">本地文件将在创建 Task 时放入文件服务目录</small>
-          </label>
-        </div>
-        <button class="primary-button" type="button" :disabled="workspace.taskBusy || !selectedWorkflow || !workspace.selectedDeviceId" @click="createTask"><RotateCcw :size="14" />创建 Workflow Task</button>
-      </template>
-      <template v-else>
-        <label><span>任务目标</span><input v-model="planObjective" placeholder="例如：检查设备版本" /></label>
-        <label><span>第一步命令</span><input v-model="planCommand" placeholder="例如：display version" /></label>
-        <button class="primary-button" type="button" :disabled="workspace.taskBusy || !planObjective.trim() || !planCommand.trim() || !workspace.selectedDeviceId" @click="createTask"><Workflow :size="14" />校验并创建 Task</button>
-      </template>
+    <div v-if="localError || workspace.taskError || copyNotice" class="task-ui-notices">
       <p v-if="localError" class="task-error" role="alert">{{ localError }}</p>
       <div v-if="workspace.taskError" class="task-error task-error-with-action" role="alert"><span>Task API 暂不可用：{{ workspace.taskError }}</span><button class="icon-button" type="button" title="复制 Task API 错误" aria-label="复制 Task API 错误" @click="copyTaskApiError"><Copy :size="13" /></button></div>
       <p v-if="copyNotice" class="task-copy-notice" role="status" aria-live="polite">{{ copyNotice }}</p>
     </div>
 
-    <div class="task-ui-list" aria-label="Task 列表">
+    <div class="task-ui-content">
+      <div class="task-ui-list" aria-label="Task 执行记录">
       <div class="task-ui-list-heading"><strong>Task 记录</strong><div class="task-ui-list-actions"><small>{{ workspace.tasks.length }} 条 · ✓{{ taskSummary.completed }}　✕{{ taskSummary.failed }}　⏸{{ taskSummary.waiting }}</small><label v-if="terminalTasks.length" class="task-select-all" title="选择全部已结束任务"><input type="checkbox" :checked="allTerminalTasksSelected" :indeterminate="someTerminalTasksSelected" :disabled="workspace.taskBusy" @change="toggleAllTerminalTasks" /><span>已结束</span></label><button v-if="selectedTerminalTaskCount" class="task-bulk-delete" type="button" :disabled="workspace.taskBusy" title="删除选中的任务记录" @click="deleteSelectedTasks"><Trash2 :size="13" />删除选中 ({{ selectedTerminalTaskCount }})</button></div></div>
       <div v-for="task in workspace.tasks" :key="task.id" class="task-row" :data-active="task.id === workspace.activeTaskId" :aria-current="task.id === workspace.activeTaskId ? 'true' : undefined" role="button" tabindex="0" @click="chooseTask(task)" @keydown.enter="chooseTask(task)" @keydown.space.prevent="chooseTask(task)">
         <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ taskWorkflowLabel(task) }}</strong><small>{{ task.workflow_id }} · {{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ taskStatusLabel(task) }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
       </div>
-      <p v-if="!workspace.tasks.length" class="task-empty">还没有任务，选择 Workflow 或“制定任务”开始。</p>
-    </div>
+        <p v-if="!workspace.tasks.length" class="task-empty">还没有执行记录，请从 Workflow Studio 运行流程。</p>
+      </div>
 
-    <article v-if="selectedTask" class="task-detail">
+      <article v-if="selectedTask" class="task-detail">
       <header><div><strong>{{ taskWorkflowLabel(selectedTask) }}</strong><small>Task {{ selectedTask.id.slice(0, 8) }} · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
         <button class="secondary-button" type="button" :disabled="reportBusy" @click="downloadReport"><FileArchive :size="13" />{{ reportBusy ? '正在导出…' : '导出报告' }}</button>
         <button v-if="selectedTask.status === 'running'" class="secondary-button" type="button" @click="workspace.pauseTask()"><CirclePause :size="13" />暂停</button>
@@ -641,6 +460,12 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
       </div>
       <div v-if="selectedTask.status === 'completed'" class="task-success"><Check :size="15" />Workflow Task 已完成</div>
       <div v-else-if="selectedTask.status === 'failed'" class="task-failure"><CircleAlert :size="15" />Workflow Task 失败</div>
-    </article>
+      </article>
+      <div v-else class="task-detail task-detail-empty">
+        <Workflow :size="24" />
+        <strong>选择一条执行记录</strong>
+        <small>这里显示步骤进度、输出、错误详情和恢复操作。</small>
+      </div>
+    </div>
   </section>
 </template>

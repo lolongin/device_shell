@@ -29,6 +29,14 @@ _SENSITIVE_ASSIGNMENT = re.compile(
 )
 
 
+def control_key_byte(control_key: str) -> int | None:
+    """Return the ASCII control byte for an exact ``Ctrl+A`` style token."""
+    value = str(control_key or "").strip().upper().replace(" ", "")
+    if not value.startswith("CTRL+") or len(value) != 6 or not "A" <= value[-1] <= "Z":
+        return None
+    return ord(value[-1]) - ord("A") + 1
+
+
 def redact_command_secrets(command: str) -> str:
     return _SENSITIVE_ASSIGNMENT.sub(r"\1[REDACTED]", command)
 
@@ -340,6 +348,9 @@ class CommandService:
     @staticmethod
     def command_payload(command: str) -> str:
         normalized = command.replace("\r\n", "\n").replace("\r", "\n")
+        control_byte = control_key_byte(normalized)
+        if control_byte is not None:
+            return chr(control_byte)
         return f"{normalized.replace(chr(10), chr(13))}\r"
 
     def _session(self, session_id: str) -> SessionRecord:

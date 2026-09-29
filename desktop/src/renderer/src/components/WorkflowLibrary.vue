@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, FileUp, GitBranch, GripVertical, Hand, MousePointer2, Play, Plus, Redo, RotateCcw, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
+import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, Eye, FileUp, GitBranch, GripVertical, Hand, MoreHorizontal, MousePointer2, Play, Plus, Redo, RotateCcw, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
-import type { DeviceSummary, TaskRecord, WorkflowScript, WorkflowScriptInput } from '../types'
+import type { DeviceSummary, TaskRecord, WorkflowActionCatalogEntry, WorkflowScript } from '../types'
 import WorkflowCanvas from './WorkflowCanvas.vue'
 import WorkflowScriptEditor from './WorkflowScriptEditor.vue'
 import WorkflowScriptStudio from './WorkflowScriptStudio.vue'
@@ -11,12 +11,20 @@ import WorkflowFlowTestPanel from './WorkflowFlowTestPanel.vue'
 import WorkflowRunPreview from './WorkflowRunPreview.vue'
 import WorkflowVersionManager from './WorkflowVersionManager.vue'
 import WorkflowManagementDialogs from './WorkflowManagementDialogs.vue'
+import WorkflowTargetPicker from './WorkflowTargetPicker.vue'
+import WorkflowNodeProperties from './workflow-config/WorkflowNodeProperties.vue'
+import WorkflowActionPreview from './workflow-config/WorkflowActionPreview.vue'
+import WorkflowInspectorShell from './WorkflowInspectorShell.vue'
+import WorkflowSettingsPanel from './WorkflowSettingsPanel.vue'
+import AdvancedNodeConfig from './workflow-config/AdvancedNodeConfig.vue'
 import { useWorkflowScripts, workflowScriptSnapshot as scriptSnapshot } from '../composables/useWorkflowScripts'
 import { useWorkflowEditor } from '../composables/useWorkflowEditor'
 import { normalizeLoopUntilNodes } from '../utils/loopUntil'
+import { actionItemsFromCatalog, fieldLabels, outputFieldsFromSchema } from './workflow-config/actionCatalog'
+import type { ActionItem } from './workflow-config/types'
 
 type NodeItem = { id: string; action_id: string; config: Record<string, unknown>; input_mapping?: Record<string, unknown>; position?: { x: number; y: number } }
-type WorkflowInput = { name: string; type?: string; control?: string; required?: boolean; default?: unknown; description?: string }
+type WorkflowInput = { name: string; type?: string; control?: string | { id: string; props?: Record<string, unknown> }; required?: boolean; default?: unknown; description?: string }
 type WorkflowOutput = { name: string; value?: unknown; type?: string; description?: string }
 type WorkflowEdge = { source: string; target: string; condition?: string; source_handle?: string }
 type WorkflowItem = { id: string; name: string; description?: string; version?: string | number; inputs?: WorkflowInput[]; outputs?: WorkflowOutput[]; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; condition?: string; source_handle?: string }> }
@@ -24,10 +32,8 @@ type PublishedVersionItem = { id: string; name: string; description?: string; ve
 type WorkflowTemplate = { id: string; name: string; description?: string; built_in?: boolean; workflow?: WorkflowItem }
 type Issue = { code: string; message: string; node_id?: string }
 type OutputField = { name: string; label: string }
-type ActionCategory = 'flow-control' | 'device' | 'transfer' | 'data' | 'workflow' | 'script'
-type ActionItem = { id: string; label: string; hint: string; tone: string; category: ActionCategory; outputFields: OutputField[]; preset?: { actionId: string; config: Record<string, unknown>; customActionId: string } }
 type CommandReference = { reference: string; label: string; hint: string }
-const emit = defineEmits<{ close: []; 'run-published': []; 'run-version': [payload: { workflowId: string; version: string | number }] }>()
+const emit = defineEmits<{ close: []; 'run-published': []; 'run-version': [payload: { workflowId: string; version: string | number }]; 'add-quick-workflow': [payload: { workflowId: string; name: string }] }>()
 const workspace = useWorkspaceStore()
 const workflows = ref<WorkflowItem[]>([])
 const selected = ref<WorkflowItem | null>(null)
@@ -56,7 +62,6 @@ const {
 } = workflowScripts
 const eventValue = scriptEventValue
 const eventChecked = scriptEventChecked
-const scriptNodeInputMode = ref<'form' | 'json'>('form')
 const issues = ref<Issue[]>([])
 const error = ref('')
 const loading = ref(false)
@@ -69,9 +74,11 @@ const flowTestTask = ref<TaskRecord | null>(null)
 const flowTestError = ref('')
 const expandedFlowTestStepIds = ref<string[]>([])
 const searchQuery = ref('')
+const selectedCatalogAction = ref<ActionItem | null>(null)
 const selectedDeviceIds = ref<string[]>([])
 const showCreateMenu = ref(false)
 const createMenuRef = ref<HTMLElement | null>(null)
+const workflowMoreMenuRef = ref<HTMLDetailsElement | null>(null)
 const showCreateDialog = ref(false)
 const createBlank = ref(false)
 const createTemplateId = ref('')
@@ -103,8 +110,6 @@ const workflowOutputsExpanded = ref(false)
 const workflowRuntimeInputsExpanded = ref(false)
 let workflowPropertiesResizeStartX = 0
 let workflowPropertiesResizeStartWidth = 312
-const commandEditor = ref<HTMLTextAreaElement | null>(null)
-const showCommandReferenceMenu = ref(false)
 const showCustomActionDialog = ref(false)
 const customActionName = ref('')
 const customActionDescription = ref('')
@@ -132,9 +137,24 @@ const managementState = {
 }
 const hasUnsavedChanges = computed(() => Boolean(selected.value && workflowSnapshot(selected.value) !== savedWorkflowSnapshot.value))
 function defaultWorkflowInputValue(input: WorkflowInput): unknown {
-  if (input.default !== undefined && input.default !== null) return input.default
+  if (input.default !== undefined && input.default !== null) return normalizeStructuredInputValue(input.default, input.type)
   if (input.type === 'boolean') return false
   return ''
+}
+
+function normalizeStructuredInputValue(value: unknown, type?: string): unknown {
+  if ((type !== 'array' && type !== 'object') || typeof value !== 'string') return value
+  let current: unknown = value
+  for (let attempt = 0; attempt < 3 && typeof current === 'string'; attempt += 1) {
+    const text = current.trim()
+    if (!text || (!text.startsWith('[') && !text.startsWith('{') && !text.startsWith('"'))) break
+    try {
+      current = JSON.parse(current)
+    } catch {
+      break
+    }
+  }
+  return current
 }
 
 function initializeWorkflowInputValues(workflow: WorkflowItem | null): void {
@@ -148,23 +168,9 @@ function initializeWorkflowInputValues(workflow: WorkflowItem | null): void {
 }
 
 async function saveNodeScriptResource(): Promise<void> {
-  if (selectedNodeScript.value) await saveScriptResource(selectedNodeScript.value)
-}
-
-function selectScriptForNode(scriptId: string): void {
-  if (!selectedNode.value) return
-  selectedNode.value.config.script_id = scriptId
+  const scriptId = String(selectedNode.value?.config.script_id || '')
   const script = scripts.value.find((item) => item.id === scriptId)
-  if (script) {
-    selectedNode.value.config.language = script.language
-    selectedNode.value.config.script = script.script
-    const inputs = scriptNodeInputObject()
-    for (const parameter of script.input_schema || []) {
-      if (Object.prototype.hasOwnProperty.call(inputs, parameter.name)) continue
-      if (Object.prototype.hasOwnProperty.call(parameter, 'default')) inputs[parameter.name] = parameter.default
-    }
-    selectedNode.value.config.input_json = JSON.stringify(inputs, null, 2)
-  }
+  if (script) await saveScriptResource(script)
 }
 
 function addWorkflowInput(): void {
@@ -234,13 +240,22 @@ function workflowInputDisplay(input: WorkflowInput): string {
   const value = workflowInputValues.value[input.name]
   if (input.type === 'object' || input.type === 'array') {
     if (value === '' || value === undefined || value === null) return ''
+    // Keep an in-progress JSON edit as raw text. Re-stringifying every keystroke
+    // escapes quotes and backslashes, making it impossible to type naturally.
+    if (typeof value === 'string') return String(normalizeStructuredInputValue(value, input.type))
     return JSON.stringify(value)
   }
   return String(value ?? '')
 }
 
 function isWorkflowFileInput(input: WorkflowInput): boolean {
-  return input.control === 'file' || input.type === 'file' || input.name === 'package_path'
+  if (input.control === 'file' || input.type === 'file' || input.name === 'package_path') return true
+  const references = ['${inputs.' + input.name + '}', '${' + input.name + '}']
+  return (selected.value?.nodes || []).some((node) => {
+    if (node.action_id !== 'file.upload') return false
+    const source = node.input_mapping?.source ?? node.input_mapping?.source_path ?? node.config.source ?? node.config.source_path
+    return references.includes(String(source || ''))
+  })
 }
 
 function normalizeWorkflowPath(value: string): string {
@@ -279,13 +294,24 @@ function updateWorkflowInput(name: string, event: Event): void {
     value = target.value === '' ? '' : Number(target.value)
   }
   else if (input.type === 'object' || input.type === 'array') {
-    if (target.value === '') value = ''
-    else {
-      try { value = JSON.parse(target.value) } catch { value = target.value }
-    }
+    // Parse only after the edit is complete (on blur); while typing preserve the
+    // raw text so intermediate JSON such as `{` does not get escaped.
+    value = target.value
   }
   workflowInputValues.value = { ...workflowInputValues.value, [name]: value }
   workflowInputTouched.value = new Set([...workflowInputTouched.value, name])
+}
+
+function normalizeWorkflowInputJson(name: string): void {
+  const input = selected.value?.inputs?.find((item) => item.name === name)
+  if (!input || (input.type !== 'object' && input.type !== 'array')) return
+  const current = workflowInputValues.value[name]
+  if (typeof current !== 'string' || current.trim() === '') return
+  try {
+    workflowInputValues.value = { ...workflowInputValues.value, [name]: normalizeStructuredInputValue(current, input.type) }
+  } catch {
+    // Leave invalid JSON visible so the user can correct it.
+  }
 }
 
 async function chooseWorkflowRuntimeFile(input: WorkflowInput): Promise<void> {
@@ -316,6 +342,10 @@ function workflowInputHasIssue(name: string): boolean {
 
 function toggleCanvasInteractive(): void {
   canvasInteractive.value = !canvasInteractive.value
+}
+
+function closeWorkflowMoreMenu(event: MouseEvent): void {
+  if ((event.target as HTMLElement).closest('button')) workflowMoreMenuRef.value?.removeAttribute('open')
 }
 
 function workflowCatalogResizeLimit(): { min: number; max: number } {
@@ -434,79 +464,6 @@ function setLoopItemsField(field: string): void {
   loopItemsReference.value = loopItemsSourceId.value ? `${loopItemsSourceId.value}${field ? `.${field}` : ''}` : ''
 }
 
-const fallbackOutputFields: Record<string, string[]> = {
-  'device.select': ['device_id', 'status'],
-  'device.connect': ['output', 'status', 'execution_id', 'operation_id', 'session_id', 'device_id', 'cli_status', 'evidence'],
-  'device.ssh': ['output', 'status', 'execution_id', 'operation_id', 'session_id', 'device_id', 'cli_status', 'evidence'],
-  'device.telnet': ['output', 'status', 'execution_id', 'operation_id', 'session_id', 'device_id', 'cli_status', 'evidence'],
-  'device.info': ['device_id', 'name', 'address', 'model', 'version', 'output', 'status', 'execution_id', 'operation_id', 'session_id', 'cli_status', 'software_version', 'requested_fields', 'evidence'],
-  'device.command': ['output', 'status', 'execution_id', 'operation_id', 'session_id', 'device_id', 'cli_status', 'evidence'],
-  'script.run': ['stdout', 'stderr', 'output', 'result', 'returncode', 'exit_code', 'exitCode', 'status'],
-  'file.upload': ['status', 'operation_id', 'verified', 'skipped', 'skip_reason', 'output', 'evidence'],
-  'file.download': ['status', 'operation_id', 'verified', 'skipped', 'skip_reason', 'output', 'evidence'],
-  'device.reboot': ['output', 'status', 'execution_id', 'operation_id', 'session_id', 'device_id', 'cli_status', 'evidence'],
-  'utility.wait': ['seconds', 'status'],
-  'terminal.wait': ['output', 'status', 'matched', 'sequence', 'session_id'],
-  'result.save': ['key', 'value', 'status'],
-  'variable.set': ['name', 'value', 'matched', 'source'],
-  'expression.evaluate': ['value', 'status'],
-  'loop.for_each': ['items', 'results', 'count'],
-  'loop.until': ['status', 'matched', 'iterations', 'result', 'results']
-}
-
-function fieldLabel(name: string): string {
-  return ({
-    count: '数量',
-    device_id: '设备',
-    execution_id: '执行 ID',
-    iterations: '循环次数',
-    items: '列表',
-    key: '结果名称',
-    matched: '是否匹配',
-    operation_id: '操作 ID',
-    output: '输出',
-    requested_fields: '请求字段',
-    address: '地址',
-    model: '型号',
-    name: '名称',
-    result: '当前结果',
-    results: '结果列表',
-    seconds: '秒数',
-    sequence: '终端序号',
-    session_id: '会话',
-    skipped: '已跳过',
-    skip_reason: '跳过原因',
-    software_version: '软件版本',
-    source: '原始值',
-    stdout: '标准输出',
-    stderr: '错误输出',
-    exitCode: '退出码',
-    duration: '执行耗时',
-    status: '状态',
-    version: '版本',
-    value: '值',
-    verified: '已校验'
-  } as Record<string, string>)[name] || name
-}
-
-function outputField(name: string): OutputField {
-  return { name, label: fieldLabel(name) }
-}
-
-function outputFieldsFromSchema(schema: unknown): OutputField[] {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return []
-  const properties = (schema as { properties?: unknown }).properties
-  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return []
-  return Object.keys(properties).map(outputField)
-}
-
-function defaultOutputFields(actionId: string): OutputField[] {
-  const fields = actionId === 'device.command'
-    ? ['stdout', 'stderr', 'exitCode', 'status', 'duration', ...(fallbackOutputFields[actionId] || [])]
-    : (fallbackOutputFields[actionId] || [])
-  return fields.map(outputField)
-}
-
 function outputFieldsForAction(actionId: string): OutputField[] {
   return actions.find((action) => action.id === actionId)?.outputFields || []
 }
@@ -517,10 +474,10 @@ function outputFieldsForNode(node: NodeItem): OutputField[] {
   const version = String(node.config.version || '')
   const published = [...subworkflowVersions.value, ...publishedWorkflows.value]
     .find((item) => item.id === workflowId && String(item.version) === version)
-  return (published?.outputs || []).map((item) => outputField(item.name))
+  return (published?.outputs || []).map((item) => ({ name: item.name, label: fieldLabel(item.name) }))
 }
 
-const ACTION_CATEGORY_LABELS: Record<ActionCategory, string> = {
+const ACTION_CATEGORY_LABELS: Record<string, string> = {
   'flow-control': '基础流程控制',
   device: '设备操作',
   transfer: '文件传输',
@@ -529,46 +486,14 @@ const ACTION_CATEGORY_LABELS: Record<ActionCategory, string> = {
   script: '脚本执行',
 }
 
-const ACTION_CATEGORY_ORDER: ActionCategory[] = ['flow-control', 'device', 'transfer', 'script', 'data', 'workflow']
-
-function actionCategory(actionId: string, catalogCategory = ''): ActionCategory {
-  if (actionId.startsWith('loop.') || ['utility.condition', 'utility.wait', 'terminal.wait', 'utility.confirm'].includes(actionId)) return 'flow-control'
-  if (['variable.set', 'expression.evaluate', 'result.save'].includes(actionId)) return 'data'
-  if (actionId.startsWith('file.') || catalogCategory === 'transfer') return 'transfer'
-  if (actionId === 'script.run' || catalogCategory === 'script') return 'script'
-  if (actionId === 'workflow.call' || catalogCategory === 'workflow') return 'workflow'
-  if (actionId.startsWith('device.') || catalogCategory === 'device' || catalogCategory === 'connection') return 'device'
-  return 'device'
-}
-
-function baseAction(id: string, label: string, hint: string, tone: string): ActionItem {
-  return { id, label, hint, tone, category: actionCategory(id), outputFields: defaultOutputFields(id) }
-}
-
-const actions: ActionItem[] = [
-  baseAction('device.select', '选择设备', '指定后续步骤的目标设备', 'blue'),
-  baseAction('device.connect', '连接设备', '自动选择可用连接方式', 'blue'),
-  baseAction('device.ssh', 'SSH 连接', '使用 SSH 恢复连接', 'blue'),
-  baseAction('device.telnet', 'Telnet 连接', '使用 Telnet 恢复连接', 'blue'),
-  baseAction('device.info', '获取设备信息', '读取型号、版本和状态', 'blue'),
-  baseAction('device.command', '执行命令', '选择一个命令并执行', 'blue'),
-  baseAction('script.run', '执行脚本', '运行 Python、PowerShell 或 Bash 脚本', 'teal'),
-  baseAction('file.upload', '上传文件', '将本地文件上传到设备', 'amber'),
-  baseAction('file.download', '下载文件', '从设备下载文件到本地', 'amber'),
-  baseAction('device.reboot', '重启设备', '重新启动目标设备', 'red'),
-  baseAction('utility.wait', '等待', '等待设备或流程继续', 'amber'),
-  baseAction('terminal.wait', '等待终端输出', '看到指定文本后继续', 'teal'),
-  baseAction('utility.confirm', '人工确认', '暂停流程并等待人员决定', 'amber'),
-  baseAction('utility.condition', '如果 / 否则', '根据数据选择真分支或假分支', 'purple'),
-  baseAction('result.save', '保存结果', '保存本步骤输出供后续使用', 'green'),
-  baseAction('variable.set', '设置变量', '保存一个可复用的流程变量', 'green'),
-  baseAction('expression.evaluate', '计算表达式', '计算受限表达式并输出结果', 'purple'),
-  baseAction('loop.for_each', '循环 FOR', '遍历列表执行一个动作', 'purple'),
-  baseAction('loop.until', '循环直到满足', '重复执行并等待条件成立', 'purple'),
-  baseAction('workflow.call', '调用子流程', '复用固定发布版本的流程', 'teal')
-]
+const ACTION_CATEGORY_ORDER = ['flow-control', 'device', 'transfer', 'script', 'data', 'workflow']
+const actions: ActionItem[] = []
 const actionsRevision = ref(0)
-const nonExecutableLoopActions = new Set(['loop.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'workflow.call'])
+const catalogError = ref('')
+function fieldLabel(name: string): string {
+  return fieldLabels[name] || name
+}
+const nonExecutableLoopActions = new Set(['loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'workflow.call'])
 const filteredActions = computed(() => {
   void actionsRevision.value
   const query = searchQuery.value.trim().toLowerCase()
@@ -587,10 +512,11 @@ const loopChildActions = computed(() => {
   return actions.filter((item) => !nonExecutableLoopActions.has(item.id))
 })
 const availableDevices = computed<DeviceSummary[]>(() => workspace.devices || [])
-const selectedAction = computed(() => {
-  void actionsRevision.value
-  return actions.find((item) => item.id === selectedNode.value?.action_id)
-})
+const workflowTargetOptions = computed(() => availableDevices.value.map((device) => ({
+  id: device.id,
+  label: deviceLabel(device),
+  detail: device.ssh_endpoint || device.telnet_endpoint || device.serial_display || '',
+})))
 const selectedSubworkflow = computed(() => {
   if (selectedNode.value?.action_id !== 'workflow.call') return null
   const workflowId = String(selectedNode.value.config.workflow_id || '')
@@ -667,55 +593,6 @@ function previewValue(value: unknown): string | undefined {
   if (value === undefined || value === null || value === '') return undefined
   if (typeof value === 'string') return value
   try { return JSON.stringify(value) } catch { return String(value) }
-}
-const commandPreview = computed(() => {
-  const command = configString('command')
-  const inputValues = new Map<string, unknown>()
-  for (const input of selected.value?.inputs || []) inputValues.set(`inputs.${input.name}`, workflowInputValues.value[input.name])
-  const sourceIds = new Set(resultSources.value.map((source) => source.id))
-  const variableValues = new Map<string, unknown>()
-  for (const node of selected.value?.nodes || []) {
-    if (node.action_id !== 'variable.set' || !sourceIds.has(node.id)) continue
-    const name = String(node.config.name || '').trim()
-    if (name) variableValues.set(name, node.config.value)
-  }
-  const resolving = new Set<string>()
-  const resolveStatic = (reference: string): string | undefined => {
-    const inputValue = previewValue(inputValues.get(reference))
-    if (inputValue !== undefined) return inputValue
-    if (!variableValues.has(reference) || resolving.has(reference)) return undefined
-    resolving.add(reference)
-    const raw = variableValues.get(reference)
-    const exactReference = typeof raw === 'string' ? raw.match(/^\$\{([^}]+)\}$/)?.[1] : undefined
-    const resolved = exactReference ? resolveStatic(exactReference) : previewValue(raw)
-    resolving.delete(reference)
-    return resolved
-  }
-  let runtimeOnly = false
-  const preview = command.replace(/\$\{([^}]+)\}/g, (token, reference: string) => {
-    const value = resolveStatic(reference)
-    if (value !== undefined) return value
-    runtimeOnly = true
-    return token
-  })
-  return { text: preview || '等待输入命令', runtimeOnly }
-})
-function insertCommandReference(reference: string): void {
-  if (!selectedNode.value || !reference) return
-  const textarea = commandEditor.value
-  const command = configString('command')
-  const start = textarea?.selectionStart ?? command.length
-  const end = textarea?.selectionEnd ?? start
-  const token = `\${${reference}}`
-  selectedNode.value.config.command = `${command.slice(0, start)}${token}${command.slice(end)}`
-  showCommandReferenceMenu.value = false
-  void nextTick(() => {
-    const nextTextarea = commandEditor.value
-    if (!nextTextarea) return
-    const cursor = start + token.length
-    nextTextarea.focus()
-    nextTextarea.setSelectionRange(cursor, cursor)
-  })
 }
 const loopItemsSourceFields = computed(() => resultSources.value.find((source) => source.id === loopItemsSourceId.value)?.fields || [])
 
@@ -1015,7 +892,7 @@ const previewParallelGroups = computed(() => {
 const highRiskActions = new Set(['device.reboot', 'file.upload', 'file.download', 'script.run'])
 function nodeHasHighRiskAction(node: NodeItem): boolean {
   if (highRiskActions.has(node.action_id)) return true
-  return ['loop.for_each', 'loop.until'].includes(node.action_id) && highRiskActions.has(String(node.config.action_id || ''))
+  return ['loop.for_each', 'device.for_each', 'loop.until'].includes(node.action_id) && highRiskActions.has(String(node.config.action_id || ''))
 }
 const previewHasRisk = computed(() => {
   const nodes = selected.value?.nodes || []
@@ -1092,6 +969,18 @@ const {
   applyAutoLayout,
   handleNodePositionChange
 } = workflowEditor
+
+function previewCatalogAction(actionId: string): void {
+  selectedCatalogAction.value = actions.find((action) => action.id === actionId) || null
+  if (!selectedCatalogAction.value) return
+  if (flowTestOpen.value) closeFlowTestPanel()
+  rightRailMode.value = 'step'
+}
+
+function addCanvasNode(actionId: string, position: { x: number; y: number }): void {
+  selectedCatalogAction.value = null
+  addNode(actionId, position)
+}
 const incomingEdgeByTarget = computed(() => {
   const map = new Map<string, WorkflowEdge>()
   for (const edge of selected.value?.edges || []) {
@@ -1180,6 +1069,7 @@ function selectWorkflow(item: WorkflowItem, force = false): void {
   flowTestError.value = ''
   savedWorkflowSnapshot.value = workflowSnapshot(item)
   selectedNode.value = null
+  selectedCatalogAction.value = null
   rightRailMode.value = 'workflow'
   initializeWorkflowInputValues(item)
   issues.value = []
@@ -1192,8 +1082,9 @@ function selectWorkflow(item: WorkflowItem, force = false): void {
 }
 
 async function removePublishedVersion(version: PublishedVersionItem): Promise<void> {
-  if (!selected.value || version.referenced) return
-  if (!window.confirm(`确定删除 ${selected.value.name} 的 v${version.version} 吗？此操作不可撤销。`)) return
+  if (!selected.value) return
+  const referenceNotice = version.referenced ? '该版本已被任务引用，删除不会影响已创建的任务。' : ''
+  if (!window.confirm(`确定删除 ${selected.value.name} 的 v${version.version} 吗？${referenceNotice}此操作不可撤销。`)) return
   try {
     await desktopApi.deleteWorkflowVersion(selected.value.id, version.version)
     await refreshPublishedVersions(selected.value.id)
@@ -1397,6 +1288,7 @@ function focusIssue(issue: Issue): void {
     return
   }
   if (!node) return
+  selectedCatalogAction.value = null
   selectedNode.value = node
   rightRailMode.value = 'step'
   void nextTick(() => {
@@ -1581,7 +1473,10 @@ function showWorkflowSettings(): void {
 
 function showStepSettings(nodeId = ''): void {
   const node = selected.value?.nodes?.find((item) => item.id === nodeId)
-  if (node) selectedNode.value = node
+  if (node) {
+    selectedCatalogAction.value = null
+    selectedNode.value = node
+  }
   if (selectedNode.value) rightRailMode.value = 'step'
 }
 
@@ -1721,6 +1616,7 @@ const requiredConfigByAction: Record<string, string[]> = {
   'file.upload': ['source'],
   'file.download': ['source', 'destination'],
   'loop.for_each': ['items', 'action_id'],
+  'device.for_each': ['devices', 'action_id'],
   'loop.until': ['action_id', 'condition'],
   'workflow.call': ['workflow_id', 'version'],
   'terminal.wait': ['pattern'],
@@ -1758,7 +1654,10 @@ async function exportWorkflow(format: 'yaml' | 'json'): Promise<void> {
   try {
     const result = await desktopApi.exportWorkflowDefinition(selected.value.id, format)
     await window.desktopApi.saveWorkflowFile({ suggestedName: result.filename, content: result.content })
-  } catch (cause) { error.value = String(cause) }
+  } catch (cause) {
+    if (!actions.length) catalogError.value = '动作目录加载失败，请检查后端连接后重试。'
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  }
 }
 
 async function copyAiPrompt(): Promise<void> {
@@ -1801,102 +1700,6 @@ function nodeState(node: NodeItem): 'ready' | 'attention' {
   return 'ready'
 }
 function configString(key: string): string { return String(selectedNode.value?.config?.[key] ?? '') }
-const scriptPlaceholder = computed(() => String(selectedNode.value?.config.language || 'python') === 'python'
-  ? '例如：\nimport json\nprint(json.dumps({"status": "ok"}))'
-  : '输入要执行的脚本内容')
-const selectedNodeScript = computed(() => {
-  const scriptId = String(selectedNode.value?.config.script_id || '')
-  return scripts.value.find((item) => item.id === scriptId) || null
-})
-function scriptNodeInputObject(): Record<string, unknown> {
-  const raw = selectedNode.value?.config.input_json
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ...(raw as Record<string, unknown>) }
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...(parsed as Record<string, unknown>) }
-    } catch {
-      // Keep the invalid JSON visible in the advanced editor for correction.
-    }
-  }
-  return {}
-}
-function scriptNodeInputText(parameter: WorkflowScriptInput): string {
-  const value = scriptNodeInputObject()[parameter.name]
-  if (value === undefined || value === null) return ''
-  return typeof value === 'string' ? value : JSON.stringify(value)
-}
-function scriptNodeInputReference(parameterName: string): string {
-  const value = scriptNodeInputObject()[parameterName]
-  if (typeof value !== 'string') return ''
-  return value.match(/^\$\{([^}]+)\}$/)?.[1] || ''
-}
-function updateScriptNodeInputReference(parameterName: string, reference: string): void {
-  updateScriptNodeInput(parameterName, reference ? `\${${reference}}` : undefined)
-}
-function hasEmbeddedScriptReference(value: unknown): boolean {
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    return trimmed.includes('${') && !/^\$\{[^}]+\}$/.test(trimmed)
-  }
-  if (Array.isArray(value)) return value.some((item) => hasEmbeddedScriptReference(item))
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((item) => hasEmbeddedScriptReference(item))
-  return false
-}
-function updateScriptNodeInput(name: string, value: unknown): void {
-  if (!selectedNode.value) return
-  if (hasEmbeddedScriptReference(value)) {
-    runMessage.value = '脚本输入中的变量引用必须单独作为完整值，不能嵌在其他文字中。'
-    return
-  }
-  const inputs = scriptNodeInputObject()
-  if (value === '' || value === undefined) delete inputs[name]
-  else inputs[name] = value
-  selectedNode.value.config.input_json = JSON.stringify(inputs, null, 2)
-}
-function updateScriptNodeInputField(parameter: WorkflowScriptInput, event: Event): void {
-  const raw = eventValue(event)
-  if (parameter.type === 'number' && raw.trim() && !raw.trim().startsWith('${')) {
-    const parsed = Number(raw)
-    updateScriptNodeInput(parameter.name, Number.isFinite(parsed) ? parsed : raw)
-    return
-  }
-  updateScriptNodeInput(parameter.name, raw)
-}
-function updateScriptNodeInputBoolean(parameter: WorkflowScriptInput, event: Event): void {
-  updateScriptNodeInput(parameter.name, eventChecked(event))
-}
-function updateScriptNodeInputJson(parameter: WorkflowScriptInput, event: Event): void {
-  const raw = eventValue(event)
-  if (!raw.trim()) {
-    updateScriptNodeInput(parameter.name, undefined)
-    return
-  }
-  try {
-    updateScriptNodeInput(parameter.name, JSON.parse(raw))
-  } catch {
-    runMessage.value = `参数“${parameter.name}”必须是有效 JSON`
-  }
-}
-function updateScriptNodeInputJsonEditor(event: Event): void {
-  if (!selectedNode.value) return
-  const raw = eventValue(event)
-  if (!raw.trim()) {
-    selectedNode.value.config.input_json = '{}'
-    return
-  }
-  try {
-    const parsed = JSON.parse(raw)
-    if (hasEmbeddedScriptReference(parsed)) {
-      runMessage.value = '脚本输入中的变量引用必须单独作为完整值，不能嵌在其他文字中。'
-      return
-    }
-    selectedNode.value.config.input_json = raw
-  } catch {
-    // Keep invalid JSON visible so the user can correct it before publishing.
-    selectedNode.value.config.input_json = raw
-  }
-}
 function updateConfigString(key: string, event: Event): void { if (selectedNode.value) selectedNode.value.config[key] = (event.target as HTMLInputElement | HTMLTextAreaElement).value }
 function updateConfigJson(key: string, event: Event): void {
   if (!selectedNode.value) return
@@ -1952,6 +1755,7 @@ async function deleteCustomAction(action: ActionItem): Promise<void> {
   if (!customId) return
   try {
     await desktopApi.deleteWorkflowCustomAction(customId)
+    if (selectedCatalogAction.value?.id === action.id) selectedCatalogAction.value = null
     await loadCustomActions()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -1966,13 +1770,20 @@ async function loadCustomActions(): Promise<void> {
   for (const raw of result.actions) {
     const item = raw as { id?: string; name?: string; description?: string; action_id?: string; config?: Record<string, unknown>; output_schema?: unknown }
     if (!item.id || !item.action_id || !item.config) continue
+    const action = actions.find((candidate) => candidate.id === item.action_id)
+    const outputSchema = item.output_schema && typeof item.output_schema === 'object' && !Array.isArray(item.output_schema)
+      ? item.output_schema as Record<string, unknown>
+      : action?.outputSchema || {}
     actions.push({
       id: `custom:${item.id}`,
       label: item.name || '自定义 Action',
       hint: item.description || '可复用动作',
       tone: 'teal',
-      category: actionCategory(item.action_id),
-      outputFields: outputFieldsFromSchema(item.output_schema).length ? outputFieldsFromSchema(item.output_schema) : defaultOutputFields(item.action_id),
+      category: action?.category || 'device',
+      inputSchema: action?.inputSchema || {},
+      outputSchema,
+      risk: action?.risk || 'low',
+      outputFields: outputFieldsFromSchema(outputSchema),
       preset: { actionId: item.action_id, config: item.config, customActionId: item.id },
     })
   }
@@ -2001,27 +1812,7 @@ onMounted(async () => {
     ])
     await Promise.all([loadWorkflowTemplates(), loadWorkflowScripts()])
     publishedWorkflows.value = published.workflows as PublishedVersionItem[]
-    for (const raw of catalog.actions) {
-      const item = raw as { id?: string; name?: string; category?: string; output_schema?: unknown }
-      if (!item.id) continue
-      const fields = outputFieldsFromSchema(item.output_schema)
-      const existing = actions.find((action) => action.id === item.id)
-      if (existing) {
-        existing.label = item.name || existing.label
-        existing.category = actionCategory(item.id, item.category)
-        existing.outputFields = fields.length ? fields : existing.outputFields
-      }
-      else {
-        actions.push({
-          id: item.id,
-          label: item.name || item.id,
-          hint: '工作流动作',
-          tone: 'blue',
-          category: actionCategory(item.id, item.category),
-          outputFields: fields.length ? fields : defaultOutputFields(item.id)
-        })
-      }
-    }
+    actions.splice(0, actions.length, ...actionItemsFromCatalog(catalog.actions))
     actionsRevision.value += 1
     await loadCustomActions()
   } catch (cause) { error.value = String(cause) }
@@ -2075,7 +1866,7 @@ watch(
   <section class="workflow-library" aria-label="Workflow Library">
     <header class="workflow-library-header">
       <div class="workflow-brand"><span class="workflow-brand-mark"><Workflow :size="17" /></span><div><strong>Workflow Studio</strong><small>低代码自动化工作台</small></div></div>
-      <div class="workflow-library-header-actions"><span v-if="hasUnsavedChanges || hasUnsavedScriptChanges" class="workflow-dirty-state">未保存修改</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" @click="requestClose"><X :size="16" /></button></div>
+      <div class="workflow-library-header-actions"><span v-if="hasUnsavedChanges || hasUnsavedScriptChanges" class="workflow-dirty-state">未保存修改</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" class="workflow-run-header-button" :disabled="!selected || !publishedVersions.length" title="添加当前 Workflow 到快捷发送" @click="selected && emit('add-quick-workflow', { workflowId: selected.id, name: selected.name })"><Plus :size="14" />添加快捷</button><button type="button" title="关闭" @click="requestClose"><X :size="16" /></button></div>
     </header>
     <div class="workflow-library-toolbar">
       <div class="toolbar-group toolbar-group-primary">
@@ -2094,24 +1885,29 @@ watch(
       </div>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <div class="toolbar-group toolbar-group-secondary">
-        <button type="button" @click="importWorkflow" :disabled="importing"><Braces :size="14" />导入</button>
-        <button type="button" :disabled="!selected" @click="duplicateWorkflow"><Copy :size="14" />复制</button>
-        <button type="button" :disabled="!selected" @click="saveCurrentAsTemplate"><Save :size="14" />保存为模板</button>
         <button type="button" class="icon-toolbar-button" :disabled="!workflowHistory.canUndo.value" @click="performUndo" title="撤销 (Ctrl+Z)" aria-label="撤销"><Undo :size="14" /></button>
         <button type="button" class="icon-toolbar-button" :disabled="!workflowHistory.canRedo.value" @click="performRedo" title="重做 (Ctrl+Shift+Z)" aria-label="重做"><Redo :size="14" /></button>
         <button type="button" :disabled="!selected || !selected.nodes || selected.nodes.length === 0" @click="applyAutoLayout" title="自动布局"><GitBranch :size="14" />自动布局</button>
-      </div>
-      <div class="toolbar-group toolbar-group-export">
-        <button type="button" class="icon-toolbar-button" :disabled="!selected" @click="exportWorkflow('yaml')" title="导出 YAML" aria-label="导出 YAML"><Download :size="14" /></button>
-        <button type="button" class="icon-toolbar-button" :disabled="!selected" @click="exportWorkflow('json')" title="导出 JSON" aria-label="导出 JSON"><Braces :size="14" /></button>
-        <button type="button" class="icon-toolbar-button" :disabled="!selected" @click="copyAiPrompt" title="复制 AI 提示词" aria-label="复制 AI 提示词"><Copy :size="14" /></button>
+        <details ref="workflowMoreMenuRef" class="workflow-more-menu" @click="closeWorkflowMoreMenu">
+          <summary><MoreHorizontal :size="14" />更多操作</summary>
+          <div class="workflow-more-popover">
+            <span class="workflow-more-heading">流程</span>
+            <button type="button" :disabled="importing" @click="importWorkflow"><Braces :size="14" />{{ importing ? '导入中…' : '导入流程' }}</button>
+            <button type="button" :disabled="!selected" @click="duplicateWorkflow"><Copy :size="14" />复制流程</button>
+            <button type="button" :disabled="!selected" @click="saveCurrentAsTemplate"><Save :size="14" />保存为模板</button>
+            <span class="workflow-more-heading">导出与分享</span>
+            <button type="button" :disabled="!selected" @click="exportWorkflow('yaml')"><Download :size="14" />导出 YAML</button>
+            <button type="button" :disabled="!selected" @click="exportWorkflow('json')"><Braces :size="14" />导出 JSON</button>
+            <button type="button" :disabled="!selected" @click="copyAiPrompt"><Copy :size="14" />复制 AI 提示词</button>
+          </div>
+        </details>
       </div>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <div class="toolbar-group toolbar-group-commit">
         <button type="button" :disabled="!canSave" @click="save"><Save :size="14" />{{ saving ? '保存中…' : '保存草稿' }}</button>
         <button type="button" :disabled="!selected" @click="validate"><CheckCircle2 :size="14" />检查流程</button>
       </div>
-      <label class="workflow-run-target"><span>执行目标</span><select v-model="selectedDeviceIds" multiple aria-label="测试运行目标设备"><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">{{ deviceLabel(device) }}</option></select></label>
+      <div class="workflow-run-target"><WorkflowTargetPicker v-model="selectedDeviceIds" :devices="workflowTargetOptions" /></div>
       <div class="toolbar-group toolbar-group-actions">
         <button class="flow-test-action" type="button" :disabled="!canStartFlowTest" @click="testFlowInEditor"><Play :size="14" />{{ flowTestRunning ? '测试运行中…' : '测试运行' }}</button>
         <button class="run-action" type="button" :disabled="!canStartRun" @click="requestRunPreview"><Play :size="14" />{{ running ? '启动中…' : '执行预览' }}</button>
@@ -2164,8 +1960,15 @@ watch(
         />
       </aside>
       <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step' }" :style="{ '--workflow-catalog-width': `${workflowCatalogWidth}px`, '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
-        <aside class="workflow-right-rail">
-        <WorkflowFlowTestPanel
+        <WorkflowInspectorShell
+          :mode="rightRailMode"
+          :flow-test-open="flowTestOpen"
+          :has-selected-node="Boolean(selectedNode || selectedCatalogAction)"
+          :previewing-action="Boolean(selectedCatalogAction)"
+          @update:mode="rightRailMode = $event"
+        >
+          <template #flow-test>
+<WorkflowFlowTestPanel
           v-if="flowTestOpen"
           :selected="selected"
           :status="flowTestStatus"
@@ -2183,96 +1986,127 @@ watch(
           :on-toggle-step="toggleFlowTestStep"
           :on-retry="testFlowInEditor"
           :on-resume="resumeFlowTestMonitoring"
+          :output-definitions="selected.outputs || []"
+          :output-values="{ ...(flowTestTask?.checkpoint?.outputs || {}), ...(flowTestTask?.result?.outputs || {}) }"
         />
-        <template v-if="!flowTestOpen">
-        <nav class="workflow-right-rail-switcher" aria-label="配置视图">
-          <button type="button" :class="{ active: rightRailMode === 'workflow' }" @click="showWorkflowSettings"><Workflow :size="13" />流程设置</button>
-          <button type="button" :disabled="!selectedNode" :class="{ active: rightRailMode === 'step' }" @click="showStepSettings()"><Braces :size="13" />步骤配置</button>
-        </nav>
-        <template v-if="rightRailMode === 'workflow'">
-        <section class="workflow-metadata-editor" aria-label="流程基本信息">
-          <div class="workflow-contract-heading"><span class="workflow-section-kicker">当前流程</span><strong>{{ selected.name || '未命名流程' }}</strong><span class="workflow-contract-status" :class="{ dirty: hasUnsavedChanges }">{{ hasUnsavedChanges ? '草稿有修改' : '已保存' }}</span></div>
-          <label>流程名称<input v-model="selected.name" maxlength="120" placeholder="请输入流程名称" /></label>
-          <label>流程说明<input v-model="selected.description" maxlength="500" placeholder="说明这个流程的用途（可选）" /></label>
-          <small v-if="!selected.name.trim()">流程名称不能为空</small>
-        </section>
-        <section class="workflow-input-editor workflow-input-compact" :class="{ expanded: workflowInputsExpanded }" aria-label="流程输入定义">
-          <div class="panel-heading"><button type="button" class="workflow-section-toggle" :aria-expanded="workflowInputsExpanded" @click="workflowInputsExpanded = !workflowInputsExpanded"><strong>流程输入</strong><small>{{ selected.inputs?.length || 0 }} 个参数</small><span>{{ workflowInputsExpanded ? '收起' : '展开' }}</span></button><button type="button" class="icon-toolbar-button" title="添加流程输入" aria-label="添加流程输入" @click="addWorkflowInput(); workflowInputsExpanded = true"><Plus :size="14" /></button></div>
-          <div v-if="workflowInputsExpanded && selected.inputs?.length" class="workflow-input-definitions">
-            <div v-for="(input, index) in selected.inputs" :key="`${index}-${input.name}`" class="workflow-input-definition">
-              <label>名称<input :value="input.name" placeholder="例如：package_path" @input="updateWorkflowInputDefinition(index, 'name', ($event.target as HTMLInputElement).value)" /></label>
-              <label>类型<select :value="input.type || 'string'" @change="updateWorkflowInputDefinition(index, 'type', ($event.target as HTMLSelectElement).value)"><option value="string">文本</option><option value="file">本地文件</option><option value="number">数字</option><option value="integer">整数</option><option value="boolean">布尔值</option><option value="array">数组</option><option value="object">对象</option></select></label>
-              <label class="workflow-input-required"><input type="checkbox" :checked="input.required === true" @change="updateWorkflowInputDefinition(index, 'required', ($event.target as HTMLInputElement).checked)" />必填</label>
-              <label>默认值<input :value="input.default == null ? '' : String(input.default)" placeholder="可选" @input="updateWorkflowInputDefinition(index, 'default', ($event.target as HTMLInputElement).value)" /></label>
-              <label class="workflow-input-description">说明<input :value="input.description || ''" placeholder="给执行者的提示" @input="updateWorkflowInputDefinition(index, 'description', ($event.target as HTMLInputElement).value)" /></label>
-              <button type="button" class="icon-toolbar-button workflow-input-delete" title="删除流程输入" aria-label="删除流程输入" @click="removeWorkflowInput(index)"><Trash2 :size="14" /></button>
-            </div>
-          </div>
-          <p v-else-if="workflowInputsExpanded" class="field-hint">尚未定义输入。点击右上角加号后，执行时会出现运行参数。</p>
-        </section>
-        <section class="workflow-input-editor workflow-output-editor workflow-input-compact" :class="{ expanded: workflowOutputsExpanded }" aria-label="流程输出定义">
-          <div class="panel-heading"><button type="button" class="workflow-section-toggle" :aria-expanded="workflowOutputsExpanded" @click="workflowOutputsExpanded = !workflowOutputsExpanded"><strong>流程输出</strong><small>{{ selected.outputs?.length || 0 }} 个结果</small><span>{{ workflowOutputsExpanded ? '收起' : '展开' }}</span></button><button type="button" class="icon-toolbar-button" title="添加流程输出" aria-label="添加流程输出" @click="addWorkflowOutput(); workflowOutputsExpanded = true"><Plus :size="14" /></button></div>
-          <div v-if="workflowOutputsExpanded && selected.outputs?.length" class="workflow-input-definitions">
-            <div v-for="(output, index) in selected.outputs" :key="`${index}-${output.name}`" class="workflow-input-definition workflow-output-definition">
-              <label>名称<input :value="output.name" placeholder="例如：software_version" @input="updateWorkflowOutput(index, 'name', ($event.target as HTMLInputElement).value)" /></label>
-              <label>类型<select :value="output.type || 'any'" @change="updateWorkflowOutput(index, 'type', ($event.target as HTMLSelectElement).value)"><option value="any">任意</option><option value="string">文本</option><option value="number">数字</option><option value="integer">整数</option><option value="boolean">布尔值</option><option value="array">数组</option><option value="object">对象</option></select></label>
-              <label class="workflow-output-value">值或引用<input :value="String(output.value ?? '')" placeholder="例如：${probe.software_version}" @input="updateWorkflowOutput(index, 'value', ($event.target as HTMLInputElement).value)" /></label>
-              <label class="workflow-input-description">说明<input :value="output.description || ''" placeholder="供调用者理解此输出" @input="updateWorkflowOutput(index, 'description', ($event.target as HTMLInputElement).value)" /></label>
-              <button type="button" class="icon-toolbar-button workflow-input-delete" title="删除流程输出" aria-label="删除流程输出" @click="removeWorkflowOutput(index)"><Trash2 :size="14" /></button>
-            </div>
-          </div>
-          <p v-else-if="workflowOutputsExpanded" class="field-hint">尚未定义输出。发布后作为子流程使用时，显式输出会出现在调用节点上。</p>
-        </section>
-        <section v-if="selected.inputs?.length" class="workflow-runtime-inputs workflow-input-compact" :class="{ expanded: workflowRuntimeInputsExpanded }" aria-label="运行参数">
-          <div class="panel-heading"><button type="button" class="workflow-section-toggle" :aria-expanded="workflowRuntimeInputsExpanded" @click="workflowRuntimeInputsExpanded = !workflowRuntimeInputsExpanded"><strong>运行参数</strong><small>{{ selected.inputs.length }} 个参数</small><span>{{ workflowRuntimeInputsExpanded ? '收起' : '展开' }}</span></button></div>
-          <div v-if="workflowRuntimeInputsExpanded" class="workflow-input-values">
-            <label
-              v-for="input in selected.inputs"
-              :key="input.name"
-              :class="{ 'workflow-input-invalid': workflowInputHasIssue(input.name) }"
-            >
-              <span class="workflow-input-label">{{ input.name }}<b v-if="input.required"> · 必填</b></span>
-              <small v-if="input.description" class="field-hint">{{ input.description }}</small>
-              <textarea
-                v-if="input.type === 'object' || input.type === 'array'"
-                :data-workflow-input-name="input.name"
-                :value="workflowInputDisplay(input)"
-                rows="2"
-                :placeholder="input.type === 'array' ? '例如：[a, b]' : '例如：{key: value}'"
-                @input="updateWorkflowInput(input.name, $event)"
-              />
-              <div v-else class="workflow-runtime-input-row">
-                <input
-                  :data-workflow-input-name="input.name"
-                  :type="input.type === 'boolean' ? 'checkbox' : input.type === 'number' || input.type === 'integer' ? 'number' : 'text'"
-                  :step="input.type === 'integer' ? '1' : 'any'"
-                  :checked="input.type === 'boolean' ? workflowInputValues[input.name] === true : undefined"
-                  :value="input.type === 'boolean' ? undefined : workflowInputDisplay(input)"
-                  :placeholder="isWorkflowFileInput(input) ? '选择本机文件，或填写路径' : input.default === undefined || input.default === null ? `请输入${input.name}` : ''"
-                  @input="updateWorkflowInput(input.name, $event)"
-                  @change="updateWorkflowInput(input.name, $event)"
-                />
-                <button v-if="isWorkflowFileInput(input)" type="button" class="workflow-file-button" @click="chooseWorkflowRuntimeFile(input)"><FileUp :size="14" />选择文件</button>
-              </div>
-              <small v-if="isWorkflowFileInput(input)" class="field-hint workflow-shared-root-hint">
-                这是本机源文件输入；执行上传时会自动暂存到共享目录，用户无需关心暂存目录，不要把设备目标路径填在这里。
-                <button v-if="!workspace.transferSettings?.root" type="button" class="text-button" @click="workspace.transferPanelOpen = true">打开设置</button>
-              </small>
-            </label>
-          </div>
-        </section>
-        </template>
-        </template>
-        </aside>
+          </template>
+          <template #workflow-settings>
+            <WorkflowSettingsPanel
+              :workflow="selected"
+              :has-unsaved-changes="hasUnsavedChanges"
+              :input-values="workflowInputValues"
+              :inputs-expanded="workflowInputsExpanded"
+              :outputs-expanded="workflowOutputsExpanded"
+              :runtime-inputs-expanded="workflowRuntimeInputsExpanded"
+              :transfer-root="workspace.transferSettings?.root || ''"
+              :workflow-input-has-issue="workflowInputHasIssue"
+              :workflow-input-display="workflowInputDisplay"
+              :is-workflow-file-input="isWorkflowFileInput"
+              :update-workflow-input-definition="(index, key, value) => updateWorkflowInputDefinition(index, key as keyof WorkflowInput, value)"
+              :normalize-workflow-input-json="normalizeWorkflowInputJson"
+              :remove-workflow-input="removeWorkflowInput"
+              :add-workflow-input="addWorkflowInput"
+              :update-workflow-output="(index, key, value) => updateWorkflowOutput(index, key as keyof WorkflowOutput, value)"
+              :remove-workflow-output="removeWorkflowOutput"
+              :add-workflow-output="addWorkflowOutput"
+              :update-workflow-input="updateWorkflowInput"
+              :choose-workflow-runtime-file="chooseWorkflowRuntimeFile"
+              :on-open-transfer-settings="() => { workspace.transferPanelOpen = true }"
+              @update:inputs-expanded="workflowInputsExpanded = $event"
+              @update:outputs-expanded="workflowOutputsExpanded = $event"
+              @update:runtime-inputs-expanded="workflowRuntimeInputsExpanded = $event"
+            />
+          </template>
+          <template #step-settings>
+<WorkflowActionPreview
+          v-if="selectedCatalogAction && !flowTestOpen && rightRailMode === 'step'"
+          :action="selectedCatalogAction"
+        />
+<WorkflowNodeProperties
+          v-else-if="selectedNode && !flowTestOpen && rightRailMode === 'step'"
+          :node="selectedNode"
+          :available-devices="availableDevices"
+          :workflow-inputs="selected.inputs || []"
+          :command-references="commandReferences"
+          :result-sources="resultSources"
+          :scripts="scripts"
+          :actions="actions"
+          :node-options="nodeOptions(selectedNode.id).map((node) => ({ id: node.id, label: nodeLabel(node) }))"
+          :predecessor-id="nodePredecessorId"
+          :successor-id="nodeSuccessorId"
+          :script-saving="scriptSaving"
+          @update="selectedNode = $event"
+          @update:predecessor-id="setNodePredecessor"
+          @update:successor-id="setNodeSuccessor"
+          @rename="renameNode"
+          @remove="removeNode"
+          @test="testSelectedStep"
+          @save-as-action="openCustomActionDialog"
+          @open-script-studio="openScriptStudio"
+          @save-script="saveNodeScriptResource"
+          @choose-upload-source="chooseUploadSource"
+        >
+          <AdvancedNodeConfig
+            v-if="selectedNode && ['variable.set', 'expression.evaluate', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(selectedNode.action_id)"
+            :node="selectedNode"
+            :available-devices="availableDevices"
+            :workflow-inputs="selected.inputs || []"
+            :workflow="selected"
+            :published-workflows="publishedWorkflows"
+            :subworkflow-versions="subworkflowVersions"
+            :selected-subworkflow="selectedSubworkflow"
+            :result-sources="resultSources"
+            :actions="actions"
+            :loop-child-actions="loopChildActions"
+            :loop-items-mode="loopItemsMode"
+            :loop-items-source-id="loopItemsSourceId"
+            :loop-items-field="loopItemsField"
+            :loop-until-stop-mode="loopUntilStopMode"
+            :loop-until-pattern="loopUntilPattern"
+            :condition-rules="conditionRules"
+            :condition-logical-operator="conditionLogicalOperator"
+            :condition-targets="conditionTargets"
+            :variable-value-source-id="variableValueSourceId"
+            :variable-value-field="variableValueField"
+            :variable-extract-enabled="variableExtractEnabled"
+            :config-string="configString"
+            :variable-extract-string="variableExtractString"
+            :variable-extract-config="variableExtractConfig"
+            :on-select-subworkflow="selectSubworkflow"
+            :on-select-subworkflow-version="selectSubworkflowVersion"
+            :on-update-subworkflow-input="updateSubworkflowInput"
+            :on-update-config-string="updateConfigString"
+            :on-update-config-json="updateConfigJson"
+            :on-set-loop-items-source="setLoopItemsSource"
+            :on-set-loop-items-field="setLoopItemsField"
+            :on-set-variable-value-reference="setVariableValueReference"
+            :on-toggle-variable-extract="toggleVariableExtract"
+            :on-update-variable-extract-string="updateVariableExtractString"
+            :on-update-variable-extract-mode="updateVariableExtractMode"
+            :on-update-variable-extract-number="updateVariableExtractNumber"
+            :on-update-variable-extract-boolean="updateVariableExtractBoolean"
+            :on-set-condition-target="setConditionTarget"
+            :on-add-condition="() => conditionRules.push({ field: 'status', operator: '等于', value: '' })"
+            :on-result-field-change="onResultFieldChange"
+            @update="selectedNode = $event"
+            @loop-items-mode="loopItemsMode = $event as 'manual' | 'reference'"
+            @loop-until-stop-mode="loopUntilStopMode = $event as typeof loopUntilStopMode"
+            @update:loop-until-pattern="loopUntilPattern = $event"
+            @update-condition-operator="conditionLogicalOperator = $event as 'AND' | 'OR'"
+          />
+        </WorkflowNodeProperties>
+          </template>
+        </WorkflowInspectorShell>
         <section class="workflow-action-catalog">
-          <div class="panel-heading"><div><strong>节点库</strong><small>拖入画布或点击添加</small></div><span class="catalog-count">{{ filteredActions.length }}</span></div>
+           <div class="panel-heading"><div><strong>节点库</strong><small>点击查看配置，拖入画布添加</small></div><span class="catalog-count">{{ filteredActions.length }}</span></div>
+           <p v-if="catalogError" class="catalog-error" role="alert">{{ catalogError }}</p>
           <label class="workflow-search"><Search :size="13" /><input v-model="searchQuery" placeholder="搜索动作" aria-label="搜索动作" /></label>
           <div v-for="group in groupedActions" :key="group.category" class="action-category-group">
             <div class="action-category-heading"><span>{{ group.label }}</span><small>{{ group.actions.length }}</small></div>
-            <button v-for="action in group.actions" :key="action.id" type="button" draggable="true" :class="`action-tile tone-${action.tone}`" @dragstart="startActionDrag($event, action.id)" @click="addNode(action.id)"><span class="action-icon"><Plus :size="12" /></span><span><b>{{ action.label }}</b><small>{{ action.hint }}</small></span><Trash2 v-if="action.preset" :size="12" class="custom-action-delete" title="删除自定义 Action" @click.stop="deleteCustomAction(action)" /></button>
+            <button v-for="action in group.actions" :key="action.id" type="button" draggable="true" :class="`action-tile tone-${action.tone}`" :aria-pressed="selectedCatalogAction?.id === action.id" title="点击查看配置，拖入画布添加" @dragstart="startActionDrag($event, action.id)" @click="previewCatalogAction(action.id)"><span class="action-icon"><Eye :size="12" /></span><span><b>{{ action.label }}</b><small>{{ action.hint }}</small></span><Trash2 v-if="action.preset" :size="12" class="custom-action-delete" title="删除自定义 Action" @click.stop="deleteCustomAction(action)" /></button>
           </div>
           <p v-if="!filteredActions.length" class="catalog-empty">没有匹配的动作</p>
-          <p class="node-library-hint">拖动节点到画布创建步骤；点击节点端口可以重新组织流程。</p>
+          <p class="node-library-hint">点击查看节点配置；拖入画布创建步骤。</p>
         </section>
         <div
           class="workflow-catalog-resizer"
@@ -2310,7 +2144,7 @@ watch(
               :interactive="canvasInteractive"
               @node-select="showStepSettings"
               @connect="({ source, target, sourceHandle }) => addEdge(source, target, sourceHandle)"
-              @node-add="addNode"
+              @node-add="addCanvasNode"
               @disconnect="(edgeId) => { const edge = (selected?.edges || []).find((item) => `${item.source}-${item.source_handle || 'default'}-${item.target}` === edgeId); if (edge && selected) selected.edges = (selected.edges || []).filter((item) => item !== edge) }"
               @node-position-change="handleNodePositionChange"
             />
@@ -2325,186 +2159,7 @@ watch(
           title="拖动调整配置栏宽度"
           @pointerdown="startWorkflowPropertiesResize"
         ><GripVertical :size="14" /></div>
-        <section v-if="selectedNode && !flowTestOpen && rightRailMode === 'step'" class="workflow-properties" aria-label="步骤设置">
-          <div class="panel-heading"><div><strong>{{ selectedNode.action_id === 'variable.set' ? '设置变量' : '步骤设置' }}</strong><small v-if="selectedNode.action_id !== 'variable.set'">{{ selectedAction?.label }}</small></div><span class="properties-node-index">{{ selectedNode.id }}</span></div>
-          <template v-if="selectedNode.action_id !== 'variable.set'">
-            <label>步骤名称<input :value="selectedNode.id" @change="renameNode" /></label>
-            <label>上游步骤<select :value="nodePredecessorId" @change="setNodePredecessor"><option value="">无（流程起点）</option><option v-for="node in nodeOptions(selectedNode.id)" :key="node.id" :value="node.id">{{ nodeLabel(node) }}</option></select></label>
-            <label>下游步骤<select :value="nodeSuccessorId" @change="setNodeSuccessor"><option value="">无（流程终点）</option><option v-for="node in nodeOptions(selectedNode.id)" :key="`${node.id}-successor`" :value="node.id">{{ nodeLabel(node) }}</option></select></label>
-          </template>
-          <label v-if="selectedNode.action_id === 'device.select'">目标设备<select v-model="selectedNode.config.device_id"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">{{ deviceLabel(device) }}</option></select></label>
-          <template v-else-if="selectedNode.action_id === 'device.connect'">
-            <label>目标设备<select v-model="selectedNode.config.device_id"><option value="">选择设备</option><option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">{{ deviceLabel(device) }}</option></select></label>
-            <label>超时时间<input v-model.number="selectedNode.config.timeout_seconds" type="number" min="1" max="300" /> 秒</label>
-          </template>
-          <label v-else-if="selectedNode.action_id === 'device.info'">采集字段<select v-model="selectedNode.config.fields" multiple size="4"><option value="name">名称</option><option value="address">地址</option><option value="model">型号</option><option value="software_version">软件版本</option><option value="status">状态</option><option value="output">原始输出</option></select><small class="field-hint">可多选，后续条件和保存结果可使用这些字段。</small></label>
-          <div v-if="selectedNode.action_id === 'device.command'" class="workflow-command-field">
-            <label>运行位置<select v-model="selectedNode.config.execution_mode"><option value="device">设备终端 / SSH</option><option value="shell">本机 Shell</option><option value="bash">Bash</option></select></label>
-            <div class="workflow-command-label-row"><span>要执行的命令</span><button class="workflow-command-insert" type="button" :aria-expanded="showCommandReferenceMenu" title="在光标位置插入变量" @mousedown.prevent @click="showCommandReferenceMenu = !showCommandReferenceMenu"><Braces :size="13" />插入变量</button></div>
-            <textarea ref="commandEditor" :value="configString('command')" rows="3" placeholder="例如：display version" @input="updateConfigString('command', $event)" />
-            <div v-if="showCommandReferenceMenu" class="workflow-command-reference-menu" role="menu" aria-label="选择要插入的变量">
-              <small class="workflow-command-reference-title">选择引用，插入到当前光标位置</small>
-              <button v-for="item in commandReferences" :key="item.reference" type="button" role="menuitem" @mousedown.prevent @click="insertCommandReference(item.reference)"><span><strong>{{ item.label }}</strong><small>{{ item.hint }}</small></span><code>${{ '{' }}{{ item.reference }}{{ '}' }}</code></button>
-              <small v-if="!commandReferences.length" class="workflow-command-reference-empty">暂无可用变量；请先连接上游步骤或定义流程输入。</small>
-            </div>
-            <div class="workflow-command-preview" :class="{ 'is-runtime': commandPreview.runtimeOnly }"><span>实际命令预览</span><code>{{ commandPreview.text }}</code><small>{{ commandPreview.runtimeOnly ? '运行时解析' : '当前值已解析' }}</small></div>
-            <label>超时时间（秒）<input v-model.number="selectedNode.config.timeout_seconds" type="number" min="1" max="86400" /></label>
-            <div class="workflow-command-grid" v-if="selectedNode.config.execution_mode !== 'device'"><label>工作目录<input :value="configString('cwd')" placeholder="可选，例如 D:/scripts" @input="updateConfigString('cwd', $event)" /></label><label>环境变量 JSON<textarea :value="JSON.stringify(selectedNode.config.env || {})" rows="2" placeholder="可选，例如 {&quot;MODE&quot;:&quot;prod&quot;}" @change="updateConfigJson('env', $event)" /></label></div>
-            <div class="workflow-command-result-contract"><span>输出</span><code>stdout</code><code>stderr</code><code>exitCode</code><code>status</code><code>duration</code></div>
-            <button type="button" class="connect-button" @click="openCustomActionDialog"><Save :size="13" />保存为自定义 Action</button>
-            <small class="field-hint">可直接输入文本，也可用“插入变量”生成 `${变量名}`。</small>
-          </div>
-          <div v-if="selectedNode.action_id === 'script.run'" class="workflow-script-field">
-            <div class="workflow-script-heading">
-              <div><strong>本机脚本</strong><small>在后端主机执行，不会在设备终端运行</small></div>
-              <span class="workflow-risk-chip"><AlertTriangle :size="12" />高风险</span>
-            </div>
-            <label>脚本资源<select :value="String(selectedNode.config.script_id || '')" @change="selectScriptForNode(($event.target as HTMLSelectElement).value)"><option value="">兼容模式：使用节点内联脚本</option><option v-for="script in scripts" :key="script.id" :value="script.id">{{ script.name }} · {{ script.language }}</option></select></label>
-            <label v-if="!selectedNode.config.script_id">脚本语言<select v-model="selectedNode.config.language"><option value="python">Python</option><option value="powershell">PowerShell</option><option value="bash">Bash</option></select></label>
-            <div v-if="selectedNode.config.script_id" class="workflow-script-reference-notice">
-              <span><Code2 :size="14" />引用脚本资源</span>
-              <strong>{{ selectedNodeScript?.name || selectedNode.config.script_id }}</strong>
-              <small>参数名和类型由脚本函数签名决定；修改脚本代码后需单独保存脚本资源。</small>
-              <div class="workflow-script-resource-actions-inline">
-                <button type="button" class="secondary-button" @click="openScriptStudio(String(selectedNode.config.script_id))"><Code2 :size="13" />打开脚本工作区</button>
-                <button v-if="selectedNodeScript && scriptSnapshot(selectedNodeScript) !== savedScriptSnapshots[selectedNodeScript.id]" type="button" class="primary-action" :disabled="scriptSaving" @click="saveNodeScriptResource"><Save :size="13" />{{ scriptSaving ? '保存中…' : '保存脚本' }}</button>
-              </div>
-            </div>
-            <WorkflowScriptEditor
-              :model-value="selectedNodeScript?.script || configString('script')"
-              :language="String(selectedNode.config.language || selectedNodeScript?.language || 'python')"
-              :placeholder="scriptPlaceholder"
-              aria-label="步骤脚本编辑器"
-              @update:model-value="(value) => { if (selectedNode) { selectedNode.config.script = value; if (selectedNode.config.script_id) { const script = scripts.find((item) => item.id === selectedNode?.config.script_id); if (script) script.script = value } } }"
-            />
-            <small class="field-hint">脚本在后端主机执行；引用资源时，编辑内容会同步到对应脚本资源。</small>
-            <div v-if="selectedNodeScript?.input_schema?.length" class="workflow-script-node-inputs">
-              <div class="workflow-script-node-input-heading">
-                <div><strong>脚本输入</strong><small>按脚本定义配置参数</small></div>
-                <div class="workflow-script-test-mode" role="tablist" aria-label="脚本输入模式">
-                  <button type="button" :class="{ active: scriptNodeInputMode === 'form' }" @click="scriptNodeInputMode = 'form'">参数表单</button>
-                  <button type="button" :class="{ active: scriptNodeInputMode === 'json' }" @click="scriptNodeInputMode = 'json'"><Braces :size="13" />JSON</button>
-                </div>
-              </div>
-              <div v-if="scriptNodeInputMode === 'form'" class="workflow-script-node-input-form">
-                <div v-for="parameter in selectedNodeScript.input_schema" :key="`node-input-${parameter.name}`" class="workflow-script-node-input-field">
-                  <label :for="`node-input-${parameter.name}`"><span>{{ parameter.name }}</span><em v-if="parameter.required">必填</em></label>
-                  <template v-if="parameter.type === 'string' || parameter.type === 'number'">
-                  <input
-                    :id="`node-input-${parameter.name}`"
-                    type="text"
-                    :inputmode="parameter.type === 'number' ? 'decimal' : 'text'"
-                    :value="scriptNodeInputText(parameter)"
-                    :placeholder="parameter.required ? '必填值或 ${inputs.name}' : '可选值或 ${inputs.name}'"
-                    @input="updateScriptNodeInputField(parameter, $event)"
-                  />
-                  </template>
-                  <label v-else-if="parameter.type === 'boolean'" class="workflow-inline-toggle" :for="`node-input-${parameter.name}`">
-                    <input :id="`node-input-${parameter.name}`" type="checkbox" :checked="scriptNodeInputObject()[parameter.name] === true" @change="updateScriptNodeInputBoolean(parameter, $event)" />
-                    启用
-                  </label>
-                  <textarea
-                    v-else
-                    :id="`node-input-${parameter.name}`"
-                    :value="scriptNodeInputText(parameter)"
-                    rows="3"
-                    :placeholder="parameter.type === 'array' ? 'JSON 数组或 ${inputs.name}' : 'JSON 对象或 ${inputs.name}'"
-                    @change="updateScriptNodeInputJson(parameter, $event)"
-                  />
-                  <select
-                    class="workflow-script-node-input-reference"
-                    :value="scriptNodeInputReference(parameter.name)"
-                    :aria-label="`选择 ${parameter.name} 的引用来源`"
-                    @change="updateScriptNodeInputReference(parameter.name, eventValue($event))"
-                  >
-                    <option value="">固定值 / 手动填写</option>
-                    <option v-for="item in commandReferences" :key="`script-ref-${parameter.name}-${item.reference}`" :value="item.reference">{{ item.label }} · {{ item.reference }}</option>
-                  </select>
-                  <small v-if="parameter.description" class="field-hint">{{ parameter.description }}</small>
-                </div>
-              </div>
-              <label v-else>输入 JSON<textarea :value="typeof selectedNode.config.input_json === 'string' ? String(selectedNode.config.input_json) : JSON.stringify(selectedNode.config.input_json || {}, null, 2)" rows="6" placeholder='例如：{"mode":"check"}' @change="updateScriptNodeInputJsonEditor($event)" /></label>
-              <small class="field-hint">参数会以 JSON 写入 <code>DEVICE_TUI_INPUT_JSON</code>；支持使用 <code>${inputs.xxx}</code> 引用流程输入。</small>
-            </div>
-            <label v-else>输入 JSON<textarea :value="typeof selectedNode.config.input_json === 'string' ? String(selectedNode.config.input_json) : JSON.stringify(selectedNode.config.input_json || {})" rows="3" placeholder='例如：{"device_id":"router-1"}' @change="updateScriptNodeInputJsonEditor($event)" /><small class="field-hint">脚本通过环境变量 <code>DEVICE_TUI_INPUT_JSON</code> 读取；变量引用必须单独作为完整值。</small></label>
-            <div class="workflow-command-grid">
-              <label>工作目录<input :value="configString('cwd')" placeholder="可选，例如 D:/scripts" @input="updateConfigString('cwd', $event)" /></label>
-              <label>环境变量 JSON<textarea :value="JSON.stringify(selectedNode.config.env || {})" rows="3" placeholder='例如：{"MODE":"prod"}' @change="updateConfigJson('env', $event)" /></label>
-            </div>
-            <div class="workflow-command-grid">
-              <label>超时时间（秒）<input v-model.number="selectedNode.config.timeout_seconds" type="number" min="1" max="86400" /></label>
-              <label>最大输出长度<input v-model.number="selectedNode.config.max_output_chars" type="number" min="1024" max="16777216" step="1024" /><small class="field-hint">stdout 和 stderr 分别保留，避免日志失控。</small></label>
-            </div>
-            <div class="workflow-command-result-contract"><span>输出</span><code>stdout</code><code>stderr</code><code>result</code><code>exit_code</code><code>status</code></div>
-            <small class="field-hint">脚本 stdout 最后一行若是 JSON，会解析为 <code>result</code>；退出码非 0 时步骤失败。</small>
-          </div>
-          <template v-if="selectedNode.action_id === 'workflow.call'">
-            <label>已发布流程<select :value="String(selectedNode.config.workflow_id || '')" @change="selectSubworkflow(($event.target as HTMLSelectElement).value)"><option value="">选择流程</option><option v-for="item in publishedWorkflows.filter((workflow) => workflow.id !== selected?.id)" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-            <label>固定版本<select :value="String(selectedNode.config.version || '')" @change="selectSubworkflowVersion(($event.target as HTMLSelectElement).value)"><option value="">选择版本</option><option v-for="item in subworkflowVersions" :key="`${item.id}-${item.version}`" :value="String(item.version)">v{{ item.version }} · {{ item.step_count || 0 }} 步</option></select></label>
-            <div v-if="selectedSubworkflow?.inputs?.length" class="workflow-subflow-contract"><strong>输入映射</strong><label v-for="input in selectedSubworkflow.inputs" :key="input.name">{{ input.name }}<input :value="String((selectedNode.config.inputs as Record<string, unknown> | undefined)?.[input.name] ?? '')" :placeholder="input.required ? '必填值或 ${inputs.name}' : '可选'" @input="updateSubworkflowInput(input.name, ($event.target as HTMLInputElement).value)" /></label></div>
-            <div v-if="selectedSubworkflow?.outputs?.length" class="workflow-command-result-contract"><span>输出</span><code v-for="output in selectedSubworkflow.outputs" :key="output.name">{{ output.name }}</code></div>
-            <small class="field-hint">运行时展开固定发布版本；下游可使用 <code>{{ '${' + selectedNode.id + '.输出名}' }}</code>。</small>
-          </template>
-          <template v-if="selectedNode.action_id === 'terminal.wait'"><label>匹配方式<select v-model="selectedNode.config.mode"><option value="contains">包含文本</option><option value="regex">正则表达式</option></select></label><label>等待文本<textarea :value="configString('pattern')" rows="2" placeholder="例如：Huawei、Password: 或 completed" @input="updateConfigString('pattern', $event)" /></label><label>等待超时（秒）<input v-model.number="selectedNode.config.timeout_seconds" type="number" min="1" max="86400" /></label><label class="workflow-input-required"><input v-model="selectedNode.config.send_enter" type="checkbox" />开始等待时发送回车</label><label class="workflow-input-required"><input v-model="selectedNode.config.case_sensitive" type="checkbox" />区分大小写</label><small class="field-hint">开始等待时会自动唤醒终端提示符，再监听后续输出；支持跨数据块匹配。</small></template>
-          <template v-if="selectedNode.action_id === 'variable.set'">
-            <label>变量名<input :value="configString('name')" @input="updateConfigString('name', $event)" /></label>
-            <label>变量值<input :value="configString('value')" placeholder="固定值或支持 ${node.field}" @input="updateConfigString('value', $event)" /><details class="workflow-variable-reference"><summary>插入上游引用</summary><select :value="variableValueSourceId && variableValueField ? `${variableValueSourceId}.${variableValueField}` : variableValueSourceId" aria-label="选择上游输出" @change="setVariableValueReference(($event.target as HTMLSelectElement).value)"><option value="">选择步骤或字段</option><template v-for="source in resultSources" :key="`${source.id}-fields`"><option :value="`${source.id}`">{{ source.label }} · 完整结果</option><option v-for="field in source.fields" :key="`${source.id}-${field.name}`" :value="`${source.id}.${field.name}`">{{ source.label }} · {{ fieldLabel(field.name) }}</option></template></select></details></label>
-            <label class="workflow-inline-toggle"><input :checked="variableExtractEnabled" type="checkbox" @change="toggleVariableExtract(($event.target as HTMLInputElement).checked)" /><span>提取匹配</span></label>
-            <div v-if="variableExtractEnabled" class="workflow-variable-extract">
-              <label>匹配规则<textarea :value="variableExtractString('pattern')" rows="2" placeholder="例如：flash:/\\S*cc\\S*" @input="updateVariableExtractString('pattern', $event)" /></label>
-              <label>保存方式<select :value="variableExtractString('mode') || 'match'" @change="updateVariableExtractMode"><option value="match">匹配内容</option><option value="line">匹配所在整行</option></select></label>
-              <label>捕获组<input :value="variableExtractString('group') || '0'" type="number" min="0" step="1" @input="updateVariableExtractNumber('group', $event)" /></label>
-              <label>转换为<select :value="variableExtractString('convert') || 'string'" @change="updateVariableExtractString('convert', $event)"><option value="string">文本</option><option value="integer">整数</option><option value="number">数字</option><option value="boolean">布尔值</option><option value="json">JSON</option></select></label>
-              <label class="workflow-inline-toggle"><input :checked="Boolean(variableExtractConfig().trim)" type="checkbox" @change="updateVariableExtractBoolean('trim', $event)" /><span>去除首尾空白</span></label>
-              <small class="field-hint">保存第一个匹配并按需转换；无匹配时变量为空。</small>
-            </div>
-          </template>
-          <template v-if="selectedNode.action_id === 'expression.evaluate'"><label>表达式<textarea :value="configString('expression')" rows="2" placeholder="例如：inputs.version &lt; 10" @input="updateConfigString('expression', $event)" /></label><label>表达式上下文 JSON<textarea :value="JSON.stringify(selectedNode.config.values || {})" rows="2" @change="updateConfigJson('values', $event)" /></label></template>
-          <template v-if="selectedNode.action_id === 'loop.for_each'"><label>列表来源<select v-model="loopItemsMode"><option value="manual">手动输入列表</option><option value="reference">引用前置步骤输出</option></select></label><label v-if="loopItemsMode === 'manual'">遍历列表 JSON<textarea :value="JSON.stringify(selectedNode.config.items || [])" rows="2" @change="updateConfigJson('items', $event)" /></label><template v-else><label>列表来源步骤<select :value="loopItemsSourceId" @change="setLoopItemsSource(($event.target as HTMLSelectElement).value)"><option value="">选择步骤</option><option v-for="source in resultSources" :key="source.id" :value="source.id">{{ source.label }}</option></select></label><label>输出字段<select :value="loopItemsField" @change="setLoopItemsField(($event.target as HTMLSelectElement).value)"><option value="">完整输出</option><option v-for="field in loopItemsSourceFields" :key="`loop-${loopItemsSourceId}-${field.name}`" :value="field.name">{{ fieldLabel(field.name) }}</option></select><small class="field-hint">引用会在运行时解析为列表；适合消费采集、表达式或保存结果步骤的输出。</small></label></template><label>循环动作<select v-model="selectedNode.config.action_id"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label><label>动作参数 JSON<textarea :value="JSON.stringify(selectedNode.config.action_inputs || {})" rows="2" @change="updateConfigJson('action_inputs', $event)" /></label></template>
-          <template v-if="selectedNode.action_id === 'loop.until'">
-            <label>循环执行什么？<select v-model="selectedNode.config.action_id"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
-            <div v-if="selectedNode.config.action_id === 'device.command'" class="workflow-command-field">
-              <div class="workflow-command-label-row"><span>命令内容</span></div>
-              <textarea :value="String((selectedNode.config.action_inputs as Record<string, unknown> | undefined)?.command || '')" rows="2" placeholder="例如：display version" @input="(e) => { const node = selectedNode; if (!node) return; if (!node.config.action_inputs || typeof node.config.action_inputs !== 'object') node.config.action_inputs = {}; (node.config.action_inputs as Record<string, unknown>).command = (e.target as HTMLTextAreaElement).value }" />
-            </div>
-            <label>何时停止？<select v-model="loopUntilStopMode">
-              <option value="output_contains">输出包含文本</option>
-              <option value="output_regex">输出匹配正则</option>
-              <option value="success">命令成功</option>
-              <option value="failure">命令失败</option>
-              <option value="max_iterations">达到最大次数</option>
-            </select></label>
-            <label v-if="loopUntilStopMode === 'output_contains' || loopUntilStopMode === 'output_regex'">
-              {{ loopUntilStopMode === 'output_contains' ? '目标文本' : '正则表达式' }}
-              <input v-model="loopUntilPattern" :placeholder="loopUntilStopMode === 'output_contains' ? '例如：READY' : '例如：V\\d+R\\d+'" />
-            </label>
-            <label>最多执行<input v-model.number="selectedNode.config.max_iterations" type="number" min="1" max="100" /> 次</label>
-            <label>每次间隔<input v-model.number="selectedNode.config.interval_seconds" type="number" min="0" max="86400" step="0.1" /> 秒</label>
-            <small class="field-hint">{{ loopUntilStopMode === 'max_iterations' ? '每轮执行一次动作，达到最大次数后停止。' : '每轮执行一次动作并检查停止条件，满足条件或达到最大次数时停止。' }}</small>
-          </template>
-          <template v-if="selectedNode.action_id === 'utility.confirm'"><label>确认提示<textarea :value="configString('prompt')" rows="3" placeholder="例如：请确认设备已备份配置" @input="updateConfigString('prompt', $event)" /></label><label>同意按钮文字<input :value="configString('approve_label')" @input="updateConfigString('approve_label', $event)" /></label><label>拒绝按钮文字<input :value="configString('reject_label')" @input="updateConfigString('reject_label', $event)" /></label><small class="field-hint">执行到此步骤会暂停，任务页会显示确认或取消选项。</small></template>
-          <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.wait' && selectedNode.action_id !== 'utility.confirm'">失败重试次数<input v-model.number="selectedNode.config.retry_attempts" type="number" min="1" max="5" placeholder="1" /><small class="field-hint">失败后自动重试，最多 5 次。</small></label>
-          <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.wait' && selectedNode.action_id !== 'utility.confirm'">失败重试间隔（秒）<input v-model.number="selectedNode.config.retry_backoff_seconds" type="number" min="0" max="60" step="0.1" placeholder="0" /><small class="field-hint">两次重试之间等待的时间，最多 60 秒。</small></label>
-          <label v-if="selectedNode.action_id === 'device.command'">失败后的处理<select v-model="selectedNode.config.failure_strategy"><option value="stop">停止流程</option><option value="continue">继续后续节点</option></select></label>
-          <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.confirm'">并行组（可选）<input :value="configString('parallel_group')" placeholder="例如：信息采集" @input="updateConfigString('parallel_group', $event)" /><small class="field-hint">同一组中互相独立的步骤可并行执行；留空表示按顺序执行。</small></label>
-          <label v-if="selectedNode.action_id !== 'variable.set' && selectedNode.action_id !== 'utility.condition' && selectedNode.action_id !== 'utility.confirm'">重复执行次数<input v-model.number="selectedNode.config.repeat_count" type="number" min="1" max="20" placeholder="1" /><small class="field-hint">将此步骤最多执行 20 次，适合重复探测和轮询。</small></label>
-          <template v-if="selectedNode.action_id === 'file.upload'">
-            <label>本机文件绝对路径<div class="workflow-file-input"><input :value="configString('source')" placeholder="例如：D:/packages/image.cc" @input="updateConfigString('source', $event)" /><button type="button" class="workflow-file-button workflow-upload-picker" @click="chooseUploadSource"><FileUp :size="14" />选择文件</button></div><small class="field-hint">填写或选择本机文件绝对路径；执行时会自动暂存并上传。</small></label>
-            <label>设备目标路径（可选）<input :value="configString('destination')" placeholder="留空自动使用 flash:/文件名" @input="updateConfigString('destination', $event)" /><small class="field-hint">留空时默认上传到设备 flash:/ 目录，也可手动指定完整路径。</small></label>
-            <label class="workflow-inline-toggle"><input v-model="selectedNode.config.overwrite" type="checkbox" />文件已存在时覆盖</label>
-          </template>
-          <template v-else-if="selectedNode.action_id === 'file.download'">
-            <label>设备源路径<input :value="configString('source')" placeholder="例如：flash:/image.cc" @input="updateConfigString('source', $event)" /></label>
-            <label>本地保存位置<input :value="configString('destination')" placeholder="共享目录中的相对路径" @input="updateConfigString('destination', $event)" /></label>
-          </template>
-          <label v-if="selectedNode.action_id === 'utility.wait'">等待秒数<input v-model.number="selectedNode.config.seconds" type="number" min="1" max="3600" /></label>
-          <div v-else-if="selectedNode.action_id === 'utility.condition'" class="condition-builder"><strong>如果</strong><label>多个条件<select v-model="conditionLogicalOperator"><option value="AND">全部满足（AND）</option><option value="OR">任一满足（OR）</option></select></label><div v-for="(rule, index) in conditionRules" :key="index" class="condition-row"><select v-model="rule.field"><option value="software_version">软件版本</option><option value="status">状态</option><option value="name">名称</option><option value="stdout">标准输出</option><option value="stderr">错误输出</option><option value="exitCode">退出码</option><option value="duration">执行耗时</option></select><select v-model="rule.operator"><option>等于</option><option>不等于</option><option>包含</option><option>不包含</option><option>正则匹配</option><option>大于</option><option>小于</option><option>是否为空</option></select><input v-model="rule.value" placeholder="比较值或正则表达式" /></div><button type="button" class="connect-button" @click="conditionRules.push({ field: 'status', operator: '等于', value: '' })">+ 添加条件</button><label>满足条件时<select :value="conditionTargets.trueTarget" @change="setConditionTarget('true', $event)"><option value="">选择真分支步骤</option><option v-for="node in (selected.nodes || []).filter((item) => item.id !== selectedNode?.id)" :key="node.id" :value="node.id">{{ actions.find((action) => action.id === node.action_id)?.label || node.id }}</option></select></label><label>不满足时<select :value="conditionTargets.falseTarget" @change="setConditionTarget('false', $event)"><option value="">选择假分支步骤</option><option v-for="node in (selected.nodes || []).filter((item) => item.id !== selectedNode?.id)" :key="node.id" :value="node.id">{{ actions.find((action) => action.id === node.action_id)?.label || node.id }}</option></select></label><small>运行时只会执行其中一条分支，后续步骤会沿用分支条件。</small></div>
-          <label v-else-if="selectedNode.action_id === 'result.save'">结果名称<input v-model="selectedNode.config.key" placeholder="例如：版本检查结果" /><span class="field-hint">保存哪个数据</span><select :value="String(selectedNode.config.value || '')" @change="onResultFieldChange"><option value="">上一步完整结果</option><template v-for="source in resultSources" :key="`${source.id}-result-fields`"><option :value="`${source.id}`">{{ source.label }} · 完整结果</option><option v-for="field in source.fields" :key="`${source.id}-${field.name}`" :value="`${source.id}.${field.name}`">{{ source.label }} · {{ fieldLabel(field.name) }}</option></template></select><small class="field-hint">通过选择器传递上一步数据，无需填写表达式。</small></label>
-          <button v-if="selectedNode.action_id !== 'device.command' && selectedNode.action_id !== 'utility.condition'" type="button" class="connect-button" @click="openCustomActionDialog"><Save :size="13" />保存为自定义 Action</button>
-          <button class="remove-node-button" type="button" @click="removeNode"><Trash2 :size="13" />删除步骤</button>
-          <button v-if="selectedNode.action_id !== 'variable.set'" class="connect-button" type="button" @click="testSelectedStep">测试此步骤</button>
-        </section>
-        <section v-else-if="!flowTestOpen && rightRailMode === 'step'" class="workflow-properties workflow-empty">选择一个步骤编辑参数</section>
+
       </main>
       <main v-else class="workflow-empty">选择一个 Workflow 开始编辑</main>
     </div>
@@ -2545,7 +2200,6 @@ watch(
   color: var(--workflow-muted);
   font-size: 11px;
 }
-.workflow-run-target select,
 .workflow-properties select {
   min-width: 150px;
   max-width: 220px;
@@ -2558,22 +2212,9 @@ watch(
 .flow-test-action { display: inline-flex; align-items: center; gap: 6px; color: #dbeafe; border-color: rgba(96, 165, 250, .48); background: rgba(37, 99, 235, .2); }
 .flow-test-action:hover:not(:disabled) { border-color: #60a5fa; background: rgba(37, 99, 235, .34); }
 @keyframes workflow-test-pulse { 50% { opacity: .45; transform: scale(.75); } }
-.workflow-right-rail-switcher { display: flex; align-items: center; gap: 4px; grid-column: 3; grid-row: 1; min-width: 0; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface); }
-.workflow-right-rail-switcher button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; flex: 1; min-height: 30px; padding: 0 8px; color: var(--workflow-muted); border: 1px solid transparent; border-radius: 5px; background: transparent; cursor: pointer; font-size: 11px; }
-.workflow-right-rail-switcher button:hover:not(:disabled) { color: var(--workflow-text); background: color-mix(in srgb, var(--workflow-focus) 8%, transparent); }
-.workflow-right-rail-switcher button.active { color: var(--workflow-focus); border-color: color-mix(in srgb, var(--workflow-focus) 34%, var(--workflow-border)); background: color-mix(in srgb, var(--workflow-focus) 12%, transparent); font-weight: 650; }
-.workflow-right-rail-switcher button:disabled { opacity: .4; cursor: default; }
-.workflow-studio-grid.step-settings-mode > .workflow-properties { grid-row: 2 / -1; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-metadata-editor { grid-row: 2; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-input-editor:not(.workflow-output-editor) { grid-row: 3; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-output-editor { grid-row: 4; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-runtime-inputs { grid-row: 5; }
 @media (max-width: 980px) {
-  .workflow-right-rail-switcher { grid-column: 1 / -1; grid-row: 1; }
-  .workflow-studio-grid.step-settings-mode > .workflow-properties { grid-column: 1 / -1; grid-row: 6; }
 }
 @media (max-width: 720px) {
-  .workflow-studio-grid.step-settings-mode > .workflow-properties { grid-row: 7; }
 }
 .workflow-flow-raw-result, .workflow-flow-raw-json { min-width: 0; }
 .workflow-flow-raw-result summary, .workflow-flow-raw-json summary { color: var(--workflow-focus); cursor: pointer; font-size: 10px; }
@@ -2593,13 +2234,12 @@ watch(
 .workflow-properties > .workflow-script-field { flex: 0 0 auto; min-height: 0; overflow: visible; }
 .workflow-properties .workflow-script-editor { flex: 0 0 auto; min-height: 280px; height: 320px; }
 :global(:root[data-theme="light"]) .workflow-flow-result-item { background: #ffffff; }
-.workflow-studio-grid.flow-test-mode > .workflow-right-rail { display: block; grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; border-left: 1px solid var(--workflow-border); background: var(--workflow-surface-muted); }
 :global(:root[data-theme="light"]) .flow-test-action { color: #1d4ed8; background: #eff6ff; border-color: #93c5fd; }
-.workflow-input-editor { grid-column: 1 / -1; display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface-muted); }
-.workflow-metadata-editor { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.4fr); gap: 8px 14px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface); }
+.workflow-input-editor { display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface-muted); }
+.workflow-metadata-editor { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.4fr); gap: 8px 14px; padding: 12px 16px; border-bottom: 1px solid var(--workflow-border); background: var(--workflow-surface); }
 .workflow-metadata-editor label { min-width: 0; margin: 0; color: var(--workflow-muted); font-size: 10px; }
 .workflow-metadata-editor input { margin-top: 4px; }
-.workflow-metadata-editor small { grid-column: 1 / -1; color: #fca5a5; font-size: 10px; }
+.workflow-metadata-editor small { color: #fca5a5; font-size: 10px; }
 .workflow-input-editor .panel-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 0; }
 .workflow-input-editor .panel-heading small { flex: 1; }
 .workflow-input-definitions { display: grid; gap: 8px; }
@@ -2620,7 +2260,6 @@ watch(
 .workflow-shared-root-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
 .text-button { padding: 0; border: 0; background: none; color: #93c5fd; cursor: pointer; }
 @media (max-width: 900px) { .workflow-input-definition { grid-template-columns: repeat(2, minmax(0, 1fr)); } .workflow-input-definition .workflow-input-description { grid-column: 1 / -1; } }
-.workflow-run-target select[multiple] { min-height: 68px; }
 .workflow-command-field { position: relative; margin-bottom: 13px; }
 .workflow-script-field { display: grid; gap: 10px; margin-bottom: 13px; padding: 10px; border: 1px solid rgba(20, 184, 166, .3); border-radius: 7px; background: rgba(13, 148, 136, .08); }
 .workflow-script-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -2673,6 +2312,7 @@ watch(
 .workflow-search { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; padding: 5px 7px; border: 1px solid var(--workflow-border); border-radius: 5px; color: rgba(226, 232, 240, .55); }
 .workflow-search input { min-width: 0; margin: 0; padding: 2px; border: 0; background: transparent; color: inherit; outline: 0; }
 .catalog-empty { margin: 8px; color: rgba(226, 232, 240, .5); font-size: 11px; }
+.catalog-error { margin: 8px 0; padding: 8px; border: 1px solid rgba(248, 113, 113, .35); border-radius: 5px; color: #fca5a5; background: rgba(127, 29, 29, .16); font-size: 10px; line-height: 1.4; }
 .action-category-group { display: grid; gap: 5px; }
 .action-category-heading { display: flex; align-items: center; justify-content: space-between; margin: 10px 2px 1px; padding-bottom: 4px; border-bottom: 1px solid rgba(100,116,139,.18); color: var(--workflow-muted, rgba(226,232,240,.72)); font-size: 10px; font-weight: 700; letter-spacing: .02em; }
 .action-category-heading small { color: var(--workflow-subtle, rgba(226,232,240,.48)); font-size: 9px; font-weight: 600; }
@@ -2692,11 +2332,6 @@ watch(
   overflow: hidden;
 }
 
-.workflow-studio-grid {
-  height: 100%;
-  min-height: 0;
-  grid-template-columns: 220px minmax(0, 1fr) 300px;
-}
 .workflow-studio-grid > .workflow-canvas {
   display: flex;
   flex-direction: column;
@@ -2728,7 +2363,6 @@ watch(
 @media (max-width: 900px) { .workflow-search { grid-column: 1 / -1; } }
 @media (max-width: 900px) {
   .workflow-run-target { order: 10; width: 100%; margin-left: 0; }
-  .workflow-run-target select { flex: 1; max-width: none; }
 }
 @media (max-width: 980px) {
   .workflow-studio-grid { height: auto; }
@@ -2798,13 +2432,20 @@ watch(
 .toolbar-group-secondary { padding-left: 2px; }
 .toolbar-group-secondary > button:not(.icon-toolbar-button), .toolbar-group-commit > button:not(.primary-action) { color: var(--workflow-muted); background: transparent; border-color: transparent; }
 .toolbar-group-secondary > button:hover, .toolbar-group-commit > button:hover:not(:disabled) { color: var(--workflow-text); background: var(--workflow-surface-muted); border-color: var(--workflow-border); }
-.toolbar-group-export { margin-left: auto; padding: 0 2px; }
-.toolbar-group-export .icon-toolbar-button { color: var(--workflow-muted); background: transparent; border-color: transparent; }
-.toolbar-group-export .icon-toolbar-button:hover:not(:disabled) { color: var(--workflow-focus); background: rgba(79,156,249,.1); border-color: rgba(79,156,249,.3); }
+.workflow-more-menu { position: relative; }
+.workflow-more-menu > summary { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 6px 9px; border: 1px solid transparent; border-radius: 6px; color: var(--workflow-muted); cursor: pointer; list-style: none; user-select: none; }
+.workflow-more-menu > summary::-webkit-details-marker { display: none; }
+.workflow-more-menu > summary:hover,
+.workflow-more-menu[open] > summary { border-color: var(--workflow-border); color: var(--workflow-text); background: var(--workflow-surface-muted); }
+.workflow-more-menu > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.workflow-more-popover { position: absolute; z-index: 85; top: calc(100% + 6px); left: 0; display: grid; gap: 3px; min-width: 220px; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 8px; background: var(--workflow-surface); box-shadow: 0 14px 32px rgba(0, 0, 0, .3); }
+.workflow-more-popover .workflow-more-heading { padding: 6px 8px 2px; color: var(--workflow-muted); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.workflow-more-popover button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 6px 8px; border: 0; border-radius: 5px; color: var(--workflow-text); text-align: left; background: transparent; cursor: pointer; font-size: 11px; }
+.workflow-more-popover button:hover:not(:disabled) { background: var(--workflow-surface-muted); }
+.workflow-more-popover button:disabled { color: var(--workflow-muted); opacity: .48; cursor: default; }
 .secondary-run-button { color: #99f6e4 !important; background: rgba(13,148,136,.12) !important; border-color: rgba(45,212,191,.28) !important; }
 .secondary-run-button:hover:not(:disabled) { background: rgba(13,148,136,.22) !important; }
-.workflow-run-target { padding-left: 8px; }
-.workflow-run-target select { max-width: 190px; min-height: 30px; }
+.workflow-run-target { padding-left: 4px; }
 .workflow-library-body { grid-template-columns: 232px minmax(0, 1fr); }
 .workflow-library-body > aside { padding: 14px 10px; background: color-mix(in srgb, var(--workflow-surface-muted) 86%, var(--workflow-bg)); }
 .workflow-list-title { padding: 0 8px 10px; }
@@ -2814,9 +2455,7 @@ watch(
 .workflow-library-body aside button.active { border-color: rgba(79,156,249,.34); background: rgba(37,99,235,.14); box-shadow: inset 3px 0 0 var(--workflow-focus); }
 .workflow-library-body aside button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-library-body aside button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-studio-grid { grid-template-columns: var(--workflow-catalog-width, 224px) minmax(0, 1fr) 312px; grid-template-rows: auto auto auto auto minmax(0, 1fr); gap: 0; min-width: 0; min-height: 0; height: 100%; overflow: hidden; background: var(--workflow-bg); }
-.workflow-metadata-editor, .workflow-input-editor, .workflow-runtime-inputs { min-width: 0; background: var(--workflow-surface); border-bottom: 1px solid var(--workflow-border); }
-.workflow-metadata-editor { grid-column: 1 / -1; grid-row: 1; grid-template-columns: minmax(220px,.75fr) minmax(280px,1.25fr); gap: 8px 16px; padding: 10px 18px; }
+.workflow-metadata-editor { grid-template-columns: minmax(220px,.75fr) minmax(280px,1.25fr); gap: 8px 16px; padding: 10px 18px; }
 .workflow-contract-heading { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; min-width: 0; }
 .workflow-section-kicker { color: var(--workflow-focus); font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .workflow-contract-heading strong { overflow: hidden; min-width: 0; color: var(--workflow-text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
@@ -2824,19 +2463,20 @@ watch(
 .workflow-contract-status.dirty { border-color: rgba(240,180,77,.34); color: #fcd34d; background: rgba(180,83,9,.12); }
 .workflow-metadata-editor label { font-size: 10px; }
 .workflow-metadata-editor input { min-height: 30px; }
-.workflow-input-editor { grid-column: 1 / -1; padding: 9px 16px; overflow: auto; }
+.workflow-input-editor { padding: 9px 16px; overflow: visible; }
 .workflow-input-editor .panel-heading { min-height: 26px; }
 .workflow-input-definitions { gap: 6px; }
 .workflow-input-definition { gap: 6px; padding: 6px; border-radius: 6px; }
 .workflow-input-definition input:not([type='checkbox']), .workflow-input-definition select { min-height: 28px; padding: 5px 6px; }
-.workflow-runtime-inputs { grid-column: 1 / -1; padding: 9px 16px; overflow: auto; }
+.workflow-runtime-inputs { padding: 9px 16px; overflow: visible; }
 .workflow-runtime-inputs .workflow-input-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 12px; }
 .workflow-runtime-inputs .workflow-input-values > label { min-width: 0; margin: 0; }
-.workflow-action-catalog, .workflow-properties { min-height: 0; overflow: auto; border: 0; border-radius: 0; background: var(--workflow-surface-muted); }
-.workflow-action-catalog { position: relative; grid-column: 1; grid-row: 5; padding: 14px 12px; border-right: 1px solid var(--workflow-border); }
-.workflow-properties { grid-column: 3; grid-row: 5; padding: 14px 16px 22px; border-left: 1px solid var(--workflow-border); }
+.workflow-action-catalog { min-height: 0; overflow: auto; border: 0; border-radius: 0; background: var(--workflow-surface-muted); }
+.workflow-properties { min-height: 0; overflow: visible; border: 0; border-radius: 0; background: transparent; }
+.workflow-action-catalog { position: relative; padding: 14px 12px; border-right: 1px solid var(--workflow-border); }
+.workflow-properties { padding: 14px 16px 22px; }
 .workflow-properties.workflow-empty { display: grid; place-items: center; color: var(--workflow-muted); text-align: center; }
-.workflow-canvas { grid-column: 2; grid-row: 5; min-width: 0; min-height: 0; padding: 12px 14px 14px; background: var(--workflow-bg); }
+.workflow-canvas { min-width: 0; min-height: 0; padding: 12px 14px 14px; background: var(--workflow-bg); }
 .workflow-canvas-container { min-height: 0; height: 100%; border: 1px solid rgba(100,116,139,.45); border-radius: 10px; background: #0a1220; overflow: hidden; }
 .workflow-canvas-container .workflow-canvas { padding: 0; }
 .catalog-count { display: inline-grid; min-width: 22px; height: 20px; padding: 0 5px; place-items: center; border: 1px solid rgba(79,156,249,.24); border-radius: 999px; color: #bfdbfe; background: rgba(37,99,235,.12); font-size: 10px; }
@@ -2855,17 +2495,10 @@ watch(
 .canvas-toolbar-hint { display: none; }
 
 @media (max-width: 1180px) {
-  .workflow-studio-grid { grid-template-columns: var(--workflow-catalog-width, 200px) minmax(300px, 1fr) var(--workflow-properties-width, 312px); }
   .workflow-library-toolbar { padding-left: 14px; padding-right: 14px; }
-  .workflow-library-toolbar .toolbar-group-secondary > button:not(.icon-toolbar-button) { font-size: 0; gap: 0; }
-  .workflow-library-toolbar .toolbar-group-secondary > button:not(.icon-toolbar-button) svg { width: 15px; height: 15px; }
 }
 @media (max-width: 980px) {
   .workflow-library-body { grid-template-columns: 190px minmax(0, 1fr); }
-  .workflow-studio-grid { grid-template-columns: minmax(170px, var(--workflow-catalog-width, 220px)) minmax(0, 1fr); grid-template-rows: auto auto auto auto minmax(420px, 1fr) auto; overflow: auto; }
-  .workflow-action-catalog { grid-column: 1; grid-row: 5; }
-  .workflow-canvas { grid-column: 2; grid-row: 5; min-height: 420px; }
-  .workflow-properties { grid-column: 1 / -1; grid-row: 6; min-height: 240px; max-height: none; border-top: 1px solid var(--workflow-border); border-left: 0; }
   .workflow-properties-resizer { display: none; }
   .workflow-library-toolbar { align-items: center; }
   .workflow-run-target { order: 9; }
@@ -2875,19 +2508,13 @@ watch(
   .workflow-library { min-width: 0; }
   .workflow-library-header { padding: 10px 14px; }
   .workflow-library-toolbar { gap: 5px; padding: 8px 12px; }
-  .workflow-library-toolbar .toolbar-divider, .toolbar-group-secondary, .toolbar-group-export { display: none; }
+  .workflow-library-toolbar .toolbar-divider { display: none; }
+  .toolbar-group-secondary > button[title="自动布局"] { display: none; }
   .workflow-library-body { grid-template-columns: 1fr; }
   .workflow-library-body > aside { max-height: 150px; border-right: 0; border-bottom: 1px solid var(--workflow-border); }
-  .workflow-studio-grid { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto 420px auto; }
-  .workflow-action-catalog, .workflow-canvas, .workflow-properties { grid-column: 1; }
-  .workflow-action-catalog { grid-row: 5; }
-  .workflow-canvas { grid-row: 6; min-height: 420px; }
-  .workflow-properties { grid-row: 7; }
-  .workflow-metadata-editor { grid-template-columns: 1fr; }
-  .workflow-input-definition, .workflow-output-definition { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workflow-input-definition .workflow-input-description, .workflow-output-definition .workflow-input-description { grid-column: 1 / -1; }
   .workflow-run-target { width: 100%; margin-left: 0; }
-  .workflow-run-target select { flex: 1; max-width: none; }
+  .workflow-run-target :deep(.workflow-target-picker) { width: min(100%, 320px); }
+  .workflow-run-target :deep(.workflow-target-trigger) { width: 100%; min-width: 0; }
 }
 :global(:root[data-theme="light"]) .workflow-action-catalog,
 :global(:root[data-theme="light"]) .workflow-properties { background: #f1f5f9; }
@@ -2902,400 +2529,26 @@ watch(
 
 
 
-/* Restore intentional scroll regions after the compact studio layout. */
-.workflow-library-body,
-.workflow-studio-grid { min-height: 0; }
-.workflow-studio-grid {
-  height: 100%;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: #475569 rgba(15, 23, 42, .35);
-}
-.workflow-action-catalog,
-.workflow-properties { scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: #475569 rgba(15, 23, 42, .28); }
-.workflow-input-editor,
-.workflow-runtime-inputs { scrollbar-gutter: stable; scrollbar-width: thin; }
-:global(:root[data-theme="light"]) .workflow-studio-grid { scrollbar-color: #94a3b8 #e2e8f0; }
-:global(:root[data-theme="light"]) .workflow-studio-grid::-webkit-scrollbar-track,
-:global(:root[data-theme="light"]) .workflow-action-catalog::-webkit-scrollbar-track,
-:global(:root[data-theme="light"]) .workflow-properties::-webkit-scrollbar-track,
-:global(:root[data-theme="light"]) .workflow-input-editor::-webkit-scrollbar-track,
-:global(:root[data-theme="light"]) .workflow-runtime-inputs::-webkit-scrollbar-track { background: #e2e8f0; }
-:global(:root[data-theme="light"]) .workflow-studio-grid::-webkit-scrollbar-thumb,
-:global(:root[data-theme="light"]) .workflow-action-catalog::-webkit-scrollbar-thumb,
-:global(:root[data-theme="light"]) .workflow-properties::-webkit-scrollbar-thumb,
-:global(:root[data-theme="light"]) .workflow-input-editor::-webkit-scrollbar-thumb,
-:global(:root[data-theme="light"]) .workflow-runtime-inputs::-webkit-scrollbar-thumb { background: #94a3b8; background-clip: padding-box; }
-
+/* Canonical studio layout. The inspector shell owns its internal layout and scroll. */
 .workflow-library-body > main.workflow-studio-grid {
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.workflow-action-catalog,
-.workflow-properties {
-  min-width: 0;
-  min-height: 0;
-  height: auto;
-  max-height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-/* Keep the canvas full height; workflow contract editors live in the scrollable right rail. */
-.workflow-studio-grid {
-  grid-template-columns: var(--workflow-catalog-width, 224px) minmax(0, 1fr) var(--workflow-properties-width, 312px);
-  grid-template-rows: minmax(0, 1fr);
-}
-.workflow-right-rail {
-  grid-column: 3;
-  grid-row: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  border-left: 1px solid var(--workflow-border);
-  background: var(--workflow-surface-muted);
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-}
-.workflow-right-rail > .workflow-metadata-editor,
-.workflow-right-rail > .workflow-input-editor,
-.workflow-right-rail > .workflow-runtime-inputs,
-.workflow-right-rail > .workflow-properties {
-  position: static;
-  width: auto;
-  max-height: none;
-  box-sizing: border-box;
-}
-.workflow-metadata-editor,
-.workflow-input-editor,
-.workflow-runtime-inputs {
   display: grid;
-  grid-column: auto;
-  grid-row: auto;
-  overflow: visible;
-  border-left: 0;
-}
-.workflow-metadata-editor {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-  padding: 14px 16px 10px;
-}
-.workflow-input-editor,
-.workflow-runtime-inputs {
-  padding: 9px 16px;
-}
-.workflow-action-catalog,
-.workflow-canvas,
-.workflow-properties {
-  grid-row: 1;
-}
-.workflow-canvas {
-  grid-column: 2;
-}
-.workflow-properties {
-  display: grid;
-  grid-column: auto;
-  grid-row: auto;
-  max-height: none;
-  overflow: visible;
-  border-left: 0;
-}
-.workflow-properties-resizer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 8;
-  display: grid;
-  width: 12px;
-  place-items: center;
-  color: rgba(148, 163, 184, .42);
-  background: transparent;
-  cursor: col-resize;
-  touch-action: none;
-}
-.workflow-properties-resizer:hover,
-.workflow-properties-resizer.active { color: #60a5fa; }
-.workflow-properties-resizer::before { content: ''; position: absolute; inset: 0 5px; border-left: 1px solid transparent; }
-.workflow-properties-resizer:hover::before,
-.workflow-properties-resizer.active::before { border-color: rgba(96, 165, 250, .7); }
-
-/* Final studio layout: three columns, one scrollable inspector rail. */
-.workflow-library-body > main.workflow-studio-grid {
   position: relative;
-  display: grid;
+  grid-template-areas: 'catalog canvas inspector';
   grid-template-columns: var(--workflow-catalog-width, 224px) minmax(0, 1fr) var(--workflow-properties-width, 312px);
   grid-template-rows: minmax(0, 1fr);
+  width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
-}
-.workflow-studio-grid {
-  grid-template-columns: var(--workflow-catalog-width, 224px) minmax(320px, 1fr) var(--workflow-properties-width, 312px);
-  grid-template-areas: 'catalog canvas inspector';
 }
 .workflow-studio-grid > .workflow-action-catalog {
   grid-area: catalog;
-  grid-column: 1;
-  grid-row: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-.workflow-studio-grid > .workflow-canvas {
-  grid-area: canvas;
-  grid-column: 2;
-  grid-row: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-.workflow-studio-grid > .workflow-right-rail {
-  grid-area: inspector;
-  grid-column: 3;
-  grid-row: 1;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  position: relative;
-  border-left: 1px solid var(--workflow-border);
-  background: var(--workflow-surface-muted);
-}
-.workflow-studio-grid > .workflow-properties,
-.workflow-studio-grid > .workflow-properties.workflow-empty {
-  position: static;
-  grid-column: 3;
-  grid-row: 1;
-  width: auto;
-  max-width: none;
-  z-index: auto;
-  overflow: visible;
-  pointer-events: auto;
-  opacity: 1;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  border-left: 1px solid var(--workflow-border);
-  background: var(--workflow-surface-muted);
-}
-.workflow-right-rail > .workflow-metadata-editor,
-.workflow-right-rail > .workflow-input-editor,
-.workflow-right-rail > .workflow-runtime-inputs,
-.workflow-right-rail > .workflow-properties,
-.workflow-right-rail > .workflow-properties.workflow-empty {
-  position: static;
-  display: grid;
-  flex: 0 0 auto;
-  width: auto;
-  max-height: none;
-  min-height: auto;
-  overflow: visible;
-  border-left: 0;
-  border-right: 0;
-}
-.workflow-right-rail > .workflow-metadata-editor { grid-template-columns: 1fr; }
-.workflow-right-rail > .workflow-properties { order: 10; }
-.workflow-right-rail > .workflow-properties-resizer {
-  position: absolute;
-  top: 0;
-  left: -7px;
-  bottom: 0;
-  z-index: 20;
-}
-.workflow-right-rail > .workflow-metadata-editor,
-.workflow-right-rail > .workflow-input-editor,
-.workflow-right-rail > .workflow-runtime-inputs,
-.workflow-right-rail > .workflow-properties {
-  margin: 0;
-  padding: 16px;
-  border-bottom: 1px solid color-mix(in srgb, var(--workflow-border) 78%, transparent);
-  background: transparent;
-}
-.workflow-right-rail > .workflow-metadata-editor { padding-top: 18px; }
-.workflow-right-rail > .workflow-properties { padding-bottom: 24px; }
-.workflow-right-rail .panel-heading {
-  position: static;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  margin: 0 0 12px;
-  padding: 0;
-  background: transparent;
-}
-.workflow-right-rail .panel-heading > div { min-width: 0; }
-.workflow-input-compact { min-height: 48px; }
-.workflow-input-compact.expanded { min-height: 0; }
-.workflow-section-toggle { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
-.workflow-section-toggle strong { color: var(--workflow-text); font-size: 12px; }
-.workflow-section-toggle small { color: var(--workflow-muted); font-size: 10px; }
-.workflow-section-toggle span { color: var(--workflow-focus); font-size: 10px; }
-.workflow-right-rail .panel-heading strong { color: var(--workflow-text); font-size: 12px; }
-.workflow-right-rail .panel-heading small { color: var(--workflow-muted); font-size: 10px; }
-.workflow-right-rail label { min-width: 0; }
-.workflow-right-rail input:not([type='checkbox']),
-.workflow-right-rail select,
-.workflow-right-rail textarea { box-sizing: border-box; width: 100%; max-width: none; }
-.workflow-right-rail .workflow-input-definition {
-  grid-template-columns: minmax(0, 1fr) minmax(90px, .7fr) auto;
-  gap: 8px;
-}
-.workflow-right-rail .workflow-input-definition .workflow-input-description,
-.workflow-right-rail .workflow-output-definition .workflow-input-description,
-.workflow-right-rail .workflow-output-value { grid-column: 1 / -1; }
-.workflow-right-rail .workflow-output-definition { grid-template-columns: minmax(0, 1fr) minmax(90px, .7fr) auto; }
-.workflow-right-rail .workflow-runtime-inputs .workflow-input-values { grid-template-columns: 1fr; gap: 10px; }
-.workflow-right-rail .workflow-script-field { margin: 0; }
-.workflow-right-rail .remove-node-button,
-.workflow-right-rail .connect-button { min-height: 34px; }
-.workflow-studio-grid > .workflow-catalog-resizer {
-  position: absolute;
-  left: var(--workflow-catalog-width, 224px);
-  right: auto;
-}
-.workflow-studio-grid > .workflow-properties-resizer {
-  position: absolute;
-  left: calc(100% - var(--workflow-properties-width, 312px));
-  right: auto;
-}
-
-/* Resolve the inspector as a real third grid column; never paint it over the canvas. */
-.workflow-library-body > main.workflow-studio-grid {
-  grid-template-columns: var(--workflow-catalog-width, 224px) minmax(320px, 1fr) var(--workflow-properties-width, 312px);
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
-  grid-template-areas: none;
-  overflow: hidden;
-}
-.workflow-studio-grid > .workflow-right-rail {
-  display: contents;
-}
-.workflow-studio-grid > .workflow-right-rail > .workflow-metadata-editor,
-.workflow-studio-grid > .workflow-right-rail > .workflow-input-editor,
-.workflow-studio-grid > .workflow-right-rail > .workflow-runtime-inputs {
-  grid-column: 3;
-  min-width: 0;
-  max-height: none;
-  overflow: visible;
-}
-.workflow-studio-grid > .workflow-right-rail > .workflow-metadata-editor { grid-row: 1; }
-.workflow-studio-grid > .workflow-right-rail > .workflow-input-editor:not(.workflow-output-editor) { grid-row: 2; }
-.workflow-studio-grid > .workflow-right-rail > .workflow-output-editor { grid-row: 3; }
-.workflow-studio-grid > .workflow-right-rail > .workflow-runtime-inputs { grid-row: 4; }
-.workflow-studio-grid > .workflow-action-catalog {
-  grid-column: 1;
-  grid-row: 1 / -1;
-  min-height: 0;
-  overflow-y: auto;
-}
-.workflow-studio-grid > .workflow-canvas {
-  grid-column: 2;
-  grid-row: 1 / -1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-.workflow-studio-grid > .workflow-properties,
-.workflow-studio-grid > .workflow-properties.workflow-empty {
-  position: static;
-  grid-column: 3;
-  grid-row: 5;
-  width: auto;
-  max-width: none;
-  min-width: 0;
-  min-height: 0;
-  max-height: none;
-  overflow-x: hidden;
-  overflow-y: auto;
-  pointer-events: auto;
-  opacity: 1;
-  border-left: 0;
-  background: var(--workflow-surface-muted);
-}
-.workflow-studio-grid > .workflow-properties-resizer {
-  position: absolute;
-  left: calc(100% - var(--workflow-properties-width, 312px));
-  right: auto;
-  top: 0;
-  bottom: 0;
-}
-
-.workflow-catalog-resizer {
-  position: absolute;
-  top: 0;
-  right: -6px;
-  bottom: 0;
-  z-index: 8;
-  display: grid;
-  width: 12px;
-  place-items: center;
-  border: 0;
-  color: rgba(148, 163, 184, .42);
-  background: transparent;
-  cursor: col-resize;
-  touch-action: none;
-}
-.workflow-catalog-resizer:hover,
-.workflow-catalog-resizer.active { color: #60a5fa; }
-.workflow-catalog-resizer::before { content: ''; position: absolute; inset: 0 5px; border-right: 1px solid transparent; }
-.workflow-catalog-resizer:hover::before,
-.workflow-catalog-resizer.active::before { border-color: rgba(96, 165, 250, .7); }
-
-@media (max-width: 720px) {
-  .workflow-catalog-resizer,
-  .workflow-properties-resizer { display: none; }
-}
-
-/* Context switch: keep workflow contract and step settings in separate views. */
-.workflow-right-rail-switcher {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  grid-column: 3;
-  grid-row: 1;
-  min-width: 0;
-  margin: 0;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--workflow-border);
-  background: var(--workflow-surface);
-}
-.workflow-right-rail-switcher button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-width: 0;
-  flex: 1;
-  min-height: 30px;
-  padding: 0 8px;
-  color: var(--workflow-muted);
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-}
-.workflow-right-rail-switcher button:hover:not(:disabled) { color: var(--workflow-text); background: color-mix(in srgb, var(--workflow-focus) 8%, transparent); }
-.workflow-right-rail-switcher button.active { color: var(--workflow-focus); border-color: color-mix(in srgb, var(--workflow-focus) 34%, var(--workflow-border)); background: color-mix(in srgb, var(--workflow-focus) 12%, transparent); font-weight: 650; }
-.workflow-right-rail-switcher button:disabled { opacity: .4; cursor: default; }
-.workflow-studio-grid.step-settings-mode > .workflow-properties { grid-row: 2 / -1; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-metadata-editor { grid-row: 2; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-input-editor:not(.workflow-output-editor) { grid-row: 3; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-output-editor { grid-row: 4; }
-.workflow-studio-grid:not(.flow-test-mode) > .workflow-right-rail > .workflow-runtime-inputs { grid-row: 5; }
-.workflow-studio-grid.step-settings-mode > .workflow-right-rail {
-  display: flex;
-  flex-direction: column;
-  grid-column: 3;
-  grid-row: 1 / -1;
-  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  align-self: stretch;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -3303,30 +2556,62 @@ watch(
   scrollbar-width: thin;
   scrollbar-color: #64748b rgba(15, 23, 42, .28);
 }
-.workflow-studio-grid.step-settings-mode > .workflow-right-rail > .workflow-right-rail-switcher {
-  position: sticky;
-  top: 0;
+.workflow-studio-grid > .workflow-action-catalog::-webkit-scrollbar { width: 10px; }
+.workflow-studio-grid > .workflow-action-catalog::-webkit-scrollbar-track { background: rgba(15, 23, 42, .28); }
+.workflow-studio-grid > .workflow-action-catalog::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #64748b; background-clip: padding-box; }
+.workflow-studio-grid > .workflow-action-catalog::-webkit-scrollbar-thumb:hover { background: #94a3b8; background-clip: padding-box; }
+.workflow-studio-grid > .workflow-canvas {
+  grid-area: canvas;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.workflow-studio-grid > .workflow-right-rail { grid-area: inspector; }
+.workflow-studio-grid > .workflow-catalog-resizer {
+  position: absolute;
   z-index: 3;
-  flex: 0 0 auto;
+  top: 0;
+  bottom: 0;
+  left: var(--workflow-catalog-width, 224px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  cursor: col-resize;
+  user-select: none;
 }
-.workflow-studio-grid.step-settings-mode > .workflow-right-rail > .workflow-properties {
-  display: grid;
-  grid-column: auto;
-  grid-row: auto;
-  box-sizing: border-box;
-  width: auto;
-  height: auto;
-  flex: 0 0 auto;
-  min-height: max-content;
-  max-height: none;
-  overflow: visible;
+.workflow-studio-grid > .workflow-catalog-resizer:hover,
+.workflow-studio-grid > .workflow-catalog-resizer.active { background: rgba(59, 130, 246, .12); }
+.workflow-studio-grid > .workflow-catalog-resizer svg { pointer-events: none; opacity: .4; }
+.workflow-studio-grid > .workflow-catalog-resizer:hover svg,
+.workflow-studio-grid > .workflow-catalog-resizer.active svg { opacity: .7; }
+.workflow-studio-grid > .workflow-properties-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: auto;
+  /* Center the handle on the inspector's left edge, rather than the window edge. */
+  right: calc(var(--workflow-properties-width, 312px) - 4px);
 }
-:global(:root[data-theme="light"]) .workflow-studio-grid.step-settings-mode > .workflow-right-rail { scrollbar-color: #94a3b8 #e2e8f0; }
 
+@media (max-width: 980px) {
+  .workflow-library-body > main.workflow-studio-grid {
+    grid-template-areas: 'catalog canvas' 'inspector inspector';
+    grid-template-columns: minmax(170px, var(--workflow-catalog-width, 220px)) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(240px, 42vh);
+  }
+  .workflow-studio-grid > .workflow-catalog-resizer { display: none; }
+  .workflow-studio-grid > .workflow-properties-resizer { display: none; }
+}
 
-
-
-
-
-
+@media (max-width: 720px) {
+  .workflow-library-body > main.workflow-studio-grid {
+    grid-template-areas: 'catalog' 'canvas' 'inspector';
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, min(34vh, 260px)) minmax(420px, 1fr) minmax(240px, 46vh);
+    overflow: auto;
+  }
+  .workflow-studio-grid > .workflow-action-catalog { height: 100%; max-height: min(34vh, 260px); }
+  .workflow-studio-grid > .workflow-catalog-resizer { display: none; }
+}
 </style>

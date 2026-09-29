@@ -3,9 +3,10 @@ from fastapi.testclient import TestClient
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
 from device_tui.application.workflow_studio import build_action_catalog
-from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowNode, WorkflowVersion
+from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowVersion
 from device_tui.interfaces.desktop_api.routers.workflow_definitions import (
     _compile_task_plan,
+    _derive_workflow_convenience_inputs,
     _normalize_action_inputs,
     _prepare_workflow_file_inputs,
     _validate_workflow_script_inputs,
@@ -40,12 +41,66 @@ def test_workflow_upload_input_is_prepared_before_plan_compilation() -> None:
     assert overrides == {}
 
 
+def test_workflow_upload_stages_selected_file_and_text_inputs_once() -> None:
+    staged: list[str] = []
+
+    class Transfers:
+        def prepare_workflow_source(self, value: str, *, staging_id: str) -> str:
+            assert staging_id == "run-1"
+            staged.append(value)
+            return f".workflow-staging/run-1/file-{len(staged)}"
+
+    version = WorkflowVersion(
+        "workflow", 1, "Upload",
+        inputs=(WorkflowInput("file_path", type="file"), WorkflowInput("text_path", type="string")),
+        nodes=(
+            WorkflowNode("first", "file.upload", {"source": "${inputs.file_path}"}),
+            WorkflowNode("second", "file.upload", {"source": "${inputs.file_path}"}),
+            WorkflowNode("third", "file.upload", {"source": "${inputs.text_path}"}),
+        ),
+    )
+
+    prepared, overrides = _prepare_workflow_file_inputs(
+        version,
+        {"file_path": r"D:\packages\first.cc", "text_path": r"D:\packages\second.cc"},
+        Transfers(),
+        staging_id="run-1",
+    )
+
+    assert staged == [r"D:\packages\first.cc", r"D:\packages\second.cc"]
+    assert prepared == {
+        "file_path": ".workflow-staging/run-1/file-1",
+        "text_path": ".workflow-staging/run-1/file-2",
+    }
+    assert overrides == {}
+
+
 def test_workflow_upload_defaults_to_overwrite_but_preserves_explicit_false() -> None:
     assert _normalize_action_inputs("file.upload", {"source": "a.cc"})["overwrite"] is True
     assert _normalize_action_inputs(
         "file.upload",
         {"source": "a.cc", "overwrite": False},
     )["overwrite"] is False
+
+def test_workflow_derives_optional_package_name_from_package_path() -> None:
+    version = WorkflowVersion(
+        "workflow",
+        1,
+        "Upload",
+        inputs=(WorkflowInput("package_path", type="file", required=True), WorkflowInput("package_name")),
+    )
+
+    assert _derive_workflow_convenience_inputs(
+        version,
+        {"package_path": r"D:\packages\device.cc"},
+    ) == {
+        "package_path": r"D:\packages\device.cc",
+        "package_name": "device.cc",
+    }
+    assert _derive_workflow_convenience_inputs(
+        version,
+        {"package_path": r"D:\packages\device.cc", "package_name": "custom.cc"},
+    )["package_name"] == "custom.cc"
 
 
 def test_workflow_upload_does_not_stage_device_name_inputs_as_local_files() -> None:
@@ -391,7 +446,7 @@ def test_workflow_definition_cannot_be_renamed_to_blank() -> None:
         assert "workflow name is required" in response.json()["detail"]
 
 
-def test_workflow_published_versions_can_be_listed_and_deleted_until_referenced() -> None:
+def test_workflow_published_versions_can_be_deleted_even_when_referenced() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post(
             "/api/v1/workflow-definitions",
@@ -421,9 +476,9 @@ def test_workflow_published_versions_can_be_listed_and_deleted_until_referenced(
         assert started.status_code == 200
         referenced = client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"]
         assert referenced[0]["referenced"] is True
-        blocked = client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{first['version']}")
-        assert blocked.status_code == 409
-        assert "已被任务引用" in blocked.json()["detail"]
+        deleted_referenced = client.delete(f"/api/v1/workflow-definitions/{workflow_id}/versions/{first['version']}")
+        assert deleted_referenced.status_code == 204
+        assert client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"] == []
 
 
 def test_workflow_version_listing_keeps_runtime_inputs_and_version_numbers_monotonic() -> None:
@@ -479,6 +534,10 @@ def test_workflow_action_catalog_is_exposed_for_studio_clients() -> None:
         actions = {item["id"]: item for item in response.json()["actions"]}
         assert {"device.command", "file.upload", "utility.wait"}.issubset(actions)
         assert actions["file.upload"]["risk"] == "high"
+        assert actions["file.upload"]["input_schema"]["required"] == ["source"]
+        assert set(actions["file.upload"]["input_schema"]["properties"]) == {"source", "destination", "overwrite"}
+        assert actions["file.upload"]["input_schema"]["properties"]["overwrite"]["default"] is True
+        assert actions["file.download"]["input_schema"]["required"] == ["source", "destination"]
         assert "required" in actions["device.command"]["input_schema"]
 
 
@@ -1099,6 +1158,7 @@ def _minimal_workflow_config(action_id: str) -> dict[str, object]:
         "variable.set": {"name": "value", "value": "ok"},
         "expression.evaluate": {"expression": "1 + 1"},
         "loop.for_each": {"items": ["a"], "action_id": "result.save", "action_inputs": {"key": "${item}"}},
+        "device.for_each": {"devices": ["router-1"], "action_id": "device.command", "action_inputs": {"command": "display version"}},
         "loop.until": {"action_id": "result.save", "condition": "result.status == 'saved'", "max_iterations": 1, "interval_seconds": 0},
     }[action_id]
 

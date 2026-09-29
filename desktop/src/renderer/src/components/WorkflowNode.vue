@@ -46,6 +46,7 @@ const ACTION_META: Record<string, NodeMeta> = {
   'file.download': { label: '下载文件', category: 'transfer', tone: 'blue', icon: Upload },
   'utility.condition': { label: '如果 / 否则', category: 'flow-control', tone: 'purple', icon: GitBranch },
   'loop.for_each': { label: '循环 FOR', category: 'flow-control', tone: 'purple', icon: Repeat },
+  'device.for_each': { label: '遍历设备', category: 'device', tone: 'blue', icon: Repeat },
   'loop.until': { label: '循环直到满足', category: 'flow-control', tone: 'purple', icon: Repeat },
   'utility.wait': { label: '等待', category: 'flow-control', tone: 'amber', icon: Clock },
   'terminal.wait': { label: '等待终端输出', category: 'flow-control', tone: 'amber', icon: Terminal },
@@ -99,7 +100,7 @@ const configSummary = computed(() => {
   }
 
   if (actionId === 'file.upload' || actionId === 'file.download') {
-    const path = (config.local_path || config.remote_path) as string
+    const path = String(config.source || config.source_path || '')
     return path ? path.split(/[/\\]/).pop() || path : '(未配置)'
   }
 

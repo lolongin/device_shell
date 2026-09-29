@@ -9,7 +9,8 @@ from typing import Any, Mapping
 from .models import WorkflowDraft, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowOutput
 
 FORMAT = "device-tui.workflow"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = frozenset({1, SCHEMA_VERSION})
 
 
 class PortableWorkflowError(ValueError):
@@ -117,7 +118,7 @@ def from_document(document: Mapping[str, Any]) -> PortableWorkflow:
         version = int(document.get("schema_version", 0))
     except (TypeError, ValueError) as exc:
         raise PortableWorkflowError("schema_version must be an integer") from exc
-    if version != SCHEMA_VERSION:
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise PortableWorkflowError(f"unsupported workflow schema_version: {version}")
     body = document.get("workflow")
     if not isinstance(body, Mapping):
@@ -177,4 +178,4 @@ def dump_document(document: Mapping[str, Any], *, fmt: str = "yaml") -> str:
     return yaml.safe_dump(dict(document), allow_unicode=True, sort_keys=False)
 
 
-__all__ = ["FORMAT", "SCHEMA_VERSION", "PortableWorkflow", "PortableWorkflowError", "dump_document", "export_document", "from_document", "parse_document"]
+__all__ = ["FORMAT", "SCHEMA_VERSION", "SUPPORTED_SCHEMA_VERSIONS", "PortableWorkflow", "PortableWorkflowError", "dump_document", "export_document", "from_document", "parse_document"]

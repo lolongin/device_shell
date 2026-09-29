@@ -683,7 +683,15 @@ onMounted(() => {
   })
   clampCommandPanelHeight()
   window.addEventListener('resize', clampCommandPanelHeight)
+  window.addEventListener('click', handleGlobalContextMenuClick, true)
+  window.addEventListener('contextmenu', handleGlobalContextMenuClick, true)
 })
+
+function handleGlobalContextMenuClick(event: MouseEvent): void {
+  if (commandWorkspace.value?.contains(event.target as Node)) return
+  closeCommandGroupContextMenu()
+  closeEditorContextMenu()
+}
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
@@ -691,6 +699,8 @@ onBeforeUnmount(() => {
   stopCommandPanelResize()
   unsubscribeContextMenuOpen?.()
   window.removeEventListener('resize', clampCommandPanelHeight)
+  window.removeEventListener('click', handleGlobalContextMenuClick, true)
+  window.removeEventListener('contextmenu', handleGlobalContextMenuClick, true)
   void saveContent()
 })
 </script>

@@ -6,10 +6,11 @@ from typing import Any, Callable, Mapping
 from .models import WorkflowDraft
 from .catalog import ActionCatalog
 from .expression import validate_expression
+from .contract import INPUT_PRESENTATIONS, INPUT_SOURCES, INPUT_TYPES, SEMANTIC_TYPES
 
 
 _LOOP_DISALLOWED_ACTIONS = frozenset(
-    {"loop.for_each", "loop.until", "utility.condition", "utility.confirm", "workflow.call"}
+    {"loop.for_each", "device.for_each", "loop.until", "utility.condition", "utility.confirm", "workflow.call"}
 )
 _WORKFLOW_OUTPUT_TYPES = frozenset({"any", "string", "file", "number", "integer", "boolean", "object", "array", "null"})
 _RESERVED_WORKFLOW_OUTPUTS = frozenset({"status", "workflow_id", "version", "outputs"})
@@ -34,6 +35,7 @@ _CONFIG_SUGGESTIONS = {
         "items": "请输入要遍历的列表或引用前置节点的输出，例如 ['item1', 'item2']",
         "action_id": "请选择循环体要执行的操作",
     },
+    "device.for_each": {"devices": "请输入设备 ID 列表，例如 ['router-1', 'router-2']", "action_id": "请选择每台设备要执行的操作"},
     "terminal.wait": {
         "pattern": "请输入要等待的终端文本，例如 'Password:' 或 'completed'",
     },
@@ -85,6 +87,18 @@ class ValidationResult:
 def validate_workflow_inputs(workflow: WorkflowDraft, supplied: Mapping[str, Any]) -> tuple[ValidationIssue, ...]:
     issues: list[ValidationIssue] = []
     for item in workflow.inputs:
+        legacy_type = str(item.type or "string").casefold()
+        item_type = str(getattr(item, "primitive_type", "") or ("array" if legacy_type == "devices" else ("string" if legacy_type in {"file", "device"} else legacy_type))).casefold()
+        item_semantic = str(getattr(item, "semantic_type", "") or {"file": "file", "device": "device", "devices": "device_list"}.get(legacy_type, "text" if legacy_type == "string" else legacy_type)).casefold()
+        if item_type not in INPUT_TYPES:
+            issues.append(ValidationIssue("invalid_workflow_input_type", f"workflow input {item.name} has unsupported type {item.type}"))
+            continue
+        if item.source not in INPUT_SOURCES:
+            issues.append(ValidationIssue("invalid_workflow_input_source", f"workflow input {item.name} has unsupported source {item.source}"))
+        if item_semantic not in SEMANTIC_TYPES:
+            issues.append(ValidationIssue("invalid_workflow_input_semantic_type", f"workflow input {item.name} has unsupported semantic type {item_semantic}"))
+        if item.presentation and item.presentation not in INPUT_PRESENTATIONS:
+            issues.append(ValidationIssue("invalid_workflow_input_presentation", f"workflow input {item.name} has unsupported presentation {item.presentation}"))
         value = supplied.get(item.name, item.default)
         if item.required and (value is None or (isinstance(value, str) and not value.strip())):
             issues.append(ValidationIssue("missing_workflow_input", f"required workflow input is missing: {item.name}"))
@@ -99,9 +113,13 @@ def validate_workflow_inputs(workflow: WorkflowDraft, supplied: Mapping[str, Any
             "boolean": isinstance(value, bool),
             "object": isinstance(value, Mapping),
             "array": isinstance(value, (list, tuple)),
-        }.get(item.type, True)
+            "device": isinstance(value, str),
+            "devices": isinstance(value, (list, tuple)) and all(isinstance(entry, str) for entry in value),
+        }.get(item_type, True)
+        if item_semantic == "device_list":
+            valid = isinstance(value, (list, tuple)) and all(isinstance(entry, str) for entry in value)
         if not valid:
-            issues.append(ValidationIssue("invalid_workflow_input_type", f"workflow input {item.name} must be {item.type}"))
+            issues.append(ValidationIssue("invalid_workflow_input_type", f"workflow input {item.name} must be {item_type}"))
     return tuple(issues)
 
 def _create_issue(code: str, message: str, node_id: str | None = None, fix_suggestion: str | None = None, doc_link: str | None = None, affected_nodes: tuple[str, ...] = ()) -> ValidationIssue:
@@ -317,7 +335,7 @@ def validate_workflow(
             except (TypeError, ValueError):
                 errors.append(ValidationIssue("invalid_number", "timeout_seconds must be a number", node.id))
             else:
-                if timeout_value <= 0 or timeout_value > 86_400:
+                if timeout_value < 0 or timeout_value > 86_400:
                     errors.append(ValidationIssue("number_out_of_range", "timeout_seconds must be between 0 and 86400", node.id))
             failure_strategy = str(settings.get("failure_strategy") or "stop").strip().casefold()
             if failure_strategy not in {"stop", "continue"}:
@@ -335,7 +353,7 @@ def validate_workflow(
             except (TypeError, ValueError):
                 errors.append(ValidationIssue("invalid_number", "script timeout_seconds must be a number", node.id))
             else:
-                if timeout_value <= 0 or timeout_value > 86_400:
+                if timeout_value < 0 or timeout_value > 86_400:
                     errors.append(ValidationIssue("number_out_of_range", "script timeout_seconds must be between 0 and 86400", node.id))
             max_output = settings.get("max_output_chars", 1_048_576)
             if not isinstance(max_output, int) or isinstance(max_output, bool) or max_output < 1_024 or max_output > 16_777_216:
@@ -350,7 +368,7 @@ def validate_workflow(
             except (TypeError, ValueError):
                 errors.append(ValidationIssue("invalid_number", "timeout_seconds must be a number", node.id))
             else:
-                if timeout_value <= 0 or timeout_value > 86_400:
+                if timeout_value < 0 or timeout_value > 86_400:
                     errors.append(ValidationIssue("number_out_of_range", "timeout_seconds must be between 0 and 86400", node.id))
             if mode == "regex":
                 pattern = str(settings.get("pattern") or "")
@@ -408,6 +426,13 @@ def validate_workflow(
                 errors.append(ValidationIssue("invalid_loop_items", "loop items must be a list or variable reference", node.id))
             if catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS:
                 errors.append(ValidationIssue("invalid_loop_action", "loop child action is not executable", node.id))
+        if node.action_id == "device.for_each":
+            devices = settings.get("devices")
+            child_action = str(settings.get("action_id") or "").strip()
+            if not isinstance(devices, (list, tuple, str)) or (isinstance(devices, str) and not _is_exact_reference(devices)):
+                errors.append(ValidationIssue("invalid_device_list", "devices must be a list or variable reference", node.id))
+            if catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS:
+                errors.append(ValidationIssue("invalid_device_action", "device child action is not executable", node.id))
         if node.action_id == "loop.until":
             child_action = str(settings.get("action_id") or "").strip()
             condition = str(settings.get("condition") or "").strip()
@@ -612,7 +637,14 @@ def validate_workflow(
         item = input_by_name.get(name)
         if item is None:
             return None
-        schema: Mapping[str, Any] = {"type": item.type}
+        legacy_type = str(getattr(item, "type", "string") or "string").casefold()
+        semantic_type = str(getattr(item, "semantic_type", "") or "").casefold()
+        # Device-list inputs are persisted in the legacy `devices` form in
+        # older drafts, but their runtime value is always an array of IDs.
+        # Normalize that contract before checking references such as
+        # `${inputs.devices}` against an action expecting an array.
+        input_schema_type = "array" if legacy_type == "devices" or semantic_type == "device_list" else ("string" if legacy_type == "file" else legacy_type)
+        schema: Mapping[str, Any] = {"type": input_schema_type}
         if not path:
             return schema
         # WorkflowInput currently stores only a top-level type. A mapping
@@ -820,8 +852,8 @@ def validate_workflow(
         settings = node_settings(node)
         spec = catalog.get(node.action_id)
         input_schema = spec.input_schema if spec is not None else None
-        if node.action_id in {"loop.for_each", "loop.until"}:
-            local_refs = {"item", "index"} if node.action_id == "loop.for_each" else {"iteration", "result", "outputs"}
+        if node.action_id in {"loop.for_each", "device.for_each", "loop.until"}:
+            local_refs = {"device", "device_id", "index"} if node.action_id == "device.for_each" else ({"item", "index"} if node.action_id == "loop.for_each" else {"iteration", "result", "outputs"})
             base_config = {key: value for key, value in settings.items() if key != "action_inputs"}
             scan(base_config, node.id, visible, input_schema)
             child_action = str(settings.get("action_id") or "").strip()

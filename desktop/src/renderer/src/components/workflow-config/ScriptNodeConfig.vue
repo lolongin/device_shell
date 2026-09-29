@@ -300,12 +300,13 @@ function eventValue(event: Event): string {
       <label>
         超时时间（秒）
         <input
-          :value="node.config.timeout_seconds || 30"
+          :value="node.config.timeout_seconds || ''"
           type="number"
-          min="1"
+          min="0"
           max="86400"
           @input="updateConfig('timeout_seconds', Number(eventValue($event)))"
         />
+        <label class="workflow-inline-toggle"><input type="checkbox" :checked="Number(node.config.timeout_seconds || 0) === 0" @change="updateConfig('timeout_seconds', ($event.target as HTMLInputElement).checked ? 0 : 300)" />永不超时</label>
       </label>
       <label>
         最大输出长度
@@ -324,11 +325,7 @@ function eventValue(event: Event): string {
     <!-- 输出说明 -->
     <div class="workflow-command-result-contract">
       <span>输出</span>
-      <code>stdout</code>
-      <code>stderr</code>
-      <code>result</code>
-      <code>exit_code</code>
-      <code>status</code>
+      <code v-for="field in actions?.find((item) => item.id === node.action_id)?.outputFields || []" :key="field.name">{{ field.label }}</code>
     </div>
     <small class="field-hint">
       脚本 stdout 最后一行若是 JSON，会解析为 <code>result</code>；退出码非 0 时步骤失败。

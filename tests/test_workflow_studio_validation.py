@@ -468,6 +468,24 @@ def test_validation_accepts_upload_without_device_destination() -> None:
     assert not issues(draft)
 
 
+def test_validation_accepts_file_workflow_input_as_upload_source() -> None:
+    draft = WorkflowDraft(
+        "w", "x",
+        inputs=(
+            WorkflowInput("package_file", type="file", required=True),
+            WorkflowInput("target_path", type="string"),
+            WorkflowInput("replace", type="boolean"),
+        ),
+        nodes=(WorkflowNode("upload", "file.upload", {
+            "source": "${inputs.package_file}",
+            "destination": "${inputs.target_path}",
+            "overwrite": "${inputs.replace}",
+        }),),
+    )
+
+    assert not issues(draft)
+
+
 @pytest.mark.parametrize("action_id", ["device.ssh", "device.telnet"])
 def test_validation_does_not_require_unused_connection_host(action_id: str) -> None:
     draft = WorkflowDraft(

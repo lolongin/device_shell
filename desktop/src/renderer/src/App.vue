@@ -41,6 +41,7 @@ import ConnectionProfileDialog from './components/ConnectionProfileDialog.vue'
 import ConnectionGroupDialog from './components/ConnectionGroupDialog.vue'
 import DeviceImportDialog from './components/DeviceImportDialog.vue'
 import CommandWorkspace from './components/CommandWorkspace.vue'
+import QuickActionsBar from './components/QuickActionsBar.vue'
 import CompactSelect from './components/CompactSelect.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -153,10 +154,12 @@ const settingsPanelOpen = ref(false)
 const helpPanelOpen = ref(false)
 const workflowPanelOpen = ref(false)
 const workflowLibraryRef = ref<InstanceType<typeof WorkflowLibrary> | null>(null)
+const quickActionsBarRef = ref<InstanceType<typeof QuickActionsBar> | null>(null)
 const workflowRunDialogOpen = ref(false)
 const workflowRunDeviceId = ref('')
 const workflowRunWorkflowId = ref('')
 const workflowRunVersion = ref<string | number | undefined>(undefined)
+const workflowRunAutoRun = ref(false)
 const selectedProfileId = ref('')
 const editingProfile = ref<ConnectionProfileSummary | null>(null)
 const dialogType = ref<ProfileType | ''>('')
@@ -1578,12 +1581,21 @@ function closeWorkflowPanel(): boolean {
   return true
 }
 
-function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId, workflowId = '', version?: string | number): void {
+function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId, workflowId = '', version?: string | number, autoRun = false): void {
   closeAppContextMenus()
   workflowRunDeviceId.value = deviceId
   workflowRunWorkflowId.value = workflowId
   workflowRunVersion.value = version
+  workflowRunAutoRun.value = autoRun
   workflowRunDialogOpen.value = true
+}
+
+function addQuickCommand(payload: { command: string; name: string }): void {
+  quickActionsBarRef.value?.addCommand(payload.command, payload.name)
+}
+
+function addQuickWorkflow(payload: { workflowId: string; name: string }): void {
+  quickActionsBarRef.value?.addWorkflow(payload.workflowId, payload.name)
 }
 
 function openWorkflowStudioFromRunner(): void {
@@ -2807,13 +2819,14 @@ onBeforeUnmount(() => {
     <UpgradeWorkspace v-if="workspace.upgradePanelOpen" @run-workflow="openWorkflowRunDialog()" />
     <PackageBuildWorkspace v-if="workspace.packageBuildPanelOpen" />
     <KeepAlive>
-      <WorkflowLibrary ref="workflowLibraryRef" v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" @run-version="openWorkflowRunDialog(workspace.selectedDeviceId, $event.workflowId, $event.version)" />
+      <WorkflowLibrary ref="workflowLibraryRef" v-if="workflowPanelOpen" @close="workflowPanelOpen = false" @run-published="openWorkflowRunDialog()" @run-version="openWorkflowRunDialog(workspace.selectedDeviceId, $event.workflowId, $event.version)" @add-quick-workflow="addQuickWorkflow" />
     </KeepAlive>
     <WorkflowRunDialog
       v-if="workflowRunDialogOpen"
       :initial-device-id="workflowRunDeviceId"
       :initial-workflow-id="workflowRunWorkflowId"
       :initial-version="workflowRunVersion"
+      :auto-run="workflowRunAutoRun"
       @close="workflowRunDialogOpen = false"
       @open-studio="openWorkflowStudioFromRunner"
     />
@@ -3213,6 +3226,10 @@ onBeforeUnmount(() => {
         </button>
       </section>
       </div>
+      <QuickActionsBar
+        ref="quickActionsBarRef"
+        @run-workflow="openWorkflowRunDialog(workspace.selectedDeviceId, $event.workflowId, undefined, $event.autoRun)"
+      />
       <CommandWorkspace />
     </main>
 

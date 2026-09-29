@@ -16,14 +16,14 @@ defineProps<{ versions: PublishedVersion[]; loading: boolean; error: string; onR
               <div class="workflow-version-info">
                 <strong>v{{ version.version }}</strong>
                 <small>{{ version.published_at ? new Date(version.published_at).toLocaleString() : '发布时间未知' }}</small>
-                <span>{{ version.referenced ? '已被任务引用' : '未被引用，可删除' }}</span>
+                <span>{{ version.referenced ? '已被任务引用，可删除' : '未被引用，可删除' }}</span>
               </div>
               <div class="workflow-version-actions">
                 <button type="button" class="icon-toolbar-button" title="运行此发布版本" :aria-label="`运行发布版本 v${version.version}`" @click.stop="onRun({ workflowId: version.id, version: version.version })"><Play :size="13" /></button>
                 <button type="button" class="icon-toolbar-button" title="导出此发布版本 YAML" :aria-label="`导出发布版本 v${version.version}`" @click.stop="onExport(version)"><Download :size="13" /></button>
                 <button type="button" class="icon-toolbar-button" title="恢复为当前草稿" :aria-label="`恢复发布版本 v${version.version} 为草稿`" @click.stop="onRestore(version)"><RotateCcw :size="13" /></button>
                 <button type="button" class="icon-toolbar-button" title="保存为自定义 Action" :aria-label="`将发布版本 v${version.version} 保存为自定义 Action`" @click.stop="onSaveAction(version)"><Save :size="13" /></button>
-                <button type="button" class="icon-toolbar-button workflow-version-delete" :disabled="version.referenced" :title="version.referenced ? '已被任务引用，不能删除' : '删除此发布版本'" :aria-label="version.referenced ? '已被任务引用，不能删除' : `删除发布版本 v${version.version}`" @click.stop="onRemove(version)"><Trash2 :size="13" /></button>
+                <button type="button" class="icon-toolbar-button workflow-version-delete" title="删除此发布版本" :aria-label="`删除发布版本 v${version.version}`" @click.stop="onRemove(version)"><Trash2 :size="13" /></button>
               </div>
             </div>
           </div>

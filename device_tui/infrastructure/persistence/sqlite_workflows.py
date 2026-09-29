@@ -118,13 +118,12 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
     def delete(self, workflow_id: str, version: int | str | None = None) -> None:
         with self._connect() as c:
             if version is None or version == "draft":
-                referenced = c.execute("SELECT 1 FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND referenced=1 LIMIT 1", (workflow_id,)).fetchone()
+                referenced = c.execute("SELECT 1 FROM workflow_definitions WHERE workflow_id=? AND kind IN ('published','deleted') AND referenced=1 LIMIT 1", (workflow_id,)).fetchone()
                 if referenced is not None:
                     raise ValueError(f"workflow has referenced published versions: {workflow_id}")
                 count = c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind IN ('draft','published','deleted')", (workflow_id,)).rowcount
             else:
-                count = c.execute("UPDATE workflow_definitions SET kind='deleted' WHERE workflow_id=? AND kind='published' AND version=? AND referenced=0", (workflow_id, int(version))).rowcount
-                if not count and c.execute("SELECT referenced FROM workflow_definitions WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).fetchone() is not None: raise ValueError(f"published workflow version is referenced: {workflow_id}@{version}")
+                count = c.execute("UPDATE workflow_definitions SET kind='deleted' WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).rowcount
         if not count: raise KeyError(f"workflow not found: {workflow_id}")
 
     def publish(self, workflow_id: str) -> WorkflowVersion:

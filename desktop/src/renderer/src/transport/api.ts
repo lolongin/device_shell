@@ -37,6 +37,7 @@ import type {
   TaskDecisionResponse,
   TaskDecisionActionPayload,
   WorkflowCatalogResponse,
+  WorkflowActionCatalogEntry,
   WorkflowScript,
   PublishedWorkflowDefinition,
   PublishedWorkflowDefinitionResponse,
@@ -51,7 +52,7 @@ import type {
 } from '../types'
 
 export interface WorkflowDefinitionResponse { workflows: Array<Record<string, unknown>> }
-export interface WorkflowActionCatalogResponse { actions: Array<Record<string, unknown>> }
+export interface WorkflowActionCatalogResponse { actions: WorkflowActionCatalogEntry[] }
 export interface WorkflowCustomActionResponse { actions: Array<Record<string, unknown>> }
 export interface WorkflowTemplateResponse { templates: Array<Record<string, unknown>> }
 export interface WorkflowScriptResponse { scripts: WorkflowScript[] }

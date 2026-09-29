@@ -287,6 +287,37 @@ def test_device_execution_tool_uses_injected_command_profile() -> None:
     asyncio.run(scenario())
 
 
+def test_device_command_sends_ctrl_key_as_control_byte() -> None:
+    class ControlKeyControl:
+        def __init__(self) -> None:
+            self.raw: list[str] = []
+            self.executed = False
+
+        async def send_raw(self, target, text, *, context):
+            del target, context
+            self.raw.append(text)
+            return type("Sent", (), {"session_id": "session-1", "device_id": "d1", "sent": True})()
+
+        async def execute(self, target, request, *, context):
+            del target, request, context
+            self.executed = True
+            raise AssertionError("Ctrl key should bypass CLI command execution")
+
+    async def scenario() -> None:
+        control = ControlKeyControl()
+        result = await DeviceExecutionTool(control).execute(
+            DeviceTarget(device_id="d1"),
+            WorkflowStep("command", kind="device", action="command", params={"command": "Ctrl+B"}),
+            context=ControlContext(source="test"),
+        )
+        assert control.raw == ["Ctrl+B"]
+        assert not control.executed
+        assert result["sent"] is True
+        assert result["status"] == "completed"
+
+    asyncio.run(scenario())
+
+
 def test_wait_online_does_not_treat_connected_transport_as_cli_ready() -> None:
     async def scenario() -> None:
         control = ReadinessControl(cli_ready=False)

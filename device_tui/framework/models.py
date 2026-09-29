@@ -84,8 +84,8 @@ class Expectation(FrameworkModel):
     def __post_init__(self) -> None:
         if not self.event_type.strip():
             raise ValueError("expectation event_type is required")
-        if self.timeout_seconds <= 0:
-            raise ValueError("expectation timeout_seconds must be positive")
+        if self.timeout_seconds < 0:
+            raise ValueError("expectation timeout_seconds cannot be negative")
         if self.idle_timeout_seconds < 0:
             raise ValueError("expectation idle_timeout_seconds cannot be negative")
 
@@ -137,8 +137,8 @@ class ActionSpec(FrameworkModel):
     def __post_init__(self) -> None:
         if not self.id.strip() or not self.operation.strip():
             raise ValueError("action id and operation are required")
-        if self.timeout_seconds <= 0:
-            raise ValueError("action timeout_seconds must be positive")
+        if self.timeout_seconds < 0:
+            raise ValueError("action timeout_seconds cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)

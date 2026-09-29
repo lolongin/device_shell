@@ -7,7 +7,7 @@ from device_tui.infrastructure.persistence.sqlite_workflows import SQLiteWorkflo
 
 
 @pytest.mark.parametrize("kind", ["memory", "sqlite"])
-def test_definition_crud_publish_snapshot_and_reference_protection(kind, tmp_path: Path):
+def test_definition_crud_publish_snapshot_and_referenced_version_deletion(kind, tmp_path: Path):
     store = MemoryWorkflowDefinitionStore() if kind == "memory" else SQLiteWorkflowDefinitionStore(tmp_path / "workflow.sqlite3")
     draft = WorkflowDraft("w1", "Demo", nodes=(WorkflowNode("n1", "utility.wait", {"seconds": 1}),))
     store.create(draft)
@@ -18,8 +18,11 @@ def test_definition_crud_publish_snapshot_and_reference_protection(kind, tmp_pat
     assert store.is_referenced("w1", published.version) is False
     store.mark_referenced("w1", published.version)
     assert store.is_referenced("w1", published.version) is True
+    store.delete("w1", published.version)
+    with pytest.raises(KeyError):
+        store.get("w1", published.version)
     with pytest.raises(ValueError):
-        store.delete("w1", published.version)
+        store.delete("w1")
 
 
 def test_sqlite_list_published_latest_is_grouped_by_workflow(tmp_path: Path):

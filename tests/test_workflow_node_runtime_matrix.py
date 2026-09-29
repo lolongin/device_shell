@@ -253,6 +253,65 @@ def test_compiled_for_each_preserves_loop_item_reference_in_real_execution() -> 
     assert [item["value"] for item in result.outputs["loop"]["results"]] == ["a", "b"]
 
 
+def test_device_for_each_resolves_input_list_and_child_device_reference() -> None:
+    from device_tui.application.composition.workflows import build_default_activity_executor, build_default_adapter_registry, build_default_workflow_registry
+    from device_tui.application.workflow_plugins.device_bridge import build_device_action_registry
+
+    executor = build_default_activity_executor()
+    actions = build_device_action_registry(
+        object(), build_default_adapter_registry(), activity_executor=executor,
+    )
+    orchestrator = TaskOrchestrator(
+        WorkflowRuntime(actions=actions), build_default_workflow_registry(),
+    )
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="device-for-each",
+        inputs=(WorkflowInput("targets", "devices", required=True),),
+        nodes=(StudioNode(
+            "loop",
+            "device.for_each",
+            {
+                "devices": "${inputs.targets}",
+                "action_id": "result.save",
+                "action_inputs": {"key": "${device_id}", "value": "ok"},
+            },
+        ),),
+    )
+    plan = _compile_task_plan(version, "SIM-TERMINAL")
+    task = orchestrator.start(plan, device_id="SIM-TERMINAL", inputs={"targets": ["router-1", "router-2"]})
+
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+
+    assert result.status.value == "succeeded"
+    assert [item["device_id"] for item in result.outputs["loop"]["results"]] == ["router-1", "router-2"]
+    assert [item["key"] for item in result.outputs["loop"]["results"]] == ["router-1", "router-2"]
+
+
+def test_compiler_preserves_device_for_each_failure_strategy_for_loop_handler() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="device-for-each-continue",
+        nodes=(StudioNode(
+            "loop",
+            "device.for_each",
+            {
+                "devices": ["router-1", "router-2"],
+                "action_id": "variable.set",
+                "action_inputs": {"name": "device", "value": "ok"},
+                "failure_strategy": "continue",
+            },
+        ),),
+    )
+
+    node = _compile_task_plan(version, "SIM-TERMINAL").nodes[0]
+
+    assert node.input_mapping["failure_strategy"] == "continue"
+    assert node.retry_policy["on_failure"] == "continue"
+
+
 def test_compiled_until_exposes_previous_child_result_to_condition() -> None:
     version = WorkflowVersion(
         workflow_id="wf",

@@ -23,11 +23,12 @@ class ActivityWorkflowProvider:
     def build(self, inputs: dict[str, Any]) -> WorkflowDefinition:
         params = dict(inputs)
         params["_framework_activity"] = True
+        action_timeout = float(params.get("timeout_seconds")) if params.get("timeout_seconds") is not None else 3_600.0
         action = ActionSpec(
             id="run",
             operation=self.id,
             params=params,
-            timeout_seconds=float(params.get("timeout_seconds") or 3_600),
+            timeout_seconds=action_timeout,
             # ActivityDefinition owns the idempotency classification (including
             # unsafe reboot); this compatibility Action must remain valid
             # without a vendor-specific reconcile provider.
@@ -90,6 +91,7 @@ def build_default_activity_workflow_providers() -> tuple[ActivityWorkflowProvide
         ActivityWorkflowProvider("expression.evaluate"),
         ActivityWorkflowProvider("workflow.outputs"),
         ActivityWorkflowProvider("loop.for_each"),
+        ActivityWorkflowProvider("device.for_each"),
         ActivityWorkflowProvider("loop.until"),
         ActivityWorkflowProvider("device.verify_artifact"),
         ActivityWorkflowProvider("device.storage.cleanup"),

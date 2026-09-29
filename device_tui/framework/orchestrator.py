@@ -853,8 +853,14 @@ class TaskOrchestrator:
 
     @staticmethod
     def _deferred_reference_roots(node: WorkflowNode) -> frozenset[str]:
-        if node.workflow_id == "loop.for_each":
-            return frozenset({"item", "index"})
+        if node.workflow_id in {"loop.for_each", "device.for_each"}:
+            # Child action inputs are evaluated by the loop activity after it
+            # injects the current item/device.  Deferring these roots avoids
+            # resolving them against the parent task before iteration starts.
+            roots = {"item", "index"}
+            if node.workflow_id == "device.for_each":
+                roots.update({"device", "device_id"})
+            return frozenset(roots)
         if node.workflow_id == "loop.until":
             return frozenset({"iteration", "result", "outputs"})
         return frozenset()

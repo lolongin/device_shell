@@ -46,12 +46,13 @@ def test_workflow_studio_loads_catalog_and_preserves_edges_when_renaming() -> No
 
 def test_workflow_studio_names_new_workflows_and_allows_renaming() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    settings = Path("desktop/src/renderer/src/components/WorkflowSettingsPanel.vue").read_text(encoding="utf-8")
     management = Path("desktop/src/renderer/src/components/WorkflowManagementDialogs.vue").read_text(encoding="utf-8")
 
     assert "async function confirmCreate" in source
     assert 'v-model="state.createName.value"' in management
     assert ':disabled="!state.createName.value.trim() || creating"' in management
-    assert 'v-model="selected.name"' in source
+    assert 'v-model="workflow.name"' in settings
     assert "selected.value.name.trim()" in source
 
 
@@ -89,49 +90,106 @@ def test_workflow_script_creation_offers_named_templates() -> None:
 
 def test_workflow_script_nodes_render_schema_inputs_with_json_escape_hatch() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    script = Path("desktop/src/renderer/src/components/workflow-config/ScriptNodeConfig.vue").read_text(encoding="utf-8")
 
-    assert "selectedNodeScript" in source
-    assert "scriptNodeInputMode" in source
-    assert "updateScriptNodeInputField" in source
-    assert "updateScriptNodeInputBoolean" in source
-    assert "updateScriptNodeInputJson" in source
-    assert "updateScriptNodeInputJsonEditor" in source
-    assert "hasEmbeddedScriptReference(parsed)" in source
-    assert "变量引用必须单独作为完整值" in source
-    assert "参数表单" in source
-    assert "DEVICE_TUI_INPUT_JSON" in source
-    assert "支持使用 <code>${inputs.xxx}</code> 引用流程输入" in source
+    assert "WorkflowNodeProperties" in source
+    assert "scriptNodeInputMode" in script
+    assert "updateScriptNodeInputField" in script
+    assert "updateScriptNodeInputBoolean" in script
+    assert "updateScriptNodeInputJson" in script
+    assert "updateScriptNodeInputJsonEditor" in script
+    assert "JSON.parse(value)" in script
+    assert "变量引用必须单独作为完整值" in script
+    assert "参数表单" in script
+    assert "DEVICE_TUI_INPUT_JSON" in script
+    assert "支持使用 <code>${inputs.xxx}</code> 引用流程输入" in script
 
 
 def test_workflow_studio_panels_keep_independent_scroll_containers() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    shell = Path("desktop/src/renderer/src/components/WorkflowInspectorShell.vue").read_text(encoding="utf-8")
     script_studio_styles = Path("desktop/src/renderer/src/components/WorkflowScriptStudio.css").read_text(encoding="utf-8")
 
     assert ".workflow-script-list { min-height: 0; overflow: auto;" in script_studio_styles
     assert ".workflow-script-test-panel {" in script_studio_styles
     assert "min-height: 0; overflow: auto;" in script_studio_styles
-    assert ".workflow-action-catalog, .workflow-properties { min-height: 0; overflow: auto;" in source
-    assert ".workflow-properties { grid-column: 3; grid-row: 5;" in source
+    assert "<WorkflowInspectorShell" in source
+    assert ".workflow-inspector-content" in shell
 
-    step_rail = source.split(".workflow-studio-grid.step-settings-mode > .workflow-right-rail {", 1)[1].split("}", 1)[0]
-    step_inspector = source.split(".workflow-studio-grid.step-settings-mode > .workflow-right-rail > .workflow-properties {", 1)[1].split("}", 1)[0]
-    assert "display: flex;" in step_rail
-    assert "overflow-y: auto;" in step_rail
-    assert "overflow: visible;" in step_inspector
+    assert "display: flex;" in shell
+    assert "overflow-y: auto;" in shell
+    assert "<WorkflowNodeProperties" in source
+
+
+def test_step_settings_puts_long_configuration_in_its_own_scroll_container() -> None:
+    shell = Path("desktop/src/renderer/src/components/WorkflowInspectorShell.vue").read_text(encoding="utf-8")
+
+    assert "flex: 1 1 auto;" in shell
+    assert "min-height: 0;" in shell
+    assert "overflow-y: auto;" in shell
+    assert "overflow: hidden;" in shell
+
+
+def test_inspector_shell_is_the_only_scroll_owner_for_settings_content() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    shell = Path("desktop/src/renderer/src/components/WorkflowInspectorShell.vue").read_text(encoding="utf-8")
+
+    assert "overflow-y: auto;" in shell
+    assert ".workflow-input-editor { padding: 9px 16px; overflow: visible; }" in source
+    assert ".workflow-runtime-inputs { padding: 9px 16px; overflow: visible; }" in source
+    assert ".workflow-properties { min-height: 0; overflow: visible;" in source
+
+
+def test_node_catalog_has_a_stable_visible_scrollbar() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+
+    catalog = source.split(".workflow-studio-grid > .workflow-action-catalog {", 1)[1].split("}", 1)[0]
+    assert "min-height: 0;" in catalog
+    assert "height: 100%;" in catalog
+    assert "overflow-y: auto;" in catalog
+    assert "scrollbar-gutter: stable;" in catalog
+    assert ".workflow-studio-grid > .workflow-action-catalog::-webkit-scrollbar" in source
+    assert "grid-template-areas: 'catalog canvas inspector';" in source
+    assert "grid-template-areas: 'catalog canvas' 'inspector inspector';" in source
+    assert "grid-template-areas: 'catalog' 'canvas' 'inspector';" in source
+    assert "grid-template-rows: minmax(0, min(34vh, 260px)) minmax(420px, 1fr) minmax(240px, 46vh);" in source
+    assert ".workflow-studio-grid > .workflow-catalog-resizer {" in source
+
+
+def test_workflow_settings_have_their_own_panel_module() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    settings = Path("desktop/src/renderer/src/components/WorkflowSettingsPanel.vue").read_text(encoding="utf-8")
+
+    assert "<WorkflowSettingsPanel" in source
+    assert "workflow-input-definition" in settings
+    assert "workflow-runtime-inputs" in settings
+    assert "update:inputsExpanded" in settings
+    assert "update:outputsExpanded" in settings
+
+
+def test_step_properties_fill_the_inspector_rail_instead_of_shrinking_to_content() -> None:
+    properties = Path("desktop/src/renderer/src/components/workflow-config/WorkflowNodeProperties.vue").read_text(encoding="utf-8")
+
+    assert "width: 100%;" in properties
+    assert "box-sizing: border-box;" in properties
+    assert "align-self: stretch;" in properties
+    assert "align-self: start;" not in properties
 
 
 def test_script_step_resource_can_be_edited_from_step_settings() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    script = Path("desktop/src/renderer/src/components/workflow-config/ScriptNodeConfig.vue").read_text(encoding="utf-8")
 
-    assert "class=\"workflow-script-reference-notice\"" in source
-    assert "aria-label=\"步骤脚本编辑器\"" in source
-    assert "if (script) script.script = value" in source
-    assert "@click=\"saveNodeScriptResource\"" in source
-    assert "selectedNodeScript?.script || configString('script')" in source
+    assert "class=\"workflow-script-reference-notice\"" in script
+    assert "aria-label=\"步骤脚本编辑器\"" in script
+    assert "script.script = value" in script
+    assert '@save-script="saveNodeScriptResource"' in source
+    assert "selectedNodeScript?.script || getConfigString('script')" in script
 
 
 def test_workflow_studio_manages_user_templates_and_renders_subworkflow_reference() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
     management = Path("desktop/src/renderer/src/components/WorkflowManagementDialogs.vue").read_text(encoding="utf-8")
     versions = Path("desktop/src/renderer/src/components/WorkflowVersionManager.vue").read_text(encoding="utf-8")
 
@@ -139,8 +197,12 @@ def test_workflow_studio_manages_user_templates_and_renders_subworkflow_referenc
     assert "await desktopApi.deleteWorkflowTemplate(template.id)" in source
     assert "!item.built_in" in management
     assert "workflow-version-manager" in versions
-    assert "'${' + selectedNode.id + '.输出名}'" in source
-    assert "`${selectedNode.id}.输出名`" not in source
+    assert "已被任务引用，可删除" in versions
+    assert ':disabled="version.referenced"' not in versions
+    assert "if (!selected.value || version.referenced) return" not in source
+    assert "删除不会影响已创建的任务" in source
+    assert "'${' + node.id + '.输出名}'" in advanced
+    assert "`${node.id}.输出名`" not in advanced
 
 
 def test_workflow_studio_requires_explicit_draft_and_risk_confirmation() -> None:
@@ -155,7 +217,7 @@ def test_workflow_studio_requires_explicit_draft_and_risk_confirmation() -> None
     assert "update:confirmedRisks" in preview
     assert "confirmed_risks: true" in source
     assert "draft: selected.value.version === 'draft'" in source
-    assert "send_enter" in source
+    assert "inputSchema" in Path("desktop/src/renderer/src/components/workflow-config/GenericNodeConfig.vue").read_text(encoding="utf-8")
 
 
 def test_workflow_run_panels_are_separate_presentation_components() -> None:
@@ -185,7 +247,7 @@ def test_flow_test_panel_shows_execution_process_without_overlapping_outputs_sec
     assert ":output-entries=" not in source
     assert "workflow-test-outputs" not in styles
     assert ".workflow-test-process-section { min-height: 0;" in styles
-    assert "workflow-output-editor" in source
+    assert "workflow-output-editor" in Path("desktop/src/renderer/src/components/WorkflowSettingsPanel.vue").read_text(encoding="utf-8")
 
 
 def test_quick_workflow_runner_preserves_typed_input_defaults() -> None:
@@ -252,25 +314,41 @@ def test_task_workspace_uses_clear_workflow_step_labels_and_progress_context() -
     assert ".task-detail-summary" in styles
 
 
+def test_task_workspace_separates_history_from_detail_without_inline_creation() -> None:
+    source = Path("desktop/src/renderer/src/components/TaskWorkspace.vue").read_text(encoding="utf-8")
+    styles = STYLES.read_text(encoding="utf-8")
+
+    assert 'class="task-ui-content"' in source
+    assert 'class="task-ui-create"' not in source
+    assert "创建 Workflow Task" not in source
+    assert "if (task.status === 'failed') return '工作流失败'" in source
+    assert ".task-ui-content {" in styles
+    assert ".task-row b {" in styles
+    task_row_status = styles.split("\n.task-row b {", 1)[1].split("}", 1)[0]
+    assert "white-space: nowrap;" in task_row_status
+
+
 def test_workflow_studio_exposes_editable_runtime_inputs() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    settings = Path("desktop/src/renderer/src/components/WorkflowSettingsPanel.vue").read_text(encoding="utf-8")
     assert "workflowRuntimeInputs" in source
     assert "workflowInputValues" in source
     assert "function updateWorkflowInput" in source
-    assert "运行参数" in source
+    assert "运行参数" in settings
     assert "inputs: workflowRuntimeInputs.value" in source
-    assert '<option value="file">本地文件</option>' in source
-    assert "这是本机源文件输入" in source
+    assert '<option value="file">本地文件</option>' in settings
+    assert "这是本机源文件输入" in settings
     assert "async function chooseUploadSource" in source
-    assert "设备目标路径" in source
-    assert "用户无需关心暂存目录" in source
+    assert "设备目标路径" in settings
+    assert "用户无需关心暂存目录" in settings
 
 
 def test_workflow_contract_add_buttons_invoke_their_handlers() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    settings = Path("desktop/src/renderer/src/components/WorkflowSettingsPanel.vue").read_text(encoding="utf-8")
 
-    assert '@click="addWorkflowInput(); workflowInputsExpanded = true"' in source
-    assert '@click="addWorkflowOutput(); workflowOutputsExpanded = true"' in source
+    assert "addWorkflowInput(); emit('update:inputsExpanded', true)" in settings
+    assert "addWorkflowOutput(); emit('update:outputsExpanded', true)" in settings
 
 
 def test_workflow_studio_configures_loop_references_retry_backoff_and_batch_sessions() -> None:
@@ -278,7 +356,7 @@ def test_workflow_studio_configures_loop_references_retry_backoff_and_batch_sess
     assert "loopItemsMode" in source
     assert "loopItemsReference" in source
     assert "resultSources" in source
-    assert "retry_backoff_seconds" in source
+    assert "retry_backoff_seconds" in Path("desktop/src/renderer/src/components/workflow-config/WorkflowNodeProperties.vue").read_text(encoding="utf-8")
     assert "sessionIdsByDevice" in source
     assert "const targetSessionIds = selectedDeviceIds.value" in source
 
@@ -333,57 +411,104 @@ def test_workflow_risk_preview_checks_until_loop_child_actions() -> None:
 
 def test_workflow_studio_configures_generic_variable_extraction_without_extra_actions() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
 
     assert "variableValueSourceId" in source
     assert "variableValueField" in source
     assert "setVariableValueReference" in source
-    assert "`${source.id}`" in source
+    assert "source.id" in advanced
     assert "variableExtractEnabled" in source
     assert "delete selectedNode.value.config.extract" in source
-    assert "匹配规则" in source
-    assert 'value="match"' in source
-    assert 'value="line"' in source
-    assert "捕获组" in source
-    assert "${source}.${field}" in source
+    assert "匹配规则" in advanced
+    assert 'value="match"' in advanced
+    assert 'value="line"' in advanced
+    assert "捕获组" in advanced
+    assert "${source.id}.${field.name}" in advanced
 
 
 def test_variable_node_uses_one_value_entry_with_collapsed_reference_helper() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
     styles = STYLES.read_text(encoding="utf-8")
 
-    assert 'class="workflow-variable-reference"' in source
-    assert '<summary>插入上游引用</summary>' in source
-    assert 'class="workflow-variable-value"' not in source
+    assert 'class="workflow-variable-reference"' in advanced
+    assert '<summary>插入上游引用</summary>' in advanced
+    assert 'class="workflow-variable-value"' not in advanced
     assert "grid-template-columns: minmax(0, 1fr) 116px" not in styles
 
 
 def test_workflow_reference_selectors_use_catalog_output_schema() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
+    catalog = Path("desktop/src/renderer/src/components/workflow-config/actionCatalog.ts").read_text(encoding="utf-8")
 
     assert "type OutputField" in source
-    assert "function outputFieldsFromSchema" in source
+    assert "outputFieldsFromSchema" in source
     assert "function outputFieldsForAction" in source
     assert "function outputFieldsForNode" in source
     assert "fields: outputFieldsForNode(item)" in source
-    assert 'v-for="field in source.fields"' in source
-    assert "fieldLabel(field.name)" in source
-    assert "`${source.id}-${field.name}`" in source
-    assert "source.id}-version" not in source
+    assert 'v-for="field in source.fields"' in advanced
+    assert "fieldLabel(field.name)" in advanced
+    assert "`${source.id}-${field.name}`" in advanced
+    assert "source.id}-version" not in advanced
+    assert "Object.keys(properties as Record<string, unknown>)" in catalog
 
 
-def test_workflow_reference_fallback_includes_execution_identity_fields() -> None:
+def test_workflow_action_cards_use_the_backend_catalog_as_their_source() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    catalog = Path("desktop/src/renderer/src/components/workflow-config/actionCatalog.ts").read_text(encoding="utf-8")
 
-    assert "'device.command': ['output', 'status', 'execution_id', 'operation_id', 'session_id', 'device_id', 'cli_status', 'evidence']" in source
-    assert "'file.upload': ['status', 'operation_id', 'verified', 'skipped', 'skip_reason', 'output', 'evidence']" in source
+    assert "const actions: ActionItem[] = []" in source
+    assert "actionItemsFromCatalog(catalog.actions)" in source
+    assert "inputSchema," in catalog
+    assert "outputSchema," in catalog
+    assert "risk: entry.risk || 'low'" in catalog
+    assert "fallbackOutputFields" not in source
+    assert "baseAction('device.command'" not in source
+
+
+def test_generic_node_configuration_uses_catalog_input_schema() -> None:
+    panel = Path("desktop/src/renderer/src/components/workflow-config/WorkflowNodeProperties.vue").read_text(encoding="utf-8")
+    generic = Path("desktop/src/renderer/src/components/workflow-config/GenericNodeConfig.vue").read_text(encoding="utf-8")
+    command = Path("desktop/src/renderer/src/components/workflow-config/CommandNodeConfig.vue").read_text(encoding="utf-8")
+    script = Path("desktop/src/renderer/src/components/workflow-config/ScriptNodeConfig.vue").read_text(encoding="utf-8")
+
+    assert "<GenericNodeConfig" in panel
+    assert "props.actions?.find((item) => item.id === props.node.action_id)?.inputSchema" in generic
+    assert "schema.required" in generic
+    assert "JSON.parse(target.value)" in generic
+    assert "field in actions?.find((item) => item.id === node.action_id)?.outputFields" in command
+    assert "field in actions?.find((item) => item.id === node.action_id)?.outputFields" in script
+
+    assert "最小输入：指定本机文件或选择文件入参" in generic
+    assert "上传文件来源 <em>必填</em>" in generic
+    assert "选择上传文件的流程入参" in generic
+    assert "选择设备目标路径的流程入参" in generic
+    assert "选择覆盖开关的流程入参" in generic
+    assert ':workflow-inputs="selected.inputs || []"' in Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    assert "输入与输出" in panel
+    assert "selectedAction.outputFields" in panel
+
+
+def test_workflow_advanced_nodes_use_a_dedicated_configuration_module() -> None:
+    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
+
+    assert "<AdvancedNodeConfig" in source
+    assert "onSelectSubworkflow" in advanced
+    assert "condition-builder" in advanced
+    assert "loopChildActions" in advanced
+    assert "workflow-variable-reference" in advanced
+    assert "catalogError" in source
+    assert "动作目录加载失败，请检查后端连接后重试。" in source
 
 
 def test_command_editor_supports_visual_variable_insertion_and_preview() -> None:
-    source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    source = Path("desktop/src/renderer/src/components/workflow-config/CommandNodeConfig.vue").read_text(encoding="utf-8")
     styles = STYLES.read_text(encoding="utf-8")
 
     assert "const commandEditor = ref<HTMLTextAreaElement | null>(null)" in source
-    assert "const commandReferences = computed" in source
+    assert "commandReferences" in source
     assert "function insertCommandReference(reference: string)" in source
     assert "selectionStart" in source
     assert "commandPreview" in source
@@ -394,17 +519,20 @@ def test_command_editor_supports_visual_variable_insertion_and_preview() -> None
 
 def test_variable_node_property_heading_does_not_repeat_action_name() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    properties = Path("desktop/src/renderer/src/components/workflow-config/BaseNodeConfig.vue").read_text(encoding="utf-8")
 
-    assert "selectedNode.action_id === 'variable.set' ? '设置变量' : '步骤设置'" in source
-    assert '<small v-if="selectedNode.action_id !== \'variable.set\'">{{ selectedAction?.label }}</small>' in source
+    assert "node.action_id === 'variable.set'" in properties
+    assert "selectedAction.label" in properties
+    assert "<WorkflowNodeProperties" in source
 
 
 def test_variable_node_editor_hides_shared_advanced_controls() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    properties = Path("desktop/src/renderer/src/components/workflow-config/WorkflowNodeProperties.vue").read_text(encoding="utf-8")
 
-    assert '<template v-if="selectedNode.action_id !== \'variable.set\'">' in source
-    assert source.count("selectedNode.action_id !== 'variable.set'") >= 5
-    assert '<button v-if="selectedNode.action_id !== \'variable.set\'"' in source
+    assert "<BaseNodeConfig" in properties
+    assert "node.action_id !== 'variable.set'" in Path("desktop/src/renderer/src/components/workflow-config/BaseNodeConfig.vue").read_text(encoding="utf-8")
+    assert "WorkflowNodeProperties" in source
 
 
 def test_workflow_canvas_renders_real_edges_and_marks_disconnected_nodes() -> None:
@@ -469,11 +597,12 @@ def test_workflow_issue_messages_cover_node_library_validation_codes() -> None:
 
 def test_workflow_loop_child_selectors_hide_non_executable_actions() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
 
     assert "const nonExecutableLoopActions = new Set" in source
     assert "const loopChildActions = computed" in source
     assert "!nonExecutableLoopActions.has(item.id)" in source
-    assert 'v-for="action in loopChildActions"' in source
+    assert 'v-for="action in loopChildActions"' in advanced
     assert "actions.filter((item) => !['loop.for_each', 'loop.until', 'utility.condition', 'utility.confirm'].includes(item.id))" not in source
 
 

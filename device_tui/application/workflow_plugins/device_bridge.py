@@ -93,6 +93,7 @@ def build_device_action_registry(
             "variable.set",
             "expression.evaluate",
             "loop.for_each",
+            "device.for_each",
             "loop.until",
             "script.run",
             "artifact.build",

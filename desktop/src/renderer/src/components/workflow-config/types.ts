@@ -35,6 +35,9 @@ export type ActionItem = {
   hint: string
   tone: string
   category: string
+  inputSchema: Record<string, unknown>
+  outputSchema: Record<string, unknown>
+  risk: string
   outputFields: Array<{ name: string; label: string }>
   preset?: {
     actionId: string
@@ -47,7 +50,7 @@ export type WorkflowScript = {
   id: string
   name: string
   description?: string
-  language: 'python' | 'powershell' | 'bash'
+  language: 'python' | 'powershell' | 'bash' | string
   script: string
   entrypoint?: string
   input_schema: Array<{
@@ -65,6 +68,7 @@ export type WorkflowScript = {
 export interface NodeConfigProps {
   node: NodeItem
   availableDevices?: DeviceSummary[]
+  workflowInputs?: Array<{ name: string; type?: string; description?: string }>
   commandReferences?: CommandReference[]
   resultSources?: ResultSource[]
   scripts?: WorkflowScript[]

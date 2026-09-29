@@ -322,7 +322,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       transferServiceLog.value = transferLogResponse.entries
       transferClientCommand.value = transferLogResponse.client_command
       operations.value = operationResponse.operations
-      tasks.value = taskResponse.tasks
+      tasks.value = sortTasksByCreatedAt(taskResponse.tasks)
       workflows.value = workflowResponse.workflows
       const restoredDevice = devices.value.find(
         (device) => device.row_id === selectedDeviceRowId.value
@@ -1116,7 +1116,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       taskError.value = ''
       const response = await desktopApi.listTasks()
-      tasks.value = response.tasks
+      tasks.value = sortTasksByCreatedAt(response.tasks)
       if (activeTaskId.value) {
         const active = tasks.value.find((item) => item.id === activeTaskId.value)
         const isTerminal = Boolean(active && ['completed', 'failed', 'cancelled'].includes(active.status))
@@ -1142,6 +1142,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } catch (cause) {
       taskError.value = cause instanceof Error ? cause.message : String(cause)
     }
+  }
+
+  function sortTasksByCreatedAt(items: TaskRecord[]): TaskRecord[] {
+    return [...items].sort((left, right) => {
+      const leftTime = Date.parse(left.created_at || '') || 0
+      const rightTime = Date.parse(right.created_at || '') || 0
+      return rightTime - leftTime || right.id.localeCompare(left.id)
+    })
   }
 
   async function refreshWorkflows(): Promise<void> {
@@ -1191,47 +1199,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function createDeviceUpgradeTask(packagePath: string, options: Record<string, unknown> = {}): Promise<boolean> {
     return createNamedWorkflowTask('device_upgrade', { package_path: packagePath, ...options })
-  }
-
-  async function createWorkflowPlanTask(objective: string, command: string): Promise<boolean> {
-    const deviceId = selectedDeviceId.value
-    if (!deviceId || !objective.trim() || !command.trim()) return false
-    taskBusy.value = true
-    taskError.value = ''
-    try {
-      const plan = {
-        plan_id: 'ui-' + Date.now().toString(36),
-        objective: objective.trim(),
-        target: { device_id: deviceId },
-        steps: [{
-          id: 'command',
-          capability: 'terminal.command',
-          params: { command: command.trim() }
-        }]
-      }
-      const validated = await desktopApi.workflowPlanValidate(plan)
-      const result = validated.data
-      if (!['validated', 'requires_confirmation'].includes(result.status)) {
-        taskError.value = result.errors?.map((item) => item.message || item.code || '计划校验失败').join('；') || '计划校验失败'
-        return false
-      }
-      if (result.status === 'requires_confirmation') {
-        await desktopApi.workflowPlanApprove(result.plan_id, result.plan_hash, '桌面任务工作区确认执行')
-      }
-      const started = await desktopApi.workflowRunPlan(result.plan_id, result.plan_hash)
-      activeTaskId.value = started.data.task.id
-      updateTaskSnapshot(started.data.task, true)
-      await syncTaskSession(started.data.task)
-      taskDecision.value = null
-      notice.value = '计划任务已创建'
-      startTaskPolling()
-      return true
-    } catch (cause) {
-      taskError.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      taskBusy.value = false
-    }
   }
 
   async function getTask(taskId: string, focus = true): Promise<TaskRecord | null> {
@@ -1660,7 +1627,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     refreshWorkflows,
     createNamedWorkflowTask,
     createDeviceUpgradeTask,
-    createWorkflowPlanTask,
     getTask,
     pauseTask,
     resumeTask,
