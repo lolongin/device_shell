@@ -4,11 +4,16 @@ import subprocess
 
 
 APP = Path("desktop/src/renderer/src/App.vue")
+SESSION_WORKSPACE = Path("desktop/src/renderer/src/components/SessionWorkspaceShell.vue")
 STYLES = Path("desktop/src/renderer/src/styles.css")
+STEP_INSPECTOR = Path("desktop/src/renderer/src/components/workflow/WorkflowStepInspector.vue")
+CATALOG_PANEL = Path("desktop/src/renderer/src/components/workflow/WorkflowCatalogPanel.vue")
+WORKFLOW_INPUTS = Path("desktop/src/renderer/src/composables/useWorkflowInputs.ts")
+WORKFLOW_NODE_CONFIG = Path("desktop/src/renderer/src/composables/useWorkflowNodeConfig.ts")
 
 
 def test_workflow_studio_owns_the_full_workspace_grid() -> None:
-    app = APP.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8") + SESSION_WORKSPACE.read_text(encoding="utf-8")
     styles = STYLES.read_text(encoding="utf-8")
 
     assert 'v-show="!workflowPanelOpen"' in app
@@ -92,7 +97,7 @@ def test_workflow_script_nodes_render_schema_inputs_with_json_escape_hatch() -> 
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
     script = Path("desktop/src/renderer/src/components/workflow-config/ScriptNodeConfig.vue").read_text(encoding="utf-8")
 
-    assert "WorkflowNodeProperties" in source
+    assert "WorkflowNodeProperties" in STEP_INSPECTOR.read_text(encoding="utf-8")
     assert "scriptNodeInputMode" in script
     assert "updateScriptNodeInputField" in script
     assert "updateScriptNodeInputBoolean" in script
@@ -118,7 +123,7 @@ def test_workflow_studio_panels_keep_independent_scroll_containers() -> None:
 
     assert "display: flex;" in shell
     assert "overflow-y: auto;" in shell
-    assert "<WorkflowNodeProperties" in source
+    assert "<WorkflowNodeProperties" in STEP_INSPECTOR.read_text(encoding="utf-8")
 
 
 def test_step_settings_puts_long_configuration_in_its_own_scroll_container() -> None:
@@ -183,7 +188,7 @@ def test_script_step_resource_can_be_edited_from_step_settings() -> None:
     assert "class=\"workflow-script-reference-notice\"" in script
     assert "aria-label=\"步骤脚本编辑器\"" in script
     assert "script.script = value" in script
-    assert '@save-script="saveNodeScriptResource"' in source
+    assert '@save-script="props.onSaveScript"' in STEP_INSPECTOR.read_text(encoding="utf-8")
     assert "selectedNodeScript?.script || getConfigString('script')" in script
 
 
@@ -330,10 +335,11 @@ def test_task_workspace_separates_history_from_detail_without_inline_creation() 
 
 def test_workflow_studio_exposes_editable_runtime_inputs() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    inputs = WORKFLOW_INPUTS.read_text(encoding="utf-8")
     settings = Path("desktop/src/renderer/src/components/WorkflowSettingsPanel.vue").read_text(encoding="utf-8")
     assert "workflowRuntimeInputs" in source
     assert "workflowInputValues" in source
-    assert "function updateWorkflowInput" in source
+    assert "function updateWorkflowInput" in inputs
     assert "运行参数" in settings
     assert "inputs: workflowRuntimeInputs.value" in source
     assert '<option value="file">本地文件</option>' in settings
@@ -411,6 +417,7 @@ def test_workflow_risk_preview_checks_until_loop_child_actions() -> None:
 
 def test_workflow_studio_configures_generic_variable_extraction_without_extra_actions() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    node_config = WORKFLOW_NODE_CONFIG.read_text(encoding="utf-8")
     advanced = Path("desktop/src/renderer/src/components/workflow-config/AdvancedNodeConfig.vue").read_text(encoding="utf-8")
 
     assert "variableValueSourceId" in source
@@ -418,7 +425,7 @@ def test_workflow_studio_configures_generic_variable_extraction_without_extra_ac
     assert "setVariableValueReference" in source
     assert "source.id" in advanced
     assert "variableExtractEnabled" in source
-    assert "delete selectedNode.value.config.extract" in source
+    assert "if (!enabled) delete node.config.extract" in node_config
     assert "匹配规则" in advanced
     assert 'value="match"' in advanced
     assert 'value="line"' in advanced
@@ -500,7 +507,7 @@ def test_workflow_advanced_nodes_use_a_dedicated_configuration_module() -> None:
     assert "loopChildActions" in advanced
     assert "workflow-variable-reference" in advanced
     assert "catalogError" in source
-    assert "动作目录加载失败，请检查后端连接后重试。" in source
+    assert 'v-if="error"' in CATALOG_PANEL.read_text(encoding="utf-8")
 
 
 def test_command_editor_supports_visual_variable_insertion_and_preview() -> None:
@@ -523,7 +530,7 @@ def test_variable_node_property_heading_does_not_repeat_action_name() -> None:
 
     assert "node.action_id === 'variable.set'" in properties
     assert "selectedAction.label" in properties
-    assert "<WorkflowNodeProperties" in source
+    assert "<WorkflowNodeProperties" in STEP_INSPECTOR.read_text(encoding="utf-8")
 
 
 def test_variable_node_editor_hides_shared_advanced_controls() -> None:
@@ -532,7 +539,7 @@ def test_variable_node_editor_hides_shared_advanced_controls() -> None:
 
     assert "<BaseNodeConfig" in properties
     assert "node.action_id !== 'variable.set'" in Path("desktop/src/renderer/src/components/workflow-config/BaseNodeConfig.vue").read_text(encoding="utf-8")
-    assert "WorkflowNodeProperties" in source
+    assert "WorkflowNodeProperties" in STEP_INSPECTOR.read_text(encoding="utf-8")
 
 
 def test_workflow_canvas_renders_real_edges_and_marks_disconnected_nodes() -> None:

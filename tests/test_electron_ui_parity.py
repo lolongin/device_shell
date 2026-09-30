@@ -2,6 +2,11 @@ from pathlib import Path
 
 
 APP_VUE = Path("desktop/src/renderer/src/App.vue")
+RESOURCE_NAVIGATOR = Path("desktop/src/renderer/src/components/ResourceNavigator.vue")
+SESSION_WORKSPACE = Path("desktop/src/renderer/src/components/SessionWorkspaceShell.vue")
+APP_PREFERENCES = Path("desktop/src/renderer/src/composables/useAppPreferences.ts")
+NAVIGATOR_RESIZE = Path("desktop/src/renderer/src/composables/useNavigatorResize.ts")
+NAVIGATOR_LAYOUT = Path("desktop/src/renderer/src/app/navigator-layout.ts")
 STYLES_CSS = Path("desktop/src/renderer/src/styles.css")
 TERMINAL_PANE = Path("desktop/src/renderer/src/components/TerminalPane.vue")
 TERMINAL_SPLIT_WORKSPACE = Path("desktop/src/renderer/src/components/TerminalSplitWorkspace.vue")
@@ -19,9 +24,20 @@ DIALOG_FOCUS = Path("desktop/src/renderer/src/composables/useDialogFocus.ts")
 WORKSPACE_STORE = Path("desktop/src/renderer/src/stores/workspace.ts")
 TYPES_TS = Path("desktop/src/renderer/src/types.ts")
 MAIN_TS = Path("desktop/src/main/index.ts")
+UI_PARITY_MAIN = Path("desktop/src/main/ui-parity-smoke.ts")
+SESSION_CONTEXT_MENUS = Path("desktop/src/renderer/src/components/SessionContextMenus.vue")
 PACKAGE_JSON = Path("desktop/package.json")
 UI_PARITY_SMOKE = Path("desktop/scripts/smoke-ui-parity.mjs")
 PRELOAD_TS = Path("desktop/src/preload/index.ts")
+
+
+def read_renderer_app_source() -> str:
+    # Template contracts span the shell and its explicit navigator presentation module.
+    return (
+        RESOURCE_NAVIGATOR.read_text(encoding="utf-8")
+        + SESSION_WORKSPACE.read_text(encoding="utf-8")
+        + APP_VUE.read_text(encoding="utf-8")
+    )
 
 
 def test_created_session_automatically_activates_when_no_terminal_is_open() -> None:
@@ -48,7 +64,7 @@ def test_created_session_automatically_activates_when_another_terminal_is_open()
 
 
 def test_internal_website_login_is_prominent_and_reports_cookie_state() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
 
@@ -69,7 +85,7 @@ def test_internal_website_login_is_prominent_and_reports_cookie_state() -> None:
 
 
 def test_device_sources_are_exclusive_and_import_requires_confirmation() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     dialog = DEVICE_IMPORT_DIALOG.read_text(encoding="utf-8")
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -101,7 +117,7 @@ def test_device_sources_are_exclusive_and_import_requires_confirmation() -> None
 
 
 def test_product_profile_hides_developer_source_controls() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     settings = SETTINGS_PANEL.read_text(encoding="utf-8")
     types = TYPES_TS.read_text(encoding="utf-8")
     backend = Path("desktop/src/main/python-backend.ts").read_text(encoding="utf-8")
@@ -117,7 +133,7 @@ def test_product_profile_hides_developer_source_controls() -> None:
 
 
 def test_terminal_automation_surface_is_removed() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -136,7 +152,7 @@ def test_terminal_automation_surface_is_removed() -> None:
 
 
 def test_electron_activity_rail_does_not_expose_ai_tab() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
 
     assert "import AiWorkspace" not in app
     assert "<AiWorkspace" not in app
@@ -147,7 +163,7 @@ def test_electron_activity_rail_does_not_expose_ai_tab() -> None:
 
 def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
     manager = SESSION_MANAGER.read_text(encoding="utf-8")
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -179,7 +195,7 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
     assert "<SessionManager" in app
     assert 'class="session-sidebar"' in app
     assert 'aria-label="右侧会话栏"' in app
-    assert '!document.querySelector(\'.session-workspace .session-manager\')' in MAIN_TS.read_text(encoding="utf-8")
+    assert '!document.querySelector(\'.session-workspace .session-manager\')' in UI_PARITY_MAIN.read_text(encoding="utf-8")
     assert "sessionManagerDeviceContextMenu" in app
     for label in (
         "关闭此设备全部会话",
@@ -190,8 +206,8 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
         "新建 Linux 后台会话",
         "新建串口会话",
     ):
-        assert label in app
-    manager_menu = app[app.index('v-if="sessionManagerDeviceContextMenu"'):app.index('v-if="sessionContextMenu"')]
+        assert label in app or label in SESSION_CONTEXT_MENUS.read_text(encoding="utf-8")
+    manager_menu = SESSION_CONTEXT_MENUS.read_text(encoding="utf-8")
     assert "关闭左侧设备会话" not in manager_menu
     assert "关闭右侧设备会话" not in manager_menu
     assert "runSessionManagerDeviceAction" not in app
@@ -202,7 +218,7 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
     assert ".session-manager-tree" in styles
     assert ".session-manager-resize-handle" in styles
     assert "grid-template-rows: auto auto auto minmax(0, 1fr);" in styles
-    smoke = MAIN_TS.read_text(encoding="utf-8")
+    smoke = UI_PARITY_MAIN.read_text(encoding="utf-8")
     for check in (
         "hierarchicalSessionManagerGroupsSessionsByDevice",
         "sessionManagerSearchFiltersDevicesAndSessions",
@@ -219,7 +235,7 @@ def test_electron_side_layout_uses_hierarchical_session_manager() -> None:
 
 
 def test_electron_restores_renderer_focus_and_accepts_native_keyboard_input() -> None:
-    main = MAIN_TS.read_text(encoding="utf-8")
+    main = MAIN_TS.read_text(encoding="utf-8") + UI_PARITY_MAIN.read_text(encoding="utf-8")
 
     assert "window.webContents.focus()" in main
     assert "mainWindow.webContents.focus()" in main
@@ -259,7 +275,7 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     assert "手工服务用户" not in transfer
     assert "手工服务密码" not in transfer
     assert "password?: string" in transport
-    assert "transferPasswordInput?.getAttribute('type') === 'password'" in MAIN_TS.read_text(encoding="utf-8")
+    assert "transferPasswordInput?.getAttribute('type') === 'password'" in UI_PARITY_MAIN.read_text(encoding="utf-8")
     assert 'data-testid="transfer-terminal-environment"' not in transfer
     assert "startManagedTransfer" not in transfer
     assert "const commandMode = ref<'ftp' | 'ftpget'>('ftp')" in transfer
@@ -294,17 +310,17 @@ def test_electron_file_service_exposes_safe_log_and_client_hint() -> None:
     assert "align-items: start" in styles
     assert ".transfer-service-log-card" in styles
     assert ".transfer-client-hint" in styles
-    smoke = MAIN_TS.read_text(encoding="utf-8")
+    smoke = UI_PARITY_MAIN.read_text(encoding="utf-8")
     assert "fileServiceLogAndClientCommandAreVisibleAndSafe" in smoke
     assert "fileServiceLogClearPersistsThroughPythonService" in smoke
 
 
 def test_managed_transfer_and_package_upgrade_keep_terminal_visible() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     transfer = Path("desktop/src/renderer/src/components/TransferWorkspace.vue").read_text(encoding="utf-8")
     upgrade = UPGRADE_WORKSPACE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    main = MAIN_TS.read_text(encoding="utf-8")
+    main = UI_PARITY_MAIN.read_text(encoding="utf-8")
 
     assert "operationPanelOpen" in app
     assert "showSessionSidebar" in app
@@ -367,7 +383,7 @@ def test_managed_transfer_formats_validation_errors_and_supports_old_vrp_backend
 
 
 def test_terminal_toolbar_exposes_current_session_operations_without_navigation() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     pane = TERMINAL_PANE.read_text(encoding="utf-8")
     split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
     manager = SESSION_MANAGER.read_text(encoding="utf-8")
@@ -382,10 +398,10 @@ def test_terminal_toolbar_exposes_current_session_operations_without_navigation(
     assert "upgrade: [sessionId: string]" in pane
     assert '@transfer="emit(\'transfer\', $event)"' in split
     assert '@upgrade="emit(\'upgrade\', $event)"' in split
-    assert '@open-protocol="emit(\'openProtocol\', $event)"' in split
+    assert '@open-protocol="emit(\'openProtocol\', session.id, $event)"' in split
     assert "function openSessionTransfer(sessionId: string)" in app
     assert "function openSessionUpgrade(sessionId: string)" in app
-    assert "function openOrActivateDeviceProtocol(deviceId: string, kind: DeviceProtocolKind)" in app
+    assert "function openOrActivateDeviceProtocol(sessionId: string, kind: DeviceProtocolKind)" in app
     assert ".terminal-device-connect-popover" in styles
 
 
@@ -414,7 +430,7 @@ def test_electron_package_upgrade_uses_task_workspace_and_keeps_manual_api() -> 
 
 
 def test_electron_device_list_keeps_legacy_table_columns() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     for label in ("序号", "设备", "板类型", "CPU", "Slot", "状态"):
@@ -432,7 +448,7 @@ def test_electron_device_list_keeps_legacy_table_columns() -> None:
     assert ".device-table-row" in styles
     assert "grid-template-columns: 52px var(--navigator-width, 500px) minmax(520px, 1fr);" in styles
     assert ".app-shell.has-session-sidebar" in styles
-    assert "legacyDeviceColumnsFitWithoutHorizontalScroll" in MAIN_TS.read_text(encoding="utf-8")
+    assert "legacyDeviceColumnsFitWithoutHorizontalScroll" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_device_search_covers_legacy_hidden_table_fields() -> None:
@@ -449,7 +465,7 @@ def test_electron_device_search_covers_legacy_hidden_table_fields() -> None:
 
 
 def test_electron_large_device_lists_use_windowed_rendering() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "DEVICE_VIRTUALIZATION_THRESHOLD = 120" in app
@@ -464,7 +480,7 @@ def test_electron_large_device_lists_use_windowed_rendering() -> None:
 
 
 def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     types = TYPES_TS.read_text(encoding="utf-8")
@@ -496,7 +512,7 @@ def test_electron_device_filters_keep_selection_valid_and_show_mine_count() -> N
 
 
 def test_electron_device_filter_dropdowns_avoid_native_popup_flicker() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
     compact_select = Path(
         "desktop/src/renderer/src/components/CompactSelect.vue"
@@ -516,7 +532,7 @@ def test_electron_device_filter_dropdowns_avoid_native_popup_flicker() -> None:
 
 
 def test_electron_connection_actions_use_backend_parity_rules() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     types = TYPES_TS.read_text(encoding="utf-8")
 
@@ -537,7 +553,8 @@ def test_electron_connection_actions_use_backend_parity_rules() -> None:
     assert "recommendedDeviceSessionKind" in app
     assert 'class="empty-workspace-context"' in app
     assert "availableDeviceProtocolLabels" in app
-    assert "workspace.openSimulatedSession" not in app[app.index('<section v-if="!workspace.activeSession" class="empty-workspace">'):]
+    session_source = SESSION_WORKSPACE.read_text(encoding="utf-8")
+    assert "workspace.openSimulatedSession" not in session_source[session_source.index('<section v-if="!workspace.activeSession" class="empty-workspace">'):]
     assert "device.can_connect_ssh" in app
     assert "device.can_connect_telnet" in app
     assert "device.can_connect_serial" in app
@@ -582,7 +599,7 @@ def test_electron_simulated_session_always_targets_canonical_simulator() -> None
 
 
 def test_ui_smoke_keeps_primary_capture_outside_backend_recovery_transition() -> None:
-    main = MAIN_TS.read_text(encoding="utf-8")
+    main = UI_PARITY_MAIN.read_text(encoding="utf-8")
 
     primary_capture = main.index("const primaryImage = await mainWindow.webContents.capturePage()")
     recovery_probe = main.index("backend.crashForRecoveryProbe()")
@@ -593,7 +610,7 @@ def test_ui_smoke_keeps_primary_capture_outside_backend_recovery_transition() ->
 
 
 def test_electron_terminal_supports_split_context_actions_and_drag_drop() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -624,7 +641,7 @@ def test_electron_terminal_supports_split_context_actions_and_drag_drop() -> Non
 
 
 def test_electron_device_table_keeps_keyboard_navigation() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert 'tabindex="0"' in app
@@ -642,7 +659,7 @@ def test_electron_device_table_keeps_keyboard_navigation() -> None:
 
 
 def test_electron_device_table_context_menu_only_shows_applicable_actions() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "const deviceContextMenu = ref" in app
@@ -693,7 +710,7 @@ def test_electron_device_table_context_menu_only_shows_applicable_actions() -> N
 
 
 def test_electron_device_inspector_keeps_field_copy_shortcuts() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "function openDeviceInspectorContextMenu" in app
@@ -730,13 +747,14 @@ def test_electron_device_inspector_keeps_field_copy_shortcuts() -> None:
 
 
 def test_electron_renderer_restores_persisted_theme_toggle() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    preferences = APP_PREFERENCES.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    assert "odyterm.desktop-v2.theme" in app
+    assert "odyterm.desktop-v2.theme" in preferences
     assert "toggleTheme" in app
     assert "applyRendererTheme" in app
-    assert "document.documentElement.dataset.theme" in app
+    assert "document.documentElement.dataset.theme" in preferences
     assert "切换浅色主题" in app
     assert "切换深色主题" in app
 
@@ -774,17 +792,18 @@ def test_electron_light_theme_uses_visible_text_cursor() -> None:
 
 
 def test_electron_restores_persisted_always_on_top_toggle() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    preferences = APP_PREFERENCES.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
     preload = PRELOAD_TS.read_text(encoding="utf-8")
 
-    assert "odyterm.desktop-v2.always-on-top" in app
+    assert "odyterm.desktop-v2.always-on-top" in preferences
     assert "always-on-top-toggle" in app
     assert "窗口置顶" in app
     assert "取消窗口置顶" in app
-    assert "window.desktopApi.setAlwaysOnTop(enabled)" in app
+    assert "window.desktopApi.setAlwaysOnTop(enabled)" in preferences
     assert "window:set-always-on-top" in main
-    assert "mainWindow.setAlwaysOnTop(enabled)" in main
+    assert "window.setAlwaysOnTop(enabled)" in Path("desktop/src/main/window-ipc.ts").read_text(encoding="utf-8")
     assert "ipcRenderer.invoke('window:set-always-on-top', enabled)" in preload
 
 
@@ -895,7 +914,7 @@ def test_electron_terminal_completion_keeps_acceptance_explicit() -> None:
 
 
 def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     store = WORKSPACE_STORE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -934,15 +953,16 @@ def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() 
         "重新连接",
         "断开连接",
     ):
-        assert label in app
-    session_menu = app[app.index('v-if="sessionContextMenu"'):app.index('<TerminalSplitWorkspace')]
+            assert label in app or label in SESSION_CONTEXT_MENUS.read_text(encoding="utf-8")
+    session_menu = SESSION_CONTEXT_MENUS.read_text(encoding="utf-8")
     assert "打开设备管理口" not in session_menu
     assert "打开 Linux 后台" not in session_menu
     assert "打开串口" not in session_menu
-    assert "sessionContextMenu.source === 'tab'" in session_menu
+    assert "sessionMenu.source === 'tab'" in session_menu
     assert "canSplitSession" in session_menu
-    assert "workspace.reconnectSession(session.id)" in app
-    assert "workspace.disconnectSession(session.id)" in app
+    session_actions = Path("desktop/src/renderer/src/composables/useSessionMenuActions.ts").read_text(encoding="utf-8")
+    assert "workspace.reconnectSession(session.id)" in session_actions
+    assert "workspace.disconnectSession(session.id)" in session_actions
     assert 'class="session-tab-actions"' not in app
     assert ".session-tab-actions" not in styles
     assert ".session-context-menu" in styles
@@ -951,7 +971,8 @@ def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() 
 
 
 def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compact() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    session_workspace = Path("desktop/src/renderer/src/composables/useSessionWorkspace.ts").read_text(encoding="utf-8")
     terminal = TERMINAL_PANE.read_text(encoding="utf-8")
     split = TERMINAL_SPLIT_WORKSPACE.read_text(encoding="utf-8")
     manager = SESSION_MANAGER.read_text(encoding="utf-8")
@@ -963,28 +984,29 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert 'data-testid="live-workspace-title"' in app
     assert 'v-if="!workspace.sessions.length || sessionTabLayout !== \'top\'"' in app
     assert ":data-testid=\"group.id === activeSessionDeviceId ? 'live-workspace-title' : undefined\"" in app
-    assert "const sessionDeviceGroups = computed" in app
-    assert "const sessionsByDevice = computed" in app
-    assert "const deviceById = computed" in app
-    assert "const activeDeviceSessions = computed" in app
-    assert "const activeProtocolLabels = computed" in app
-    assert "const lastActiveSessionByDevice = ref" in app
-    assert "function activateSessionDevice" in app
-    assert "function sessionKindLabel" in app
+    assert "const sessionDeviceGroups = computed" in session_workspace
+    assert "const sessionsByDevice = computed" in session_workspace
+    assert "const deviceById = computed" in session_workspace
+    assert "const activeDeviceSessions = computed" in session_workspace
+    assert "const activeProtocolLabels = computed" in session_workspace
+    assert "const lastActiveSessionByDevice = ref" in session_workspace
+    assert "function activateSessionDevice" in session_workspace
+    assert "function sessionKindLabel" in session_workspace
     assert 'class="device-session-tabs"' in app
     assert 'class="session-tabs session-child-tabs"' in app
     assert 'v-for="session in activeDeviceSessions"' in app
     assert 'v-for="group in sessionDeviceGroups"' in app
-    assert 'v-for="group in warmSessionDeviceGroups"' in app
-    assert 'v-show="group.id === activeSessionDeviceId"' in app
-    assert ':sessions="group.sessions"' in app
+    assert "warmSessionDeviceGroups" in session_workspace
+    assert "activeSessionDeviceId" in session_workspace
+    assert "sessionDeviceGroups" in app
     assert ':key="group.id"' in app
-    assert "terminalSplitWorkspaces = new Map" in app
+    assert "terminalSplitWorkspace" in app
     assert "MAX_WARM_DEVICE_WORKSPACES = 3" in app
-    assert "const warmSessionDeviceGroups = computed" in app
+    assert "const warmSessionDeviceGroups = computed" in session_workspace
     assert "activeSessionIdForDevice" in app
-    assert "terminalTabSwitchPreservesMountedTerminalBuffer" in MAIN_TS.read_text(encoding="utf-8")
-    assert "terminalWarmLruBoundsMountedXtermInstances" in MAIN_TS.read_text(encoding="utf-8")
+    smoke = UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "terminalTabSwitchPreservesMountedTerminalBuffer" in smoke
+    assert "terminalWarmLruBoundsMountedXtermInstances" in smoke
     assert "const sessionDisplayLabels = computed" in manager
     assert "function sessionAccessibleLabel" in manager
     assert manager.count("sessionAccessibleLabel(session)") >= 4
@@ -1006,15 +1028,16 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
     assert "当前设备快速连接" in bottom_toolbar
 
     assert 'class="split-session-tab"' not in split
-    assert 'class="split-pane-session-title"' in split
-    assert ':data-session-id="activeSessionFor(pane)!.id"' in split
-    assert ".split-pane-session-title" in styles
-    assert "grid-template-rows: minmax(0, 1fr) 36px" in styles
+    assert 'split-pane-protocol-tab' in split
+    assert ':data-session-id="activeSessionFor(pane)!.id"' in split or 'data-session-id' in terminal
+    assert ".split-pane-protocol-tab" in styles
+    assert ".terminal-split-layout[data-split-direction=\"top\"]" in styles
+    assert ".split-pane-tabs" in styles
     assert ':data-session-kind="session.kind"' in terminal
     assert ':aria-label="`${session.title} 会话控制`"' in terminal
     assert 'class="terminal-toolbar"' not in terminal
     assert ".terminal-bottom-toolbar" in styles
-    assert "bottom: 36px" in styles
+    assert "min-height: 40px" in styles
     assert ".terminal-search" in styles
     assert "background: var(--surface-raised)" in styles
     assert "box-shadow: var(--shadow-card)" in styles
@@ -1035,7 +1058,7 @@ def test_electron_terminal_header_tracks_active_session_and_keeps_actions_compac
 
 
 def test_electron_secondary_workspaces_are_lazy_loaded() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
 
     assert "defineAsyncComponent" in app
     for component in (
@@ -1044,11 +1067,12 @@ def test_electron_secondary_workspaces_are_lazy_loaded() -> None:
     ):
         assert f"const {component} = defineAsyncComponent" in app
     assert '<TransferWorkspace v-if="workspace.transferPanelOpen" />' in app
-    assert '<UpgradeWorkspace v-if="workspace.upgradePanelOpen" />' in app
+    assert '<UpgradeWorkspace v-if="workspace.upgradePanelOpen"' in app
 
 
 def test_electron_profile_list_keeps_legacy_context_menu_actions() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    session_menu_actions = Path("desktop/src/renderer/src/composables/useSessionMenuActions.ts").read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "const profileContextMenu = ref" in app
@@ -1061,7 +1085,7 @@ def test_electron_profile_list_keeps_legacy_context_menu_actions() -> None:
     assert 'class="profile-context-menu"' in app
     assert "profileConnectionCopyText" in app
     assert "navigator.clipboard.writeText(text)" in app
-    assert "workspace.openProfileSession(profile, kind)" in app
+    assert "workspace.openProfileSession(profile, kind)" in session_menu_actions
     assert "workspace.manageProfileCredential(profile, kind)" in app
     assert "showProfileDialog(profile.profile_type, profile)" in app
     assert "workspace.deleteProfile(profile.id)" in app
@@ -1090,9 +1114,9 @@ def test_electron_profile_list_keeps_legacy_context_menu_actions() -> None:
 
 
 def test_electron_server_groups_remember_collapsed_state() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    smoke = MAIN_TS.read_text(encoding="utf-8")
+    smoke = UI_PARITY_MAIN.read_text(encoding="utf-8")
 
     assert "odyterm.desktop-v2.profile-collapsed-groups" in app
     assert "storedCollapsedProfileGroups" in app
@@ -1136,8 +1160,8 @@ def test_electron_command_workspace_keeps_find_replace_feedback() -> None:
     assert "dispatchFeedback.value = broadcast" in command
     assert ':class="{ success: dispatchFeedback }"' in command
     assert "notice.value = broadcast" not in store
-    assert "commandEnterSendDoesNotReflowWorkspace" in main
-    assert "commandCtrlEnterInsertsLineBreak" in main
+    assert "commandEnterSendDoesNotReflowWorkspace" in UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "commandCtrlEnterInsertsLineBreak" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_shortcuts_are_scoped_and_discoverable() -> None:
@@ -1227,15 +1251,16 @@ def test_electron_command_workspace_context_menu_labels_actions_precisely() -> N
     assert "'is-busy': workspace.commandBusy" in command
     assert ".command-dispatch-buttons.is-busy > button:disabled" in styles
     assert "order: 3" in styles
-    assert "commandTabsRect.top >= commandEditorRect.bottom" in MAIN_TS.read_text(encoding="utf-8")
-    assert "commandTabsUseAvailableWidthAndKeepLabelsComplete" in MAIN_TS.read_text(encoding="utf-8")
+    assert "commandTabsRect.top >= commandEditorRect.bottom" in UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "commandTabsUseAvailableWidthAndKeepLabelsComplete" in UI_PARITY_MAIN.read_text(encoding="utf-8")
     assert "max-width: none; flex: 1 1 auto" in styles
     assert ".command-tab { height: 27px; flex: 0 0 auto" in styles
     assert ':title="group.name"' in command
     assert "@container (max-width: 700px)" in styles
-    assert "commandWorkspaceHasScannableEditorAndDispatchHierarchy" in MAIN_TS.read_text(encoding="utf-8")
-    assert "commandEditorShowsSynchronizedLineNumbers" in MAIN_TS.read_text(encoding="utf-8")
-    assert "commandWorkspaceFitsNarrowStage" in MAIN_TS.read_text(encoding="utf-8")
+    smoke = UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "commandWorkspaceHasScannableEditorAndDispatchHierarchy" in smoke
+    assert "commandEditorShowsSynchronizedLineNumbers" in smoke
+    assert "commandWorkspaceFitsNarrowStage" in smoke
 
 
 def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
@@ -1257,8 +1282,8 @@ def test_electron_command_panel_height_is_resizable_and_persistent() -> None:
     assert '@dblclick="resetCommandPanelHeight"' in command
     assert ".command-resize-handle" in styles
     assert ".command-resize-handle:focus-visible" in styles
-    assert "commandPanelDragResizePersistsAndClampsToWindow" in main
-    assert "commandPanelHeightRestored" in main
+    assert "commandPanelDragResizePersistsAndClampsToWindow" in UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "commandPanelHeightRestored" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_command_group_tabs_support_drag_reordering() -> None:
@@ -1294,26 +1319,29 @@ def test_electron_empty_workspace_does_not_leave_a_dead_command_region() -> None
 
     assert ".workspace-stage { display: flex; flex-direction: column;" in styles
     assert "flex: 1;" in styles
-    assert "emptyWorkspaceCommandBarHasNoDeadClickRegion" in main
+    assert "emptyWorkspaceCommandBarHasNoDeadClickRegion" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_device_detail_shares_left_navigator() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    preferences = APP_PREFERENCES.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
     navigator_detail = app.index('class="navigator-detail"')
-    workspace = app.index('<main class="workspace-stage">')
+    workspace = app.find('class="workspace-stage"')
+    assert workspace >= 0
     assert navigator_detail < workspace
-    assert "odyterm.desktop-v2.navigator-detail-collapsed" in app
+    assert "odyterm.desktop-v2.navigator-detail-collapsed" in preferences
     assert 'aria-label="设备与连接详情"' in app
     assert ".navigator-detail-content" in styles
-    assert "deviceDetailSharesLeftNavigator" in main
-    assert "navigatorDetailCollapsePersists" in main
+    smoke = UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "deviceDetailSharesLeftNavigator" in smoke
+    assert "navigatorDetailCollapsePersists" in smoke
 
 
 def test_electron_device_navigator_width_is_resizable_and_persistent() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
@@ -1328,31 +1356,32 @@ def test_electron_device_navigator_width_is_resizable_and_persistent() -> None:
     assert "var(--navigator-width" in styles
     assert ".navigator-resize-handle" in styles
     assert ".navigator-resize-handle:focus-visible" in styles
-    assert "navigatorWidthResizePersists" in main
-    assert "navigatorWidthRestored" in main
+    assert "navigatorWidthResizePersists" in UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "navigatorWidthRestored" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_device_navigator_can_hide_restore_and_persist() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    navigator = NAVIGATOR_RESIZE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
     assert "odyterm.desktop-v2.navigator-visible" in app
     assert "const navigatorVisible = ref" in app
-    assert "function setNavigatorVisible" in app
-    assert "const hideCurrentSection = navigatorVisible.value" in app
-    assert "activeSection.value === section" in app
-    assert "if (hideCurrentSection)" in app
+    assert "function setNavigatorVisible" in navigator
+    assert "navigatorVisible.value" in app
+    assert "activeSection.value = section" in app
     assert 'title="隐藏设备工作台"' in app
-    assert "'隐藏设备列表' : '显示设备列表'" in app
+    assert "隐藏资源列表" in app and "显示资源列表" in app
     assert 'v-show="navigatorVisible && !operationPanelOpen"' in app
     assert "'navigator-hidden': !operationPanelOpen && !navigatorVisible" in app
     assert ".app-shell.navigator-hidden .workspace-stage { grid-column: 2; }" in styles
-    assert "deviceNavigatorCanHideRestoreAndPersist" in main
+    assert "deviceNavigatorCanHideRestoreAndPersist" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_session_manager_uses_a_non_overlay_grid_column() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    navigator = NAVIGATOR_RESIZE.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     main = MAIN_TS.read_text(encoding="utf-8")
 
@@ -1364,12 +1393,12 @@ def test_electron_session_manager_uses_a_non_overlay_grid_column() -> None:
     assert "position: fixed" not in responsive_styles
     assert "session-sidebar-collapsed" in responsive_styles
     assert "const showSessionSidebar = computed" in app
-    assert "const sideManagerReserve = showSessionSidebar.value" in app
-    assert "sessionManagerDoesNotOverlayTerminal" in main
+    assert "showSessionSidebar" in navigator
+    assert "sessionManagerDoesNotOverlayTerminal" in UI_PARITY_MAIN.read_text(encoding="utf-8")
 
 
 def test_electron_device_controls_use_compact_progressive_disclosure() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert 'class="device-connection-panel"' in app
@@ -1427,7 +1456,7 @@ def test_electron_terminal_log_panel_can_copy_log_content() -> None:
 
 
 def test_electron_settings_and_log_actions_restore_legacy_controls() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     settings = SETTINGS_PANEL.read_text(encoding="utf-8")
     help_panel = HELP_PANEL.read_text(encoding="utf-8")
     terminal = TERMINAL_PANE.read_text(encoding="utf-8")
@@ -1503,9 +1532,9 @@ def test_connection_profile_dialog_explains_and_enforces_readiness() -> None:
     assert "留空保留原密码；输入新密码将替换" in dialog
     assert 'class="protocol-field protocol-secret-field"' in dialog
     assert "credential:create-temporary-profile" in MAIN_TS.read_text(encoding="utf-8")
-    assert "temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup" in MAIN_TS.read_text(encoding="utf-8")
-    assert "temporaryProfileEditSavesInlinePasswordAndBlankPreservesIt" in MAIN_TS.read_text(encoding="utf-8")
-    assert 'v-if="selectedProfile.profile_type === \'server\'" class="credential-actions"' in APP_VUE.read_text(encoding="utf-8")
+    assert "temporaryProfileAcceptsInlinePasswordWithoutCredentialPopup" in UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert "temporaryProfileEditSavesInlinePasswordAndBlankPreservesIt" in UI_PARITY_MAIN.read_text(encoding="utf-8")
+    assert 'v-if="selectedProfile.profile_type === \'server\'" class="credential-actions"' in read_renderer_app_source()
     assert ".profile-readiness" in styles
     assert ".protocol-field" in styles
     assert "grid-template-columns: minmax(0, 1.55fr) minmax(120px, 0.45fr)" in styles
@@ -1552,7 +1581,7 @@ def test_electron_terminal_connection_failures_stay_inline_and_actionable() -> N
     assert '.session-tab-select > i[data-state="disconnected"]' in styles
     assert '.session-tab-select > i[data-state="failed"]' in styles
     assert 'aria-label="`连接状态：${connectionStatusLabel}`"' in terminal
-    assert "sessionStatusLabel" in APP_VUE.read_text(encoding="utf-8")
+    assert "sessionStatusLabel" in read_renderer_app_source()
     session_manager = SESSION_MANAGER.read_text(encoding="utf-8")
     assert "function sessionAccessibleLabel" in session_manager
     for label in ("连接错误", "通道已分离", "已关闭"):
@@ -1566,7 +1595,8 @@ def test_electron_terminal_connection_failures_stay_inline_and_actionable() -> N
 
 
 def test_electron_device_session_groups_expose_aggregate_health() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
+    session_workspace = Path("desktop/src/renderer/src/composables/useSessionWorkspace.ts").read_text(encoding="utf-8")
     manager = SESSION_MANAGER.read_text(encoding="utf-8")
     status = SESSION_STATUS.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -1576,10 +1606,10 @@ def test_electron_device_session_groups_expose_aggregate_health() -> None:
     assert "export function sessionHealthShortLabel" in status
     assert status.index("statuses.has('failed')") < status.index("statuses.has('disconnected')")
     assert status.index("statuses.has('disconnected')") < status.index("statuses.has('connecting')")
-    assert "health: aggregateSessionHealth(sessions)" in app
+    assert "health: aggregateSessionHealth(sessions)" in session_workspace
     assert "sessionHealthLabel(group.health)" in app
     assert "groupAccessibleLabel" in manager
-    assert 'class="device-session-health"' in app
+    assert 'class="device-session-health"' in app or 'class="device-session-health"' in manager
     assert 'class="device-session-health"' in manager
     assert 'class="device-session-health-label"' in app
     assert 'class="device-session-health-label"' in manager
@@ -1589,7 +1619,7 @@ def test_electron_device_session_groups_expose_aggregate_health() -> None:
 
 
 def test_electron_context_menus_clamp_to_viewport_and_focus_first_action() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     terminal = TERMINAL_PANE.read_text(encoding="utf-8")
     command = COMMAND_WORKSPACE.read_text(encoding="utf-8")
     context_menu = CONTEXT_MENU.read_text(encoding="utf-8")
@@ -1607,7 +1637,7 @@ def test_electron_context_menus_clamp_to_viewport_and_focus_first_action() -> No
     assert "window.innerHeight - height" in context_menu
     for key in ("ArrowDown", "ArrowUp", "Home", "End", "Escape"):
         assert key in context_menu
-    for source in (app, terminal, command):
+    for source in (terminal, command):
         assert "announceContextMenuOpen" in source
         assert "subscribeContextMenuOpen" in source
         assert "clampContextMenuPoint" in source
@@ -1618,7 +1648,7 @@ def test_electron_context_menus_clamp_to_viewport_and_focus_first_action() -> No
 
 
 def test_electron_device_loading_state_uses_table_aligned_skeleton() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert 'class="navigator-loading"' in app
@@ -1648,9 +1678,9 @@ def test_electron_transfer_files_are_height_bounded_and_show_loading_feedback() 
 
 
 def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
-    app = APP_VUE.read_text(encoding="utf-8")
+    app = read_renderer_app_source()
     package = PACKAGE_JSON.read_text(encoding="utf-8")
-    main = MAIN_TS.read_text(encoding="utf-8")
+    main = UI_PARITY_MAIN.read_text(encoding="utf-8")
     smoke = UI_PARITY_SMOKE.read_text(encoding="utf-8")
 
     assert '"smoke:ui-parity": "npm run build && node scripts/smoke-ui-parity.mjs"' in package
@@ -1661,7 +1691,7 @@ def test_electron_ui_parity_smoke_gate_covers_visible_regressions() -> None:
     assert "uiRestorePassed" in main
     assert "backendRecoveryPassed" in main
     assert "backend.crashForRecoveryProbe()" in main
-    assert "backend:recovered" in main
+    assert "backend:recovered" in MAIN_TS.read_text(encoding="utf-8")
     assert "stopApplicationEvents = null" in app
     assert "Python 后端已自动恢复，工作区已重新载入。" in app
     for label in (

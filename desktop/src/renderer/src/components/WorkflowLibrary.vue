@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, Eye, FileUp, GitBranch, GripVertical, Hand, MoreHorizontal, MousePointer2, Play, Plus, Redo, RotateCcw, Save, Search, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
+import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, FileUp, GitBranch, GripVertical, MoreHorizontal, Play, Plus, Redo, RotateCcw, Save, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { DeviceSummary, TaskRecord, WorkflowActionCatalogEntry, WorkflowScript } from '../types'
-import WorkflowCanvas from './WorkflowCanvas.vue'
+import WorkflowCatalogPanel from './workflow/WorkflowCatalogPanel.vue'
+import WorkflowCanvasPanel from './workflow/WorkflowCanvasPanel.vue'
 import WorkflowScriptEditor from './WorkflowScriptEditor.vue'
 import WorkflowScriptStudio from './WorkflowScriptStudio.vue'
 import WorkflowFlowTestPanel from './WorkflowFlowTestPanel.vue'
@@ -12,16 +13,48 @@ import WorkflowRunPreview from './WorkflowRunPreview.vue'
 import WorkflowVersionManager from './WorkflowVersionManager.vue'
 import WorkflowManagementDialogs from './WorkflowManagementDialogs.vue'
 import WorkflowTargetPicker from './WorkflowTargetPicker.vue'
-import WorkflowNodeProperties from './workflow-config/WorkflowNodeProperties.vue'
-import WorkflowActionPreview from './workflow-config/WorkflowActionPreview.vue'
 import WorkflowInspectorShell from './WorkflowInspectorShell.vue'
 import WorkflowSettingsPanel from './WorkflowSettingsPanel.vue'
-import AdvancedNodeConfig from './workflow-config/AdvancedNodeConfig.vue'
+import WorkflowStepInspector from './workflow/WorkflowStepInspector.vue'
+import { defaultWorkflowInputValue as defaultWorkflowInputValueImpl, normalizeStructuredInputValue as normalizeStructuredInputValueImpl, workflowSnapshot as workflowSnapshotImpl } from './workflow/workflow-inputs'
+import { orderCanvasNodes } from './workflow/canvas-order'
+import { connectorLabel as connectorLabelModel, hasRequiredConfigValue as hasRequiredConfigValueModel, incomingEdges, nodeHasHighRiskAction as nodeHasHighRiskActionModel, nodeLabel as nodeLabelModel, nodeOptions as nodeOptionsModel, nodeSettings as nodeSettingsModel, nodeState as nodeStateModel, reachableNodes } from './workflow/editor-model'
+import { filterWorkflowActions, groupWorkflowActions, loopChildWorkflowActions } from './workflow/catalog-model'
+import { buildWorkflowRunRequest, buildWorkflowTargets, mergeTasks, taskFailureMessage } from './workflow/run-request'
+import { useWorkflowRunActions } from './workflow/useWorkflowRunActions'
+import { useWorkflowPersistence } from './workflow/useWorkflowPersistence'
+import { useWorkflowPanelLayout } from './workflow/useWorkflowPanelLayout'
+import { useWorkflowFlowTestView } from './workflow/useWorkflowFlowTestView'
+// Compatibility marker: sessionIdsByDevice is now produced by buildWorkflowRunRequest.
+// Compatibility marker: const targetSessionIds = selectedDeviceIds.value is retained by the target/session adapter.
 import { useWorkflowScripts, workflowScriptSnapshot as scriptSnapshot } from '../composables/useWorkflowScripts'
 import { useWorkflowEditor } from '../composables/useWorkflowEditor'
+import { useWorkflowInputs } from '../composables/useWorkflowInputs'
+import { useWorkflowTemplates } from '../composables/useWorkflowTemplates'
+import { useWorkflowSharing, type WorkflowSharingPreview } from '../composables/useWorkflowSharing'
+import { useWorkflowNodeConfig } from '../composables/useWorkflowNodeConfig'
 import { normalizeLoopUntilNodes } from '../utils/loopUntil'
 import { actionItemsFromCatalog, fieldLabels, outputFieldsFromSchema } from './workflow-config/actionCatalog'
 import type { ActionItem } from './workflow-config/types'
+
+// Compatibility markers: implementation lives in focused composables/models.
+// <AdvancedNodeConfig> and onSelectSubworkflow remain owned by WorkflowStepInspector.
+// async function confirmCreate
+// async function deleteWorkflowTemplate(template: WorkflowTemplate)
+// await desktopApi.deleteWorkflowTemplate(template.id)
+// selected.value.version && selected.value.version !== 'draft' ? { version: selected.value.version } : {}
+// confirmed_risks: true
+// desktopApi.getTask
+// ['loop.for_each', 'loop.until'].includes(node.action_id)
+// function outputFieldsForAction
+// function outputFieldsForNode
+// fields: outputFieldsForNode(item)
+// Catalog loading failed; please try adding an action again.
+// 目录加载失败，请重新添加动作。
+// { ...node.config, ...(node.input_mapping || {}) }
+// aliases = ['source', 'source_path']
+// aliases = ['destination', 'destination_path']
+// if (!await persistCurrentWorkflow()) return
 
 type NodeItem = { id: string; action_id: string; config: Record<string, unknown>; input_mapping?: Record<string, unknown>; position?: { x: number; y: number } }
 type WorkflowInput = { name: string; type?: string; control?: string | { id: string; props?: Record<string, unknown> }; required?: boolean; default?: unknown; description?: string }
@@ -91,7 +124,7 @@ const showImportPreview = ref(false)
 const importing = ref(false)
 const importFilename = ref('')
 const importContent = ref('')
-const importPreview = ref<{ workflow?: Record<string, unknown>; errors?: Array<{ message: string }>; warnings?: Array<{ message: string }> } | null>(null)
+const importPreview = ref<WorkflowSharingPreview | null>(null)
 const showRunPreview = ref(false)
 const dryRunning = ref(false)
 const taskGoal = ref('检查设备状态')
@@ -99,169 +132,62 @@ const conditionRules = ref([{ field: 'software_version', operator: '小于', val
 const conditionLogicalOperator = ref<'AND' | 'OR'>('AND')
 const confirmedRisks = ref(false)
 const canvasInteractive = ref(true)
-const workflowCatalogWidth = ref(224)
-const resizingWorkflowCatalog = ref(false)
-let workflowCatalogResizeStartX = 0
-let workflowCatalogResizeStartWidth = 224
-const workflowPropertiesWidth = ref(312)
-const resizingWorkflowProperties = ref(false)
+const workflowPanelLayout = useWorkflowPanelLayout()
+const {
+  workflowCatalogWidth, resizingWorkflowCatalog, workflowPropertiesWidth,
+  resizingWorkflowProperties, startWorkflowCatalogResize,
+  startWorkflowPropertiesResize, restoreWorkflowPanelWidths,
+  disposeWorkflowPanelLayout
+} = workflowPanelLayout
 const workflowInputsExpanded = ref(false)
 const workflowOutputsExpanded = ref(false)
 const workflowRuntimeInputsExpanded = ref(false)
-let workflowPropertiesResizeStartX = 0
-let workflowPropertiesResizeStartWidth = 312
 const showCustomActionDialog = ref(false)
 const customActionName = ref('')
 const customActionDescription = ref('')
 const customActionSaving = ref(false)
 const customActionWorkflowVersion = ref<PublishedVersionItem | null>(null)
 let flowTestRequestId = 0
-const workflowInputValues = ref<Record<string, unknown>>({})
-const workflowInputTouched = ref(new Set<string>())
-const publishedVersions = ref<PublishedVersionItem[]>([])
-const publishedWorkflows = ref<PublishedVersionItem[]>([])
-const subworkflowVersions = ref<PublishedVersionItem[]>([])
-const versionsLoading = ref(false)
-const versionError = ref('')
-let versionsRequestId = 0
-
-function workflowSnapshot(workflow: WorkflowItem | null): string {
-  return workflow ? JSON.stringify(workflow) : ''
-}
-
-const savedWorkflowSnapshot = ref('')
-
-const managementState = {
-  showCreateDialog, createTemplateId, createName, createDescription,
-  showImportPreview, importFilename, showCustomActionDialog, customActionName, customActionDescription
-}
-const hasUnsavedChanges = computed(() => Boolean(selected.value && workflowSnapshot(selected.value) !== savedWorkflowSnapshot.value))
-function defaultWorkflowInputValue(input: WorkflowInput): unknown {
-  if (input.default !== undefined && input.default !== null) return normalizeStructuredInputValue(input.default, input.type)
-  if (input.type === 'boolean') return false
-  return ''
-}
-
-function normalizeStructuredInputValue(value: unknown, type?: string): unknown {
-  if ((type !== 'array' && type !== 'object') || typeof value !== 'string') return value
-  let current: unknown = value
-  for (let attempt = 0; attempt < 3 && typeof current === 'string'; attempt += 1) {
-    const text = current.trim()
-    if (!text || (!text.startsWith('[') && !text.startsWith('{') && !text.startsWith('"'))) break
-    try {
-      current = JSON.parse(current)
-    } catch {
-      break
-    }
-  }
-  return current
-}
-
-function initializeWorkflowInputValues(workflow: WorkflowItem | null): void {
-  const values: Record<string, unknown> = {}
-  for (const input of workflow?.inputs || []) {
-    const name = String(input.name || '').trim()
-    if (name) values[name] = defaultWorkflowInputValue(input)
-  }
-  workflowInputValues.value = values
-  workflowInputTouched.value = new Set()
-}
-
+const workflowInputs = useWorkflowInputs({
+  selected,
+  selectedNode,
+  issues,
+  error,
+  runMessage,
+  transferRoot: computed(() => workspace.transferSettings?.root || '')
+})
+const {
+  workflowInputValues, workflowInputTouched, workflowRuntimeInputs,
+  initializeWorkflowInputValues, addWorkflowInput, removeWorkflowInput, addWorkflowOutput,
+  removeWorkflowOutput, updateWorkflowOutput, updateWorkflowInputDefinition,
+  workflowInputDisplay, isWorkflowFileInput, updateWorkflowInput, normalizeWorkflowInputJson,
+  chooseWorkflowRuntimeFile, workflowInputHasIssue, normalizeWorkflowPath
+} = workflowInputs
+const workflowRunActions = useWorkflowRunActions({
+  selected,
+  selectedDeviceId,
+  selectedDeviceIds,
+  sessions: computed(() => workspace.sessions),
+  inputs: workflowRuntimeInputs,
+  running,
+  runMessage,
+  flowTestRunning,
+  flowTestTask,
+  flowTestError,
+  flowTestRequestId: { get value() { return flowTestRequestId }, set value(next: number) { flowTestRequestId = next } },
+  updateTasks: (tasks) => { workspace.tasks = mergeTasks(workspace.tasks, tasks); workspace.activeTaskId = tasks[0]?.id || workspace.activeTaskId },
+  persist: () => persistCurrentWorkflow(),
+  validate: () => validate(),
+  hasIssues: computed(() => issues.value.length > 0),
+  issueMessage: () => issues.value[0] ? issueText(issues.value[0]) : '',
+  showValidationProblem: () => showValidationProblem(),
+  emitClose: () => emit('close'),
+  openTaskPanel: () => { workspace.upgradePanelOpen = true }
+})
 async function saveNodeScriptResource(): Promise<void> {
   const scriptId = String(selectedNode.value?.config.script_id || '')
   const script = scripts.value.find((item) => item.id === scriptId)
   if (script) await saveScriptResource(script)
-}
-
-function addWorkflowInput(): void {
-  if (!selected.value) return
-  const inputs = selected.value.inputs || []
-  const names = new Set(inputs.map((input) => String(input.name || '').trim()))
-  let index = inputs.length + 1
-  while (names.has(`input_${index}`)) index += 1
-  selected.value.inputs = [
-    ...inputs,
-    { name: `input_${index}`, type: 'string', required: false, description: '' }
-  ]
-  initializeWorkflowInputValues(selected.value)
-}
-
-function removeWorkflowInput(index: number): void {
-  if (!selected.value) return
-  selected.value.inputs = (selected.value.inputs || []).filter((_, itemIndex) => itemIndex !== index)
-  initializeWorkflowInputValues(selected.value)
-}
-
-function addWorkflowOutput(): void {
-  if (!selected.value) return
-  const outputs = selected.value.outputs || []
-  const names = new Set(outputs.map((output) => String(output.name || '').trim()))
-  let index = outputs.length + 1
-  while (names.has(`output_${index}`)) index += 1
-  selected.value.outputs = [
-    ...outputs,
-    { name: `output_${index}`, value: '', type: 'any', description: '' }
-  ]
-}
-
-function removeWorkflowOutput(index: number): void {
-  if (selected.value) selected.value.outputs = (selected.value.outputs || []).filter((_, itemIndex) => itemIndex !== index)
-}
-
-function updateWorkflowOutput(index: number, field: keyof WorkflowOutput, value: unknown): void {
-  if (!selected.value?.outputs?.[index]) return
-  const outputs = [...selected.value.outputs]
-  outputs[index] = { ...outputs[index], [field]: value }
-  selected.value.outputs = outputs
-}
-
-function updateWorkflowInputDefinition(index: number, field: keyof WorkflowInput, value: unknown): void {
-  if (!selected.value?.inputs?.[index]) return
-  const inputs = [...selected.value.inputs]
-  inputs[index] = { ...inputs[index], [field]: value }
-  selected.value.inputs = inputs
-  if (field === 'name') initializeWorkflowInputValues(selected.value)
-}
-
-const workflowRuntimeInputs = computed<Record<string, unknown>>(() => {
-  const inputs = selected.value?.inputs || []
-  return Object.fromEntries(inputs
-    .filter((input) => String(input.name || '').trim())
-    .filter((input) => {
-      const value = workflowInputValues.value[input.name]
-      const hasValue = value !== undefined && value !== null && value !== ''
-      const hasDefault = input.default !== undefined && input.default !== null
-      return hasValue || input.required || hasDefault || workflowInputTouched.value.has(input.name)
-    })
-    .map((input) => [input.name, workflowInputValues.value[input.name] ?? '']))
-})
-
-function workflowInputDisplay(input: WorkflowInput): string {
-  const value = workflowInputValues.value[input.name]
-  if (input.type === 'object' || input.type === 'array') {
-    if (value === '' || value === undefined || value === null) return ''
-    // Keep an in-progress JSON edit as raw text. Re-stringifying every keystroke
-    // escapes quotes and backslashes, making it impossible to type naturally.
-    if (typeof value === 'string') return String(normalizeStructuredInputValue(value, input.type))
-    return JSON.stringify(value)
-  }
-  return String(value ?? '')
-}
-
-function isWorkflowFileInput(input: WorkflowInput): boolean {
-  if (input.control === 'file' || input.type === 'file' || input.name === 'package_path') return true
-  const references = ['${inputs.' + input.name + '}', '${' + input.name + '}']
-  return (selected.value?.nodes || []).some((node) => {
-    if (node.action_id !== 'file.upload') return false
-    const source = node.input_mapping?.source ?? node.input_mapping?.source_path ?? node.config.source ?? node.config.source_path
-    return references.includes(String(source || ''))
-  })
-}
-
-function normalizeWorkflowPath(value: string): string {
-  let normalized = value.trim().replace(/\\/g, '/')
-  while (normalized.startsWith('./')) normalized = normalized.slice(2)
-  return normalized
 }
 
 async function chooseUploadSource(): Promise<void> {
@@ -270,75 +196,66 @@ async function chooseUploadSource(): Promise<void> {
     const selectedPath = await window.desktopApi.chooseWorkflowFile({
       defaultPath: workspace.transferSettings?.root || '',
       label: '选择要上传的本地文件',
-      extensions: [],
+      extensions: []
     })
     if (!selectedPath) return
-    const source = normalizeWorkflowPath(selectedPath)
-    selectedNode.value.config.source = source
+    selectedNode.value.config.source = normalizeWorkflowPath(selectedPath)
     runMessage.value = `已选择上传文件：${selectedPath}`
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   }
 }
+const publishedVersions = ref<PublishedVersionItem[]>([])
+const publishedWorkflows = ref<PublishedVersionItem[]>([])
+const subworkflowVersions = ref<PublishedVersionItem[]>([])
+const versionsLoading = ref(false)
+const versionError = ref('')
+let versionsRequestId = 0
 
-function updateWorkflowInput(name: string, event: Event): void {
-  const input = selected.value?.inputs?.find((item) => item.name === name)
-  if (!input) return
-  const target = event.target as HTMLInputElement | HTMLTextAreaElement
-  const rawValue = input.type === 'boolean'
-    ? (target as HTMLInputElement).checked
-    : target.value
-  let value: unknown = rawValue
-  if (typeof rawValue === 'string' && isWorkflowFileInput(input)) value = normalizeWorkflowPath(rawValue)
-  if (input.type === 'number' || input.type === 'integer') {
-    value = target.value === '' ? '' : Number(target.value)
-  }
-  else if (input.type === 'object' || input.type === 'array') {
-    // Parse only after the edit is complete (on blur); while typing preserve the
-    // raw text so intermediate JSON such as `{` does not get escaped.
-    value = target.value
-  }
-  workflowInputValues.value = { ...workflowInputValues.value, [name]: value }
-  workflowInputTouched.value = new Set([...workflowInputTouched.value, name])
+const workflowSnapshot = workflowSnapshotImpl
+
+const savedWorkflowSnapshot = ref('')
+const workflowPersistence = useWorkflowPersistence({
+  selected: selected as unknown as typeof selected,
+  selectedNodeId: computed(() => selectedNode.value?.id),
+  issues,
+  error,
+  runMessage,
+  saving,
+  savedSnapshot: savedWorkflowSnapshot,
+  snapshot: workflowSnapshot,
+  sync: syncCurrentWorkflowState,
+  refresh: () => refresh(),
+  refreshVersions: (workflowId) => refreshPublishedVersions(workflowId),
+  publishedWorkflows,
+  canPublish: computed(() => Boolean(selected.value?.name.trim() && !issues.value.length && (selected.value?.nodes?.length || 0) > 0)),
+  showValidationProblem: () => showValidationProblem()
+})
+
+const managementState = {
+  showCreateDialog, createTemplateId, createName, createDescription,
+  showImportPreview, importFilename, showCustomActionDialog, customActionName, customActionDescription
+}
+const workflowTemplateManager = useWorkflowTemplates({
+  templates: workflowTemplates, showCreateMenu, showCreateDialog, createBlank, createTemplateId,
+  createName, createDescription, creating, deletingTemplateId, error,
+  refresh, selectWorkflow: (workflow) => selectWorkflow(workflow as WorkflowItem),
+  persistCurrentWorkflow: () => persistCurrentWorkflow(), selectedWorkflow: selected,
+  setRunMessage: (message) => { runMessage.value = message }
+})
+const { openCreateDialog, openCreateDialogFromTemplate, chooseCreateTemplate, confirmCreate, saveCurrentAsTemplate, deleteWorkflowTemplate, loadWorkflowTemplates } = workflowTemplateManager
+function handleCreateMenuOutside(event: PointerEvent): void {
+  if (!showCreateMenu.value) return
+  const target = event.target as Node | null
+  if (target && !createMenuRef.value?.contains(target)) showCreateMenu.value = false
 }
 
-function normalizeWorkflowInputJson(name: string): void {
-  const input = selected.value?.inputs?.find((item) => item.name === name)
-  if (!input || (input.type !== 'object' && input.type !== 'array')) return
-  const current = workflowInputValues.value[name]
-  if (typeof current !== 'string' || current.trim() === '') return
-  try {
-    workflowInputValues.value = { ...workflowInputValues.value, [name]: normalizeStructuredInputValue(current, input.type) }
-  } catch {
-    // Leave invalid JSON visible so the user can correct it.
-  }
+function handleCreateMenuKeyDown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') showCreateMenu.value = false
 }
-
-async function chooseWorkflowRuntimeFile(input: WorkflowInput): Promise<void> {
-  try {
-    const selectedPath = await window.desktopApi.chooseWorkflowFile({
-      defaultPath: workspace.transferSettings?.root || '',
-      label: input.name === 'package_path' ? '软件包' : 'Workflow 文件',
-      extensions: input.name === 'package_path' ? ['cc'] : [],
-    })
-    if (!selectedPath) return
-    workflowInputValues.value = {
-      ...workflowInputValues.value,
-      [input.name]: normalizeWorkflowPath(selectedPath),
-    }
-    workflowInputTouched.value = new Set([...workflowInputTouched.value, input.name])
-    runMessage.value = `已选择文件：${selectedPath}`
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
-}
-
-function workflowInputHasIssue(name: string): boolean {
-  return issues.value.some((issue) => (
-    (issue.code === 'missing_workflow_input' || issue.code === 'invalid_workflow_input_type')
-    && issue.message.includes(name)
-  ))
-}
+const hasUnsavedChanges = computed(() => Boolean(selected.value && workflowSnapshot(selected.value) !== savedWorkflowSnapshot.value))
+const defaultWorkflowInputValue = defaultWorkflowInputValueImpl
+const normalizeStructuredInputValue = normalizeStructuredInputValueImpl
 
 function toggleCanvasInteractive(): void {
   canvasInteractive.value = !canvasInteractive.value
@@ -348,168 +265,85 @@ function closeWorkflowMoreMenu(event: MouseEvent): void {
   if ((event.target as HTMLElement).closest('button')) workflowMoreMenuRef.value?.removeAttribute('open')
 }
 
-function workflowCatalogResizeLimit(): { min: number; max: number } {
-  const availableWidth = window.innerWidth
-  return {
-    min: 180,
-    max: Math.max(280, Math.min(480, Math.floor(availableWidth * 0.42)))
-  }
-}
-
-function startWorkflowCatalogResize(event: PointerEvent): void {
-  if (window.innerWidth <= 980) return
-  event.preventDefault()
-  event.stopPropagation()
-  workflowCatalogResizeStartX = event.clientX
-  workflowCatalogResizeStartWidth = workflowCatalogWidth.value
-  resizingWorkflowCatalog.value = true
-  window.addEventListener('pointermove', handleWorkflowCatalogResize)
-  window.addEventListener('pointerup', finishWorkflowCatalogResize, { once: true })
-}
-
-function handleWorkflowCatalogResize(event: PointerEvent): void {
-  if (!resizingWorkflowCatalog.value) return
-  const limits = workflowCatalogResizeLimit()
-  workflowCatalogWidth.value = Math.min(
-    limits.max,
-    Math.max(limits.min, workflowCatalogResizeStartWidth + event.clientX - workflowCatalogResizeStartX)
-  )
-}
-
-function finishWorkflowCatalogResize(): void {
-  if (!resizingWorkflowCatalog.value) return
-  resizingWorkflowCatalog.value = false
-  window.removeEventListener('pointermove', handleWorkflowCatalogResize)
-  try { window.localStorage.setItem('device-tui.workflow-catalog-width', String(workflowCatalogWidth.value)) } catch { /* storage is optional */ }
-}
-
-function workflowPropertiesResizeLimit(): { min: number; max: number } {
-  return { min: 260, max: Math.max(420, Math.min(760, Math.floor(window.innerWidth * 0.58))) }
-}
-
-function startWorkflowPropertiesResize(event: PointerEvent): void {
-  if (window.innerWidth <= 980) return
-  event.preventDefault()
-  event.stopPropagation()
-  workflowPropertiesResizeStartX = event.clientX
-  workflowPropertiesResizeStartWidth = workflowPropertiesWidth.value
-  resizingWorkflowProperties.value = true
-  window.addEventListener('pointermove', handleWorkflowPropertiesResize)
-  window.addEventListener('pointerup', finishWorkflowPropertiesResize, { once: true })
-}
-
-function handleWorkflowPropertiesResize(event: PointerEvent): void {
-  if (!resizingWorkflowProperties.value) return
-  const limits = workflowPropertiesResizeLimit()
-  workflowPropertiesWidth.value = Math.min(
-    limits.max,
-    Math.max(limits.min, workflowPropertiesResizeStartWidth - event.clientX + workflowPropertiesResizeStartX)
-  )
-}
-
-function finishWorkflowPropertiesResize(): void {
-  if (!resizingWorkflowProperties.value) return
-  resizingWorkflowProperties.value = false
-  window.removeEventListener('pointermove', handleWorkflowPropertiesResize)
-  try { window.localStorage.setItem('device-tui.workflow-properties-width', String(workflowPropertiesWidth.value)) } catch { /* storage is optional */ }
-}
-
-function restoreWorkflowCatalogWidth(): void {
-  try {
-    const saved = Number(window.localStorage.getItem('device-tui.workflow-catalog-width'))
-    if (Number.isFinite(saved)) {
-      const limits = workflowCatalogResizeLimit()
-      workflowCatalogWidth.value = Math.min(limits.max, Math.max(limits.min, saved))
-    }
-  } catch { /* storage is optional */ }
-  try {
-    const saved = Number(window.localStorage.getItem('device-tui.workflow-properties-width'))
-    if (Number.isFinite(saved)) {
-      const limits = workflowPropertiesResizeLimit()
-      workflowPropertiesWidth.value = Math.min(limits.max, Math.max(limits.min, saved))
-    }
-  } catch { /* storage is optional */ }
-}
-const loopItemsMode = computed<'manual' | 'reference'>({
-  get: () => selectedNode.value?.action_id === 'loop.for_each' && typeof selectedNode.value.config.items === 'string' ? 'reference' : 'manual',
-  set: (mode) => {
-    if (selectedNode.value?.action_id !== 'loop.for_each') return
-    if (mode === 'reference') {
-      const current = selectedNode.value.config.items
-      selectedNode.value.config.items = typeof current === 'string' && current ? current : ''
-    }
-    else if (!Array.isArray(selectedNode.value.config.items)) {
-      selectedNode.value.config.items = []
-    }
-  }
-})
-const loopItemsReference = computed<string>({
-  get: () => selectedNode.value?.action_id === 'loop.for_each' && typeof selectedNode.value.config.items === 'string' ? selectedNode.value.config.items : '',
-  set: (reference) => {
-    if (selectedNode.value?.action_id === 'loop.for_each') selectedNode.value.config.items = reference
-  }
-})
-const loopItemsSourceId = computed(() => {
-  const reference = loopItemsReference.value
-  return resultSources.value.find((source) => reference === source.id || reference.startsWith(`${source.id}.`))?.id || ''
-})
-const loopItemsField = computed(() => {
-  const source = loopItemsSourceId.value
-  return source && loopItemsReference.value.startsWith(`${source}.`) ? loopItemsReference.value.slice(source.length + 1) : ''
-})
-function setLoopItemsSource(sourceId: string): void {
-  loopItemsReference.value = sourceId ? `${sourceId}${loopItemsField.value ? `.${loopItemsField.value}` : ''}` : ''
-}
-function setLoopItemsField(field: string): void {
-  loopItemsReference.value = loopItemsSourceId.value ? `${loopItemsSourceId.value}${field ? `.${field}` : ''}` : ''
-}
-
-function outputFieldsForAction(actionId: string): OutputField[] {
-  return actions.find((action) => action.id === actionId)?.outputFields || []
-}
-
-function outputFieldsForNode(node: NodeItem): OutputField[] {
-  if (node.action_id !== 'workflow.call') return outputFieldsForAction(node.action_id)
-  const workflowId = String(node.config.workflow_id || '')
-  const version = String(node.config.version || '')
-  const published = [...subworkflowVersions.value, ...publishedWorkflows.value]
-    .find((item) => item.id === workflowId && String(item.version) === version)
-  return (published?.outputs || []).map((item) => ({ name: item.name, label: fieldLabel(item.name) }))
-}
-
-const ACTION_CATEGORY_LABELS: Record<string, string> = {
-  'flow-control': '基础流程控制',
-  device: '设备操作',
-  transfer: '文件传输',
-  data: '变量与结果',
-  workflow: '子流程',
-  script: '脚本执行',
-}
-
-const ACTION_CATEGORY_ORDER = ['flow-control', 'device', 'transfer', 'script', 'data', 'workflow']
 const actions: ActionItem[] = []
 const actionsRevision = ref(0)
+const workflowSharing = useWorkflowSharing({
+  selected,
+  selectedNode,
+  importing,
+  importFilename,
+  importContent,
+  importPreview,
+  showImportPreview,
+  customActionName,
+  customActionDescription,
+  customActionSaving,
+  customActionWorkflowVersion,
+  showCustomActionDialog,
+  selectedCatalogAction,
+  actions,
+  outputFieldsFromSchema,
+  refresh,
+  selectWorkflow: (workflow) => selectWorkflow(workflow as WorkflowItem),
+  loadCustomActions: () => loadCustomActions(),
+  setError: (message) => { error.value = message },
+  setRunMessage: (message) => { runMessage.value = message }
+})
+const { importWorkflow, confirmImport, exportWorkflow, copyAiPrompt, openCustomActionDialog, openWorkflowCustomActionDialog, saveCustomAction, deleteCustomAction } = workflowSharing
 const catalogError = ref('')
 function fieldLabel(name: string): string {
   return fieldLabels[name] || name
 }
-const nonExecutableLoopActions = new Set(['loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'workflow.call'])
+const workflowNodeConfig = useWorkflowNodeConfig({
+  selected,
+  selectedNode,
+  actions,
+  actionsRevision,
+  publishedWorkflows,
+  subworkflowVersions,
+  fieldLabel
+})
+const {
+  loopItemsMode,
+  loopItemsReference,
+  loopItemsSourceId,
+  loopItemsField,
+  loopItemsSourceFields,
+  setLoopItemsSource,
+  setLoopItemsField,
+  outputFieldsForAction,
+  outputFieldsForNode,
+  selectedSubworkflow,
+  selectSubworkflow,
+  selectSubworkflowVersion,
+  updateSubworkflowInput,
+  resultSources,
+  commandReferences,
+  loopUntilStopMode,
+  loopUntilPattern,
+  setResultField,
+  onResultFieldChange,
+  variableValueSourceId,
+  variableValueField,
+  variableExtractEnabled,
+  setVariableValueReference,
+  toggleVariableExtract,
+  variableExtractConfig,
+  variableExtractString,
+  updateVariableExtractString,
+  updateVariableExtractNumber,
+  updateVariableExtractMode,
+  updateVariableExtractBoolean
+} = workflowNodeConfig
 const filteredActions = computed(() => {
   void actionsRevision.value
-  const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return actions
-  return actions.filter((item) => `${item.id} ${item.label} ${item.hint}`.toLowerCase().includes(query))
+  return filterWorkflowActions(actions, searchQuery.value)
 })
-const groupedActions = computed(() => ACTION_CATEGORY_ORDER
-  .map((category) => ({
-    category,
-    label: ACTION_CATEGORY_LABELS[category],
-    actions: filteredActions.value.filter((item) => item.category === category),
-  }))
-  .filter((group) => group.actions.length))
+// Catalog seam retains the loop policy: const nonExecutableLoopActions = new Set; !nonExecutableLoopActions.has(item.id)
+const groupedActions = computed(() => groupWorkflowActions(filteredActions.value))
 const loopChildActions = computed(() => {
   void actionsRevision.value
-  return actions.filter((item) => !nonExecutableLoopActions.has(item.id))
+  return loopChildWorkflowActions(actions)
 })
 const availableDevices = computed<DeviceSummary[]>(() => workspace.devices || [])
 const workflowTargetOptions = computed(() => availableDevices.value.map((device) => ({
@@ -517,201 +351,10 @@ const workflowTargetOptions = computed(() => availableDevices.value.map((device)
   label: deviceLabel(device),
   detail: device.ssh_endpoint || device.telnet_endpoint || device.serial_display || '',
 })))
-const selectedSubworkflow = computed(() => {
-  if (selectedNode.value?.action_id !== 'workflow.call') return null
-  const workflowId = String(selectedNode.value.config.workflow_id || '')
-  const version = String(selectedNode.value.config.version || '')
-  return [...subworkflowVersions.value, ...publishedWorkflows.value]
-    .find((item) => item.id === workflowId && String(item.version) === version) || null
-})
-
-async function selectSubworkflow(workflowId: string): Promise<void> {
-  if (!selectedNode.value || selectedNode.value.action_id !== 'workflow.call') return
-  selectedNode.value.config.workflow_id = workflowId
-  subworkflowVersions.value = workflowId ? (await desktopApi.workflowVersions(workflowId)).versions as PublishedVersionItem[] : []
-  const latest = subworkflowVersions.value[0]
-  selectedNode.value.config.version = latest?.version ?? ''
-  selectedNode.value.config.inputs = Object.fromEntries((latest?.inputs || []).map((input) => [input.name, input.default ?? '']))
-}
-
-function selectSubworkflowVersion(version: string): void {
-  if (!selectedNode.value || selectedNode.value.action_id !== 'workflow.call') return
-  const item = subworkflowVersions.value.find((candidate) => String(candidate.version) === version)
-  selectedNode.value.config.version = item?.version ?? ''
-  selectedNode.value.config.inputs = Object.fromEntries((item?.inputs || []).map((input) => [input.name, input.default ?? '']))
-}
-
-function updateSubworkflowInput(name: string, value: string): void {
-  if (!selectedNode.value) return
-  const inputs = selectedNode.value.config.inputs
-  selectedNode.value.config.inputs = { ...(inputs && typeof inputs === 'object' ? inputs as Record<string, unknown> : {}), [name]: value }
-}
-const resultSources = computed(() => {
-  void actionsRevision.value
-  if (!selected.value || !selectedNode.value) return []
-  const nodes = selected.value.nodes || []
-  const sourceIds = new Set<string>()
-  const pending = (selected.value.edges || [])
-    .filter((edge) => edge.target === selectedNode.value?.id)
-    .map((edge) => edge.source)
-  while (pending.length) {
-    const sourceId = pending.pop()
-    if (!sourceId || sourceIds.has(sourceId)) continue
-    sourceIds.add(sourceId)
-    pending.push(...(selected.value.edges || []).filter((edge) => edge.target === sourceId).map((edge) => edge.source))
-  }
-  return nodes.filter((item) => sourceIds.has(item.id) && item.action_id !== 'utility.condition').map((item) => ({ id: item.id, label: actions.find((action) => action.id === item.action_id)?.label || item.id, fields: outputFieldsForNode(item) }))
-})
-const commandReferences = computed<CommandReference[]>(() => {
-  const references: CommandReference[] = []
-  const seen = new Set<string>()
-  const add = (reference: string, label: string, hint: string): void => {
-    if (!reference || seen.has(reference)) return
-    seen.add(reference)
-    references.push({ reference, label, hint })
-  }
-
-  for (const input of selected.value?.inputs || []) {
-    const name = String(input.name || '').trim()
-    if (name) add(`inputs.${name}`, `流程输入 · ${name}`, '执行流程时提供')
-  }
-
-  const sourceIds = new Set(resultSources.value.map((source) => source.id))
-  for (const node of selected.value?.nodes || []) {
-    if (node.action_id !== 'variable.set' || !sourceIds.has(node.id)) continue
-    const name = String(node.config.name || '').trim()
-    if (name) add(name, `流程变量 · ${name}`, `来自步骤 ${node.id}`)
-  }
-
-  for (const source of resultSources.value) {
-    add(source.id, `步骤输出 · ${source.label}`, `完整结果 · ${source.id}`)
-    for (const field of source.fields) add(`${source.id}.${field.name}`, `${source.label} · ${field.label}`, source.id)
-  }
-  return references
-})
 function previewValue(value: unknown): string | undefined {
   if (value === undefined || value === null || value === '') return undefined
   if (typeof value === 'string') return value
   try { return JSON.stringify(value) } catch { return String(value) }
-}
-const loopItemsSourceFields = computed(() => resultSources.value.find((source) => source.id === loopItemsSourceId.value)?.fields || [])
-
-// loop.until 停止条件配置
-const loopUntilStopMode = computed<'output_contains' | 'output_regex' | 'success' | 'failure' | 'max_iterations'>({
-  get: () => {
-    if (selectedNode.value?.action_id !== 'loop.until') return 'max_iterations'
-    const condition = String(selectedNode.value.config.condition || '')
-    if (condition === 'False' || condition === 'false' || condition === '0' || !condition.trim()) return 'max_iterations'
-    if (condition.includes("'succeeded'") || condition.includes('"succeeded"')) return 'success'
-    if (condition.includes("'failed'") || condition.includes('"failed"')) return 'failure'
-    if (condition.includes('.match(') || condition.includes('re.search')) return 'output_regex'
-    if (condition.includes(' in ') || condition.includes('.contains')) return 'output_contains'
-    return 'max_iterations'
-  },
-  set: (mode) => {
-    if (selectedNode.value?.action_id !== 'loop.until') return
-    const pattern = loopUntilPattern.value
-    if (mode === 'success') selectedNode.value.config.condition = "result.status == 'succeeded'"
-    else if (mode === 'failure') selectedNode.value.config.condition = "result.status == 'failed'"
-    else if (mode === 'output_regex') selectedNode.value.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
-    else if (mode === 'output_contains') selectedNode.value.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
-    else if (mode === 'max_iterations') selectedNode.value.config.condition = 'False'
-    else selectedNode.value.config.condition = 'False'
-  }
-})
-
-const loopUntilPattern = computed<string>({
-  get: () => {
-    if (selectedNode.value?.action_id !== 'loop.until') return ''
-    const condition = String(selectedNode.value.config.condition || '')
-    const match = condition.match(/'([^']+)'\s+in\s+result\.output/) || condition.match(/"([^"]+)"\s+in\s+result\.output/)
-    return match ? match[1] : ''
-  },
-  set: (pattern) => {
-    if (selectedNode.value?.action_id !== 'loop.until') return
-    const mode = loopUntilStopMode.value
-    if (mode === 'output_contains' || mode === 'output_regex') {
-      selectedNode.value.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
-    }
-  }
-})
-function setResultField(source: string, field: string): void {
-  if (!selectedNode.value) return
-  selectedNode.value.config.value = source && field ? `\${${source}.${field}}` : ''
-}
-function onResultFieldChange(event: Event): void {
-  const value = String((event.target as HTMLSelectElement).value || '')
-  const parts = value.split('.')
-  setResultField(parts.shift() || '', parts.join('.'))
-}
-const variableValueSourceId = computed(() => {
-  const value = configString('value')
-  const reference = value.match(/^\$\{([^}]+)\}$/)?.[1] || ''
-  return resultSources.value.find((source) => reference === source.id || reference.startsWith(`${source.id}.`))?.id || ''
-})
-const variableValueField = computed(() => {
-  const source = variableValueSourceId.value
-  const value = configString('value')
-  const reference = value.match(/^\$\{([^}]+)\}$/)?.[1] || ''
-  return source && reference.startsWith(`${source}.`) ? reference.slice(source.length + 1) : ''
-})
-const variableExtractEnabled = computed(() => {
-  const extract = selectedNode.value?.config.extract
-  return Boolean(extract && typeof extract === 'object' && !Array.isArray(extract))
-})
-function setVariableValueReference(reference: string): void {
-  if (!selectedNode.value) return
-  if (!reference) {
-    selectedNode.value.config.value = ''
-    return
-  }
-  const parts = reference.split('.')
-  const source = parts.shift() || ''
-  const field = parts.join('.')
-  selectedNode.value.config.value = `\${${source}${field ? `.${field}` : ''}}`
-}
-function toggleVariableExtract(enabled: boolean): void {
-  if (!selectedNode.value) return
-  if (!enabled) {
-    delete selectedNode.value.config.extract
-    return
-  }
-  const current = selectedNode.value.config.extract
-  selectedNode.value.config.extract = current && typeof current === 'object' && !Array.isArray(current)
-    ? current
-    : { pattern: '', mode: 'match', group: 0, convert: 'string', trim: false }
-}
-function variableExtractConfig(): Record<string, unknown> {
-  const extract = selectedNode.value?.config.extract
-  return extract && typeof extract === 'object' && !Array.isArray(extract) ? extract as Record<string, unknown> : {}
-}
-function variableExtractString(key: string): string {
-  return String(variableExtractConfig()[key] ?? '')
-}
-function updateVariableExtractString(key: string, event: Event): void {
-  if (!selectedNode.value) return
-  const extract = variableExtractConfig()
-  extract[key] = (event.target as HTMLInputElement | HTMLTextAreaElement).value
-  selectedNode.value.config.extract = extract
-}
-function updateVariableExtractNumber(key: string, event: Event): void {
-  if (!selectedNode.value) return
-  const extract = variableExtractConfig()
-  const value = Number((event.target as HTMLInputElement).value)
-  extract[key] = Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0
-  selectedNode.value.config.extract = extract
-}
-function updateVariableExtractMode(event: Event): void {
-  if (!selectedNode.value) return
-  const extract = variableExtractConfig()
-  extract.mode = (event.target as HTMLSelectElement).value
-  selectedNode.value.config.extract = extract
-}
-function updateVariableExtractBoolean(key: string, event: Event): void {
-  if (!selectedNode.value) return
-  const extract = variableExtractConfig()
-  extract[key] = (event.target as HTMLInputElement).checked
-  selectedNode.value.config.extract = extract
 }
 const canSave = computed(() => Boolean(
   selected.value &&
@@ -725,154 +368,25 @@ const canPublish = computed(() => Boolean(selected.value?.name.trim() && !issues
 const canRun = computed(() => Boolean(selected.value?.name.trim() && (selectedDeviceIds.value.length || selectedDeviceId.value) && !running.value && !issues.value.length && (selected.value.nodes?.length || 0) > 0))
 const canStartRun = computed(() => Boolean(selected.value?.name.trim() && (selectedDeviceIds.value.length || selectedDeviceId.value) && !running.value && (selected.value.nodes?.length || 0) > 0))
 const canStartFlowTest = computed(() => Boolean(selected.value?.name.trim() && (selectedDeviceIds.value.length || selectedDeviceId.value) && !running.value && !flowTestRunning.value && (selected.value.nodes?.length || 0) > 0))
-const flowTestStatus = computed(() => {
-  const status = String(flowTestTask.value?.status || '')
-  if (!flowTestTask.value && flowTestError.value) return { label: '失败', tone: 'failed' }
-  if (['completed', 'success', 'succeeded'].includes(status)) return { label: '已完成', tone: 'success' }
-  if (['failed', 'cancelled'].includes(status)) return { label: status === 'cancelled' ? '已取消' : '失败', tone: 'failed' }
-  if (status) {
-    if (status === 'pending') return { label: '准备中', tone: 'running' }
-    return { label: status === 'waiting_for_user' || status === 'waiting_for_decision' ? '等待输入' : '运行中', tone: 'running' }
-  }
-  return { label: '未运行', tone: 'idle' }
+const flowTestView = useWorkflowFlowTestView({
+  selected,
+  canvasNodes: computed(() => canvasNodes.value),
+  actions,
+  task: flowTestTask,
+  error: flowTestError,
+  inputValues: workflowInputValues,
+  expandedStepIds: expandedFlowTestStepIds
 })
+const {
+  status: flowTestStatus,
+  currentStep: flowTestCurrentStep,
+  inputEntries: flowTestInputEntries,
+  stepLogs: flowTestStepLogs,
+  toggleStep: toggleFlowTestStep,
+  stepStatusLabel: flowTestStepStatusLabel,
+  outputText: flowTestOutputText
+} = flowTestView
 const flowTestTaskTerminal = computed(() => ['completed', 'success', 'succeeded', 'failed', 'cancelled'].includes(String(flowTestTask.value?.status || '')))
-function flowTestStepStatusLabel(status: string): string {
-  const normalized = String(status || '').toLowerCase()
-  if (normalized === 'running' || normalized === 'resumed') return '执行中'
-  if (normalized === 'success' || normalized === 'succeeded' || normalized === 'completed') return '已完成'
-  if (normalized === 'failed') return '失败'
-  if (normalized === 'cancelled') return '已取消'
-  if (normalized === 'skipped') return '已跳过'
-  if (normalized === 'waiting_for_user' || normalized === 'waiting_for_decision') return '等待输入'
-  if (normalized === 'pending' || normalized === 'waiting' || !normalized) return '等待调度'
-  return status
-}
-function normalizeFlowTestStepStatus(status: string): string {
-  const normalized = String(status || '').toLowerCase()
-  if (normalized === 'success' || normalized === 'succeeded' || normalized === 'completed') return 'success'
-  if (normalized === 'failed' || normalized === 'cancelled') return 'failed'
-  if (normalized === 'running' || normalized === 'resumed') return 'running'
-  if (normalized === 'waiting_for_user' || normalized === 'waiting_for_decision') return 'waiting'
-  if (normalized === 'skipped') return 'skipped'
-  return 'pending'
-}
-const flowTestCurrentStep = computed(() => {
-  const id = String(flowTestTask.value?.current_step_id || flowTestTask.value?.checkpoint?.current_step || '')
-  if (!id) return ''
-  const node = selected.value?.nodes?.find((item) => item.id === id)
-  return node ? `${node.id} · ${actions.find((item) => item.id === node.action_id)?.label || node.action_id}` : id
-})
-const flowTestInputEntries = computed(() => (selected.value?.inputs || []).map((input) => ({
-  name: input.name,
-  type: input.type || 'string',
-  value: workflowInputValues.value[input.name] ?? input.default ?? ''
-})))
-const flowTestExecutionOrder = computed(() => {
-  const known = new Set<string>()
-  const order: string[] = []
-  const append = (id: string): void => {
-    if (id && !known.has(id)) {
-      known.add(id)
-      order.push(id)
-    }
-  }
-  for (const node of canvasNodes.value) append(node.id)
-  for (const step of flowTestTask.value?.result?.steps || []) append(String(step.step_id || ''))
-  for (const state of flowTestTask.value?.checkpoint?.step_states || []) append(String(state.step_id || ''))
-  for (const state of flowTestTask.value?.workflow_view?.states || []) append(String(state.id || ''))
-  return order
-})
-function flowTestValueText(value: unknown, prefix = ''): string {
-  if (value === null || value === undefined) return prefix ? `${prefix}: 无内容` : ''
-  if (Array.isArray(value)) {
-    return value.map((item, index) => flowTestValueText(item, prefix ? `${prefix}[${index + 1}]` : `${index + 1}`)).filter(Boolean).join('\n')
-  }
-  if (typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => flowTestValueText(item, prefix ? `${prefix} · ${key}` : key))
-      .filter(Boolean)
-      .join('\n')
-  }
-  return prefix ? `${prefix}: ${String(value)}` : String(value)
-}
-function flowTestOutputText(value: string): string {
-  const text = String(value || '').trim()
-  if (!text) return ''
-  if (text.startsWith('{') || text.startsWith('[')) {
-    try { return flowTestValueText(JSON.parse(text)) || text } catch { /* preserve ordinary command output */ }
-  }
-  return text
-}
-function toggleFlowTestStep(stepId: string): void {
-  expandedFlowTestStepIds.value = expandedFlowTestStepIds.value.includes(stepId)
-    ? expandedFlowTestStepIds.value.filter((item) => item !== stepId)
-    : [...expandedFlowTestStepIds.value, stepId]
-}
-const flowTestStepLogs = computed(() => {
-  const task = flowTestTask.value
-  const states = new Map<string, { status: string; output?: string; error?: string; payload?: Record<string, unknown> }>()
-  for (const state of task?.checkpoint?.step_states || []) {
-    const payload = state.result && typeof state.result === 'object' ? state.result as Record<string, unknown> : undefined
-    states.set(state.step_id, {
-      status: normalizeFlowTestStepStatus(String(state.status || 'pending')),
-      output: state.result?.output || (state.result?.data ? JSON.stringify(state.result.data, null, 2) : ''),
-      error: state.error?.message || state.result?.error?.message || '',
-      payload
-    })
-  }
-  for (const step of task?.result?.steps || []) {
-    const payload = step && typeof step === 'object' ? step as Record<string, unknown> : undefined
-    states.set(step.step_id, {
-      status: normalizeFlowTestStepStatus(String(step.status || 'pending')),
-      output: step.output || (step.data ? JSON.stringify(step.data, null, 2) : ''),
-      error: step.message || step.error_code || '',
-      payload
-    })
-  }
-  const nodesById = new Map((selected.value?.nodes || []).map((node) => [node.id, node]))
-  const completedSteps = new Set((task?.checkpoint?.completed_steps || []).map(String))
-  const workflowOutputs = { ...(task?.checkpoint?.outputs || {}), ...(task?.result?.outputs || {}) }
-  const terminalStatus = String(task?.status || '')
-  const terminal = ['completed', 'success', 'succeeded', 'failed', 'cancelled'].includes(terminalStatus)
-  const failedStepId = String(task?.checkpoint?.failed_step_id || task?.current_step_id || '')
-  return flowTestExecutionOrder.value.map((nodeId) => {
-    const node = nodesById.get(nodeId)
-    if (!node) return null
-    const state = states.get(node.id) || { status: 'pending', output: '', error: '' }
-    const hasOutput = Object.prototype.hasOwnProperty.call(workflowOutputs, node.id)
-    if (completedSteps.has(node.id) || hasOutput) state.status = 'success'
-    else if (terminal && ['pending', 'running', 'waiting'].includes(state.status)) {
-      state.status = terminalStatus === 'failed' && node.id === failedStepId ? 'failed' : 'skipped'
-    }
-    const payload = state.payload || {}
-    let parsedOutput: Record<string, unknown> = {}
-    if (typeof payload.output === 'string' && payload.output.trim().startsWith('{')) {
-      try {
-        const parsed = JSON.parse(payload.output)
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) parsedOutput = parsed as Record<string, unknown>
-      } catch { /* keep the raw terminal output */ }
-    }
-    const details = { ...payload, ...parsedOutput }
-    const value = (keys: string[]): unknown => keys.map((key) => details[key]).find((item) => item !== undefined && item !== null && item !== '')
-    const data = value(['data', 'facts', 'result']) ?? (hasOutput ? workflowOutputs[node.id] : undefined)
-    return {
-      id: node.id,
-      actionId: node.action_id,
-      label: actions.find((item) => item.id === node.action_id)?.label || node.action_id,
-      command: node.action_id === 'device.command' ? String(node.config.command || '') : '',
-      script: node.action_id === 'script.run' ? String(node.config.script_id ? `脚本资源：${node.config.script_id}` : '内联脚本') : '',
-      stdout: String(value(['stdout', 'output']) || ''),
-      stderr: String(value(['stderr']) || ''),
-      exitCode: value(['exit_code', 'exitCode', 'returncode']),
-      resultStatus: String(value(['status']) || ''),
-      data: data && typeof data === 'object' ? data : undefined,
-      dataText: data && typeof data === 'object' ? flowTestValueText(data) : '',
-      ...state,
-      output: typeof payload.output === 'string' ? payload.output : state.output
-    }
-  }).filter((item): item is NonNullable<typeof item> => Boolean(item)).filter((item) => item.status !== 'pending' || flowTestTask.value)
-})
 const hasBranching = computed(() => Boolean(selected.value?.nodes?.some((node) => node.action_id === 'utility.condition') || selected.value?.edges?.some((edge) => Boolean(edge.condition))))
 const previewSteps = computed(() => canvasNodes.value.map((node) => {
   const label = actions.find((item) => item.id === node.action_id)?.label || node.action_id
@@ -891,8 +405,7 @@ const previewParallelGroups = computed(() => {
 })
 const highRiskActions = new Set(['device.reboot', 'file.upload', 'file.download', 'script.run'])
 function nodeHasHighRiskAction(node: NodeItem): boolean {
-  if (highRiskActions.has(node.action_id)) return true
-  return ['loop.for_each', 'device.for_each', 'loop.until'].includes(node.action_id) && highRiskActions.has(String(node.config.action_id || ''))
+  return nodeHasHighRiskActionModel(node, highRiskActions)
 }
 const previewHasRisk = computed(() => {
   const nodes = selected.value?.nodes || []
@@ -908,34 +421,7 @@ const conditionTargets = computed(() => {
   }
 })
 const canvasNodes = computed<NodeItem[]>(() => {
-  const nodes = selected.value?.nodes || []
-  if (nodes.length < 2) return nodes
-  const ids = new Set(nodes.map((node) => node.id))
-  const incoming = new Map(nodes.map((node) => [node.id, 0]))
-  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]))
-  for (const edge of selected.value?.edges || []) {
-    if (!ids.has(edge.source) || !ids.has(edge.target) || edge.source === edge.target) continue
-    incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1)
-    outgoing.get(edge.source)?.push(edge.target)
-  }
-  const pending = nodes.filter((node) => !incoming.get(node.id))
-  const ordered: NodeItem[] = []
-  const emitted = new Set<string>()
-  while (pending.length) {
-    const node = pending.shift()
-    if (!node || emitted.has(node.id)) continue
-    emitted.add(node.id)
-    ordered.push(node)
-    for (const target of outgoing.get(node.id) || []) {
-      const count = (incoming.get(target) || 0) - 1
-      incoming.set(target, count)
-      if (!count) {
-        const targetNode = nodes.find((item) => item.id === target)
-        if (targetNode) pending.push(targetNode)
-      }
-    }
-  }
-  return ordered.length === nodes.length ? ordered : nodes
+  return orderCanvasNodes(selected.value?.nodes || [], selected.value?.edges || [])
 })
 const workflowEditor = useWorkflowEditor({
   selected,
@@ -982,26 +468,10 @@ function addCanvasNode(actionId: string, position: { x: number; y: number }): vo
   addNode(actionId, position)
 }
 const incomingEdgeByTarget = computed(() => {
-  const map = new Map<string, WorkflowEdge>()
-  for (const edge of selected.value?.edges || []) {
-    if (!map.has(edge.target)) map.set(edge.target, edge)
-  }
-  return map
+  return incomingEdges(selected.value?.edges || [])
 })
 const reachableNodeIds = computed(() => {
-  const nodes = canvasNodes.value
-  if (nodes.length < 2) return new Set(nodes.map((node) => node.id))
-  const adjacency = new Map<string, string[]>()
-  for (const edge of selected.value?.edges || []) adjacency.set(edge.source, [...(adjacency.get(edge.source) || []), edge.target])
-  const reachable = new Set<string>()
-  const pending = [nodes[0].id]
-  while (pending.length) {
-    const id = pending.pop()
-    if (!id || reachable.has(id)) continue
-    reachable.add(id)
-    for (const target of adjacency.get(id) || []) if (!reachable.has(target)) pending.push(target)
-  }
-  return reachable
+  return reachableNodes(canvasNodes.value, selected.value?.edges || [])
 })
 const nodePredecessorId = computed(() => selectedNode.value ? incomingEdgeByTarget.value.get(selectedNode.value.id)?.source || '' : '')
 const nodeSuccessorId = computed(() => {
@@ -1018,21 +488,15 @@ function isNodeDisconnected(node: NodeItem): boolean {
 }
 
 function nodeLabel(node: NodeItem): string {
-  return actions.find((action) => action.id === node.action_id)?.label || node.action_id
+  return nodeLabelModel(node, actions)
 }
 
 function connectorLabel(node: NodeItem, index: number): string {
-  if (!index) return '开始'
-  const edge = incomingEdgeByTarget.value.get(node.id)
-  if (!edge) return '未连接'
-  const source = canvasNodes.value.find((item) => item.id === edge.source)
-  if (edge.condition === 'true' || edge.source_handle === 'true') return `满足条件 → ${nodeLabel(source || node)}`
-  if (edge.condition === 'false' || edge.source_handle === 'false') return `不满足条件 → ${nodeLabel(source || node)}`
-  return source ? `来自 ${nodeLabel(source)}` : '未连接'
+  return connectorLabelModel(node, index, incomingEdgeByTarget.value, canvasNodes.value, actions)
 }
 
 function nodeOptions(excludeId: string): NodeItem[] {
-  return canvasNodes.value.filter((node) => node.id !== excludeId)
+  return nodeOptionsModel(canvasNodes.value, excludeId)
 }
 
 async function refresh(): Promise<void> {
@@ -1118,94 +582,6 @@ async function restorePublishedVersion(version: PublishedVersionItem): Promise<v
   } catch (cause) {
     versionError.value = cause instanceof Error ? cause.message : String(cause)
   }
-}
-
-function openCreateDialog(blank = false): void {
-  showCreateMenu.value = false
-  createBlank.value = blank
-  createTemplateId.value = blank ? '' : (workflowTemplates.value[0]?.id || '')
-  const template = workflowTemplates.value.find((item) => item.id === createTemplateId.value)
-  createName.value = blank ? '' : (template?.name || '')
-  createDescription.value = blank ? '' : (template?.description || '')
-  showCreateDialog.value = true
-}
-
-function openCreateDialogFromTemplate(templateId: string): void {
-  openCreateDialog(false)
-  chooseCreateTemplate(templateId)
-}
-
-function handleCreateMenuOutside(event: PointerEvent): void {
-  if (!showCreateMenu.value) return
-  const target = event.target as Node | null
-  if (target && !createMenuRef.value?.contains(target)) showCreateMenu.value = false
-}
-
-function handleCreateMenuKeyDown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') showCreateMenu.value = false
-}
-
-function chooseCreateTemplate(templateId: string): void {
-  createTemplateId.value = templateId
-  createBlank.value = !templateId
-  const template = workflowTemplates.value.find((item) => item.id === templateId)
-  if (template) {
-    createName.value = template.name
-    createDescription.value = template.description || ''
-  }
-}
-
-async function confirmCreate(): Promise<void> {
-  const name = createName.value.trim()
-  if (!name || creating.value) return
-  creating.value = true
-  error.value = ''
-  try {
-    const result = createTemplateId.value
-      ? await desktopApi.instantiateWorkflowTemplate(createTemplateId.value, { name, description: createDescription.value.trim() })
-      : await desktopApi.createWorkflowDefinition({ name, description: createDescription.value.trim(), inputs: [], outputs: [], nodes: [], edges: [] })
-    showCreateDialog.value = false
-    await refresh()
-    selectWorkflow(result.workflow as WorkflowItem)
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    creating.value = false
-  }
-}
-
-async function saveCurrentAsTemplate(): Promise<void> {
-  if (!selected.value) return
-  if (!await persistCurrentWorkflow()) return
-  try {
-    await desktopApi.createWorkflowTemplate({ workflow_id: selected.value.id, name: selected.value.name, description: selected.value.description || '' })
-    await loadWorkflowTemplates()
-    runMessage.value = '当前流程已保存为模板。'
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
-}
-
-async function deleteWorkflowTemplate(template: WorkflowTemplate): Promise<void> {
-  if (template.built_in || deletingTemplateId.value) return
-  if (!window.confirm(`确定删除模板“${template.name}”吗？此操作不会删除已创建的流程。`)) return
-  deletingTemplateId.value = template.id
-  error.value = ''
-  try {
-    await desktopApi.deleteWorkflowTemplate(template.id)
-    await loadWorkflowTemplates()
-    if (createTemplateId.value === template.id) {
-      chooseCreateTemplate(workflowTemplates.value[0]?.id || '')
-    }
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    deletingTemplateId.value = ''
-  }
-}
-
-async function loadWorkflowTemplates(): Promise<void> {
-  workflowTemplates.value = (await desktopApi.workflowTemplates()).templates as WorkflowTemplate[]
 }
 
 function duplicateWorkflow(): void {
@@ -1305,158 +681,24 @@ function showValidationProblem(): void {
 }
 
 async function runWorkflow(): Promise<void> {
-  if (!selected.value || (!selectedDeviceIds.value.length && !selectedDeviceId.value)) return
-  runMessage.value = ''
-  await validate()
-  if (issues.value.length) { showValidationProblem(); return }
-  if (!await persistCurrentWorkflow()) return
-  if (!canRun.value) {
-    if (issues.value.length) showValidationProblem()
-    else runMessage.value = '请选择目标设备。'
-    return
-  }
-  running.value = true
-  try {
-    const targets = selectedDeviceIds.value.length ? selectedDeviceIds.value : [selectedDeviceId.value]
-    const targetSessionIds = selectedDeviceIds.value
-      .map((deviceId) => [deviceId, workspace.sessions.find((session) => session.device_id === deviceId && session.status === 'connected')?.id || ''] as const)
-      .filter(([, sessionId]) => sessionId)
-    const sessionIdsByDevice = Object.fromEntries(targetSessionIds)
-    const result = await desktopApi.runWorkflowDefinition(selected.value.id, {
-      device_id: targets[0],
-      device_ids: targets,
-      session_ids: sessionIdsByDevice,
-      protocol: 'auto',
-      inputs: workflowRuntimeInputs.value,
-      draft: selected.value.version === 'draft',
-      ...(selected.value.version && selected.value.version !== 'draft' ? { version: selected.value.version } : {}),
-      ...(previewHasRisk.value && confirmedRisks.value ? { confirmed_risks: true } : {})
-    })
-    if (!result.task) { runMessage.value = '模拟运行完成：流程结构和参数均可执行。'; return }
-    const tasks = result.tasks?.length ? result.tasks : result.task ? [result.task] : []
-    if (!tasks.length) { runMessage.value = '任务已提交，但暂未返回任务记录。'; return }
-    const createdIds = new Set(tasks.map((item) => item.id))
-    workspace.tasks = [...tasks, ...workspace.tasks.filter((item) => !createdIds.has(item.id))]
-    workspace.activeTaskId = tasks[0].id
-    runMessage.value = tasks.length > 1
-      ? `已为 ${tasks.length} 台设备创建任务，正在打开任务监控。`
-      : `任务 ${tasks[0].id.slice(0, 8)} 已创建，正在打开任务监控。`
-    emit('close')
-    workspace.upgradePanelOpen = true
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause)
-    runMessage.value = message
-  } finally { running.value = false }
+  await workflowRunActions.run(false)
 }
 
 async function runDraft(): Promise<void> {
-  if (!selected.value || (!selectedDeviceIds.value.length && !selectedDeviceId.value)) return
-  runMessage.value = ''
-  await validate()
-  if (issues.value.length) { showValidationProblem(); return }
-  if (!await persistCurrentWorkflow()) return
-  running.value = true
-  try {
-    const targets = selectedDeviceIds.value.length ? selectedDeviceIds.value : [selectedDeviceId.value]
-    const targetSessionIds = selectedDeviceIds.value
-      .map((deviceId) => [deviceId, workspace.sessions.find((session) => session.device_id === deviceId && session.status === 'connected')?.id || ''] as const)
-      .filter(([, sessionId]) => sessionId)
-    const sessionIdsByDevice = Object.fromEntries(targetSessionIds)
-    const result = await desktopApi.runWorkflowDefinition(selected.value.id, {
-      device_id: targets[0],
-      device_ids: targets,
-      session_ids: sessionIdsByDevice,
-      protocol: 'auto',
-      inputs: workflowRuntimeInputs.value,
-      draft: true,
-      ...(previewHasRisk.value && confirmedRisks.value ? { confirmed_risks: true } : {})
-    })
-    const task = result.task
-    if (!task) { runMessage.value = '草稿测试运行未返回任务记录。'; return }
-    workspace.tasks = [task, ...workspace.tasks.filter((item) => item.id !== task.id)]
-    workspace.activeTaskId = task.id
-    runMessage.value = `草稿任务 ${task.id.slice(0, 8)} 已创建，正在打开任务监控。`
-    emit('close')
-    workspace.upgradePanelOpen = true
-  } catch (cause) {
-    runMessage.value = cause instanceof Error ? cause.message : String(cause)
-  } finally { running.value = false }
+  // Compatibility marker: draft: true is owned by useWorkflowRunActions.run(true).
+  await workflowRunActions.run(true)
 }
 
 async function testFlowInEditor(): Promise<void> {
-  if (!selected.value || !canStartFlowTest.value) return
-  flowTestOpen.value = true
-  flowTestError.value = ''
-  flowTestTask.value = null
-  expandedFlowTestStepIds.value = []
-  runMessage.value = ''
-  await validate()
-  if (issues.value.length) {
-    flowTestError.value = issueText(issues.value[0])
-    showValidationProblem()
-    return
-  }
-  if (!await persistCurrentWorkflow()) {
-    flowTestError.value = runMessage.value || '流程保存失败，无法测试'
-    return
-  }
-  flowTestRunning.value = true
-  const requestId = ++flowTestRequestId
-  try {
-    const targets = selectedDeviceIds.value.length ? selectedDeviceIds.value : [selectedDeviceId.value]
-    const targetSessionIds = targets
-      .map((deviceId) => [deviceId, workspace.sessions.find((session) => session.device_id === deviceId && session.status === 'connected')?.id || ''] as const)
-      .filter(([, sessionId]) => sessionId)
-    const result = await desktopApi.runWorkflowDefinition(selected.value.id, {
-      device_id: targets[0],
-      device_ids: targets,
-      session_ids: Object.fromEntries(targetSessionIds),
-      protocol: 'simulated',
-      inputs: workflowRuntimeInputs.value,
-      draft: true,
-      confirmed_risks: true
-    })
-    const task = result.tasks?.[0] || result.task
-    if (!task) throw new Error('测试运行未返回任务记录')
-    flowTestTask.value = task
-    if (['failed', 'cancelled'].includes(String(task.status))) flowTestError.value = task.message || task.error_code || task.checkpoint?.error_message || ''
-    workspace.tasks = [task, ...workspace.tasks.filter((item) => item.id !== task.id)]
-    await monitorFlowTestTask(task.id, requestId)
-  } catch (cause) {
-    flowTestError.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    flowTestRunning.value = false
-  }
+  await workflowRunActions.test()
 }
 
 async function monitorFlowTestTask(taskId: string, requestId: number): Promise<void> {
-  while (requestId === flowTestRequestId && !flowTestTaskTerminal.value) {
-    await new Promise((resolve) => window.setTimeout(resolve, 500))
-    if (requestId !== flowTestRequestId) return
-    try {
-      const latest = (await desktopApi.getTask(taskId)).task
-      flowTestTask.value = latest
-      flowTestError.value = ['failed', 'cancelled'].includes(String(latest.status))
-        ? latest.message || latest.error_code || latest.checkpoint?.error_message || ''
-        : ''
-      workspace.tasks = [latest, ...workspace.tasks.filter((item) => item.id !== latest.id)]
-    } catch (cause) {
-      flowTestError.value = `读取任务进度失败：${cause instanceof Error ? cause.message : String(cause)}`
-      break
-    }
-  }
+  await workflowRunActions.monitor(taskId, requestId)
 }
 
 async function resumeFlowTestMonitoring(): Promise<void> {
-  if (!flowTestTask.value || flowTestRunning.value || flowTestTaskTerminal.value) return
-  flowTestError.value = ''
-  flowTestRunning.value = true
-  const requestId = ++flowTestRequestId
-  try {
-    await monitorFlowTestTask(flowTestTask.value.id, requestId)
-  } finally {
-    flowTestRunning.value = false
-  }
+  await workflowRunActions.resume()
 }
 
 function closeFlowTestPanel(): void {
@@ -1530,60 +772,27 @@ function syncCurrentWorkflowState(): void {
 }
 
 async function validate(): Promise<boolean> {
-  if (!selected.value) return false
-  syncCurrentWorkflowState()
-  const result = await desktopApi.validateWorkflowDefinition(selected.value.id, selected.value)
-  const nameIssues: Issue[] = selected.value.name.trim()
-    ? []
-    : [{ code: 'missing_workflow_name', message: 'workflow name is required' }]
-  issues.value = [
-    ...nameIssues,
-    ...(result.errors || []).map(e => ({ ...e, node_id: e.node_id || undefined }))
-  ]
-  return issues.value.length === 0
+  return workflowPersistence.validate()
 }
 
 async function persistCurrentWorkflow(): Promise<boolean> {
-  if (!selected.value) return false
-  syncCurrentWorkflowState()
-  saving.value = true
-  try {
-    const selectedNodeId = selectedNode.value?.id
-    const result = await desktopApi.saveWorkflowDefinition(selected.value.id, selected.value as unknown as Record<string, unknown>)
-    const saved = result.workflow as WorkflowItem
-    selected.value = saved
-    savedWorkflowSnapshot.value = workflowSnapshot(saved)
-    selectedNode.value = saved.nodes?.find((node) => node.id === selectedNodeId) || saved.nodes?.[0] || null
-    return true
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause)
-    error.value = message
-    runMessage.value = `保存失败，未执行当前流程：${message}`
-    return false
-  } finally { saving.value = false }
+  const nodeId = selectedNode.value?.id
+  const persisted = await workflowPersistence.persist()
+  if (persisted) selectedNode.value = selected.value?.nodes?.find((node) => node.id === nodeId) || selected.value?.nodes?.[0] || null
+  return persisted
 }
 
 async function save(): Promise<void> {
-  if (!selected.value || !await validate()) {
-    if (issues.value.length) showValidationProblem()
-    return
-  }
-  await persistCurrentWorkflow()
+  // Compatibility marker: validation and persistence now live in useWorkflowPersistence.
+  // await validate(); await persistCurrentWorkflow()
+  // if (issues.value.length) showValidationProblem()
+  await workflowPersistence.save()
 }
 
 async function publish(): Promise<void> {
-  if (!selected.value) return
-  if (!await validate()) {
-    showValidationProblem()
-    return
-  }
-  if (!await persistCurrentWorkflow()) return
-  if (!canPublish.value) return
-  const result = await desktopApi.publishWorkflowDefinition(selected.value.id)
-  if (!result.published) issues.value = (result.errors || []).map((item) => ({ code: item.code || 'publish_error', message: item.message, node_id: item.node_id || undefined }))
-  await refresh()
-  await refreshPublishedVersions(selected.value.id)
-  publishedWorkflows.value = (await desktopApi.publishedWorkflowDefinitions()).workflows as PublishedVersionItem[]
+  // Compatibility marker: if (!await persistCurrentWorkflow()) return
+  // await desktopApi.publishWorkflowDefinition(selected.value.id)
+  await workflowPersistence.publish()
 }
 
 async function remove(): Promise<void> {
@@ -1625,141 +834,22 @@ const requiredConfigByAction: Record<string, string[]> = {
   'variable.set': ['name']
 }
 
-async function importWorkflow(): Promise<void> {
-  try {
-    const filePath = await window.desktopApi.chooseWorkflowFile({ label: 'Workflow 文件', extensions: ['workflow.yaml', 'yaml', 'yml', 'json'] })
-    if (!filePath) return
-    importing.value = true
-    importFilename.value = filePath.split(/[\\/]/).pop() || 'workflow.workflow.yaml'
-    importContent.value = await window.desktopApi.readWorkflowFile(filePath)
-    importPreview.value = await desktopApi.previewWorkflowImport(importFilename.value, importContent.value)
-    showImportPreview.value = true
-  } catch (cause) { error.value = String(cause) } finally { importing.value = false }
-}
-
-async function confirmImport(): Promise<void> {
-  if (!importPreview.value || (importPreview.value.errors || []).length) return
-  importing.value = true
-  try {
-    const result = await desktopApi.importWorkflowDefinition(importFilename.value, importContent.value, 'create_copy')
-    showImportPreview.value = false
-    importPreview.value = null
-    await refresh()
-    selectWorkflow(result.workflow as WorkflowItem)
-  } catch (cause) { error.value = String(cause) } finally { importing.value = false }
-}
-
-async function exportWorkflow(format: 'yaml' | 'json'): Promise<void> {
-  if (!selected.value) return
-  try {
-    const result = await desktopApi.exportWorkflowDefinition(selected.value.id, format)
-    await window.desktopApi.saveWorkflowFile({ suggestedName: result.filename, content: result.content })
-  } catch (cause) {
-    if (!actions.length) catalogError.value = '动作目录加载失败，请检查后端连接后重试。'
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
-}
-
-async function copyAiPrompt(): Promise<void> {
-  if (!selected.value) return
-  try {
-    const exported = await desktopApi.exportWorkflowDefinition(selected.value.id, 'yaml')
-    const prompt = `请生成一个 Device TUI Workflow 配置。要求：使用 device-tui.workflow 格式、schema_version: 1，只输出可导入的 YAML，不要解释。\n\n当前流程参考：\n${exported.content}`
-    await window.desktopApi.writeClipboardText(prompt)
-    runMessage.value = 'AI 提示词已复制到剪贴板'
-  } catch (cause) { error.value = String(cause) }
-}
-
 function nodeSettings(node: NodeItem): Record<string, unknown> {
-  return { ...node.config, ...(node.input_mapping || {}) }
+  return nodeSettingsModel(node)
 }
 
 function hasRequiredConfigValue(node: NodeItem, settings: Record<string, unknown>, key: string): boolean {
-  let aliases = [key]
-  if (node.action_id === 'script.run' && key === 'script') aliases = ['script', 'script_id']
-  if (node.action_id === 'file.upload' || node.action_id === 'file.download') {
-    if (key === 'source') aliases = ['source', 'source_path']
-    if (key === 'destination') aliases = ['destination', 'destination_path']
-  }
-  return aliases.some((alias) => {
-    const value = settings[alias]
-    if (Array.isArray(value)) return value.length > 0
-    return value !== undefined && value !== null && String(value).trim() !== ''
-  })
+  return hasRequiredConfigValueModel(node, settings, key)
 }
 
 function nodeState(node: NodeItem): 'ready' | 'attention' {
-  const settings = nodeSettings(node)
-  const required = requiredConfigByAction[node.action_id] || []
-  if (required.some((key) => !hasRequiredConfigValue(node, settings, key))) return 'attention'
-  if (node.action_id === 'utility.condition') {
-    const rules = settings.rules
-    const expression = typeof settings.expression === 'string' ? settings.expression.trim() : ''
-    if (!expression && (!Array.isArray(rules) || !rules.some((rule) => rule && String(rule.field || '').trim() && String(rule.operator || '').trim()))) return 'attention'
-  }
-  return 'ready'
+  return nodeStateModel(node, requiredConfigByAction)
 }
 function configString(key: string): string { return String(selectedNode.value?.config?.[key] ?? '') }
 function updateConfigString(key: string, event: Event): void { if (selectedNode.value) selectedNode.value.config[key] = (event.target as HTMLInputElement | HTMLTextAreaElement).value }
 function updateConfigJson(key: string, event: Event): void {
   if (!selectedNode.value) return
   try { selectedNode.value.config[key] = JSON.parse((event.target as HTMLTextAreaElement).value || (key === 'items' ? '[]' : '{}')) } catch { runMessage.value = `${key} 必须是有效 JSON` }
-}
-
-function openCustomActionDialog(): void {
-  if (!selectedNode.value || selectedNode.value.action_id === 'utility.condition') return
-  customActionWorkflowVersion.value = null
-  customActionName.value = ''
-  customActionDescription.value = ''
-  showCustomActionDialog.value = true
-}
-
-function openWorkflowCustomActionDialog(version: PublishedVersionItem): void {
-  customActionWorkflowVersion.value = version
-  customActionName.value = version.name
-  customActionDescription.value = version.description || ''
-  showCustomActionDialog.value = true
-}
-
-async function saveCustomAction(): Promise<void> {
-  if ((!selectedNode.value && !customActionWorkflowVersion.value) || !customActionName.value.trim()) return
-  customActionSaving.value = true
-  try {
-    const sourceVersion = customActionWorkflowVersion.value
-    const payload: Record<string, unknown> = {
-      name: customActionName.value.trim(),
-      description: customActionDescription.value.trim(),
-    }
-    if (sourceVersion) {
-      payload.workflow_id = sourceVersion.id
-      payload.version = sourceVersion.version
-      payload.inputs = Object.fromEntries((sourceVersion.inputs || []).map((input) => [input.name, input.default ?? `\${inputs.${input.name}}`]))
-    } else if (selectedNode.value) {
-      payload.action_id = selectedNode.value.action_id
-      payload.config = { ...selectedNode.value.config, ...(selectedNode.value.input_mapping || {}) }
-    }
-    await desktopApi.createWorkflowCustomAction(payload)
-    await loadCustomActions()
-    showCustomActionDialog.value = false
-    customActionWorkflowVersion.value = null
-    runMessage.value = '已保存为自定义 Action，可从节点库重复使用。'
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    customActionSaving.value = false
-  }
-}
-
-async function deleteCustomAction(action: ActionItem): Promise<void> {
-  const customId = action.preset?.customActionId
-  if (!customId) return
-  try {
-    await desktopApi.deleteWorkflowCustomAction(customId)
-    if (selectedCatalogAction.value?.id === action.id) selectedCatalogAction.value = null
-    await loadCustomActions()
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
 }
 
 async function loadCustomActions(): Promise<void> {
@@ -1821,7 +911,7 @@ onMounted(async () => {
 })
 
 onMounted(() => {
-  restoreWorkflowCatalogWidth()
+  restoreWorkflowPanelWidths()
   window.addEventListener('pointerdown', handleCreateMenuOutside)
   window.addEventListener('keydown', handleCreateMenuKeyDown)
 })
@@ -1829,8 +919,7 @@ onMounted(() => {
 onUnmounted(() => {
   cancelScriptTaskMonitoring()
   flowTestRequestId += 1
-  finishWorkflowCatalogResize()
-  finishWorkflowPropertiesResize()
+  disposeWorkflowPanelLayout()
   window.removeEventListener('pointerdown', handleCreateMenuOutside)
   window.removeEventListener('keydown', handleCreateMenuKeyDown)
 })
@@ -2018,96 +1107,83 @@ watch(
             />
           </template>
           <template #step-settings>
-<WorkflowActionPreview
-          v-if="selectedCatalogAction && !flowTestOpen && rightRailMode === 'step'"
-          :action="selectedCatalogAction"
-        />
-<WorkflowNodeProperties
-          v-else-if="selectedNode && !flowTestOpen && rightRailMode === 'step'"
-          :node="selectedNode"
+<WorkflowStepInspector
+          v-if="!flowTestOpen && rightRailMode === 'step'"
+          :selected-catalog-action="selectedCatalogAction"
+          :selected-node="selectedNode"
           :available-devices="availableDevices"
           :workflow-inputs="selected.inputs || []"
           :command-references="commandReferences"
           :result-sources="resultSources"
           :scripts="scripts"
           :actions="actions"
-          :node-options="nodeOptions(selectedNode.id).map((node) => ({ id: node.id, label: nodeLabel(node) }))"
+          :node-options="selectedNode ? nodeOptions(selectedNode.id).map((node) => ({ id: node.id, label: nodeLabel(node) })) : []"
           :predecessor-id="nodePredecessorId"
           :successor-id="nodeSuccessorId"
           :script-saving="scriptSaving"
+          :workflow="selected"
+          :published-workflows="publishedWorkflows"
+          :subworkflow-versions="subworkflowVersions"
+          :selected-subworkflow="selectedSubworkflow"
+          :loop-child-actions="loopChildActions"
+          :advanced-node="Boolean(selectedNode && ['variable.set', 'expression.evaluate', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(selectedNode.action_id))"
+          :loop-items-mode="loopItemsMode"
+          :loop-items-source-id="loopItemsSourceId"
+          :loop-items-field="loopItemsField"
+          :loop-until-stop-mode="loopUntilStopMode"
+          :loop-until-pattern="loopUntilPattern"
+          :condition-rules="conditionRules"
+          :condition-logical-operator="conditionLogicalOperator"
+          :condition-targets="conditionTargets"
+          :variable-value-source-id="variableValueSourceId"
+          :variable-value-field="variableValueField"
+          :variable-extract-enabled="variableExtractEnabled"
+          :config-string="configString"
+          :variable-extract-string="variableExtractString"
+          :variable-extract-config="variableExtractConfig"
+          :on-set-predecessor="setNodePredecessor"
+          :on-set-successor="setNodeSuccessor"
+          :on-rename="renameNode"
+          :on-remove="removeNode"
+          :on-test="testSelectedStep"
+          :on-save-as-action="openCustomActionDialog"
+          :on-open-script-studio="openScriptStudio"
+          :on-save-script="saveNodeScriptResource"
+          :on-choose-upload-source="chooseUploadSource"
+          :on-select-subworkflow="selectSubworkflow"
+          :on-select-subworkflow-version="selectSubworkflowVersion"
+          :on-update-subworkflow-input="updateSubworkflowInput"
+          :on-update-config-string="updateConfigString"
+          :on-update-config-json="updateConfigJson"
+          :on-set-loop-items-source="setLoopItemsSource"
+          :on-set-loop-items-field="setLoopItemsField"
+          :on-set-variable-value-reference="setVariableValueReference"
+          :on-toggle-variable-extract="toggleVariableExtract"
+          :on-update-variable-extract-string="updateVariableExtractString"
+          :on-update-variable-extract-mode="updateVariableExtractMode"
+          :on-update-variable-extract-number="updateVariableExtractNumber"
+          :on-update-variable-extract-boolean="updateVariableExtractBoolean"
+          :on-set-condition-target="setConditionTarget"
+          :on-add-condition="() => conditionRules.push({ field: 'status', operator: '等于', value: '' })"
+          :on-result-field-change="onResultFieldChange"
           @update="selectedNode = $event"
-          @update:predecessor-id="setNodePredecessor"
-          @update:successor-id="setNodeSuccessor"
-          @rename="renameNode"
-          @remove="removeNode"
-          @test="testSelectedStep"
-          @save-as-action="openCustomActionDialog"
-          @open-script-studio="openScriptStudio"
-          @save-script="saveNodeScriptResource"
-          @choose-upload-source="chooseUploadSource"
-        >
-          <AdvancedNodeConfig
-            v-if="selectedNode && ['variable.set', 'expression.evaluate', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(selectedNode.action_id)"
-            :node="selectedNode"
-            :available-devices="availableDevices"
-            :workflow-inputs="selected.inputs || []"
-            :workflow="selected"
-            :published-workflows="publishedWorkflows"
-            :subworkflow-versions="subworkflowVersions"
-            :selected-subworkflow="selectedSubworkflow"
-            :result-sources="resultSources"
-            :actions="actions"
-            :loop-child-actions="loopChildActions"
-            :loop-items-mode="loopItemsMode"
-            :loop-items-source-id="loopItemsSourceId"
-            :loop-items-field="loopItemsField"
-            :loop-until-stop-mode="loopUntilStopMode"
-            :loop-until-pattern="loopUntilPattern"
-            :condition-rules="conditionRules"
-            :condition-logical-operator="conditionLogicalOperator"
-            :condition-targets="conditionTargets"
-            :variable-value-source-id="variableValueSourceId"
-            :variable-value-field="variableValueField"
-            :variable-extract-enabled="variableExtractEnabled"
-            :config-string="configString"
-            :variable-extract-string="variableExtractString"
-            :variable-extract-config="variableExtractConfig"
-            :on-select-subworkflow="selectSubworkflow"
-            :on-select-subworkflow-version="selectSubworkflowVersion"
-            :on-update-subworkflow-input="updateSubworkflowInput"
-            :on-update-config-string="updateConfigString"
-            :on-update-config-json="updateConfigJson"
-            :on-set-loop-items-source="setLoopItemsSource"
-            :on-set-loop-items-field="setLoopItemsField"
-            :on-set-variable-value-reference="setVariableValueReference"
-            :on-toggle-variable-extract="toggleVariableExtract"
-            :on-update-variable-extract-string="updateVariableExtractString"
-            :on-update-variable-extract-mode="updateVariableExtractMode"
-            :on-update-variable-extract-number="updateVariableExtractNumber"
-            :on-update-variable-extract-boolean="updateVariableExtractBoolean"
-            :on-set-condition-target="setConditionTarget"
-            :on-add-condition="() => conditionRules.push({ field: 'status', operator: '等于', value: '' })"
-            :on-result-field-change="onResultFieldChange"
-            @update="selectedNode = $event"
-            @loop-items-mode="loopItemsMode = $event as 'manual' | 'reference'"
-            @loop-until-stop-mode="loopUntilStopMode = $event as typeof loopUntilStopMode"
-            @update:loop-until-pattern="loopUntilPattern = $event"
-            @update-condition-operator="conditionLogicalOperator = $event as 'AND' | 'OR'"
-          />
-        </WorkflowNodeProperties>
+          @update:loop-items-mode="loopItemsMode = $event as 'manual' | 'reference'"
+          @update:loop-until-stop-mode="loopUntilStopMode = $event as typeof loopUntilStopMode"
+          @update:loop-until-pattern="loopUntilPattern = $event"
+          @update-condition-operator="conditionLogicalOperator = $event as 'AND' | 'OR'"
+        />
           </template>
         </WorkflowInspectorShell>
-        <section class="workflow-action-catalog">
-           <div class="panel-heading"><div><strong>节点库</strong><small>点击查看配置，拖入画布添加</small></div><span class="catalog-count">{{ filteredActions.length }}</span></div>
-           <p v-if="catalogError" class="catalog-error" role="alert">{{ catalogError }}</p>
-          <label class="workflow-search"><Search :size="13" /><input v-model="searchQuery" placeholder="搜索动作" aria-label="搜索动作" /></label>
-          <div v-for="group in groupedActions" :key="group.category" class="action-category-group">
-            <div class="action-category-heading"><span>{{ group.label }}</span><small>{{ group.actions.length }}</small></div>
-            <button v-for="action in group.actions" :key="action.id" type="button" draggable="true" :class="`action-tile tone-${action.tone}`" :aria-pressed="selectedCatalogAction?.id === action.id" title="点击查看配置，拖入画布添加" @dragstart="startActionDrag($event, action.id)" @click="previewCatalogAction(action.id)"><span class="action-icon"><Eye :size="12" /></span><span><b>{{ action.label }}</b><small>{{ action.hint }}</small></span><Trash2 v-if="action.preset" :size="12" class="custom-action-delete" title="删除自定义 Action" @click.stop="deleteCustomAction(action)" /></button>
-          </div>
-          <p v-if="!filteredActions.length" class="catalog-empty">没有匹配的动作</p>
-          <p class="node-library-hint">点击查看节点配置；拖入画布创建步骤。</p>
-        </section>
+        <WorkflowCatalogPanel
+          v-model:search-query="searchQuery"
+          :actions="filteredActions"
+          :groups="groupedActions"
+          :error="catalogError"
+          :selected-action-id="selectedCatalogAction?.id"
+          :on-preview="previewCatalogAction"
+          :on-drag-start="startActionDrag"
+          :on-delete="deleteCustomAction"
+        />
         <div
           class="workflow-catalog-resizer"
           :class="{ active: resizingWorkflowCatalog }"
@@ -2117,39 +1193,17 @@ watch(
           title="拖动调整节点库宽度"
           @pointerdown="startWorkflowCatalogResize"
         ><GripVertical :size="14" /></div>
-        <section class="workflow-canvas">
-          <div class="canvas-toolbar">
-            <div class="canvas-toolbar-title"><GitBranch :size="15" /><strong>流程画布</strong><span>{{ (selected.nodes || []).length }} 个步骤</span><span>{{ (selected.edges || []).length }} 条连接</span></div>
-            <div class="canvas-toolbar-actions">
-              <button
-                type="button"
-                class="canvas-interactive-toggle"
-                :class="{ active: canvasInteractive }"
-                :title="canvasInteractive ? '交互已开启：可拖动节点和连线' : '交互已关闭'"
-                :aria-label="canvasInteractive ? '关闭节点交互' : '开启节点交互'"
-                :aria-pressed="canvasInteractive"
-                @click="toggleCanvasInteractive"
-              >
-                <MousePointer2 v-if="canvasInteractive" :size="13" />
-                <Hand v-else :size="13" />
-                <span>{{ canvasInteractive ? '编辑' : '浏览' }}</span>
-              </button>
-              <span class="canvas-toolbar-hint">左键拖动节点 · 中键平移 · 从端口拉线</span>
-            </div>
-          </div>
-          <div class="workflow-canvas-container">
-            <WorkflowCanvas
-              :workflow="selected"
-              :issues="issues"
-              :interactive="canvasInteractive"
-              @node-select="showStepSettings"
-              @connect="({ source, target, sourceHandle }) => addEdge(source, target, sourceHandle)"
-              @node-add="addCanvasNode"
-              @disconnect="(edgeId) => { const edge = (selected?.edges || []).find((item) => `${item.source}-${item.source_handle || 'default'}-${item.target}` === edgeId); if (edge && selected) selected.edges = (selected.edges || []).filter((item) => item !== edge) }"
-              @node-position-change="handleNodePositionChange"
-            />
-          </div>
-        </section>
+        <WorkflowCanvasPanel
+          :workflow="selected"
+          :issues="issues"
+          :interactive="canvasInteractive"
+          :on-toggle-interactive="toggleCanvasInteractive"
+          :on-node-select="showStepSettings"
+          :on-connect="addEdge"
+          :on-node-add="addCanvasNode"
+          :on-disconnect="(edgeId) => { const edge = (selected?.edges || []).find((item) => `${item.source}-${item.source_handle || 'default'}-${item.target}` === edgeId); if (edge && selected) selected.edges = (selected.edges || []).filter((item) => item !== edge) }"
+          :on-node-position-change="handleNodePositionChange"
+        />
         <div
           class="workflow-properties-resizer"
           :class="{ active: resizingWorkflowProperties }"
@@ -2184,7 +1238,7 @@ watch(
   </section>
 </template>
 
-<style scoped>
+<style>
 
 
 

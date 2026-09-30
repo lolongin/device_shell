@@ -165,6 +165,7 @@ def test_packaged_app_soak_script_exercises_electron_recovery() -> None:
 def test_electron_backend_launcher_supports_packaged_recovery() -> None:
     launcher = Path("desktop/src/main/python-backend.ts").read_text(encoding="utf-8")
     main_process = Path("desktop/src/main/index.ts").read_text(encoding="utf-8")
+    parity_smoke = Path("desktop/src/main/ui-parity-smoke.ts").read_text(encoding="utf-8")
     renderer_api = Path("desktop/src/renderer/src/transport/api.ts").read_text(encoding="utf-8")
 
     assert "DEVICE_TUI_BACKEND_EXECUTABLE" in launcher
@@ -178,10 +179,11 @@ def test_electron_backend_launcher_supports_packaged_recovery() -> None:
     assert "DEVICE_TUI_BACKEND_LOG_BACKUPS" in launcher
     assert "scheduleRestart" in launcher
     assert "crashForRecoveryProbe" in launcher
-    assert "DEVICE_TUI_CAPTURE_BACKEND_RECOVERY" in main_process
-    assert "recoveryRequestStatus" in main_process
+    assert "DEVICE_TUI_CAPTURE_BACKEND_RECOVERY" in parity_smoke
+    assert "recoveryRequestStatus" in parity_smoke
+    runtime_ipc = Path("desktop/src/main/runtime-ipc.ts").read_text(encoding="utf-8")
     assert "fetchBackend(backend.config" in main_process
-    assert "apiBaseUrl: runtime.apiBaseUrl" in main_process
+    assert "apiBaseUrl: runtime.apiBaseUrl" in runtime_ipc
     assert "const runtime = await getRuntime(true)" in renderer_api
 
 
