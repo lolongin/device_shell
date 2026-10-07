@@ -91,6 +91,67 @@ def test_task_service_projects_generic_task_workflow_for_the_desktop() -> None:
     }]
 
 
+def test_task_service_projects_generic_steps_in_plan_execution_order() -> None:
+    service = TaskService(object(), _Orchestrator())  # type: ignore[arg-type]
+    workflow = WorkflowDefinition(
+        id="ui-plan",
+        name="检查设备",
+        steps=(
+            WorkflowStep("command", action=Action("terminal.command")),
+            WorkflowStep("loop", action=Action("device.for_each")),
+            WorkflowStep("connect", action=Action("device.wait_online")),
+        ),
+    )
+    plan = TaskPlan(
+        "plan-1",
+        nodes=(
+            WorkflowNode("command", "terminal.command", depends_on=("connect",)),
+            WorkflowNode("loop", "device.for_each"),
+            WorkflowNode("connect", "device.wait_online", depends_on=("loop",)),
+        ),
+    )
+
+    record = service.create(TaskCreate(
+        workflow=workflow,
+        target=DeviceTarget(device_id="device-1"),
+        framework_plan=plan,
+    ))
+
+    assert [state["id"] for state in record.workflow_view["states"]] == ["loop", "connect", "command"]
+
+
+def test_task_service_exposes_device_loop_body_steps_in_workflow_view() -> None:
+    service = TaskService(object(), _Orchestrator())  # type: ignore[arg-type]
+    workflow = WorkflowDefinition(
+        id="ui-plan",
+        name="遍历设备",
+        steps=(WorkflowStep("loop", action=Action("device.for_each")),),
+    )
+    plan = TaskPlan(
+        "plan-1",
+        nodes=(WorkflowNode(
+            "loop",
+            "device.for_each",
+            input_mapping={
+                "action_steps": [
+                    {"id": "connect", "action_id": "device.wait_online", "action_inputs": {}},
+                    {"id": "command", "action_id": "terminal.command", "action_inputs": {"command": "display version"}},
+                ],
+            },
+        ),),
+    )
+
+    record = service.create(TaskCreate(
+        workflow=workflow,
+        target=DeviceTarget(device_id="device-1"),
+        framework_plan=plan,
+    ))
+
+    assert [state["id"] for state in record.workflow_view["states"]] == [
+        "loop", "loop.connect", "loop.command",
+    ]
+
+
 def test_framework_task_projection_adopts_session_created_during_run() -> None:
     orchestrator = _Orchestrator()
     service = TaskService(object(), orchestrator)  # type: ignore[arg-type]

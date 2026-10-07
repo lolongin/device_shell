@@ -828,6 +828,10 @@ class TaskModel(BaseModel):
     current_step_id: str
     error_code: str
     message: str
+    plan_id: str = ""
+    plan_hash: str = ""
+    parent_task_id: str = ""
+    plan_revision: int = 0
     result: dict[str, object] | None = None
     checkpoint: dict[str, object] | None = None
     workflow_view: dict[str, object] = Field(default_factory=dict)

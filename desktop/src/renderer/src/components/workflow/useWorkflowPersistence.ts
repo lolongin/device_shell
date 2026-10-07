@@ -19,6 +19,7 @@ export function useWorkflowPersistence(options: {
   publishedWorkflows: Ref<WorkflowItem[]>
   canPublish: Ref<boolean>
   showValidationProblem: () => void
+  onPersisted?: (workflow: WorkflowItem) => void
 }) {
   async function validate(): Promise<boolean> {
     const workflow = options.selected.value
@@ -42,6 +43,7 @@ export function useWorkflowPersistence(options: {
       const saved = result.workflow as WorkflowItem
       options.selected.value = saved
       options.savedSnapshot.value = options.snapshot(saved)
+      options.onPersisted?.(saved)
       return true
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)

@@ -157,13 +157,18 @@ class WorkflowDraft:
     edges: tuple[WorkflowEdge, ...] = ()
     status: str = "draft"
     outputs: tuple[WorkflowOutput, ...] = ()
+    # None means the workflow predates explicit canvas boundary connections;
+    # an empty tuple means the user intentionally removed every boundary edge.
+    canvas_edges: tuple[WorkflowEdge, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "description": self.description, "version": self.version, "inputs": [item.to_dict() for item in self.inputs], "outputs": [item.to_dict() for item in self.outputs], "nodes": [item.to_dict() for item in self.nodes], "edges": [item.to_dict() for item in self.edges], "status": self.status}
+        return {"id": self.id, "name": self.name, "description": self.description, "version": self.version, "inputs": [item.to_dict() for item in self.inputs], "outputs": [item.to_dict() for item in self.outputs], "nodes": [item.to_dict() for item in self.nodes], "edges": [item.to_dict() for item in self.edges], "canvas_edges": None if self.canvas_edges is None else [item.to_dict() for item in self.canvas_edges], "status": self.status}
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowDraft":
-        return cls(str(payload.get("id", "")), str(payload.get("name", "")), str(payload.get("description", "")), str(payload.get("version", "draft")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), str(payload.get("status", "draft")), tuple(WorkflowOutput.from_dict(v) for v in payload.get("outputs", ()) if isinstance(v, Mapping)))
+        raw_canvas_edges = payload.get("canvas_edges")
+        canvas_edges = None if raw_canvas_edges is None else tuple(WorkflowEdge.from_dict(v) for v in raw_canvas_edges if isinstance(v, Mapping))
+        return cls(str(payload.get("id", "")), str(payload.get("name", "")), str(payload.get("description", "")), str(payload.get("version", "draft")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), str(payload.get("status", "draft")), tuple(WorkflowOutput.from_dict(v) for v in payload.get("outputs", ()) if isinstance(v, Mapping)), canvas_edges)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,10 +182,13 @@ class WorkflowVersion:
     published_at: str | None = None
     description: str = ""
     outputs: tuple[WorkflowOutput, ...] = ()
+    canvas_edges: tuple[WorkflowEdge, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"workflow_id": self.workflow_id, "version": self.version, "name": self.name, "inputs": [i.to_dict() for i in self.inputs], "outputs": [i.to_dict() for i in self.outputs], "nodes": [n.to_dict() for n in self.nodes], "edges": [e.to_dict() for e in self.edges], "published_at": self.published_at, "description": self.description}
+        return {"workflow_id": self.workflow_id, "version": self.version, "name": self.name, "inputs": [i.to_dict() for i in self.inputs], "outputs": [i.to_dict() for i in self.outputs], "nodes": [n.to_dict() for n in self.nodes], "edges": [e.to_dict() for e in self.edges], "canvas_edges": None if self.canvas_edges is None else [e.to_dict() for e in self.canvas_edges], "published_at": self.published_at, "description": self.description}
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowVersion":
-        return cls(str(payload.get("workflow_id", payload.get("id", ""))), payload.get("version", 1), str(payload.get("name", "")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), payload.get("published_at"), str(payload.get("description", "")), tuple(WorkflowOutput.from_dict(v) for v in payload.get("outputs", ()) if isinstance(v, Mapping)))
+        raw_canvas_edges = payload.get("canvas_edges")
+        canvas_edges = None if raw_canvas_edges is None else tuple(WorkflowEdge.from_dict(v) for v in raw_canvas_edges if isinstance(v, Mapping))
+        return cls(str(payload.get("workflow_id", payload.get("id", ""))), payload.get("version", 1), str(payload.get("name", "")), tuple(WorkflowInput.from_dict(v) for v in payload.get("inputs", ()) if isinstance(v, Mapping)), tuple(WorkflowNode.from_dict(v) for v in payload.get("nodes", ()) if isinstance(v, Mapping)), tuple(WorkflowEdge.from_dict(v) for v in payload.get("edges", ()) if isinstance(v, Mapping)), payload.get("published_at"), str(payload.get("description", "")), tuple(WorkflowOutput.from_dict(v) for v in payload.get("outputs", ()) if isinstance(v, Mapping)), canvas_edges)

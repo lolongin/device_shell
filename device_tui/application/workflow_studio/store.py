@@ -76,7 +76,7 @@ class MemoryWorkflowDefinitionStore:
         draft = self.get(workflow_id)
         versions = self._versions.setdefault(workflow_id, {})
         number = max(versions, default=0) + 1
-        version = WorkflowVersion(workflow_id=workflow_id, version=number, name=draft.name, inputs=draft.inputs, nodes=draft.nodes, edges=draft.edges, published_at=datetime.now(UTC).isoformat(), description=draft.description, outputs=draft.outputs)
+        version = WorkflowVersion(workflow_id=workflow_id, version=number, name=draft.name, inputs=draft.inputs, nodes=draft.nodes, edges=draft.edges, published_at=datetime.now(UTC).isoformat(), description=draft.description, outputs=draft.outputs, canvas_edges=draft.canvas_edges)
         versions[number] = version
         return deepcopy(version)
 

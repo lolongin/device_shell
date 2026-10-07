@@ -111,6 +111,23 @@ def _as_edges(values: Any, node_ids: set[str]) -> tuple[WorkflowEdge, ...]:
     return tuple(edges)
 
 
+def _as_canvas_edges(values: Any) -> tuple[WorkflowEdge, ...] | None:
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        raise PortableWorkflowError("workflow.canvas_edges must be a list")
+    edges = []
+    for item in values:
+        if not isinstance(item, Mapping):
+            raise PortableWorkflowError("each workflow canvas edge must be an object")
+        edges.append(WorkflowEdge(
+            str(item.get("from") or item.get("source") or "").strip(),
+            str(item.get("to") or item.get("target") or "").strip(),
+            item.get("condition"), item.get("source_handle"),
+        ))
+    return tuple(edges)
+
+
 def from_document(document: Mapping[str, Any]) -> PortableWorkflow:
     if document.get("format") != FORMAT:
         raise PortableWorkflowError(f"format must be {FORMAT}")
@@ -128,7 +145,7 @@ def from_document(document: Mapping[str, Any]) -> PortableWorkflow:
     name = str(body.get("name") or "").strip()
     if not name:
         raise PortableWorkflowError("workflow.name is required")
-    draft = WorkflowDraft(id="", name=name, description=str(body.get("description") or ""), inputs=_as_inputs(body.get("inputs")), nodes=nodes, edges=edges, outputs=_as_outputs(body.get("outputs")))
+    draft = WorkflowDraft(id="", name=name, description=str(body.get("description") or ""), inputs=_as_inputs(body.get("inputs")), nodes=nodes, edges=edges, outputs=_as_outputs(body.get("outputs")), canvas_edges=_as_canvas_edges(body.get("canvas_edges")))
     return PortableWorkflow(draft=draft, required_actions=tuple(dict.fromkeys(node.action_id for node in nodes)))
 
 
@@ -164,6 +181,10 @@ def export_document(workflow: WorkflowDraft | Any) -> dict[str, Any]:
             }
             for edge in workflow.edges
         ],
+        "canvas_edges": [
+            {"from": edge.source, "to": edge.target, **({"condition": edge.condition} if edge.condition else {}), **({"source_handle": edge.source_handle} if edge.source_handle else {})}
+            for edge in (getattr(workflow, "canvas_edges", None) or ())
+        ] if getattr(workflow, "canvas_edges", None) is not None else None,
     }
     return {"format": FORMAT, "schema_version": SCHEMA_VERSION, "workflow": body}
 

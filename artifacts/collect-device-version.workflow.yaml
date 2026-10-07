@@ -1,0 +1,68 @@
+format: device-tui.workflow
+schema_version: 2
+workflow:
+  name: 批量采集设备版本
+  description: 选择多台设备后逐台执行 disp version，提取 PCB Version，并汇总为设备与软件版本结果。
+  inputs:
+    - name: devices
+      type: devices
+      required: true
+      description: 要采集版本的设备列表
+  outputs:
+    - name: device_results
+      type: array
+      presentation: table
+      value: ${each.results}
+      description: 每行只需查看设备和软件版本；展开结果值可查看对应版本。
+  steps:
+    - id: each
+      action: device.for_each
+      with:
+        devices: ${inputs.devices}
+        body_mode: downstream
+        concurrency: 1
+        failure_strategy: continue
+    - id: connect_device
+      action: device.connect
+      with:
+        timeout_seconds: 30
+    - id: read_version
+      action: device.command
+      with:
+        command: disp version
+        execution_mode: device
+        timeout_seconds: 30
+    - id: extract_version
+      action: variable.set
+      with:
+        name: software_version
+        value: ${read_version.output}
+        extract:
+          pattern: '1\\.PCB\\s+Version\\s*:\\s*([A-Za-z0-9_.-]+)'
+          mode: match
+          group: 1
+          convert: string
+          trim: true
+    - id: save_version
+      action: result.save
+      with:
+        key: software_version
+        value: ${extract_version.value}
+    - id: shape_result
+      action: expression.evaluate
+      with:
+        expression: "{'设备': device_id, '软件版本': software_version}"
+        values:
+          device_id: ${device_id}
+          software_version: ${software_version}
+  edges:
+    - from: each
+      to: connect_device
+    - from: connect_device
+      to: read_version
+    - from: read_version
+      to: extract_version
+    - from: extract_version
+      to: save_version
+    - from: save_version
+      to: shape_result

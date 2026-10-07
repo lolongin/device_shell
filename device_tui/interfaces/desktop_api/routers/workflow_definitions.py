@@ -40,6 +40,7 @@ from device_tui.application.workflow_studio import (
 )
 from device_tui.application.errors import ApplicationConflictError, ResourceNotFoundError, UnsupportedOperationError
 from device_tui.domain.devices.repository import RepositoryError
+from device_tui.application.workflow_studio.device_loops import device_loop_bodies
 
 from ..dependencies import authorize, get_context
 
@@ -357,6 +358,7 @@ def _expand_subworkflows(
         nodes=tuple(nodes),
         edges=tuple(edges),
         status="published" if str(raw_version).isdigit() else "draft",
+        canvas_edges=getattr(version, "canvas_edges", None),
     )
 
 
@@ -394,8 +396,6 @@ def _normalize_action_inputs(action_id: str, raw_params: Mapping[str, Any]) -> d
             params["recovery_protocol"] = "ssh"
         elif action_id == "device.telnet":
             params["recovery_protocol"] = "telnet"
-        if action_id != "device.select":
-            params.pop("device_id", None)
     elif action_id in {"file.upload", "file.download"}:
         params["direction"] = "upload" if action_id == "file.upload" else "download"
         source_path = params.pop("source_path", None)
@@ -440,6 +440,11 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
     attached to branch nodes as ``run_if`` metadata, so the generic task
     orchestrator can skip the inactive branch without executing both sides.
     """
+    try:
+        loop_bodies = device_loop_bodies(version)
+    except ValueError as exc:
+        raise UnsupportedOperationError(str(exc)) from exc
+    body_owners = {body_id: loop_id for loop_id, body in loop_bodies.items() for body_id in body}
     node_ids = {node.id for node in version.nodes}
     condition_nodes = {node.id: node for node in version.nodes if node.action_id == "utility.condition"}
     condition_specs: dict[str, dict[str, Any]] = {}
@@ -523,7 +528,7 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
             raise UnsupportedOperationError(f"workflow action cannot run yet: {node.action_id}")
         if node.action_id in {"device.select", "device.connect", "device.ssh", "device.telnet"}:
             configured_device = str(params.get("device_id") or "").strip()
-            if configured_device and configured_device != device_id:
+            if node.id not in body_owners and configured_device and not _REFERENCE_PATTERN.fullmatch(configured_device) and configured_device != device_id:
                 raise UnsupportedOperationError(
                     f"node {node.id} selects device {configured_device}, but task target is {device_id}"
                 )
@@ -533,8 +538,13 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
                 params["recovery_protocol"] = "ssh"
             elif node.action_id == "device.telnet":
                 params["recovery_protocol"] = "telnet"
-            if node.action_id != "device.select":
+            if not configured_device:
                 params.pop("device_id", None)
+            if node.id in body_owners:
+                # A device.for_each body always targets the current iteration
+                # device. This also repairs older drafts that stored a fixed
+                # simulator/device value on the connect node.
+                params["device_id"] = "${device_id}"
         elif node.action_id in {"file.upload", "file.download"}:
             params = _normalize_action_inputs(node.action_id, params)
             if node.action_id == "file.upload" and source_overrides and node.id in source_overrides:
@@ -546,18 +556,26 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
             raw_action_inputs = params.get("action_inputs")
             child_inputs = dict(raw_action_inputs) if isinstance(raw_action_inputs, Mapping) else {}
             child_workflow_id = _workflow_id_for_action(child_action, child_inputs)
-            if child_workflow_id is None or child_action in _LOOP_DISALLOWED_ACTIONS:
+            if node.id not in loop_bodies and (child_workflow_id is None or child_action in _LOOP_DISALLOWED_ACTIONS):
                 raise UnsupportedOperationError(f"loop child action cannot run yet: {child_action}")
             if isinstance(raw_action_inputs, Mapping):
                 params["action_inputs"] = _normalize_action_inputs(child_action, raw_action_inputs)
             params["action_id"] = child_workflow_id
             if node.action_id == "device.for_each":
                 raw_devices = params.get("devices")
-                if isinstance(raw_devices, str) and re.fullmatch(r"\$\{inputs?\.([^}]+)\}", raw_devices.strip()):
-                    input_name = re.fullmatch(r"\$\{inputs?\.([^}]+)\}", raw_devices.strip()).group(1)
-                    params["devices"] = f"${{inputs.{input_name}}}"
+                if isinstance(raw_devices, str) and _REFERENCE_PATTERN.fullmatch(raw_devices.strip()):
+                    params["devices"] = raw_devices.strip().replace("${input.", "${inputs.", 1)
                 else:
                     params["devices"] = _resolve_device_list(raw_devices)
+            # These fields describe the Studio graph container. They are used
+            # while grouping the compiled body and must not leak into the
+            # executable activity inputs.
+            params.pop("body_mode", None)
+            params.pop("body_start", None)
+            params.pop("body_end", None)
+            params.pop("loop_start", None)
+            params.pop("loop_end", None)
+            params.pop("loop_body_end", None)
         retry_attempts = params.pop("retry_attempts", None)
         retry_backoff_seconds = params.pop("retry_backoff_seconds", None)
         retry_policy = params.pop("retry_policy", {})
@@ -614,6 +632,30 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
                 parallel_group=parallel_group,
             )
         )
+    if loop_bodies:
+        from dataclasses import replace
+
+        compiled = {node.id: node for node in task_nodes}
+        grouped_nodes: list[WorkflowNode] = []
+        for node in task_nodes:
+            if node.id in body_owners:
+                continue
+            params = dict(node.input_mapping)
+            if node.id in loop_bodies:
+                body = [compiled[body_id] for body_id in loop_bodies[node.id]]
+                if any(item.parallel_group for item in body):
+                    raise UnsupportedOperationError("device loop body cannot use parallel groups")
+                params.pop("action_id", None)
+                params.pop("action_inputs", None)
+                params["action_steps"] = [
+                    {"id": item.id, "action_id": item.workflow_id, "action_inputs": item.input_mapping,
+                     "retry_policy": item.retry_policy, "repeat_policy": item.repeat_policy}
+                    for item in body
+                ]
+                params["scope_outputs"] = "${outputs}"
+            dependencies = tuple(dict.fromkeys(body_owners.get(dep, dep) for dep in node.depends_on))
+            grouped_nodes.append(replace(node, input_mapping=params, depends_on=dependencies))
+        task_nodes = grouped_nodes
     workflow_id = str(getattr(version, "workflow_id", "") or getattr(version, "id", ""))
     # Framework TaskRecord uses a numeric plan revision. Draft test runs have
     # no published version, so use revision 0 while retaining the draft
@@ -627,7 +669,7 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
     return plan
 
 
-def _resolve_device_list(raw: Any) -> list[str]:
+def _resolve_device_list(raw: Any) -> list[Any]:
     """Normalize an explicit device list into device IDs."""
     if isinstance(raw, str):
         try:
@@ -636,7 +678,45 @@ def _resolve_device_list(raw: Any) -> list[str]:
             raw = [part.strip() for part in raw.split(",") if part.strip()]
     if not isinstance(raw, (list, tuple)):
         raise UnsupportedOperationError("device.for_each devices must be a list of device IDs")
-    return [str(item.get("device_id") if isinstance(item, Mapping) else item).strip() for item in raw]
+    return [dict(item) if isinstance(item, Mapping) else str(item).strip() for item in raw]
+
+
+def _workflow_uses_device_list_loop(version: Any) -> bool:
+    """Return whether a workflow owns the selected device list inside a loop.
+
+    A normal batch run creates one task per target device. When a
+    ``device.for_each`` node consumes a ``device_list`` workflow input, that
+    split would replace the list with ``[current_target]`` and make every loop
+    iteration see only one device. Such workflows need one task whose loop
+    owns the complete selected list.
+    """
+    definitions = {
+        str(item.name): item
+        for item in getattr(version, "inputs", ())
+        if str(getattr(item, "name", "")).strip()
+    }
+    reference_pattern = re.compile(r"^\$\{(?:inputs\.)?([^}.]+)\}$")
+    for node in getattr(version, "nodes", ()):
+        if str(getattr(node, "action_id", "")) != "device.for_each":
+            continue
+        settings = {**dict(getattr(node, "config", {}) or {}), **dict(getattr(node, "input_mapping", {}) or {})}
+        raw_devices = settings.get("devices")
+        if not isinstance(raw_devices, str):
+            continue
+        match = reference_pattern.fullmatch(raw_devices.strip())
+        if not match:
+            continue
+        definition = definitions.get(match.group(1).strip())
+        if definition is None:
+            continue
+        legacy_type = str(getattr(definition, "type", "") or "").casefold()
+        semantic_type = str(
+            getattr(definition, "semantic_type", "")
+            or {"devices": "device_list"}.get(legacy_type, "")
+        ).casefold()
+        if semantic_type == "device_list" or legacy_type == "devices":
+            return True
+    return False
 
 
 def _prepare_workflow_file_inputs(
@@ -1471,6 +1551,51 @@ async def delete_workflow_definition(workflow_id: str, ctx=Depends(get_context))
         raise ApplicationConflictError("流程存在已被任务引用的发布版本，不能删除") from exc
 
 
+@router.delete("/{workflow_id}/versions")
+async def delete_workflow_versions(workflow_id: str, payload: Mapping[str, Any], ctx=Depends(get_context)) -> dict[str, object]:
+    raw_versions = payload.get("versions")
+    if not isinstance(raw_versions, (list, tuple)) or not raw_versions:
+        raise UnsupportedOperationError("versions must be a non-empty array")
+
+    normalized_versions: list[int] = []
+    for raw_version in raw_versions:
+        if isinstance(raw_version, bool):
+            raise UnsupportedOperationError("versions must contain positive integers")
+        if isinstance(raw_version, int):
+            version = raw_version
+        elif isinstance(raw_version, str) and raw_version.strip().isdigit():
+            version = int(raw_version.strip())
+        else:
+            raise UnsupportedOperationError("versions must contain positive integers")
+        if version <= 0:
+            raise UnsupportedOperationError("versions must contain positive integers")
+        if version not in normalized_versions:
+            normalized_versions.append(version)
+
+    try:
+        ctx.desktop.workflow_definitions.get(workflow_id)
+    except KeyError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+
+    deleted_versions: list[int] = []
+    failed_versions: list[dict[str, object]] = []
+    for version in normalized_versions:
+        try:
+            ctx.desktop.workflow_definitions.delete(workflow_id, version)
+        except KeyError as exc:
+            failed_versions.append({"version": version, "message": str(exc)})
+        except ValueError as exc:
+            failed_versions.append({"version": version, "message": str(exc)})
+        else:
+            deleted_versions.append(version)
+
+    return {
+        "deleted_versions": deleted_versions,
+        "failed_versions": failed_versions,
+        "remaining_versions": len(ctx.desktop.workflow_definitions.list_versions(workflow_id)),
+    }
+
+
 @router.delete("/{workflow_id}/versions/{version}", status_code=204)
 async def delete_workflow_version(workflow_id: str, version: int, ctx=Depends(get_context)) -> None:
     try:
@@ -1613,9 +1738,11 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
         else (dict(inputs), {})
     )
     inputs = prepared_inputs
+    loop_owns_device_list = _workflow_uses_device_list_loop(expanded_version)
+    execution_device_ids = [device_ids[0]] if loop_owns_device_list and len(device_ids) > 1 else device_ids
     plans = {
         device_id: _compile_task_plan(expanded_version, device_id, source_overrides)
-        for device_id in device_ids
+        for device_id in execution_device_ids
     }
     if step_id:
         plans = {device_id: _select_plan_from_step(plan, step_id) for device_id, plan in plans.items()}
@@ -1645,7 +1772,7 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
         )
     steps = [WorkflowStep(node.id, kind="tool", action=Action(node.workflow_id, parameters=dict(node.input_mapping)), depends_on=node.depends_on, params=dict(node.input_mapping), retry_policy=dict(node.retry_policy)) for node in plan.nodes]
     execution_version = str(version.version) if str(version.version).isdigit() else "0"
-    workflow = TaskWorkflowDefinition(id=workflow_id, version=execution_version, name=version.name, steps=tuple(steps), metadata={"workflow_id": workflow_id, "workflow_version": str(version.version)})
+    workflow = TaskWorkflowDefinition(id=workflow_id, version=execution_version, name=version.name, steps=tuple(steps), metadata={"workflow_id": workflow_id, "workflow_version": str(version.version), "workflow_outputs": [item.to_dict() for item in getattr(version, "outputs", ())]})
     workflow_metadata = {**workflow.metadata, "framework_inputs": inputs}
     workflow = TaskWorkflowDefinition(id=workflow.id, version=workflow.version, name=workflow.name, steps=workflow.steps, metadata=workflow_metadata)
     task_payloads: list[dict[str, Any]] = []
@@ -1655,13 +1782,12 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
         ctx.desktop.workflow_definitions.get,
     )
     try:
-        for target_id in device_ids:
-            # When a device-list workflow is launched for several targets,
-            # each task represents one device. Keep device.for_each compatible
-            # by feeding it only that task's target; otherwise every task
-            # would iterate the entire selected list and execute N×N times.
+        for target_id in execution_device_ids:
+            # Ordinary batch workflows get one task per target. A workflow
+            # whose device.for_each owns the list stays as one task so the
+            # loop receives every selected device exactly once.
             task_inputs = dict(inputs)
-            if len(device_ids) > 1:
+            if len(device_ids) > 1 and not loop_owns_device_list:
                 for input_definition in getattr(version, "inputs", ()):
                     semantic = str(getattr(input_definition, "semantic_type", "") or "").casefold()
                     if semantic == "device_list" or str(getattr(input_definition, "type", "")).casefold() == "devices":
@@ -1712,5 +1838,6 @@ async def run_workflow_definition(workflow_id: str, payload: Mapping[str, Any], 
     return {
         "task": task_payloads[0],
         "tasks": task_payloads,
-        "target_count": len(task_payloads),
+        "target_count": len(device_ids) if loop_owns_device_list else len(task_payloads),
+        "batch_loop": loop_owns_device_list,
     }

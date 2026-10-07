@@ -24,7 +24,7 @@ const emit = defineEmits<{
     <template v-else>
       <nav class="workflow-right-rail-switcher" aria-label="配置视图">
         <button type="button" :class="{ active: props.mode === 'workflow' }" @click="emit('update:mode', 'workflow')"><Workflow :size="13" />流程设置</button>
-        <button type="button" :disabled="!props.hasSelectedNode" :class="{ active: props.mode === 'step' }" @click="emit('update:mode', 'step')"><Braces :size="13" />{{ props.previewingAction ? '节点预览' : '步骤配置' }}</button>
+        <button v-if="props.hasSelectedNode" type="button" :class="{ active: props.mode === 'step' }" @click="emit('update:mode', 'step')"><Braces :size="13" />{{ props.previewingAction ? '节点预览' : '步骤配置' }}</button>
       </nav>
       <div class="workflow-inspector-content">
         <slot :name="props.mode === 'workflow' ? 'workflow-settings' : 'step-settings'" />
@@ -51,9 +51,9 @@ const emit = defineEmits<{
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--workflow-border);
   background: var(--workflow-surface);
 }
@@ -65,10 +65,10 @@ const emit = defineEmits<{
   justify-content: center;
   gap: 5px;
   min-width: 0;
-  min-height: 30px;
+  min-height: 27px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 4px;
   color: var(--workflow-muted);
   background: transparent;
   cursor: pointer;

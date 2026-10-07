@@ -4,6 +4,7 @@ import { Check, CircleAlert, CirclePause, CirclePlay, CircleStop, Copy, FileArch
 import { useWorkspaceStore } from '../stores/workspace'
 import { desktopApi } from '../transport/api'
 import type { TaskDecisionActionPayload, TaskRecord, TaskStepState } from '../types'
+import WorkflowOutputRenderer from './WorkflowOutputRenderer.vue'
 
 const workspace = useWorkspaceStore()
 const emit = defineEmits<{ runWorkflow: [] }>()
@@ -22,6 +23,8 @@ const workflowActionLabels: Record<string, string> = {
   'terminal.wait': '等待终端输出',
   'device.info': '获取设备信息',
   'device.select': '选择设备',
+  'device.for_each': '遍历设备',
+  'device.connect': '连接设备',
   'device.wait_online': '等待设备上线',
   'device.reboot': '重启设备',
   'device.verify_version': '校验设备版本',
@@ -39,10 +42,45 @@ const taskSummary = computed(() => ({
 const selectedTerminalTaskCount = computed(() => terminalTasks.value.filter((task) => selectedTaskIds.value.has(task.id)).length)
 const allTerminalTasksSelected = computed(() => terminalTasks.value.length > 0 && selectedTerminalTaskCount.value === terminalTasks.value.length)
 const someTerminalTasksSelected = computed(() => selectedTerminalTaskCount.value > 0 && !allTerminalTasksSelected.value)
+function orderTaskSteps(task: TaskRecord, steps: TaskStepState[]): TaskStepState[] {
+  const declaredStates = task.workflow_view?.states || []
+  if (declaredStates.length < 2 || steps.length < 2) return steps
+  const order = new Map(declaredStates.map((state, index) => [state.id, index]))
+  return [...steps].sort((left, right) => (
+    (order.get(left.step_id) ?? declaredStates.length) - (order.get(right.step_id) ?? declaredStates.length)
+  ))
+}
+
+function mergeDeclaredTaskSteps(task: TaskRecord, runtimeSteps: TaskStepState[]): TaskStepState[] {
+  const declaredStates = task.workflow_view?.states || []
+  if (!declaredStates.length) return runtimeSteps
+  const runtimeById = new Map(runtimeSteps.map((step) => [step.step_id, step]))
+  const hasMissingDeclaredState = declaredStates.some((state) => !runtimeById.has(state.id))
+  if (!hasMissingDeclaredState) return orderTaskSteps(task, runtimeSteps)
+
+  const currentIndex = declaredStates.findIndex((state) => state.id === task.current_step_id)
+  const terminalSuccess = task.status === 'completed' || task.status === 'success'
+  return orderTaskSteps(task, declaredStates.map((state, index) => {
+    const recorded = runtimeById.get(state.id)
+    if (recorded) return recorded
+    const parentState = state.parent_id ? runtimeById.get(state.parent_id) : undefined
+    const status = terminalSuccess
+      ? 'completed'
+      : state.id === task.current_step_id
+        ? task.status === 'failed' ? 'failed' : 'running'
+        : parentState && (parentState.status === 'completed' || parentState.status === 'success')
+          ? 'completed'
+          : currentIndex >= 0 && index < currentIndex
+            ? 'completed'
+            : 'pending'
+    return { step_id: state.id, status, attempt: 1, result: null, error: null }
+  }))
+}
+
 const taskSteps = computed<TaskStepState[]>(() => {
   const task = selectedTask.value
   if (!task) return []
-  if (task.checkpoint?.step_states?.length) return task.checkpoint.step_states
+  if (task.checkpoint?.step_states?.length) return mergeDeclaredTaskSteps(task, task.checkpoint.step_states)
   const resultSteps = (task.result?.steps || []).map((step) => ({
     step_id: step.step_id,
     status: step.status,
@@ -60,7 +98,7 @@ const taskSteps = computed<TaskStepState[]>(() => {
       ? { code: step.error_code, message: step.message || step.error_code }
       : null
   }))
-  if (resultSteps.length) return resultSteps
+  if (resultSteps.length) return mergeDeclaredTaskSteps(task, resultSteps)
 
   // Generic TaskPlan projections expose their declared states without a
   // legacy checkpoint. Keep the workflow visible and infer lightweight state
@@ -69,7 +107,7 @@ const taskSteps = computed<TaskStepState[]>(() => {
   if (!states.length) return []
   const currentIndex = states.findIndex((state) => state.id === task.current_step_id)
   const terminal = ['completed', 'failed', 'cancelled'].includes(task.status)
-  return states.map((state, index) => {
+  return orderTaskSteps(task, states.map((state, index) => {
     const status = terminal && task.status === 'completed'
       ? 'completed'
       : task.status === 'failed' && state.id === task.current_step_id
@@ -80,7 +118,69 @@ const taskSteps = computed<TaskStepState[]>(() => {
             ? 'running'
             : 'pending'
     return { step_id: state.id, status, attempt: 1, result: null, error: null }
+  }))
+})
+const completedStepCount = computed(() => taskSteps.value.filter((step) => ['completed', 'success'].includes(step.status)).length)
+const failedStepCount = computed(() => taskSteps.value.filter((step) => step.status === 'failed').length)
+const taskResultOutputs = computed(() => {
+  const task = selectedTask.value
+  if (!task) return ''
+  const outputs = { ...(task.checkpoint?.outputs || {}), ...(task.result?.outputs || {}) }
+  if (!outputs || !Object.keys(outputs).length) return ''
+  return JSON.stringify(outputs, null, 2)
+})
+type WorkflowOutputDefinition = {
+  name: string
+  value?: unknown
+  type?: string
+  primitiveType?: string
+  semanticType?: string
+  description?: string
+  presentation?: string
+  renderer?: { id?: string; props?: Record<string, unknown> }
+}
+function resolveWorkflowOutputValue(value: unknown, outputs: Record<string, unknown>): unknown {
+  if (typeof value !== 'string') return value
+  const match = value.match(/^\$\{(?:outputs\.)?([^}]+)\}$/)
+  if (!match) return value
+  return match[1].split('.').reduce<unknown>((current, part) => (
+    current && typeof current === 'object' ? (current as Record<string, unknown>)[part] : undefined
+  ), outputs)
+}
+const workflowResultValues = computed<Record<string, unknown>>(() => {
+  const task = selectedTask.value
+  if (!task) return {}
+  return { ...(task.checkpoint?.outputs || {}), ...(task.result?.outputs || {}) }
+})
+function looksLikeTable(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((item) => Boolean(item && typeof item === 'object' && !Array.isArray(item)))
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && Array.isArray((value as Record<string, unknown>).rows)
+    && Array.isArray((value as Record<string, unknown>).columns))
+}
+const workflowResultDefinitions = computed<WorkflowOutputDefinition[]>(() => {
+  const task = selectedTask.value
+  if (!task) return []
+  const outputs = workflowResultValues.value
+  const declared = task.workflow_view?.outputs || []
+  const definitions: WorkflowOutputDefinition[] = declared.length
+    ? declared.map((item): WorkflowOutputDefinition => ({ ...item, value: resolveWorkflowOutputValue(item.value, outputs) }))
+    : Object.entries(outputs).map(([name, value]): WorkflowOutputDefinition => ({ name, value, type: Array.isArray(value) || (value && typeof value === 'object') ? 'object' : typeof value }))
+  return definitions.map((item) => {
+    const runtimeValue = Object.prototype.hasOwnProperty.call(outputs, item.name) ? outputs[item.name] : item.value
+    const presentation = String(item.presentation || '').toLowerCase()
+    if (!item.renderer?.id && (!presentation || presentation === 'text') && looksLikeTable(runtimeValue)) {
+      return { ...item, presentation: 'table' }
+    }
+    return item
   })
+})
+const taskOutcomeDetail = computed(() => {
+  const task = selectedTask.value
+  if (!task) return ''
+  if (task.status === 'completed' || task.status === 'success') return `已完成 ${completedStepCount.value}/${taskSteps.value.length} 个步骤，结果已写入任务记录。`
+  if (task.status === 'failed') return `在“${taskCurrentStepLabel(task)}”处停止，已完成 ${completedStepCount.value}/${taskSteps.value.length} 个步骤。`
+  return taskStatusMessage(task) || `当前已完成 ${completedStepCount.value}/${taskSteps.value.length} 个步骤。`
 })
 const decisionActions = computed(() => workspace.taskDecision?.available_actions || [])
 const workflowStateById = computed(() => new Map(
@@ -113,6 +213,14 @@ function taskWorkflowLabel(task: TaskRecord): string {
     || task.workflow_view?.id
     || task.workflow_id
     || '未命名 Workflow'
+}
+function taskVersionLabel(task: TaskRecord | null): string {
+  const revision = Number(task?.plan_revision || 0)
+  return Number.isFinite(revision) && revision > 0 ? `v${revision}` : '草稿'
+}
+function taskSnapshotMessage(task: TaskRecord | null): string {
+  if (!task || Number(task.plan_revision || 0) <= 0) return ''
+  return `此任务使用 Workflow ${taskVersionLabel(task)} 快照；后续编辑或删除步骤不会改写已创建任务。`
 }
 function stepDescription(stepId: string): string {
   return workflowStateById.value.get(stepId)?.description || ''
@@ -421,13 +529,13 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
       <div class="task-ui-list" aria-label="Task 执行记录">
       <div class="task-ui-list-heading"><strong>Task 记录</strong><div class="task-ui-list-actions"><small>{{ workspace.tasks.length }} 条 · ✓{{ taskSummary.completed }}　✕{{ taskSummary.failed }}　⏸{{ taskSummary.waiting }}</small><label v-if="terminalTasks.length" class="task-select-all" title="选择全部已结束任务"><input type="checkbox" :checked="allTerminalTasksSelected" :indeterminate="someTerminalTasksSelected" :disabled="workspace.taskBusy" @change="toggleAllTerminalTasks" /><span>已结束</span></label><button v-if="selectedTerminalTaskCount" class="task-bulk-delete" type="button" :disabled="workspace.taskBusy" title="删除选中的任务记录" @click="deleteSelectedTasks"><Trash2 :size="13" />删除选中 ({{ selectedTerminalTaskCount }})</button></div></div>
       <div v-for="task in workspace.tasks" :key="task.id" class="task-row" :data-active="task.id === workspace.activeTaskId" :aria-current="task.id === workspace.activeTaskId ? 'true' : undefined" role="button" tabindex="0" @click="chooseTask(task)" @keydown.enter="chooseTask(task)" @keydown.space.prevent="chooseTask(task)">
-        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ taskWorkflowLabel(task) }}</strong><small>{{ task.workflow_id }} · {{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ taskStatusLabel(task) }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
+        <input v-if="isTerminalStatus(task.status)" class="task-row-select" type="checkbox" :checked="selectedTaskIds.has(task.id)" :disabled="workspace.taskBusy" :aria-label="`选择 Task ${task.id.slice(0, 8)}`" @click.stop @change="toggleTaskSelection(task)" /><span v-else class="task-row-select-placeholder" aria-hidden="true"></span><span class="task-row-status" :data-status="task.status"></span><span><strong>{{ taskWorkflowLabel(task) }}</strong><small>{{ task.workflow_id }} · {{ taskVersionLabel(task) }} · {{ task.device_id }} · {{ task.updated_at }}</small></span><b>{{ taskStatusLabel(task) }}</b><button v-if="isTerminalStatus(task.status)" class="task-row-delete" type="button" title="删除任务记录" aria-label="删除任务记录" :disabled="workspace.taskBusy" @click.stop="deleteTask(task)"><Trash2 :size="14" /></button>
       </div>
         <p v-if="!workspace.tasks.length" class="task-empty">还没有执行记录，请从 Workflow Studio 运行流程。</p>
       </div>
 
       <article v-if="selectedTask" class="task-detail">
-      <header><div><strong>{{ taskWorkflowLabel(selectedTask) }}</strong><small>Task {{ selectedTask.id.slice(0, 8) }} · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
+      <header><div><strong>{{ taskWorkflowLabel(selectedTask) }}</strong><small>Task {{ selectedTask.id.slice(0, 8) }} · {{ taskVersionLabel(selectedTask) }} · {{ taskStatusLabel(selectedTask) }}</small></div><div class="task-controls">
         <button class="secondary-button" type="button" :disabled="reportBusy" @click="downloadReport"><FileArchive :size="13" />{{ reportBusy ? '正在导出…' : '导出报告' }}</button>
         <button v-if="selectedTask.status === 'running'" class="secondary-button" type="button" @click="workspace.pauseTask()"><CirclePause :size="13" />暂停</button>
         <button v-if="selectedTask.status === 'paused'" class="secondary-button" type="button" @click="workspace.resumeTask()"><CirclePlay :size="13" />恢复</button>
@@ -435,10 +543,21 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
         <button v-if="selectedTask.status === 'failed' && previousStepId" class="secondary-button" type="button" :disabled="workspace.taskBusy" @click="resumeFromPreviousStep"><CirclePlay :size="13" />从上一步继续</button>
         <button v-if="!isTerminal" class="danger-button task-cancel-button" type="button" @click="workspace.cancelTask()"><CircleStop :size="14" />取消任务</button>
       </div></header>
+      <p v-if="taskSnapshotMessage(selectedTask)" class="task-snapshot-note">{{ taskSnapshotMessage(selectedTask) }}</p>
+      <section class="task-outcome" :data-status="selectedTask.status" aria-label="执行结果摘要">
+        <div class="task-outcome-mark"><Check v-if="selectedTask.status === 'completed' || selectedTask.status === 'success'" :size="18" /><CircleAlert v-else-if="selectedTask.status === 'failed'" :size="18" /><CirclePlay v-else :size="18" /></div>
+        <div class="task-outcome-copy"><span>执行结果</span><strong>{{ taskStatusLabel(selectedTask) }}</strong><p>{{ taskOutcomeDetail }}</p></div>
+        <div class="task-outcome-metrics"><b>{{ completedStepCount }}/{{ taskSteps.length }}</b><small>步骤完成</small><b v-if="failedStepCount" class="task-outcome-failed">{{ failedStepCount }}</b><small v-if="failedStepCount">步骤失败</small></div>
+      </section>
+      <section v-if="selectedTask" class="task-workflow-results" aria-label="Workflow 输出结果">
+        <WorkflowOutputRenderer v-if="workflowResultDefinitions.length" :key="selectedTask.id" :definitions="workflowResultDefinitions" :values="workflowResultValues" />
+        <p v-else class="task-workflow-results-empty">当前任务还没有可展示的输出字段。</p>
+      </section>
+      <details v-if="taskResultOutputs" class="task-result-output"><summary>查看原始结果</summary><pre>{{ taskResultOutputs }}</pre></details>
       <div class="task-progress"><i :style="{ width: `${selectedTask.progress_percent}%` }"></i></div>
       <div class="task-detail-summary"><span><small>整体进度</small><strong>{{ selectedTask.progress_percent }}%</strong></span><span><small>步骤</small><strong>{{ taskSteps.filter((step) => step.status === 'completed' || step.status === 'success').length }}/{{ taskSteps.length }}</strong></span><span><small>当前步骤</small><strong>{{ taskCurrentStepLabel(selectedTask) }}</strong></span></div>
       <ol class="task-timeline">
-        <li v-for="state in taskSteps" :key="state.step_id" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ stepStatusLabel(state.status) }}<span v-if="state.attempt > 1"> · 第 {{ state.attempt }} 次尝试</span></small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><p v-else-if="stepDescription(state.step_id)">{{ stepDescription(state.step_id) }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details></div></li>
+        <li v-for="state in taskSteps" :key="state.step_id" :class="{ 'task-timeline-child': Boolean(workflowStateById.get(state.step_id)?.parent_id) }" :data-status="state.status"><span>{{ stepIcon(state) }}</span><div><strong>{{ stepLabel(state.step_id) }}</strong><small>{{ stepStatusLabel(state.status) }}<span v-if="state.attempt > 1"> · 第 {{ state.attempt }} 次尝试</span></small><small v-if="state.result?.execution_id || state.result?.operation_id" class="task-resource-id">{{ state.result?.execution_id ? `Execution ${state.result.execution_id}` : `Operation ${state.result.operation_id}` }}</small><p v-if="state.error">{{ state.error.message || state.error.code }}</p><p v-else-if="stepDescription(state.step_id)">{{ stepDescription(state.step_id) }}</p><details v-if="stepOutput(state)" class="task-step-output"><summary>查看过程输出</summary><pre>{{ stepOutput(state) }}</pre></details><details v-if="stepEvidence(state).length" class="task-step-output task-step-evidence"><summary>查看执行证据（{{ stepEvidence(state).length }}）</summary><div v-for="(item, index) in stepEvidence(state)" :key="`${state.step_id}-evidence-${index}`"><small>{{ evidenceTitle(item) }}</small><pre>{{ JSON.stringify(item, null, 2) }}</pre></div></details></div></li>
       </ol>
       <div v-if="taskStatusMessage(selectedTask)" class="task-status-banner" :data-status="selectedTask.status"><CircleAlert :size="16" /><span>{{ taskStatusMessage(selectedTask) }}</span></div>
       <details v-if="selectedTask.status === 'failed'" class="task-error-details" open>

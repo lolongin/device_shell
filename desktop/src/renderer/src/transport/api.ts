@@ -368,7 +368,7 @@ export const desktopApi = {
   createWorkflowDefinition: (payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request('/api/v1/workflow-definitions', { method: 'POST', body: JSON.stringify(payload) }),
   saveWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ workflow: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   publishWorkflowDefinition: (id: string): Promise<{ published: boolean; errors?: Array<{ code?: string; message: string; node_id?: string | null }>; workflow?: Record<string, unknown> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
-  runWorkflowDefinition: (id: string, payload: { device_id?: string; device_ids?: string[]; session_id?: string; session_ids?: Record<string, string>; step_id?: string; version?: string | number; draft?: boolean; protocol?: 'auto' | 'ssh' | 'telnet' | 'serial' | 'simulated'; inputs?: Record<string, unknown>; dry_run?: boolean; confirmed_risks?: boolean }): Promise<{ task?: TaskRecord; tasks?: TaskRecord[]; target_count?: number; dry_run?: boolean; preview?: Record<string, unknown> }> =>
+  runWorkflowDefinition: (id: string, payload: { device_id?: string; device_ids?: string[]; session_id?: string; session_ids?: Record<string, string>; step_id?: string; version?: string | number; draft?: boolean; protocol?: 'auto' | 'ssh' | 'telnet' | 'serial' | 'simulated'; inputs?: Record<string, unknown>; dry_run?: boolean; confirmed_risks?: boolean }): Promise<{ task?: TaskRecord; tasks?: TaskRecord[]; target_count?: number; batch_loop?: boolean; dry_run?: boolean; preview?: Record<string, unknown> }> =>
     request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/run`, {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -376,6 +376,11 @@ export const desktopApi = {
   validateWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ valid: boolean; errors: Array<{ code: string; message: string; node_id?: string | null }>; warnings: Array<{ code: string; message: string; node_id?: string | null }> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/validate`, { method: 'POST', body: JSON.stringify(payload) }),
   deleteWorkflowDefinition: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   deleteWorkflowVersion: (id: string, version: string | number): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}`, { method: 'DELETE' }),
+  deleteWorkflowVersions: (id: string, versions: Array<string | number>): Promise<{ deleted_versions: number[]; failed_versions: Array<{ version: number; message: string }>; remaining_versions: number }> =>
+    request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions`, {
+      method: 'DELETE',
+      body: JSON.stringify({ versions })
+    }),
   restoreWorkflowVersion: (id: string, version: string | number): Promise<{ workflow: Record<string, unknown>; restored_version: string | number }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/restore`, { method: 'POST' }),
   createTask: (payload: { workflow_id: string; device_id: string; parameters?: Record<string, unknown>; package?: string; options?: Record<string, unknown>; source?: string }): Promise<TaskResponse> =>
     request('/api/v1/tasks', { method: 'POST', body: JSON.stringify(payload) }),

@@ -32,6 +32,7 @@ from ..workflow_plugins.utility import (
 )
 from device_tui.framework import ActivityContext, ActivityInvocation
 from uuid import uuid4
+from device_tui.framework.resources import ResourceCoordinator
 from ..workflow_plugins.transfer import TransferActivityHandler
 from ..workflow_plugins.generic import build_default_activity_workflow_providers
 from ..workflow_plugins.vendor_adapter import DeviceVendorActivityHandler
@@ -84,6 +85,7 @@ def build_default_activity_executor(
     adapters: AdapterRegistry | None = None,
     transfers: object | None = None,
     terminal_hub: object | None = None,
+    resources: ResourceCoordinator | None = None,
 ) -> ActivityExecutor:
     """Build built-in Activities, optionally including device transfers.
 
@@ -151,7 +153,7 @@ def build_default_activity_executor(
         return {**result.outputs, "status": str(result.status)}
 
     executor.register_handler(ForEachActivityHandler(run_child))
-    executor.register_handler(DeviceForEachActivityHandler(run_child))
+    executor.register_handler(DeviceForEachActivityHandler(run_child, resources))
     executor.register_handler(UntilActivityHandler(run_child))
     if control is not None:
         executor.register_definition(ActivityDefinition(

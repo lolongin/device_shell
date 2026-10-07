@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Mapping
 
 from device_tui.framework.activity import ActivityContext, ActivityInvocation, ActivityResult, ActivityStatus
 from device_tui.framework.events import Event
+from device_tui.framework.orchestrator import TaskOrchestrator
+from device_tui.framework.resources import ResourceCoordinator, ResourceRequest
+from device_tui.framework.targets import bind_device_target, device_id_value
 from device_tui.application.workflow_studio.expression import evaluate_expression
 from device_tui.application.workflow_runtime.runner import wait_for_output
 from device_tui.application.workflow_runtime.value_extraction import extract_value
@@ -73,7 +77,8 @@ class ForEachActivityHandler:
         if not isinstance(raw_items, (list, tuple)):
             return ActivityResult(ActivityStatus.FAILED, outputs={"items": [], "results": [], "count": 0, "status": "failed"}, error={"code": "loop_items_invalid", "message": "loop.for_each items must be a list", "class": "deterministic"})
         action_id = str(invocation.inputs.get("action_id") or "").strip()
-        if not action_id or self._child_runner is None:
+        steps = invocation.inputs.get("action_steps")
+        if (not action_id and not steps) or self._child_runner is None:
             return ActivityResult(ActivityStatus.FAILED, outputs={"items": list(raw_items), "results": [], "count": 0, "status": "failed"}, error={"code": "loop_action_invalid", "message": "loop.for_each requires an executable action", "class": "deterministic"})
         results: list[dict[str, Any]] = []
         for index, item in enumerate(raw_items):
@@ -91,9 +96,12 @@ class ForEachActivityHandler:
                     },
                     outputs={"items": list(raw_items), "results": results, "count": index, "status": "failed"},
                 )
-            child_inputs.update({"item": item, "index": index})
             try:
-                result = await self._child_runner(action_id, child_inputs, context, report)
+                if steps:
+                    result = await self._run_steps(steps, {"item": item, "index": index}, context, report, invocation)
+                else:
+                    child_inputs.update({"item": item, "index": index})
+                    result = await self._child_runner(action_id, child_inputs, context, report)
             except Exception as exc:
                 return ActivityResult(ActivityStatus.FAILED, error={"code": "loop_child_failed", "message": str(exc), "class": "deterministic", "index": index, "action_id": action_id}, outputs={"items": list(raw_items), "results": results, "count": index, "status": "failed"})
             results.append(dict(result))
@@ -116,6 +124,23 @@ class ForEachActivityHandler:
             return value
         return {key: resolve(value) for key, value in values.items()}
 
+    async def _run_steps(
+        self, steps: list[dict[str, Any]], local: dict[str, Any], context: ActivityContext,
+        report: Any, invocation: ActivityInvocation,
+    ) -> dict[str, Any]:
+        outputs = dict(invocation.inputs.get("scope_outputs") or {})
+        step_results: dict[str, Any] = {}
+        result: dict[str, Any] = {}
+        for step in steps:
+            inputs = TaskOrchestrator._resolve_inputs(
+                step.get("action_inputs") or {}, {**outputs, **local, "outputs": outputs},
+            )
+            result = dict(await self._child_runner(str(step["action_id"]), inputs, context, report))
+            step_id = str(step["id"])
+            outputs[step_id] = result
+            step_results[step_id] = result
+        return {**result, "steps": step_results}
+
     async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:
         del invocation, context
 
@@ -125,33 +150,102 @@ class DeviceForEachActivityHandler(ForEachActivityHandler):
 
     activity_id = "device.for_each"
 
+    def __init__(self, child_runner: ChildRunner | None = None, resources: ResourceCoordinator | None = None) -> None:
+        super().__init__(child_runner)
+        self._resources = resources
+
     async def execute(self, invocation: ActivityInvocation, context: ActivityContext, report: Any) -> ActivityResult:
         devices = invocation.inputs.get("devices")
         if not isinstance(devices, (list, tuple)) or not devices:
             return ActivityResult(ActivityStatus.FAILED, outputs={"devices": [], "results": [], "count": 0, "succeeded": 0, "failed": 0, "status": "failed"}, error={"code": "device_list_invalid", "message": "device.for_each requires a non-empty devices list", "class": "deterministic"})
         action_id = str(invocation.inputs.get("action_id") or "").strip()
-        if not action_id or self._child_runner is None:
+        steps = invocation.inputs.get("action_steps")
+        if (not action_id and not steps) or self._child_runner is None:
             return ActivityResult(ActivityStatus.FAILED, outputs={"devices": list(devices), "results": [], "count": 0, "succeeded": 0, "failed": 0, "status": "failed"}, error={"code": "device_action_invalid", "message": "device.for_each requires an executable action", "class": "deterministic"})
         results = []
         failed = 0
         for index, device in enumerate(devices):
-            device_id = str(device.get("device_id") if isinstance(device, Mapping) else device).strip()
-            if not device_id:
-                failed += 1
-                results.append({"device_id": device_id, "status": "failed", "error": {"code": "device_id_invalid"}})
-                continue
-            child_inputs = self._resolve_inputs(dict(invocation.inputs.get("action_inputs") or {}), {"device": device, "device_id": device_id, "index": index})
-            child_inputs["device_id"] = device_id
+            device_id = ""
+            lease = None
             try:
-                result = await self._child_runner(action_id, child_inputs, context, report)
+                device_id = device_id_value(device)
+                if not device_id:
+                    raise ValueError("device ID must not be empty")
+                parent_values = dict(context.invocation.context)
+                parent_values.setdefault("target", {"device_id": context.workflow_run.device_id})
+                child_values = bind_device_target(parent_values, device_id)
+                child_values.pop("lease_token", None)
+                if self._resources is not None:
+                    owner = str(child_values.get("resource_owner_id") or context.workflow_run.id)
+                    lease = self._resources.acquire(ResourceRequest("device", device_id, owner))
+                    child_values["lease_token"] = lease.token
+                child_context = ActivityContext(
+                    replace(context.workflow_run, device_id=device_id, context=child_values),
+                    replace(context.invocation, context=child_values),
+                )
+                device_values = dict(device) if isinstance(device, Mapping) else {}
+                local = {"device": {**device_values, "id": device_id, "device_id": device_id}, "device_id": device_id, "index": index}
+                if steps:
+                    result = await self._run_steps(steps, local, child_context, report, invocation)
+                else:
+                    child_inputs = self._resolve_inputs(dict(invocation.inputs.get("action_inputs") or {}), local)
+                    child_inputs["device_id"] = device_id
+                    result = await self._child_runner(action_id, child_inputs, child_context, report)
                 results.append({"device_id": device_id, **dict(result)})
             except Exception as exc:
                 failed += 1
                 results.append({"device_id": device_id, "status": "failed", "error": {"message": str(exc)}})
                 if invocation.inputs.get("failure_strategy", "continue") == "stop":
                     break
+            finally:
+                if lease is not None:
+                    self._resources.release(lease)
         succeeded = len(results) - failed
         return ActivityResult(ActivityStatus.FAILED if failed and invocation.inputs.get("failure_strategy") == "stop" else ActivityStatus.SUCCEEDED, outputs={"devices": list(devices), "results": results, "count": len(results), "succeeded": succeeded, "failed": failed})
+
+    async def _run_steps(
+        self, steps: list[dict[str, Any]], local: dict[str, Any], context: ActivityContext,
+        report: Any, invocation: ActivityInvocation,
+    ) -> dict[str, Any]:
+        outputs = dict(invocation.inputs.get("scope_outputs") or {})
+        step_results: dict[str, Any] = {}
+        result: dict[str, Any] = {}
+        for step in steps:
+            step_id = str(step["id"])
+            inputs = TaskOrchestrator._resolve_inputs(
+                step.get("action_inputs") or {}, {**outputs, **local, "outputs": outputs},
+            )
+            inputs.setdefault("device_id", local["device_id"])
+            if device_id_value(inputs["device_id"]) != local["device_id"]:
+                raise ValueError(f"step {step_id} must target the current loop device")
+            inputs["device_id"] = local["device_id"]
+            retry = step.get("retry_policy") or {}
+            repeat = step.get("repeat_policy") or {}
+            attempts = int(retry.get("max_attempts", 1))
+            for _iteration in range(int(repeat.get("max_iterations", 1))):
+                for attempt in range(attempts):
+                    try:
+                        report(Event(type="device.for_each.step.started", run_id=invocation.workflow_run_id,
+                                     action_id=step_id, source="workflow.utility",
+                                     payload={"step_id": step_id, "device_id": local["device_id"], "index": local["index"]}))
+                        values = {**context.invocation.context, "step_id": step_id}
+                        child_context = replace(context, invocation=replace(context.invocation, context=values))
+                        result = dict(await self._child_runner(str(step["action_id"]), inputs, child_context, report))
+                        break
+                    except Exception as exc:
+                        if attempt + 1 < attempts:
+                            await asyncio.sleep(float(retry.get("backoff_seconds", 0)))
+                        elif retry.get("on_failure") == "continue":
+                            result = {"status": "failed", "error": {"message": str(exc)}}
+                        else:
+                            raise RuntimeError(f"step {step_id}: {exc}") from exc
+            outputs[step_id] = result
+            step_results[step_id] = result
+            if step["action_id"] == "variable.set" and result.get("name"):
+                outputs[str(result["name"])] = result.get("value")
+            values = TaskOrchestrator._context_with_target_output(context.invocation.context, result)
+            context = replace(context, invocation=replace(context.invocation, context=values))
+        return {**result, "steps": step_results}
 
 
 class WaitActivityHandler:
@@ -336,8 +430,9 @@ class UntilActivityHandler:
 
     async def execute(self, invocation: ActivityInvocation, context: ActivityContext, report: Any) -> ActivityResult:
         action_id = str(invocation.inputs.get("action_id") or "").strip()
+        steps = invocation.inputs.get("action_steps")
         condition = str(invocation.inputs.get("condition") or "").strip()
-        if not action_id or not condition or self._child_runner is None:
+        if (not action_id and not steps) or not condition or self._child_runner is None:
             return ActivityResult(ActivityStatus.FAILED, outputs={"status": "failed", "matched": False, "iterations": 0, "result": {}, "results": []}, error={"code": "loop_until_invalid", "message": "loop.until requires action_id, condition, and an executable action", "class": "deterministic"})
         try:
             max_iterations = int(invocation.inputs.get("max_iterations", 10))
@@ -356,24 +451,33 @@ class UntilActivityHandler:
         previous_result: dict[str, Any] = {}
         for iteration in range(1, max_iterations + 1):
             try:
-                child_inputs = ForEachActivityHandler._resolve_inputs(
-                    raw_action_inputs,
-                    {"iteration": iteration, "result": previous_result, "outputs": previous_result},
-                )
-            except ValueError as exc:
-                return ActivityResult(
-                    ActivityStatus.FAILED,
-                    outputs={"status": "failed", "matched": False, "iterations": iteration - 1, "result": results[-1] if results else {}, "results": results},
-                    error={
-                        "code": "loop_until_input_invalid",
-                        "message": str(exc),
-                        "class": "deterministic",
-                        "iteration": iteration,
-                        "action_id": action_id,
-                    },
-                )
-            try:
-                child_result = dict(await self._child_runner(action_id, child_inputs, context, report))
+                if steps:
+                    child_result = await self._run_steps(
+                        steps,
+                        {"iteration": iteration, "result": previous_result, "outputs": previous_result},
+                        context,
+                        report,
+                        invocation,
+                    )
+                else:
+                    try:
+                        child_inputs = ForEachActivityHandler._resolve_inputs(
+                            raw_action_inputs,
+                            {"iteration": iteration, "result": previous_result, "outputs": previous_result},
+                        )
+                    except ValueError as exc:
+                        return ActivityResult(
+                            ActivityStatus.FAILED,
+                            outputs={"status": "failed", "matched": False, "iterations": iteration - 1, "result": results[-1] if results else {}, "results": results},
+                            error={
+                                "code": "loop_until_input_invalid",
+                                "message": str(exc),
+                                "class": "deterministic",
+                                "iteration": iteration,
+                                "action_id": action_id,
+                            },
+                        )
+                    child_result = dict(await self._child_runner(action_id, child_inputs, context, report))
             except Exception as exc:
                 return ActivityResult(ActivityStatus.FAILED, outputs={"status": "failed", "matched": False, "iterations": iteration - 1, "result": results[-1] if results else {}, "results": results}, error={"code": "loop_until_child_failed", "message": str(exc), "class": "deterministic", "iteration": iteration})
             results.append(child_result)
@@ -400,6 +504,23 @@ class UntilActivityHandler:
                 evidence=({"kind": "until", "iterations": max_iterations},),
             )
         return ActivityResult(ActivityStatus.FAILED, outputs={"status": "exhausted", "matched": False, "iterations": max_iterations, "result": results[-1] if results else {}, "results": results}, error={"code": "loop_until_exhausted", "message": "loop.until reached max_iterations without matching condition", "class": "timeout"})
+
+    async def _run_steps(
+        self, steps: list[dict[str, Any]], local: dict[str, Any], context: ActivityContext,
+        report: Any, invocation: ActivityInvocation,
+    ) -> dict[str, Any]:
+        outputs = dict(invocation.inputs.get("scope_outputs") or {})
+        step_results: dict[str, Any] = {}
+        result: dict[str, Any] = {}
+        for step in steps:
+            inputs = TaskOrchestrator._resolve_inputs(
+                step.get("action_inputs") or {}, {**outputs, **local, "outputs": outputs},
+            )
+            result = dict(await self._child_runner(str(step["action_id"]), inputs, context, report))
+            step_id = str(step["id"])
+            outputs[step_id] = result
+            step_results[step_id] = result
+        return {**result, "steps": step_results}
 
     async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:
         del invocation, context

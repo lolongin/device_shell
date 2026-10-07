@@ -51,6 +51,7 @@ export function useWorkflowRunActions(options: {
       options.updateTasks(tasks)
       options.runMessage.value = draft
         ? `草稿任务 ${tasks[0].id.slice(0, 8)} 已创建，正在打开任务监控。`
+        : result.batch_loop ? `批量循环任务已创建，将遍历 ${Number(result.target_count || targets().length)} 台设备，正在打开任务监控。`
         : tasks.length > 1 ? `已为 ${tasks.length} 台设备创建任务，正在打开任务监控。` : `任务 ${tasks[0].id.slice(0, 8)} 已创建，正在打开任务监控。`
       options.emitClose()
       options.openTaskPanel()

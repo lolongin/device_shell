@@ -4,6 +4,24 @@ from device_tui.application.workflow_studio import *
 
 CATALOG = build_action_catalog()
 
+
+def test_batch_final_output_requires_loop_results_instead_of_save_object() -> None:
+    from dataclasses import replace
+
+    workflow = WorkflowDraft(
+        "batch-output", "Batch output",
+        nodes=(
+            WorkflowNode("each", "device.for_each", {"devices": ["device-1"], "action_id": "result.save", "action_inputs": {"value": "version"}}),
+            WorkflowNode("save_version", "result.save", {"value": "version"}),
+        ),
+        edges=(WorkflowEdge("each", "save_version"),),
+        outputs=(WorkflowOutput("device_results", "${save_version}", "array"),),
+    )
+    errors = validate_workflow(workflow, CATALOG).errors
+    assert any("resolves to object, expected array" in error.message for error in errors)
+    corrected = replace(workflow, outputs=(WorkflowOutput("device_results", "${each.results}", "array"),))
+    assert not validate_workflow(corrected, CATALOG).errors
+
 def issues(workflow):
     return validate_workflow(workflow, CATALOG).errors
 

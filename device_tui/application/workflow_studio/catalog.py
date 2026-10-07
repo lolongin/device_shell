@@ -70,7 +70,7 @@ def build_action_catalog() -> ActionCatalog:
     )
     return ActionCatalog(tuple([
         a("device.select", "选择设备", "device", ("device_id",), outputs=output(device_id={"type": "string"}, status={"type": "string"}), device_id={"type": "string"}),
-        a("device.connect", "连接设备", "device", (), outputs=execution_outputs, device_id={"type": "string"}, timeout_seconds={"type": "number"}),
+        a("device.connect", "连接设备", "device", (), outputs=execution_outputs, device_id={"type": ["string", "object"]}, timeout_seconds={"type": "number"}),
         a(
             "device.info",
             "获取设备信息",
@@ -170,7 +170,7 @@ def build_action_catalog() -> ActionCatalog:
         ),
         a("expression.evaluate", "计算表达式", "control", ("expression",), outputs=output(value={}, status={"type": "string"}), expression={"type": "string"}, values={"type": "object"}),
         a("loop.for_each", "循环 FOR", "control", ("items", "action_id"), outputs=output(items={"type": "array"}, results={"type": "array"}, count={"type": "integer"}), items={"type": "array"}, action_id={"type": "string"}, action_inputs={"type": "object"}),
-        a("device.for_each", "遍历设备", "device", ("devices", "action_id"), outputs=output(devices={"type": "array"}, results={"type": "array"}, count={"type": "integer"}, succeeded={"type": "integer"}, failed={"type": "integer"}), devices={"type": "array"}, action_id={"type": "string"}, action_inputs={"type": "object"}, concurrency={"type": "integer"}, failure_strategy={"type": "string", "enum": ["stop", "continue"]}),
+        a("device.for_each", "遍历设备", "device", ("devices",), outputs=output(devices={"type": "array"}, results={"type": "array"}, count={"type": "integer"}, succeeded={"type": "integer"}, failed={"type": "integer"}), devices={"type": "array"}, body_mode={"type": "string", "enum": ["downstream", "bounded", "action"]}, body_start={"type": "string"}, body_end={"type": "string"}, action_id={"type": "string"}, action_inputs={"type": "object"}, concurrency={"type": "integer"}, failure_strategy={"type": "string", "enum": ["stop", "continue"]}),
         a("loop.until", "循环直到满足", "control", ("action_id", "condition"), outputs=output(status={"type": "string"}, matched={"type": "boolean"}, iterations={"type": "integer"}, result={"type": "object"}, results={"type": "array"}), action_id={"type": "string"}, action_inputs={"type": "object"}, condition={"type": "string"}, max_iterations={"type": "integer"}, interval_seconds={"type": "number"}),
         a(
             "workflow.call",

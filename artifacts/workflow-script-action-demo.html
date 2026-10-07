@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workflow Script Action Prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --panel: #0d192a;
+      --panel-strong: #101f33;
+      --panel-soft: #0a1524;
+      --line: #22344d;
+      --line-strong: #315176;
+      --text: #e8f1fb;
+      --muted: #91a4ba;
+      --faint: #60738c;
+      --blue: #61a9ff;
+      --blue-soft: #173b61;
+      --teal: #55d5c2;
+      --orange: #f3b664;
+      --red: #f78686;
+      --shadow: 0 22px 60px rgba(0, 0, 0, .35);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 1080px; background: var(--bg); color: var(--text); font-size: 13px; }
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; }
+    .app { min-height: 100vh; display: grid; grid-template-rows: 58px 1fr; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--line); background: #081424; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #3d79ae; color: var(--blue); background: #0d2845; font-weight: 700; }
+    .brand-copy { display: grid; gap: 2px; }
+    .brand-copy strong { letter-spacing: .02em; font-size: 13px; }
+    .brand-copy span { color: var(--muted); font-size: 11px; }
+    .top-actions { display: flex; align-items: center; gap: 9px; }
+    .top-actions button, .icon-button { border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+    .top-actions button { padding: 7px 11px; }
+    .top-actions button:hover, .icon-button:hover { border-color: var(--line-strong); color: var(--text); background: #12243a; }
+    .top-actions .primary { border-color: #3d7db7; color: #e8f5ff; background: #164475; }
+    .workspace { min-height: 0; display: grid; grid-template-columns: minmax(540px, 1fr) 510px; }
+
+    .canvas { position: relative; overflow: hidden; border-right: 1px solid var(--line); background-color: #081321; background-image: radial-gradient(#1b3550 1px, transparent 1px); background-size: 22px 22px; }
+    .canvas-toolbar { position: absolute; z-index: 3; top: 20px; left: 22px; right: 22px; display: flex; align-items: center; justify-content: space-between; }
+    .crumbs { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .crumbs strong { color: var(--text); font-weight: 600; }
+    .crumbs b { color: var(--faint); font-weight: 400; }
+    .canvas-actions { display: flex; gap: 5px; }
+    .icon-button { width: 31px; height: 31px; display: grid; place-items: center; }
+    .canvas-help { position: absolute; bottom: 20px; left: 22px; right: 22px; display: flex; align-items: center; justify-content: space-between; color: var(--faint); font-size: 11px; }
+    .zoom { display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--line); background: rgba(9, 24, 41, .86); }
+    .zoom button { width: 25px; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .zoom span { min-width: 39px; text-align: center; color: var(--text); }
+    .flow { position: absolute; inset: 0; display: grid; place-items: center; padding-top: 48px; }
+    .flow-stack { display: grid; justify-items: center; gap: 0; transform: translateY(-24px); }
+    .connector { width: 1px; height: 38px; background: #40688f; position: relative; }
+    .connector::after { content: ""; position: absolute; left: -4px; bottom: -1px; border: 4px solid transparent; border-top-color: #40688f; }
+    .node { width: 350px; border: 1px solid var(--line-strong); background: rgba(13, 27, 45, .96); box-shadow: 0 14px 32px rgba(0, 0, 0, .2); cursor: pointer; }
+    .node.selected { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(97, 169, 255, .15), 0 17px 38px rgba(0, 0, 0, .3); }
+    .node-strip { height: 4px; background: var(--blue); }
+    .node[data-tone="teal"] .node-strip { background: var(--teal); }
+    .node[data-tone="orange"] .node-strip { background: var(--orange); }
+    .node-head { display: flex; align-items: flex-start; gap: 11px; padding: 14px 15px 11px; }
+    .node-icon { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #315d83; color: var(--blue); background: #102c49; font-weight: 700; }
+    .node[data-tone="teal"] .node-icon { color: var(--teal); border-color: #247c75; background: #0d3436; }
+    .node[data-tone="orange"] .node-icon { color: var(--orange); border-color: #86633b; background: #352a1c; }
+    .node-title { flex: 1; min-width: 0; display: grid; gap: 4px; }
+    .node-title strong { font-size: 13px; }
+    .node-title small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+    .node-status { color: var(--teal); font-size: 12px; }
+    .node-body { margin: 0 15px 15px; padding: 10px 11px; border: 1px solid #233b56; background: #0a1829; }
+    .node-body code { display: block; overflow: hidden; color: #bcd8f5; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .node-body span { display: block; margin-top: 6px; color: var(--faint); font-size: 11px; }
+
+    .inspector { min-width: 0; overflow: auto; background: var(--panel); }
+    .inspector-head { position: sticky; top: 0; z-index: 4; display: flex; justify-content: space-between; gap: 14px; padding: 19px 22px 15px; border-bottom: 1px solid var(--line); background: rgba(13, 25, 42, .97); backdrop-filter: blur(12px); }
+    .eyebrow { margin: 0 0 5px; color: var(--blue); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+    .inspector-head h1 { margin: 0; font-size: 18px; letter-spacing: -.01em; }
+    .inspector-head p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+    .head-actions { display: flex; align-items: flex-start; gap: 7px; }
+    .head-actions button { padding: 7px 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+    .head-actions button:hover { border-color: var(--line-strong); color: var(--text); }
+
+    .inspector-content { padding: 17px 22px 36px; }
+    .section { padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+    .section:last-child { margin-bottom: 0; border-bottom: 0; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .section-head h2 { margin: 0; font-size: 13px; }
+    .section-head span { color: var(--faint); font-size: 11px; }
+    .section-head .count { color: var(--blue); }
+    .field { display: grid; gap: 6px; margin-bottom: 11px; }
+    .field:last-child { margin-bottom: 0; }
+    .field > label, .field-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #cad8e8; font-size: 11px; }
+    .field > label small, .field-label small { color: var(--faint); font-size: 10px; }
+    input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 4px; outline: 0; color: var(--text); background: #091727; }
+    input, select { height: 34px; padding: 0 10px; }
+    textarea { min-height: 70px; padding: 10px; resize: vertical; line-height: 1.45; }
+    input:focus, select:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(97, 169, 255, .12); }
+    .field-hint { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .select-with-tag { position: relative; }
+    .select-with-tag select { padding-right: 88px; }
+    .select-tag { position: absolute; top: 9px; right: 9px; color: var(--teal); font-size: 10px; pointer-events: none; }
+    .resource-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .resource-row button { padding: 0 11px; border: 1px solid var(--line-strong); color: var(--blue); background: #102844; cursor: pointer; }
+    .resource-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: var(--muted); font-size: 10px; }
+    .resource-meta strong { color: var(--teal); font-weight: 600; }
+    .version-pill { padding: 3px 6px; border: 1px solid #2a6b65; color: var(--teal); background: #0c2a2b; }
+    .param { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 11px; padding: 11px 0; border-top: 1px solid #182b41; }
+    .param:first-of-type { border-top: 0; }
+    .param-name { display: grid; align-content: start; gap: 4px; }
+    .param-name strong { color: var(--text); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .param-name small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .param-controls { display: grid; gap: 7px; }
+    .source-row { display: grid; grid-template-columns: 112px 1fr; gap: 7px; }
+    .source-row select { height: 30px; padding: 0 7px; color: #b9cce0; font-size: 11px; }
+    .source-row input { height: 30px; font-size: 11px; }
+    .required { color: var(--orange); font-size: 10px; }
+    .outputs { display: grid; gap: 7px; }
+    .output-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid #1d3650; background: #0a1829; }
+    .output-row strong { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .output-row span { color: var(--muted); font-size: 10px; }
+    .output-row button { border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: 10px; }
+    .policy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .policy { padding: 10px; border: 1px solid #1d3650; background: #0a1829; }
+    .policy strong { display: block; margin-bottom: 7px; font-size: 11px; }
+    .policy select, .policy input { height: 30px; font-size: 11px; }
+    .switch-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+    .switch-line input { width: 14px; height: 14px; accent-color: var(--blue); }
+    .footer-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 2px; }
+    .footer-actions button { padding: 9px 12px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+    .footer-actions .run { border-color: #3c85bb; color: #ecf7ff; background: #174c79; }
+    .toast { position: fixed; right: 24px; bottom: 24px; transform: translateY(20px); opacity: 0; padding: 11px 14px; border: 1px solid #2d6d68; color: #d7fff5; background: #102f31; box-shadow: var(--shadow); pointer-events: none; transition: .22s ease; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+
+    @media (max-width: 1180px) {
+      body { min-width: 0; }
+      .workspace { grid-template-columns: minmax(420px, 1fr) 450px; }
+      .node { width: 300px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">W</div>
+        <div class="brand-copy"><strong>Workflow Studio</strong><span>脚本动作 · 统一配置模板</span></div>
+      </div>
+      <div class="top-actions">
+        <button type="button" data-toast="草稿已保存">保存草稿</button>
+        <button type="button" data-toast="已打开脚本资源工作区">打开脚本工作区</button>
+        <button class="primary" type="button" data-toast="运行预览已生成">执行预览</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="canvas" aria-label="Workflow 画布">
+        <div class="canvas-toolbar">
+          <div class="crumbs"><strong>设备版本巡检</strong><b>/</b><span>草稿 · 未发布</span></div>
+          <div class="canvas-actions"><button class="icon-button" type="button" title="自动布局">↗</button><button class="icon-button" type="button" title="适应画布">⌗</button></div>
+        </div>
+
+        <div class="flow">
+          <div class="flow-stack">
+            <article class="node" data-tone="teal" data-node="devices">
+              <div class="node-strip"></div>
+              <div class="node-head"><div class="node-icon">⇄</div><div class="node-title"><strong>选择目标设备</strong><small>批量输入 · 12 台设备</small></div><div class="node-status">●</div></div>
+              <div class="node-body"><code>devices = ${inputs.target_devices}</code><span>输出：device_id · device_name</span></div>
+            </article>
+            <div class="connector"></div>
+            <article class="node" data-tone="teal" data-node="connect">
+              <div class="node-strip"></div>
+              <div class="node-head"><div class="node-icon">⌁</div><div class="node-title"><strong>连接设备</strong><small>复用已有 SSH / Telnet 会话</small></div><div class="node-status">●</div></div>
+              <div class="node-body"><code>protocol = auto</code><span>输出：session_id · device_facts</span></div>
+            </article>
+            <div class="connector"></div>
+            <article class="node selected" data-tone="blue" data-node="script">
+              <div class="node-strip"></div>
+              <div class="node-head"><div class="node-icon">{ }</div><div class="node-title"><strong>检查设备版本</strong><small>脚本资源 · check_device_version</small></div><div class="node-status">●</div></div>
+              <div class="node-body"><code>device_id ← 上一步.device_id</code><span>输出：status · current_version · message</span></div>
+            </article>
+          </div>
+        </div>
+
+        <div class="canvas-help"><span>拖动连接点添加后续动作 · 点击节点查看统一配置</span><div class="zoom"><button type="button">−</button><span>100%</span><button type="button">＋</button></div></div>
+      </section>
+
+      <aside class="inspector" aria-label="动作配置">
+        <header class="inspector-head">
+          <div><p class="eyebrow">SCRIPT STEP</p><h1>检查设备版本</h1><p>引用脚本资源并映射运行参数</p></div>
+          <div class="head-actions"><button type="button" data-toast="此节点已复制">复制</button><button type="button" data-toast="此节点已删除">删除</button></div>
+        </header>
+
+        <div class="inspector-content">
+          <section class="section">
+            <div class="section-head"><h2>动作信息</h2><span>脚本动作</span></div>
+            <div class="field"><label for="node-name">节点名称 <small>仅用于流程阅读</small></label><input id="node-name" value="检查设备版本"></div>
+            <div class="field"><label for="purpose">动作说明</label><textarea id="purpose">读取设备当前版本，与流程输入中的目标版本比较，并返回结构化检查结果。</textarea></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>脚本资源</h2><span class="count">已绑定</span></div>
+            <div class="field"><label for="script-resource">脚本</label><div class="resource-row"><select id="script-resource"><option value="check_device_version">检查设备版本 · Python</option><option value="collect_device_facts">采集设备信息 · Python</option><option value="backup_running_config">备份运行配置 · PowerShell</option></select><button type="button" data-toast="已打开 check_device_version 的编辑器">编辑脚本</button></div><div class="resource-meta"><span>入口 <strong>main</strong> · 最近修改 2 小时前</span><span class="version-pill">固定版本 v3</span></div></div>
+            <div class="field"><label for="script-version">运行版本 <small>发布后保持稳定</small></label><div class="select-with-tag"><select id="script-version"><option>v3 · 2026-09-29</option><option>v2 · 2026-09-18</option><option>最新版本（不推荐）</option></select><span class="select-tag">已锁定</span></div></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>脚本参数</h2><span>由 main 函数签名生成 · <span class="count">2 项</span></span></div>
+            <div class="param">
+              <div class="param-name"><strong>device_id</strong><small>目标设备标识</small><span class="required">必填</span></div>
+              <div class="param-controls"><div class="source-row"><select class="source"><option>上游输出</option><option>流程输入</option><option>固定值</option></select><select><option>连接设备 · device_id</option><option>选择目标设备 · device_id</option></select></div><span class="field-hint">运行时按每台目标设备分别解析。</span></div>
+            </div>
+            <div class="param">
+              <div class="param-name"><strong>expected_version</strong><small>目标版本号</small><span class="required">必填</span></div>
+              <div class="param-controls"><div class="source-row"><select class="source"><option>流程输入</option><option>固定值</option><option>上游输出</option></select><select><option>target_version · string</option><option>target_version · number</option></select></div><span class="field-hint">来自运行时输入，用户执行流程时填写。</span></div>
+            </div>
+            <div class="param">
+              <div class="param-name"><strong>timeout</strong><small>脚本内部超时</small></div>
+              <div class="param-controls"><div class="source-row"><select class="source"><option>默认值</option><option>固定值</option><option>流程输入</option></select><input value="30" aria-label="timeout 默认值"></div></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>输出结果</h2><span>下游可引用</span></div>
+            <div class="outputs">
+              <div class="output-row"><strong>status</strong><span>状态 · string</span><button type="button" data-toast="已复制 ${script.status}">复制引用</button></div>
+              <div class="output-row"><strong>current_version</strong><span>当前版本 · string</span><button type="button" data-toast="已复制 ${script.current_version}">复制引用</button></div>
+              <div class="output-row"><strong>message</strong><span>说明 · string</span><button type="button" data-toast="已复制 ${script.message}">复制引用</button></div>
+            </div>
+            <p class="field-hint" style="margin: 9px 0 0;">脚本返回值、标准输出和错误日志分开保存。下游条件可直接选择结构化字段。</p>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>执行策略</h2><span>节点通用设置</span></div>
+            <div class="policy-grid">
+              <div class="policy"><strong>超时时间</strong><div class="two-col"><input value="300" type="number" aria-label="超时时间"><select aria-label="超时单位"><option>秒</option><option>分钟</option></select></div><label class="switch-line" style="margin-top: 8px;"><input type="checkbox">不设上限</label></div>
+              <div class="policy"><strong>失败策略</strong><select><option>停止当前设备流程</option><option>继续后续节点</option><option>进入人工处理</option></select><label class="switch-line" style="margin-top: 8px;"><input type="checkbox" checked>记录失败输出</label></div>
+            </div>
+            <div class="two-col" style="margin-top: 10px;"><div class="field"><label for="retry">最大重试次数</label><input id="retry" value="2" type="number" min="0" max="5"></div><div class="field"><label for="backoff">重试间隔 <small>秒</small></label><input id="backoff" value="5" type="number" min="0"></div></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>流程连接</h2><span>由画布维护</span></div>
+            <div class="two-col"><div class="field"><label>成功后</label><select><option>结束当前设备流程</option><option>进入下一节点</option></select></div><div class="field"><label>失败后</label><select><option>按失败策略处理</option><option>进入人工处理</option></select></div></div>
+          </section>
+
+          <div class="footer-actions"><button type="button" data-toast="已运行此节点的模拟测试">测试此步骤</button><button class="run" type="button" data-toast="执行预览已生成">保存并预览</button></div>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script>
+    const toast = document.getElementById('toast');
+    let toastTimer;
+    document.querySelectorAll('[data-toast]').forEach((button) => {
+      button.addEventListener('click', () => {
+        toast.textContent = button.dataset.toast || '已完成';
+        toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+      });
+    });
+    document.querySelectorAll('.node').forEach((node) => {
+      node.addEventListener('click', () => {
+        document.querySelectorAll('.node').forEach((item) => item.classList.remove('selected'));
+        node.classList.add('selected');
+        if (node.dataset.node !== 'script') {
+          toast.textContent = '原型当前展示脚本动作的统一配置模板';
+          toast.classList.add('show');
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+        }
+      });
+    });
+    document.querySelectorAll('.source').forEach((source) => {
+      source.addEventListener('change', () => {
+        const input = source.parentElement?.querySelector('input');
+        const select = source.parentElement?.querySelectorAll('select')[1];
+        if (!input && !select) return;
+        if (source.value === '固定值') {
+          if (input) input.value = 'router-01';
+          if (select) select.innerHTML = '<option>输入固定值</option>';
+        } else if (source.value === '流程输入') {
+          if (input) input.value = 'target_version';
+          if (select) select.innerHTML = '<option>target_version · string</option>';
+        } else {
+          if (input) input.value = '连接设备 · device_id';
+          if (select) select.innerHTML = '<option>连接设备 · device_id</option><option>选择目标设备 · device_id</option>';
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -22,6 +22,7 @@ type NodeItem = {
 }
 type WorkflowEdge = { source: string; target: string; condition?: string; source_handle?: string }
 type WorkflowEditorWorkflow = { id: string; name: string; version?: string | number; nodes?: NodeItem[]; edges?: WorkflowEdge[]; [key: string]: any }
+const LOOP_ACTION_IDS = new Set(['device.for_each', 'loop.for_each', 'loop.until'])
 
 export function useWorkflowEditor(context: EditorContext) {
   const { selected: selectedState, selectedNode: selectedNodeState, selectedDeviceId, rightRailMode, conditionRules, conditionLogicalOperator, actions, canvasNodes: canvasNodeState } = context
@@ -100,14 +101,18 @@ function addNode(actionId: string, position?: { x: number; y: number }): void {
         source: insertEdge.source,
         target: node.id,
         condition: insertEdge.condition,
-        source_handle: insertEdge.source_handle
+        source_handle: insertEdge.source_handle || (LOOP_ACTION_IDS.has(nodes.find((item) => item.id === insertEdge.source)?.action_id || '') ? 'loop-body' : undefined)
       },
       { source: node.id, target: insertEdge.target }
     ]
   } else {
     selected.value.nodes = [...nodes, node]
     const previous = nodes[nodes.length - 1]
-    if (previous) selected.value.edges = [...(selected.value.edges || []), { source: previous.id, target: node.id }]
+    if (previous) selected.value.edges = [...(selected.value.edges || []), {
+      source: previous.id,
+      target: node.id,
+      source_handle: LOOP_ACTION_IDS.has(previous.action_id) ? 'loop-body' : undefined
+    }]
   }
   selectedNode.value = node
   rightRailMode.value = 'step'
@@ -122,7 +127,7 @@ function startActionDrag(event: DragEvent, actionId: string): void {
 
 function defaultConfig(actionId: string): Record<string, unknown> {
   if (actionId === 'device.select') return { device_id: selectedDeviceId.value || '' }
-  if (actionId === 'device.connect') return { device_id: selectedDeviceId.value || '', timeout_seconds: 0 }
+  if (actionId === 'device.connect') return { device_id: '', timeout_seconds: 30 }
   if (actionId === 'device.info') return { fields: ['name', 'software_version', 'status'] }
   if (actionId === 'device.command') return { execution_mode: 'device', command: '', timeout_seconds: 0, retry_attempts: 1, retry_backoff_seconds: 0, failure_strategy: 'stop' }
   if (actionId === 'script.run') return { language: 'python', script_id: '', script: '', input_json: '{}', cwd: '', env: {}, timeout_seconds: 0, max_output_chars: 1_048_576, retry_attempts: 1, retry_backoff_seconds: 0 }
@@ -136,7 +141,7 @@ function defaultConfig(actionId: string): Record<string, unknown> {
   if (actionId === 'variable.set') return { name: '', value: '' }
   if (actionId === 'expression.evaluate') return { expression: '', values: {} }
   if (actionId === 'loop.for_each') return { items: [], action_id: 'result.save', action_inputs: {} }
-  if (actionId === 'device.for_each') return { devices: [], action_id: 'device.command', action_inputs: {}, concurrency: 1, failure_strategy: 'continue' }
+  if (actionId === 'device.for_each') return { devices: [], body_mode: 'downstream', concurrency: 1, failure_strategy: 'continue' }
   if (actionId === 'loop.until') return { action_id: 'device.command', action_inputs: { command: 'display version' }, condition: "False", max_iterations: 10, interval_seconds: 2 }
   if (actionId === 'workflow.call') return { workflow_id: '', version: '', inputs: {} }
   return {}
@@ -145,10 +150,13 @@ function defaultConfig(actionId: string): Record<string, unknown> {
 
 function addEdge(sourceId: string, targetId: string, sourceHandle?: string | null): void {
   if (!selected.value || !sourceId || !targetId || sourceId === targetId) return
-  const exists = (selected.value.edges || []).some((edge) => edge.source === sourceId && edge.target === targetId && (edge.source_handle || '') === (sourceHandle || ''))
-  if (exists) return
   const source = (selected.value.nodes || []).find((node) => node.id === sourceId)
-  const edge: WorkflowEdge = { source: sourceId, target: targetId, source_handle: sourceHandle || undefined }
+  // A plain connection from a loop node enters its body. The dedicated
+  // loop-exit handle is persisted when the user connects that port.
+  const normalizedHandle = source && LOOP_ACTION_IDS.has(source.action_id) && !sourceHandle ? 'loop-body' : (sourceHandle || undefined)
+  const exists = (selected.value.edges || []).some((edge) => edge.source === sourceId && edge.target === targetId && (edge.source_handle || '') === (normalizedHandle || ''))
+  if (exists) return
+  const edge: WorkflowEdge = { source: sourceId, target: targetId, source_handle: normalizedHandle }
   if (source?.action_id === 'utility.condition') {
     const requestedBranch = sourceHandle === 'true' || sourceHandle === 'false' ? sourceHandle : undefined
     const hasTrueBranch = (selected.value.edges || []).some((item) => item.source === sourceId && (item.condition === 'true' || item.source_handle === 'true'))
@@ -156,6 +164,22 @@ function addEdge(sourceId: string, targetId: string, sourceHandle?: string | nul
     edge.source_handle = edge.condition
   }
   selected.value.edges = [...(selected.value.edges || []), edge]
+
+  if (source && LOOP_ACTION_IDS.has(source.action_id) && normalizedHandle === 'loop-exit' && !source.config.body_end) {
+    const bodyEdge = (selected.value.edges || []).find((item) => item.source === sourceId && ['body', 'loop-body', 'loop_body', ''].includes(String(item.source_handle || '').toLowerCase()))
+    let current = bodyEdge?.target || ''
+    const visited = new Set<string>()
+    while (current && !visited.has(current)) {
+      visited.add(current)
+      const next = (selected.value.edges || []).filter((item) => item.source === current && item.target !== sourceId)
+      if (next.some((item) => item.target === targetId)) {
+        source.config.body_end = current
+        break
+      }
+      if (next.length !== 1) break
+      current = next[0].target
+    }
+  }
 }
 
 function removeEdgeByTarget(targetId: string): void {
@@ -334,6 +358,15 @@ function handleNodePositionChange(nodeId: string, position: { x: number; y: numb
   }
 }
 
+function handleNodePositionsChange(positions: Array<{ nodeId: string; position: { x: number; y: number } }>): void {
+  if (!selected.value || !selected.value.nodes || !positions.length) return
+  const byNodeId = new Map(positions.map((item) => [item.nodeId, item.position]))
+  selected.value.nodes = selected.value.nodes.map((node) => {
+    const position = byNodeId.get(node.id)
+    return position ? { ...node, position } : node
+  })
+}
+
 
   let cleanupShortcuts: (() => void) | null = null
   onMounted(() => {
@@ -350,6 +383,6 @@ function handleNodePositionChange(nodeId: string, position: { x: number; y: numb
     nodePosition, findInsertEdge, defaultConfig, addEdge, removeEdgeByTarget,
     setNodePredecessor, setNodeSuccessor, setConditionTarget, removeNode,
     copySelectedNode, pasteNode, handleWorkflowKeyDown, renameNode,
-    performUndo, performRedo, applyAutoLayout, handleNodePositionChange
+    performUndo, performRedo, applyAutoLayout, handleNodePositionChange, handleNodePositionsChange
   }
 }

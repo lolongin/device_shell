@@ -42,7 +42,6 @@ import ConnectionProfileDialog from './components/ConnectionProfileDialog.vue'
 import ConnectionGroupDialog from './components/ConnectionGroupDialog.vue'
 import DeviceImportDialog from './components/DeviceImportDialog.vue'
 import CommandWorkspace from './components/CommandWorkspace.vue'
-import QuickActionsBar from './components/QuickActionsBar.vue'
 import CompactSelect from './components/CompactSelect.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -172,7 +171,7 @@ const {
   setNavigatorVisible, handleWindowResize
 } = navigatorResize
 const workflowLibraryRef = ref<InstanceType<typeof WorkflowLibrary> | null>(null)
-const quickActionsBarRef = ref<InstanceType<typeof QuickActionsBar> | null>(null)
+const quickActionsBarRef = ref<InstanceType<typeof SessionWorkspaceShell> | null>(null)
 const workflowRunDialogOpen = ref(false)
 const workflowRunDeviceId = ref('')
 const workflowRunWorkflowId = ref('')
@@ -1612,7 +1611,7 @@ const sessionWorkspaceContext = {
       @dblclick="resetNavigatorWidth"
     ><span aria-hidden="true"></span></div>
 
-    <SessionWorkspaceShell :context="sessionWorkspaceContext" />
+    <SessionWorkspaceShell ref="quickActionsBarRef" :context="sessionWorkspaceContext" />
 
     <aside
       v-if="showSessionSidebar"

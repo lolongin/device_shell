@@ -7,9 +7,11 @@ import QuickActionsBar from './QuickActionsBar.vue'
 import CommandWorkspace from './CommandWorkspace.vue'
 import SessionContextMenus from './SessionContextMenus.vue'
 import TerminalSplitWorkspace from './TerminalSplitWorkspace.vue'
+import { ref } from 'vue'
 
 type SessionWorkspaceContext = Record<string, any>
 const props = defineProps<{ context: SessionWorkspaceContext }>()
+const quickActionsBarRef = ref<InstanceType<typeof QuickActionsBar> | null>(null)
 const {
   workflowPanelOpen, terminalSplitActive, sessionTabLayout, sessionTabRailCollapsed,
   workspace, liveWorkspaceTitle, sessionDeviceGroups, activeSessionDeviceId,
@@ -33,6 +35,11 @@ const {
   activeSection, availableDeviceProtocols, openDeviceProtocolSession, selectedProfile,
   profileCanConnect: canConnectProfile, openWorkflowRunDialog
 } = props.context
+
+defineExpose({
+  addCommand: (command: string, name = '') => quickActionsBarRef.value?.addCommand(command, name),
+  addWorkflow: (workflowId: string, name: string) => quickActionsBarRef.value?.addWorkflow(workflowId, name)
+})
 </script>
 
 <template>

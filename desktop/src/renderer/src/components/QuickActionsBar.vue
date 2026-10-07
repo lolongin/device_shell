@@ -22,6 +22,9 @@ const contextId = ref('')
 const draggedId = ref('')
 const dragOverId = ref('')
 const quickActionsRoot = ref<HTMLElement | null>(null)
+const commandDialogOpen = ref(false)
+const commandDraft = ref('')
+const commandName = ref('')
 let unsubscribeContextMenuOpen: (() => void) | null = null
 
 const visibleActions = computed(() => actions.value.slice(0, MAX_VISIBLE))
@@ -50,16 +53,24 @@ function addCommand(command: string, name = ''): void {
   const text = command.trim()
   if (!text) return
   const defaultName = text.split(/\r?\n/)[0].slice(0, 36)
-  const label = window.prompt('快捷命令名称', name || defaultName)
-  if (!label?.trim()) return
-  actions.value.push({ id: makeId(), type: 'command', name: label.trim(), command: text })
+  const label = (name || defaultName).trim()
+  if (!label) return
+  actions.value.push({ id: makeId(), type: 'command', name: label, command: text })
   persist()
-  workspace.notice = `已添加快捷命令：${label.trim()}`
+  workspace.notice = `已添加快捷命令：${label}`
 }
 
 function createCommand(): void {
-  const command = window.prompt('输入快捷命令，支持多行')?.trim()
-  if (command) addCommand(command)
+  commandDraft.value = ''
+  commandName.value = ''
+  commandDialogOpen.value = true
+}
+
+function submitCommand(): void {
+  const command = commandDraft.value.trim()
+  if (!command) return
+  addCommand(command, commandName.value.trim())
+  commandDialogOpen.value = false
 }
 
 function addWorkflow(workflowId: string, name: string): void {
@@ -214,6 +225,14 @@ defineExpose({ addCommand, addWorkflow })
       <button type="button" role="menuitem" class="danger" @click="removeAction"><Trash2 :size="12" />移除</button>
     </div>
   </div>
+  <div v-if="commandDialogOpen" class="quick-command-dialog-backdrop" @mousedown.self="commandDialogOpen = false">
+    <form class="quick-command-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-command-dialog-title" @submit.prevent="submitCommand">
+      <h3 id="quick-command-dialog-title">添加快捷命令</h3>
+      <input v-model="commandName" placeholder="名称（可选）" maxlength="80" data-dialog-initial-focus />
+      <textarea v-model="commandDraft" placeholder="输入快捷命令，支持多行" rows="5" required></textarea>
+      <footer><button type="button" @click="commandDialogOpen = false">取消</button><button type="submit" :disabled="!commandDraft.trim()">添加</button></footer>
+    </form>
+  </div>
 </template>
 
 <style scoped>
@@ -238,5 +257,13 @@ defineExpose({ addCommand, addWorkflow })
 .quick-actions-context button { display: flex; align-items: center; gap: 6px; padding: 6px; border: 0; border-radius: 4px; color: var(--text); background: transparent; font-size: 11px; text-align: left; cursor: pointer; }
 .quick-actions-context button:hover { background: var(--surface-hover); }
 .quick-actions-context .danger { color: #fca5a5; }
+.quick-command-dialog-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; background: rgba(2, 8, 23, .55); }
+.quick-command-dialog { display: grid; gap: 10px; width: min(420px, calc(100vw - 32px)); padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); box-shadow: 0 18px 48px rgba(0,0,0,.35); }
+.quick-command-dialog h3 { margin: 0; color: var(--text); font-size: 14px; }
+.quick-command-dialog input, .quick-command-dialog textarea { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface); font: inherit; }
+.quick-command-dialog footer { display: flex; justify-content: flex-end; gap: 7px; }
+.quick-command-dialog footer button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface); cursor: pointer; }
+.quick-command-dialog footer button[type="submit"] { border-color: var(--blue); background: var(--blue); }
+.quick-command-dialog footer button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 1100px) { .quick-actions-label, .quick-actions-empty { display: none; } .quick-action-button { max-width: 100px; } }
 </style>

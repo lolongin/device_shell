@@ -290,8 +290,9 @@ export function useWorkflowScripts(options: {
 
   async function loadWorkflowScripts(preferredId = ''): Promise<void> {
     const result = await desktopApi.workflowScripts()
-    scripts.value = result.scripts.map(normalizeWorkflowScript)
-    savedScriptSnapshots.value = Object.fromEntries(result.scripts.map((item) => [item.id, workflowScriptSnapshot(item)]))
+    const normalizedScripts = result.scripts.map(normalizeWorkflowScript)
+    scripts.value = normalizedScripts
+    savedScriptSnapshots.value = Object.fromEntries(normalizedScripts.map((item) => [item.id, workflowScriptSnapshot(item)]))
     const nextId = preferredId || selectedScriptId.value
     selectedScriptId.value = scripts.value.some((item) => item.id === nextId) ? nextId : (scripts.value[0]?.id || '')
     synchronizeScriptTestValues()
@@ -321,9 +322,10 @@ export function useWorkflowScripts(options: {
         script: template.script,
         input_schema: template.input_schema
       })
-      scripts.value = [normalizeWorkflowScript(result.script), ...scripts.value]
-      savedScriptSnapshots.value[result.script.id] = workflowScriptSnapshot(result.script)
-      selectedScriptId.value = result.script.id
+      const normalized = normalizeWorkflowScript(result.script)
+      scripts.value = [normalized, ...scripts.value]
+      savedScriptSnapshots.value[normalized.id] = workflowScriptSnapshot(normalized)
+      selectedScriptId.value = normalized.id
       synchronizeScriptTestValues()
       showScriptTemplateDialog.value = false
       options.studioMode.value = 'scripts'
@@ -342,9 +344,10 @@ export function useWorkflowScripts(options: {
         id: undefined,
         name: `${selectedScript.value.name} 副本`
       })
-      scripts.value = [normalizeWorkflowScript(result.script), ...scripts.value]
-      savedScriptSnapshots.value[result.script.id] = workflowScriptSnapshot(result.script)
-      selectedScriptId.value = result.script.id
+      const normalized = normalizeWorkflowScript(result.script)
+      scripts.value = [normalized, ...scripts.value]
+      savedScriptSnapshots.value[normalized.id] = workflowScriptSnapshot(normalized)
+      selectedScriptId.value = normalized.id
       synchronizeScriptTestValues()
     } catch (cause) {
       options.setError(cause instanceof Error ? cause.message : String(cause))
@@ -362,8 +365,9 @@ export function useWorkflowScripts(options: {
     try {
       const result = await desktopApi.saveWorkflowScript(script.id, script)
       const index = scripts.value.findIndex((item) => item.id === result.script.id)
-      if (index >= 0) scripts.value[index] = normalizeWorkflowScript(result.script)
-      savedScriptSnapshots.value[result.script.id] = workflowScriptSnapshot(result.script)
+      const normalized = normalizeWorkflowScript(result.script)
+      if (index >= 0) scripts.value[index] = normalized
+      savedScriptSnapshots.value[normalized.id] = workflowScriptSnapshot(normalized)
       options.setRunMessage('脚本已保存。')
       return true
     } catch (cause) {

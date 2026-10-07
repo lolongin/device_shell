@@ -25,6 +25,7 @@ export type CommandReference = {
 
 export type ResultSource = {
   id: string
+  actionId?: string
   label: string
   fields: Array<{ name: string; label: string }>
 }
@@ -60,6 +61,7 @@ export type WorkflowScript = {
     default?: unknown
     description?: string
   }>
+  input_schema_source?: 'function' | 'manual' | string
   input_schema_error?: string
   updated_at?: string
 }
@@ -67,6 +69,7 @@ export type WorkflowScript = {
 // Props 定义
 export interface NodeConfigProps {
   node: NodeItem
+  deviceLoopId?: string
   availableDevices?: DeviceSummary[]
   workflowInputs?: Array<{ name: string; type?: string; description?: string }>
   commandReferences?: CommandReference[]

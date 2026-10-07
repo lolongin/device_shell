@@ -195,7 +195,7 @@ async def task_report(task_id: str, ctx=Depends(get_context)) -> dict[str, Any]:
     """Return a safe, business-facing report payload for local CSV export."""
     record = ctx.desktop.task_service.get(task_id)
     result = getattr(record, "result", None)
-    columns = ["流程", "设备", "总体状态", "步骤", "步骤状态", "重试次数", "说明", "错误代码"]
+    columns = ["流程", "设备", "总体状态", "步骤", "步骤状态", "重试次数", "说明", "执行输出", "证据数", "错误代码"]
     rows: list[dict[str, Any]] = []
     for step in (getattr(result, "steps", ()) if result else ()):
         raw_attempt = (getattr(step, "data", {}) or {}).get("attempt", 1)
@@ -211,6 +211,8 @@ async def task_report(task_id: str, ctx=Depends(get_context)) -> dict[str, Any]:
             "步骤状态": getattr(step, "status", ""),
             "重试次数": retry_count,
             "说明": getattr(step, "message", "") or ("已完成" if getattr(step, "status", "") == "completed" else ""),
+            "执行输出": getattr(step, "output", "") or str((getattr(step, "data", {}) or {}).get("output", "")),
+            "证据数": len(getattr(step, "evidence", ()) or ()),
             "错误代码": getattr(step, "error_code", ""),
         })
     return {

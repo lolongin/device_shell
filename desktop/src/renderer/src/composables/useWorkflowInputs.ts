@@ -2,7 +2,7 @@ import { computed, ref, type ComputedRef, type Ref } from 'vue'
 import { defaultWorkflowInputValue, normalizeStructuredInputValue } from '../components/workflow/workflow-inputs'
 
 export type WorkflowInputDefinition = { name: string; type?: string; control?: string | { id: string; props?: Record<string, unknown> }; required?: boolean; default?: unknown; description?: string }
-export type WorkflowOutputDefinition = { name: string; value?: unknown; type?: string; description?: string }
+export type WorkflowOutputDefinition = { name: string; value?: unknown; type?: string; primitiveType?: string; presentation?: string; semanticType?: string; description?: string }
 export type WorkflowNodeDefinition = { action_id: string; config: Record<string, unknown>; input_mapping?: Record<string, unknown> }
 export type WorkflowInputWorkflow = { inputs?: WorkflowInputDefinition[]; outputs?: WorkflowOutputDefinition[]; nodes?: WorkflowNodeDefinition[] }
 export type WorkflowInputIssue = { code: string; message: string }
@@ -54,17 +54,30 @@ export function useWorkflowInputs(context: WorkflowInputContext) {
     let index = outputs.length + 1
     while (names.has(`output_${index}`)) index += 1
     selected.value.outputs = [...outputs, { name: `output_${index}`, value: '', type: 'any', description: '' }]
+    invalidateOutputValidation()
   }
 
   function removeWorkflowOutput(index: number): void {
-    if (selected.value) selected.value.outputs = (selected.value.outputs || []).filter((_, itemIndex) => itemIndex !== index)
+    if (!selected.value) return
+    selected.value.outputs = (selected.value.outputs || []).filter((_, itemIndex) => itemIndex !== index)
+    invalidateOutputValidation()
+  }
+
+  function invalidateOutputValidation(): void {
+    // Diagnostics describe the previous snapshot; execution validates again.
+    issues.value = []
+    error.value = ''
+    runMessage.value = ''
   }
 
   function updateWorkflowOutput(index: number, field: keyof WorkflowOutputDefinition, value: unknown): void {
     if (!selected.value?.outputs?.[index]) return
     const outputs = [...selected.value.outputs]
     outputs[index] = { ...outputs[index], [field]: value }
+    if (field === 'type') outputs[index].primitiveType = String(value)
+    if (field === 'presentation') outputs[index].semanticType = value === 'download' ? 'file' : value === 'json' || value === 'table' ? 'json' : 'text'
     selected.value.outputs = outputs
+    invalidateOutputValidation()
   }
 
   function updateWorkflowInputDefinition(index: number, field: keyof WorkflowInputDefinition, value: unknown): void {

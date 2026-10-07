@@ -22,5 +22,14 @@ export function defaultWorkflowInputValue(input: WorkflowInputDefinition): unkno
 }
 
 export function workflowSnapshot(workflow: unknown): string {
-  return workflow ? JSON.stringify(workflow) : ''
+  if (!workflow) return ''
+
+  function sortKeys(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sortKeys)
+    if (!value || typeof value !== 'object') return value
+    const record = value as Record<string, unknown>
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortKeys(record[key])]))
+  }
+
+  return JSON.stringify(sortKeys(workflow))
 }

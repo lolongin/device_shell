@@ -39,6 +39,41 @@ def test_device_for_each_runs_child_per_device_and_continues_after_failure() -> 
     assert result.outputs["failed"] == 1
 
 
+def test_device_for_each_downstream_body_rebinds_target_and_session_per_device() -> None:
+    calls = []
+
+    async def child(action_id, inputs, context, report):
+        calls.append((action_id, inputs["device_id"], context.workflow_run.device_id, context.invocation.context["target"].get("session_id")))
+        if action_id == "device.wait_online":
+            return {"status": "succeeded", "session_id": f"session-{inputs['device_id']}"}
+        return {"status": "succeeded"}
+
+    invocation = ActivityInvocation(
+        "device.for_each", "inv-1", "run-1",
+        inputs={
+            "devices": ["router-1", "router-2"],
+            "action_steps": [
+                {"id": "connect", "action_id": "device.wait_online", "action_inputs": {}},
+                {"id": "command", "action_id": "terminal.command", "action_inputs": {"command": "display version"}},
+            ],
+        },
+    )
+
+    result = asyncio.run(DeviceForEachActivityHandler(child).execute(
+        invocation,
+        ActivityContext(WorkflowRun("run-1", "wf", "1", "SIM-TERMINAL"), invocation),
+        lambda _event: None,
+    ))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert calls == [
+        ("device.wait_online", "router-1", "router-1", None),
+        ("terminal.command", "router-1", "router-1", "session-router-1"),
+        ("device.wait_online", "router-2", "router-2", None),
+        ("terminal.command", "router-2", "router-2", "session-router-2"),
+    ]
+
+
 def test_expression_evaluator_supports_bounded_boolean_expression() -> None:
     assert evaluate_expression("inputs.version < 10 and inputs.ready", {"inputs": {"version": 8, "ready": True}}) is True
 
@@ -183,6 +218,36 @@ def test_for_each_runs_child_action_for_each_item() -> None:
     assert result.status == ActivityStatus.SUCCEEDED
     assert result.outputs["count"] == 2
     assert [item["item"] for item in calls] == ["a", "b"]
+
+
+def test_for_each_runs_graph_steps_for_each_item() -> None:
+    calls: list[dict[str, object]] = []
+
+    async def child(action_id, inputs, context, report):
+        calls.append({"action_id": action_id, **inputs})
+        return {"status": "completed", "key": inputs["key"]}
+
+    invocation = ActivityInvocation(
+        "loop.for_each",
+        "inv-1",
+        "run-1",
+        inputs={
+            "items": ["a", "b"],
+            "action_steps": [
+                {"id": "save", "action_id": "result.save", "action_inputs": {"key": "${item}"}},
+            ],
+        },
+    )
+    result = asyncio.run(
+        ForEachActivityHandler(child).execute(
+            invocation,
+            ActivityContext(WorkflowRun("run-1", "wf", "1", "device-1"), invocation),
+            lambda _event: None,
+        )
+    )
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert [item["key"] for item in calls] == ["a", "b"]
 
 
 def test_for_each_reports_failed_item_index() -> None:
@@ -404,6 +469,40 @@ def test_until_activity_stops_when_condition_matches() -> None:
     result = asyncio.run(UntilActivityHandler(child).execute(invocation, ActivityContext(WorkflowRun("run-1", "wf", "1", "device-1"), invocation), lambda _event: None))
     assert result.status == ActivityStatus.SUCCEEDED
     assert result.outputs["iterations"] == 2
+
+
+def test_until_activity_runs_graph_steps_until_condition_matches() -> None:
+    calls = 0
+
+    async def child(_action_id, inputs, _context, _report):
+        nonlocal calls
+        calls += 1
+        return {"status": "succeeded" if calls == 2 else "running", "iteration": inputs["iteration"]}
+
+    invocation = ActivityInvocation(
+        "loop.until",
+        "inv-1",
+        "run-1",
+        inputs={
+            "condition": "result.status == 'succeeded'",
+            "max_iterations": 4,
+            "interval_seconds": 0,
+            "action_steps": [
+                {"id": "probe", "action_id": "device.info", "action_inputs": {"iteration": "${iteration}"}},
+            ],
+        },
+    )
+    result = asyncio.run(
+        UntilActivityHandler(child).execute(
+            invocation,
+            ActivityContext(WorkflowRun("run-1", "wf", "1", "device-1"), invocation),
+            lambda _event: None,
+        )
+    )
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["iterations"] == 2
+    assert calls == 2
 
 
 def test_until_activity_runs_until_max_iterations_when_condition_is_false() -> None:

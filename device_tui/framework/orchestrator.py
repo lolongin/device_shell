@@ -15,6 +15,7 @@ from .conditions import evaluate_rules
 from .expression import evaluate_expression
 from .resources import ResourceCoordinator, ResourceLease, ResourceRequest
 from .runtime import WorkflowRuntime
+from .targets import bind_device_target, device_id_value
 
 
 class TaskInputResolutionError(ValueError):
@@ -426,6 +427,7 @@ class TaskOrchestrator:
         if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, values):
             return node.id, "skipped", {"status": "skipped", "reason": "condition_false"}, None, None
         node_inputs = self._resolve_node_inputs(node, task.inputs, values, context=task.context)
+        node_device, node_context = self._node_target(task, node_inputs)
         definition = self.workflows.build(node.workflow_id, node_inputs)
         max_attempts = max(1, min(5, int(node.retry_policy.get("max_attempts", 1) or 1)))
         max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
@@ -437,9 +439,9 @@ class TaskOrchestrator:
                     await self._sleep(backoff_seconds)
                 child = self.runtime.start(
                     definition,
-                    device_id=task.device_id,
+                    device_id=node_device,
                     context={
-                        **task.context,
+                        **node_context,
                         "task_run_id": task.id,
                         "node_id": node.id,
                         "inputs": node_inputs,
@@ -654,6 +656,7 @@ class TaskOrchestrator:
                     task = self._save(replace(task, outputs=dict(outputs), status=TaskRunStatus.RUNNING))
                     continue
                 node_inputs = self._resolve_node_inputs(node, task.inputs, outputs, context=task.context)
+                node_device, node_context = self._node_target(task, node_inputs)
                 definition = self.workflows.build(node.workflow_id, node_inputs)
                 max_attempts = max(1, min(5, int(node.retry_policy.get("max_attempts", 1) or 1)))
                 max_iterations = max(1, min(20, int(node.repeat_policy.get("max_iterations", 1) or 1)))
@@ -666,13 +669,13 @@ class TaskOrchestrator:
                             await self._sleep(backoff_seconds)
                         child = self.runtime.start(
                             definition,
-                            device_id=task.device_id,
+                            device_id=node_device,
                             run_id=(
                                 str(task.context.get("orchestrator.child_run_id") or "") or None
                                 if len(plan.nodes) == 1 and _attempt == 0 and _iteration == 0 else None
                             ),
                             context={
-                                **task.context,
+                                **node_context,
                                 "task_run_id": task.id,
                                 "node_id": node.id,
                                 "inputs": node_inputs,
@@ -832,24 +835,46 @@ class TaskOrchestrator:
         context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         context_values = dict(context or {})
+        target_values = context_values.get("target")
+        current_device_id = (
+            str(target_values.get("device_id") or "").strip()
+            if isinstance(target_values, Mapping) else ""
+        )
         device_values = (
             {"device": context_values["device"]}
             if isinstance(context_values.get("device"), Mapping)
             else {}
         )
+        body_steps = node.input_mapping.get("action_steps", ())
+        body_roots = {
+            str(step.get("id")) for step in body_steps if isinstance(step, Mapping)
+        }
+        for step in body_steps:
+            if isinstance(step, Mapping) and step.get("action_id") == "variable.set":
+                body_roots.add(str(step.get("action_inputs", {}).get("name") or ""))
         return cls._resolve_inputs(
             node.input_mapping,
             {
                 **inputs,
                 **outputs,
                 **device_values,
+                "device_id": current_device_id,
                 "inputs": dict(inputs),
                 "outputs": dict(outputs),
                 "context": context_values,
             },
-            deferred_reference_roots=cls._deferred_reference_roots(node),
+            deferred_reference_roots=cls._deferred_reference_roots(node) | frozenset(body_roots | ({"outputs"} if body_steps else set())),
             deferred_reference_keys=("action_inputs",),
         )
+
+    @staticmethod
+    def _node_target(task: TaskRun, inputs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        target = task.context.get("target")
+        current = str(target.get("device_id") or task.device_id) if isinstance(target, Mapping) else task.device_id
+        selected = device_id_value(inputs["device_id"]) if inputs.get("device_id") else current
+        if "device_id" in inputs:
+            inputs["device_id"] = selected
+        return selected, bind_device_target(task.context, selected)
 
     @staticmethod
     def _deferred_reference_roots(node: WorkflowNode) -> frozenset[str]:

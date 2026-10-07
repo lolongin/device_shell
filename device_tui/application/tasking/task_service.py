@@ -507,6 +507,7 @@ class TaskService:
                     "id": definition.id,
                     "version": definition.version,
                     "name": str(getattr(definition, "name", "") or ""),
+                    "outputs": list(metadata.get("workflow_outputs") or ()),
                     "states": [
                         {
                             "id": state.id,
@@ -534,20 +535,40 @@ class TaskService:
         # labels and dependency-derived terminal flags to the renderer.
         steps = tuple(getattr(workflow, "steps", ()) or ())
         if not steps and plan is not None:
+            try:
+                ordered_nodes = tuple(plan._ordered_nodes())
+            except (AttributeError, TypeError, ValueError):
+                ordered_nodes = tuple(plan.nodes)
+            states: list[dict[str, Any]] = []
+            for node in ordered_nodes:
+                states.append({"id": node.id, "label": node.workflow_id, "terminal": True, "action_id": node.workflow_id, "operation": node.workflow_id})
+                states.extend(self._loop_body_view_states(node))
             return {
                 "id": plan.id,
                 "version": plan.version,
                 "name": str(getattr(workflow, "name", "") or ""),
-                "states": [
-                    {"id": node.id, "label": node.workflow_id, "terminal": True, "action_id": node.workflow_id, "operation": node.workflow_id}
-                    for node in plan.nodes
-                ],
+                "outputs": list(metadata.get("workflow_outputs") or ()),
+                "states": states,
             }
         if not steps:
             return {}
+        ordered_steps = steps
+        if plan is not None:
+            step_by_id = {
+                str(getattr(step, "id", "") or ""): step
+                for step in steps
+                if str(getattr(step, "id", "") or "")
+            }
+            try:
+                ordered_ids = [node.id for node in plan._ordered_nodes()]
+            except (AttributeError, TypeError, ValueError):
+                ordered_ids = []
+            if ordered_ids and all(step_id in step_by_id for step_id in ordered_ids):
+                ordered_steps = tuple(step_by_id[step_id] for step_id in ordered_ids)
+        plan_nodes = {node.id: node for node in (plan.nodes if plan is not None else ())}
         depended_on = {dependency for step in steps for dependency in getattr(step, "depends_on", ())}
         states: list[dict[str, Any]] = []
-        for step in steps:
+        for step in ordered_steps:
             action = getattr(step, "action", "")
             action_name = str(getattr(action, "name", action) or "").strip()
             states.append({
@@ -557,12 +578,41 @@ class TaskService:
                 "action_id": action_name,
                 "operation": action_name,
             })
+            node = plan_nodes.get(str(getattr(step, "id", "") or ""))
+            if node is not None:
+                states.extend(self._loop_body_view_states(node))
         return {
             "id": str(getattr(workflow, "id", "") or (plan.id if plan is not None else "workflow")),
             "version": str(getattr(workflow, "version", "") or (plan.version if plan is not None else "1")),
             "name": str(getattr(workflow, "name", "") or ""),
             "states": states,
         }
+
+    @staticmethod
+    def _loop_body_view_states(node: WorkflowNode) -> list[dict[str, Any]]:
+        """Expose compiled loop body actions as read-only child states."""
+        if node.workflow_id != "device.for_each":
+            return []
+        raw_steps = node.input_mapping.get("action_steps")
+        if not isinstance(raw_steps, (list, tuple)):
+            return []
+        states: list[dict[str, Any]] = []
+        for child in raw_steps:
+            if not isinstance(child, Mapping):
+                continue
+            child_id = str(child.get("id") or "").strip()
+            action_id = str(child.get("action_id") or "").strip()
+            if not child_id or not action_id:
+                continue
+            states.append({
+                "id": f"{node.id}.{child_id}",
+                "label": action_id,
+                "terminal": True,
+                "action_id": action_id,
+                "operation": action_id,
+                "parent_id": node.id,
+            })
+        return states
 
     def _framework_child_run(self, task_id: str) -> Any | None:
         """Return the active WorkflowRun behind a composed TaskRun."""

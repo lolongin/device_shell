@@ -12,6 +12,33 @@ WORKFLOW_INPUTS = Path("desktop/src/renderer/src/composables/useWorkflowInputs.t
 WORKFLOW_NODE_CONFIG = Path("desktop/src/renderer/src/composables/useWorkflowNodeConfig.ts")
 
 
+def test_workflow_output_remains_editable_after_validation_error() -> None:
+    script = r"""
+      import { build } from 'esbuild'
+      import { createRequire } from 'node:module'
+      const result = await build({ stdin: { contents: `
+        import { ref, computed } from 'vue'
+        import { useWorkflowInputs } from './src/renderer/src/composables/useWorkflowInputs.ts'
+        const selected = ref({ outputs: [{ name: 'device_results', type: 'array', primitiveType: 'array', value: '\${save_version}' }] })
+        const issues = ref([{ code: 'reference_type_mismatch', message: 'expected array' }])
+        const error = ref('expected array')
+        const runMessage = ref('expected array')
+        const editor = useWorkflowInputs({ selected, selectedNode: ref(null), issues, error, runMessage, transferRoot: computed(() => '') })
+        editor.updateWorkflowOutput(0, 'value', '\${each.results}')
+        if (selected.value.outputs[0].value !== '\${each.results}') throw new Error('output edit was blocked')
+        if (issues.value.length || error.value || runMessage.value) throw new Error('stale validation error remains after correction')
+        editor.updateWorkflowOutput(0, 'type', 'object')
+        if (selected.value.outputs[0].primitiveType !== 'object') throw new Error('output type metadata was not updated')
+      `, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false })
+      new Function('require', result.outputFiles[0].text)(createRequire(import.meta.url))
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd="desktop", capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
 def test_workflow_studio_owns_the_full_workspace_grid() -> None:
     app = APP.read_text(encoding="utf-8") + SESSION_WORKSPACE.read_text(encoding="utf-8")
     styles = STYLES.read_text(encoding="utf-8")
@@ -78,6 +105,26 @@ def test_workflow_studio_separates_script_management_and_shows_test_output() -> 
     assert "savedScriptSnapshots" in source
     assert "hasUnsavedScriptChanges.value && !await saveWorkflowScript()" in scripts
     assert "保存并测试" in studio
+
+
+def test_workflow_switch_guard_uses_isolated_workflow_and_normalized_script_snapshots() -> None:
+    library = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
+    scripts = Path("desktop/src/renderer/src/composables/useWorkflowScripts.ts").read_text(encoding="utf-8")
+
+    select_start = library.index("function selectWorkflow(")
+    select_end = library.index("\nasync function removePublishedVersion", select_start)
+    select_source = library[select_start:select_end]
+    assert "const nextWorkflow = cloneWorkflow(item)" in select_source
+    assert "normalizeLoopUntilNodes(nextWorkflow.nodes || [])" in select_source
+    assert "selected.value = nextWorkflow" in select_source
+    assert "savedWorkflowSnapshot.value = workflowSnapshot(nextWorkflow)" in select_source
+
+    load_start = scripts.index("async function loadWorkflowScripts")
+    load_end = scripts.index("\n  function openScriptStudio", load_start)
+    load_source = scripts[load_start:load_end]
+    assert "const normalizedScripts = result.scripts.map(normalizeWorkflowScript)" in load_source
+    assert "scripts.value = normalizedScripts" in load_source
+    assert "normalizedScripts.map((item) => [item.id, workflowScriptSnapshot(item)])" in load_source
 
 
 def test_workflow_script_creation_offers_named_templates() -> None:
@@ -202,6 +249,11 @@ def test_workflow_studio_manages_user_templates_and_renders_subworkflow_referenc
     assert "await desktopApi.deleteWorkflowTemplate(template.id)" in source
     assert "!item.built_in" in management
     assert "workflow-version-manager" in versions
+    assert "selectedVersionKeys" in versions
+    assert "全选发布版本" in versions
+    assert "onRemoveMany" in versions
+    assert "deleteWorkflowVersions" in source
+    assert "async function removePublishedVersions" in source
     assert "已被任务引用，可删除" in versions
     assert ':disabled="version.referenced"' not in versions
     assert "if (!selected.value || version.referenced) return" not in source
@@ -562,6 +614,8 @@ def test_workflow_canvas_renders_real_edges_and_marks_disconnected_nodes() -> No
     assert ':nodes-draggable="props.interactive !== false"' in canvas
     assert ':nodes-connectable="props.interactive !== false"' in canvas
     assert "fit-view-on-init" in canvas
+    assert "onActivated" in canvas
+    assert "watch(dimensionsReady" in canvas
     assert ".workflow-canvas-container" in source
 
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, FileUp, GitBranch, GripVertical, MoreHorizontal, Play, Plus, Redo, RotateCcw, Save, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
+import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, FileUp, GitBranch, GripVertical, LayoutPanelLeft, MoreHorizontal, Play, Plus, Redo, RotateCcw, Save, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
 import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { DeviceSummary, TaskRecord, WorkflowActionCatalogEntry, WorkflowScript } from '../types'
@@ -60,7 +60,7 @@ type NodeItem = { id: string; action_id: string; config: Record<string, unknown>
 type WorkflowInput = { name: string; type?: string; control?: string | { id: string; props?: Record<string, unknown> }; required?: boolean; default?: unknown; description?: string }
 type WorkflowOutput = { name: string; value?: unknown; type?: string; description?: string }
 type WorkflowEdge = { source: string; target: string; condition?: string; source_handle?: string }
-type WorkflowItem = { id: string; name: string; description?: string; version?: string | number; inputs?: WorkflowInput[]; outputs?: WorkflowOutput[]; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; condition?: string; source_handle?: string }> }
+type WorkflowItem = { id: string; name: string; description?: string; version?: string | number; inputs?: WorkflowInput[]; outputs?: WorkflowOutput[]; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; condition?: string; source_handle?: string }>; canvas_edges?: Array<{ source: string; target: string; source_handle?: string }> | null }
 type PublishedVersionItem = { id: string; name: string; description?: string; version: string | number; published_at?: string | null; step_count?: number; referenced?: boolean; inputs?: WorkflowInput[]; outputs?: WorkflowOutput[] }
 type WorkflowTemplate = { id: string; name: string; description?: string; built_in?: boolean; workflow?: WorkflowItem }
 type Issue = { code: string; message: string; node_id?: string }
@@ -73,6 +73,7 @@ const selected = ref<WorkflowItem | null>(null)
 const selectedNode = ref<NodeItem | null>(null)
 const rightRailMode = ref<'workflow' | 'step'>('workflow')
 const studioMode = ref<'flow' | 'scripts'>('flow')
+const catalogOpen = ref(false)
 const selectedDeviceId = ref('')
 const workflowScripts = useWorkflowScripts({
   selectedDeviceId,
@@ -112,6 +113,7 @@ const selectedDeviceIds = ref<string[]>([])
 const showCreateMenu = ref(false)
 const createMenuRef = ref<HTMLElement | null>(null)
 const workflowMoreMenuRef = ref<HTMLDetailsElement | null>(null)
+const showPublishedVersions = ref(false)
 const showCreateDialog = ref(false)
 const createBlank = ref(false)
 const createTemplateId = ref('')
@@ -215,6 +217,12 @@ let versionsRequestId = 0
 const workflowSnapshot = workflowSnapshotImpl
 
 const savedWorkflowSnapshot = ref('')
+
+function cloneWorkflow(workflow: WorkflowItem): WorkflowItem {
+  // Workflow definitions come from the JSON API; keep the selected draft isolated from the list item.
+  return JSON.parse(JSON.stringify(workflow)) as WorkflowItem
+}
+
 const workflowPersistence = useWorkflowPersistence({
   selected: selected as unknown as typeof selected,
   selectedNodeId: computed(() => selectedNode.value?.id),
@@ -229,7 +237,11 @@ const workflowPersistence = useWorkflowPersistence({
   refreshVersions: (workflowId) => refreshPublishedVersions(workflowId),
   publishedWorkflows,
   canPublish: computed(() => Boolean(selected.value?.name.trim() && !issues.value.length && (selected.value?.nodes?.length || 0) > 0)),
-  showValidationProblem: () => showValidationProblem()
+  showValidationProblem: () => showValidationProblem(),
+  onPersisted: (saved) => {
+    const nextWorkflow = saved as unknown as WorkflowItem
+    workflows.value = workflows.value.map((item) => item.id === nextWorkflow.id ? nextWorkflow : item)
+  }
 })
 
 const managementState = {
@@ -318,6 +330,7 @@ const {
   selectSubworkflowVersion,
   updateSubworkflowInput,
   resultSources,
+  deviceLoopId,
   commandReferences,
   loopUntilStopMode,
   loopUntilPattern,
@@ -335,6 +348,18 @@ const {
   updateVariableExtractMode,
   updateVariableExtractBoolean
 } = workflowNodeConfig
+const workflowOutputReferences = computed(() => {
+  void actionsRevision.value
+  return (selected.value?.nodes || [])
+    .filter((node) => node.action_id !== 'utility.condition')
+    .flatMap((node) => [
+      { reference: node.id, label: `${nodeLabel(node)} · 完整结果` },
+      ...outputFieldsForNode(node).map((field) => ({
+        reference: `${node.id}.${field.name}`,
+        label: `${nodeLabel(node)} · ${field.label}`
+      }))
+    ])
+})
 const filteredActions = computed(() => {
   void actionsRevision.value
   return filterWorkflowActions(actions, searchQuery.value)
@@ -453,7 +478,8 @@ const {
   performUndo,
   performRedo,
   applyAutoLayout,
-  handleNodePositionChange
+  handleNodePositionChange,
+  handleNodePositionsChange
 } = workflowEditor
 
 function previewCatalogAction(actionId: string): void {
@@ -524,25 +550,37 @@ async function refreshPublishedVersions(workflowId: string): Promise<void> {
 
 function selectWorkflow(item: WorkflowItem, force = false): void {
   if (!force && selected.value?.id !== item.id && hasUnsavedChanges.value && !window.confirm('当前流程有未保存修改，切换后将丢失这些修改。确定继续吗？')) return
-  normalizeLoopUntilNodes(item.nodes || [])
-  selected.value = item
+  const nextWorkflow = cloneWorkflow(item)
+  normalizeLoopUntilNodes(nextWorkflow.nodes || [])
+  selected.value = nextWorkflow
   flowTestRequestId += 1
   flowTestOpen.value = false
   flowTestRunning.value = false
   flowTestTask.value = null
   flowTestError.value = ''
-  savedWorkflowSnapshot.value = workflowSnapshot(item)
+  savedWorkflowSnapshot.value = workflowSnapshot(nextWorkflow)
   selectedNode.value = null
   selectedCatalogAction.value = null
+  showPublishedVersions.value = false
   rightRailMode.value = 'workflow'
-  initializeWorkflowInputValues(item)
+  initializeWorkflowInputValues(nextWorkflow)
   issues.value = []
   runMessage.value = ''
   confirmedRisks.value = false
-  const condition = item.nodes?.find((node) => node.action_id === 'utility.condition')
+  const condition = nextWorkflow.nodes?.find((node) => node.action_id === 'utility.condition')
   if (condition && Array.isArray(condition.config.rules)) conditionRules.value = condition.config.rules as typeof conditionRules.value
   conditionLogicalOperator.value = condition?.config.logical_operator === 'OR' ? 'OR' : 'AND'
-  void refreshPublishedVersions(item.id)
+  void refreshPublishedVersions(nextWorkflow.id)
+}
+
+function addSelectedQuickWorkflow(): void {
+  if (!selected.value) return
+  if (!publishedVersions.value.length) {
+    runMessage.value = '请先发布一个 Workflow 版本，再添加快捷入口。'
+    return
+  }
+  emit('add-quick-workflow', { workflowId: selected.value.id, name: selected.value.name })
+  runMessage.value = `已添加快捷 Workflow：${selected.value.name}`
 }
 
 async function removePublishedVersion(version: PublishedVersionItem): Promise<void> {
@@ -555,6 +593,25 @@ async function removePublishedVersion(version: PublishedVersionItem): Promise<vo
     runMessage.value = `已删除发布版本 v${version.version}`
   } catch (cause) {
     versionError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function removePublishedVersions(versions: PublishedVersionItem[]): Promise<boolean> {
+  if (!selected.value || !versions.length) return false
+  const referencedCount = versions.filter((version) => version.referenced).length
+  const referenceNotice = referencedCount ? `其中 ${referencedCount} 个版本已被任务引用，删除不会影响已创建的任务。` : ''
+  if (!window.confirm(`确定清理 ${selected.value.name} 的 ${versions.length} 个发布版本吗？${referenceNotice}此操作不可撤销。`)) return false
+  try {
+    const result = await desktopApi.deleteWorkflowVersions(selected.value.id, versions.map((version) => version.version))
+    await refreshPublishedVersions(selected.value.id)
+    const failedCount = result.failed_versions?.length || 0
+    runMessage.value = failedCount
+      ? `已清理 ${result.deleted_versions.length} 个发布版本，${failedCount} 个版本未找到`
+      : `已清理 ${result.deleted_versions.length} 个发布版本`
+    return true
+  } catch (cause) {
+    versionError.value = cause instanceof Error ? cause.message : String(cause)
+    throw cause
   }
 }
 
@@ -713,7 +770,94 @@ function showWorkflowSettings(): void {
   rightRailMode.value = 'workflow'
 }
 
+const WORKFLOW_INPUT_NODE = '__workflow_input__'
+const WORKFLOW_RESULT_NODE = '__workflow_result__'
+
+function inferredCanvasEdges(workflow: WorkflowItem): Array<{ source: string; target: string; source_handle?: string }> {
+  const nodes = workflow.nodes || []
+  if (!nodes.length) return [{ source: WORKFLOW_INPUT_NODE, target: WORKFLOW_RESULT_NODE }]
+  const edges = workflow.edges || []
+  const incoming = new Set(edges.map((edge) => edge.target))
+  const outgoing = new Set(edges.map((edge) => edge.source))
+  return [
+    ...nodes.filter((node) => !incoming.has(node.id)).map((node) => ({ source: WORKFLOW_INPUT_NODE, target: node.id })),
+    ...nodes.filter((node) => !outgoing.has(node.id)).map((node) => ({ source: node.id, target: WORKFLOW_RESULT_NODE }))
+  ]
+}
+
+function ensureCanvasEdges(workflow: WorkflowItem): Array<{ source: string; target: string; source_handle?: string }> {
+  if (workflow.canvas_edges == null) workflow.canvas_edges = inferredCanvasEdges(workflow)
+  return workflow.canvas_edges
+}
+
+function connectCanvasEdge(source: string, target: string, sourceHandle?: string): void {
+  if (!selected.value) return
+  const isLoopExitToResult = target === WORKFLOW_RESULT_NODE && sourceHandle === 'loop-exit'
+  if (source === WORKFLOW_INPUT_NODE || target === WORKFLOW_RESULT_NODE) {
+    const isValidInputConnection = source === WORKFLOW_INPUT_NODE
+      && (target === WORKFLOW_RESULT_NODE || selected.value.nodes?.some((node) => node.id === target))
+    const sourceNode = selected.value.nodes?.find((node) => node.id === source)
+    const isValidResultConnection = target === WORKFLOW_RESULT_NODE
+      && Boolean(sourceNode)
+      && (!isLoopExitToResult || ['device.for_each', 'loop.for_each', 'loop.until'].includes(sourceNode?.action_id || ''))
+    if (!isValidInputConnection && !isValidResultConnection) return
+    const canvasEdges = ensureCanvasEdges(selected.value)
+    if (!canvasEdges.some((edge) => edge.source === source && edge.target === target)) {
+      selected.value.canvas_edges = [...canvasEdges, { source, target, source_handle: isLoopExitToResult ? 'loop-exit' : undefined }]
+    }
+    return
+  }
+  addEdge(source, target, sourceHandle)
+}
+
+function disconnectCanvasEdge(edge: { id: string; source: string; target: string }): void {
+  if (!selected.value) return
+  if (edge.source === WORKFLOW_INPUT_NODE || edge.target === WORKFLOW_RESULT_NODE) {
+    selected.value.canvas_edges = ensureCanvasEdges(selected.value)
+      .filter((item) => item.source !== edge.source || item.target !== edge.target)
+    return
+  }
+  const workflowEdge = (selected.value.edges || []).find((item) => {
+    const sourceNode = (selected.value?.nodes || []).find((node) => node.id === item.source)
+    const handle = item.source_handle || (sourceNode?.action_id === 'device.for_each' ? 'loop-body' : 'default')
+    return `${item.source}-${handle}-${item.target}` === edge.id
+  })
+  if (workflowEdge) selected.value.edges = (selected.value.edges || []).filter((item) => item !== workflowEdge)
+}
+
+function updateCanvasEdge(update: { id: string; source: string; target: string; nextSource: string; nextTarget: string }): void {
+  if (!selected.value) return
+  const isBoundary = update.source === WORKFLOW_INPUT_NODE || update.target === WORKFLOW_RESULT_NODE
+  if (!isBoundary) return
+  const validInput = update.nextSource === WORKFLOW_INPUT_NODE
+    && (update.nextTarget === WORKFLOW_RESULT_NODE || selected.value.nodes?.some((node) => node.id === update.nextTarget))
+  const nextSourceNode = selected.value.nodes?.find((node) => node.id === update.nextSource)
+  const wasLoopExit = ensureCanvasEdges(selected.value).some((edge) => edge.source === update.source && edge.target === update.target && edge.source_handle === 'loop-exit')
+  const validResult = update.nextTarget === WORKFLOW_RESULT_NODE
+    && Boolean(nextSourceNode)
+    && (!wasLoopExit || ['device.for_each', 'loop.for_each', 'loop.until'].includes(nextSourceNode?.action_id || ''))
+  if (!validInput && !validResult) return
+  const remaining = ensureCanvasEdges(selected.value)
+    .filter((edge) => edge.source !== update.source || edge.target !== update.target)
+  if (!remaining.some((edge) => edge.source === update.nextSource && edge.target === update.nextTarget)) {
+    remaining.push({ source: update.nextSource, target: update.nextTarget, source_handle: wasLoopExit ? 'loop-exit' : undefined })
+  }
+  selected.value.canvas_edges = remaining
+}
+
 function showStepSettings(nodeId = ''): void {
+  if (nodeId === '__workflow_input__') {
+    if (flowTestOpen.value) closeFlowTestPanel()
+    workflowInputsExpanded.value = true
+    rightRailMode.value = 'workflow'
+    return
+  }
+  if (nodeId === '__workflow_result__') {
+    if (flowTestOpen.value) closeFlowTestPanel()
+    workflowOutputsExpanded.value = true
+    rightRailMode.value = 'workflow'
+    return
+  }
   const node = selected.value?.nodes?.find((item) => item.id === nodeId)
   if (node) {
     selectedCatalogAction.value = null
@@ -825,7 +969,7 @@ const requiredConfigByAction: Record<string, string[]> = {
   'file.upload': ['source'],
   'file.download': ['source', 'destination'],
   'loop.for_each': ['items', 'action_id'],
-  'device.for_each': ['devices', 'action_id'],
+  'device.for_each': ['devices'],
   'loop.until': ['action_id', 'condition'],
   'workflow.call': ['workflow_id', 'version'],
   'terminal.wait': ['pattern'],
@@ -955,7 +1099,7 @@ watch(
   <section class="workflow-library" aria-label="Workflow Library">
     <header class="workflow-library-header">
       <div class="workflow-brand"><span class="workflow-brand-mark"><Workflow :size="17" /></span><div><strong>Workflow Studio</strong><small>低代码自动化工作台</small></div></div>
-      <div class="workflow-library-header-actions"><span v-if="hasUnsavedChanges || hasUnsavedScriptChanges" class="workflow-dirty-state">未保存修改</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" class="workflow-run-header-button" :disabled="!selected || !publishedVersions.length" title="添加当前 Workflow 到快捷发送" @click="selected && emit('add-quick-workflow', { workflowId: selected.id, name: selected.name })"><Plus :size="14" />添加快捷</button><button type="button" title="关闭" @click="requestClose"><X :size="16" /></button></div>
+      <div class="workflow-library-header-actions"><span v-if="hasUnsavedChanges || hasUnsavedScriptChanges" class="workflow-dirty-state">未保存修改</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" @click="requestClose"><X :size="16" /></button></div>
     </header>
     <div class="workflow-library-toolbar">
       <div class="toolbar-group toolbar-group-primary">
@@ -970,20 +1114,23 @@ watch(
           </div>
         </div>
         <button type="button" :class="{ 'studio-mode-active': studioMode === 'scripts' }" @click="openScriptStudio()"><Code2 :size="14" />脚本</button>
+        <button type="button" :class="{ 'studio-mode-active': catalogOpen }" :aria-pressed="catalogOpen" title="显示或隐藏节点库" @click="catalogOpen = !catalogOpen"><LayoutPanelLeft :size="14" />节点库</button>
         <select v-model="taskGoal" class="task-goal" aria-label="任务目标"><option>检查设备状态</option><option>批量执行操作</option><option>采集设备信息</option><option>上传文件</option><option>验证配置</option><option>执行实验流程</option><option>自定义流程</option></select>
       </div>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <div class="toolbar-group toolbar-group-secondary">
         <button type="button" class="icon-toolbar-button" :disabled="!workflowHistory.canUndo.value" @click="performUndo" title="撤销 (Ctrl+Z)" aria-label="撤销"><Undo :size="14" /></button>
         <button type="button" class="icon-toolbar-button" :disabled="!workflowHistory.canRedo.value" @click="performRedo" title="重做 (Ctrl+Shift+Z)" aria-label="重做"><Redo :size="14" /></button>
-        <button type="button" :disabled="!selected || !selected.nodes || selected.nodes.length === 0" @click="applyAutoLayout" title="自动布局"><GitBranch :size="14" />自动布局</button>
         <details ref="workflowMoreMenuRef" class="workflow-more-menu" @click="closeWorkflowMoreMenu">
           <summary><MoreHorizontal :size="14" />更多操作</summary>
           <div class="workflow-more-popover">
             <span class="workflow-more-heading">流程</span>
+            <button type="button" :disabled="!selected || !selected.nodes || selected.nodes.length === 0" @click="applyAutoLayout"><GitBranch :size="14" />自动布局</button>
             <button type="button" :disabled="importing" @click="importWorkflow"><Braces :size="14" />{{ importing ? '导入中…' : '导入流程' }}</button>
             <button type="button" :disabled="!selected" @click="duplicateWorkflow"><Copy :size="14" />复制流程</button>
             <button type="button" :disabled="!selected" @click="saveCurrentAsTemplate"><Save :size="14" />保存为模板</button>
+            <button type="button" :disabled="!selected" @click="addSelectedQuickWorkflow"><Plus :size="14" />添加快捷</button>
+            <button type="button" class="workflow-more-danger" :disabled="!selected" @click="remove"><Trash2 :size="14" />删除当前流程</button>
             <span class="workflow-more-heading">导出与分享</span>
             <button type="button" :disabled="!selected" @click="exportWorkflow('yaml')"><Download :size="14" />导出 YAML</button>
             <button type="button" :disabled="!selected" @click="exportWorkflow('json')"><Braces :size="14" />导出 JSON</button>
@@ -998,11 +1145,15 @@ watch(
       </div>
       <div class="workflow-run-target"><WorkflowTargetPicker v-model="selectedDeviceIds" :devices="workflowTargetOptions" /></div>
       <div class="toolbar-group toolbar-group-actions">
-        <button class="flow-test-action" type="button" :disabled="!canStartFlowTest" @click="testFlowInEditor"><Play :size="14" />{{ flowTestRunning ? '测试运行中…' : '测试运行' }}</button>
-        <button class="run-action" type="button" :disabled="!canStartRun" @click="requestRunPreview"><Play :size="14" />{{ running ? '启动中…' : '执行预览' }}</button>
-        <button class="secondary-run-button" type="button" :disabled="!canRun" @click="runDraft">测试草稿</button>
+        <details class="workflow-run-menu">
+          <summary><Play :size="14" />运行<ChevronDown :size="12" /></summary>
+          <div class="workflow-run-popover">
+            <button class="flow-test-action" type="button" :disabled="!canStartFlowTest" @click="testFlowInEditor"><Play :size="13" />{{ flowTestRunning ? '测试运行中…' : '测试运行' }}</button>
+            <button class="run-action" type="button" :disabled="!canStartRun" @click="requestRunPreview"><Play :size="13" />{{ running ? '启动中…' : '执行预览' }}</button>
+            <button class="secondary-run-button" type="button" :disabled="!canRun" @click="runDraft"><Play :size="13" />测试草稿</button>
+          </div>
+        </details>
         <button class="primary-action" type="button" :disabled="!canPublish" @click="publish"><Play :size="14" />发布</button>
-        <button class="danger-action" type="button" :disabled="!selected" @click="remove"><Trash2 :size="14" />删除</button>
       </div>
     </div>
     <WorkflowManagementDialogs
@@ -1036,8 +1187,11 @@ watch(
           <strong>{{ item.name }}</strong><small>{{ item.description || '暂无描述' }}</small><em>v{{ item.version || '草稿' }}</em>
         </button>
         <p v-if="!loading && !workflows.length" class="workflow-empty-list">还没有流程<br /><span>点击“新建流程”开始</span></p>
+        <button v-if="selected" type="button" class="workflow-version-toggle" :aria-expanded="showPublishedVersions" @click="showPublishedVersions = !showPublishedVersions">
+          <span><ChevronDown :size="13" :class="{ rotated: showPublishedVersions }" />发布版本</span><small>{{ publishedVersions.length }}</small>
+        </button>
         <WorkflowVersionManager
-          v-if="selected"
+          v-if="selected && showPublishedVersions"
           :versions="publishedVersions"
           :loading="versionsLoading"
           :error="versionError"
@@ -1046,9 +1200,10 @@ watch(
           :on-restore="restorePublishedVersion"
           :on-save-action="openWorkflowCustomActionDialog"
           :on-remove="removePublishedVersion"
+          :on-remove-many="removePublishedVersions"
         />
       </aside>
-      <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step' }" :style="{ '--workflow-catalog-width': `${workflowCatalogWidth}px`, '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
+      <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step', 'catalog-collapsed': !catalogOpen }" :style="{ '--workflow-catalog-width': catalogOpen ? `${workflowCatalogWidth}px` : '0px', '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
         <WorkflowInspectorShell
           :mode="rightRailMode"
           :flow-test-open="flowTestOpen"
@@ -1098,6 +1253,7 @@ watch(
               :update-workflow-output="(index, key, value) => updateWorkflowOutput(index, key as keyof WorkflowOutput, value)"
               :remove-workflow-output="removeWorkflowOutput"
               :add-workflow-output="addWorkflowOutput"
+              :output-references="workflowOutputReferences"
               :update-workflow-input="updateWorkflowInput"
               :choose-workflow-runtime-file="chooseWorkflowRuntimeFile"
               :on-open-transfer-settings="() => { workspace.transferPanelOpen = true }"
@@ -1115,6 +1271,7 @@ watch(
           :workflow-inputs="selected.inputs || []"
           :command-references="commandReferences"
           :result-sources="resultSources"
+          :device-loop-id="deviceLoopId"
           :scripts="scripts"
           :actions="actions"
           :node-options="selectedNode ? nodeOptions(selectedNode.id).map((node) => ({ id: node.id, label: nodeLabel(node) })) : []"
@@ -1175,6 +1332,7 @@ watch(
           </template>
         </WorkflowInspectorShell>
         <WorkflowCatalogPanel
+          v-if="catalogOpen"
           v-model:search-query="searchQuery"
           :actions="filteredActions"
           :groups="groupedActions"
@@ -1198,11 +1356,14 @@ watch(
           :issues="issues"
           :interactive="canvasInteractive"
           :on-toggle-interactive="toggleCanvasInteractive"
+          :on-open-catalog="() => { catalogOpen = true }"
           :on-node-select="showStepSettings"
-          :on-connect="addEdge"
+          :on-connect="connectCanvasEdge"
           :on-node-add="addCanvasNode"
-          :on-disconnect="(edgeId) => { const edge = (selected?.edges || []).find((item) => `${item.source}-${item.source_handle || 'default'}-${item.target}` === edgeId); if (edge && selected) selected.edges = (selected.edges || []).filter((item) => item !== edge) }"
+          :on-disconnect="disconnectCanvasEdge"
+          :on-edge-update="updateCanvasEdge"
           :on-node-position-change="handleNodePositionChange"
+          :on-node-positions-change="handleNodePositionsChange"
         />
         <div
           class="workflow-properties-resizer"
@@ -1410,6 +1571,8 @@ watch(
 .canvas-toolbar-title strong { color: #e2e8f0; font-size: 13px; }
 .canvas-toolbar-title span { padding-left: 8px; border-left: 1px solid rgba(100, 116, 139, .35); }
 .canvas-toolbar-actions { display: inline-flex; align-items: center; gap: 10px; }
+.canvas-add-step { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 5px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: var(--workflow-muted); background: var(--workflow-surface); cursor: pointer; font-size: 10px; }
+.canvas-add-step:hover { border-color: var(--workflow-focus); color: var(--workflow-text); background: #1b365a; }
 .canvas-interactive-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid rgba(100, 116, 139, .35); border-radius: 6px; color: rgba(226, 232, 240, .55); background: rgba(15, 23, 42, .46); font-size: 10px; cursor: pointer; }
 .canvas-interactive-toggle:hover, .canvas-interactive-toggle.active { border-color: rgba(96, 165, 250, .55); color: #bfdbfe; background: rgba(37, 99, 235, .16); }
 .canvas-toolbar-hint { color: rgba(226, 232, 240, .42); }
@@ -1436,6 +1599,7 @@ watch(
 :global(:root[data-theme="light"]) .workflow-dirty-state { color: #92400e; }
 :global(:root[data-theme="light"]) .workflow-branch-notice { color: #92400e; background: #fffbeb; }
 :global(:root[data-theme="light"]) .canvas-toolbar-title strong { color: #172033; }
+:global(:root[data-theme="light"]) .canvas-add-step:hover { border-color: #93c5fd; color: #1d4ed8; background: #eff6ff; }
 :global(:root[data-theme="light"]) .canvas-interactive-toggle { color: #475569; background: #ffffff; border-color: #cbd5e1; }
 
 
@@ -1547,6 +1711,102 @@ watch(
 .canvas-toolbar-title strong { font-size: 12px; }
 .canvas-toolbar-actions { gap: 7px; }
 .canvas-toolbar-hint { display: none; }
+
+/* Compact studio shell: keep high frequency actions visible and defer the rest. */
+.workflow-library-header { min-height: 56px; padding: 10px 18px; }
+.workflow-library-toolbar { min-height: 46px; padding: 6px 18px; }
+.workflow-library-body { grid-template-columns: 208px minmax(0, 1fr); }
+.workflow-library-body > aside { padding: 12px 8px; }
+.workflow-version-toggle {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 30px;
+  margin-top: 12px !important;
+  padding: 5px 8px !important;
+  border-top: 1px solid rgba(100, 116, 139, .24) !important;
+  border-radius: 0 !important;
+  color: var(--workflow-muted);
+  background: transparent;
+  font-size: 10px;
+}
+.workflow-version-toggle > span { display: inline-flex; align-items: center; gap: 5px; }
+.workflow-version-toggle svg { transition: transform .16s ease; }
+.workflow-version-toggle svg.rotated { transform: rotate(180deg); }
+.workflow-version-toggle small { color: var(--workflow-subtle); font-size: 10px; }
+.workflow-version-toggle { background: var(--workflow-surface-muted); }
+.workflow-version-toggle:hover { color: var(--workflow-text); background: var(--workflow-surface); }
+.workflow-version-manager { margin-top: 2px; padding-top: 8px; border-top: 0; }
+.workflow-more-danger { color: #fca5a5 !important; }
+.workflow-more-danger:hover:not(:disabled) { color: #fecaca !important; background: rgba(127, 29, 29, .24) !important; }
+.workflow-run-menu { position: relative; }
+.workflow-run-menu > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid #14b8a6;
+  border-radius: 6px;
+  color: #f0fdfa;
+  background: #0f766e;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-size: 11px;
+}
+.workflow-run-menu > summary::-webkit-details-marker { display: none; }
+.workflow-run-menu > summary:hover,
+.workflow-run-menu[open] > summary { background: #115e59; }
+.workflow-run-popover {
+  position: absolute;
+  z-index: 90;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  gap: 4px;
+  min-width: 152px;
+  padding: 6px;
+  border: 1px solid var(--workflow-border);
+  border-radius: 7px;
+  background: var(--workflow-surface);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, .3);
+}
+.workflow-run-popover button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  text-align: left;
+  white-space: nowrap;
+}
+.workflow-run-popover .flow-test-action,
+.workflow-run-popover .run-action,
+.workflow-run-popover .secondary-run-button { color: var(--workflow-text) !important; background: transparent !important; border-color: transparent !important; }
+.workflow-run-popover button:hover:not(:disabled) { border-color: var(--workflow-border) !important; background: var(--workflow-surface-muted) !important; }
+.workflow-run-popover button:disabled { opacity: .45; }
+.workflow-action-catalog .action-tile { min-height: 42px; padding: 7px; }
+.workflow-action-catalog .action-tile { background: var(--workflow-surface); }
+.workflow-action-catalog .action-tile:hover,
+.workflow-action-catalog .action-tile[aria-pressed="true"] { background: #1b365a; }
+.workflow-action-catalog .action-tile small { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-height: 1.2; }
+.workflow-action-catalog .node-library-hint { display: none; }
+.workflow-search { background: var(--workflow-surface-input); }
+.workflow-properties { background: var(--workflow-surface-muted); }
+.workflow-studio-grid > .workflow-canvas { background: var(--workflow-bg); }
+.canvas-interactive-toggle { background: var(--workflow-surface); }
+.canvas-interactive-toggle:hover,
+.canvas-interactive-toggle.active { background: #1b365a; }
+.workflow-run-header-button { background: #193252; }
+.workflow-run-header-button:hover { background: #23456e; }
+
+@media (max-width: 980px) {
+  .workflow-library-body { grid-template-columns: 184px minmax(0, 1fr); }
+}
 
 @media (max-width: 1180px) {
   .workflow-library-toolbar { padding-left: 14px; padding-right: 14px; }
@@ -1667,5 +1927,26 @@ watch(
   }
   .workflow-studio-grid > .workflow-action-catalog { height: 100%; max-height: min(34vh, 260px); }
   .workflow-studio-grid > .workflow-catalog-resizer { display: none; }
+}
+
+/* When the catalog is closed, give the canvas the entire center column. */
+.workflow-library-body > main.workflow-studio-grid.catalog-collapsed {
+  grid-template-areas: 'canvas inspector';
+  grid-template-columns: minmax(0, 1fr) var(--workflow-properties-width, 312px);
+}
+.workflow-library-body > main.workflow-studio-grid.catalog-collapsed > .workflow-catalog-resizer { display: none; }
+@media (max-width: 980px) {
+  .workflow-library-body > main.workflow-studio-grid.catalog-collapsed {
+    grid-template-areas: 'canvas' 'inspector';
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(240px, 42vh);
+  }
+}
+@media (max-width: 720px) {
+  .workflow-library-body > main.workflow-studio-grid.catalog-collapsed {
+    grid-template-areas: 'canvas' 'inspector';
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(420px, 1fr) minmax(240px, 46vh);
+  }
 }
 </style>

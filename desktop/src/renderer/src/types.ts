@@ -320,6 +320,7 @@ export interface TaskWorkflowState {
   label: string
   description?: string
   terminal?: boolean
+  parent_id?: string
   action_id?: string
   operation?: string
   expectations?: Array<{
@@ -334,6 +335,20 @@ export interface TaskWorkflowView {
   id: string
   version: string
   name?: string
+  outputs?: Array<{
+    name: string
+    value?: unknown
+    type?: string
+    primitiveType?: string
+    semanticType?: string
+    description?: string
+    presentation?: string
+    renderer?: { id?: string; props?: Record<string, unknown> }
+    mime_type?: string
+    mimeType?: string
+    download_name?: string
+    downloadName?: string
+  }>
   states: TaskWorkflowState[]
 }
 

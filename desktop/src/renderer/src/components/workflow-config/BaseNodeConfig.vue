@@ -20,8 +20,8 @@ const emit = defineEmits<{
   <div class="base-node-config">
     <div class="panel-heading">
       <div>
-        <strong>{{ node.action_id === 'variable.set' ? '设置变量' : '步骤设置' }}</strong>
-        <small v-if="node.action_id !== 'variable.set' && selectedAction">{{ selectedAction.label }}</small>
+        <strong>{{ selectedAction ? selectedAction.label : (node.action_id === 'variable.set' ? '设置变量' : node.action_id) }}</strong>
+        <small>步骤配置</small>
       </div>
       <span class="properties-node-index">{{ node.id }}</span>
     </div>
@@ -33,7 +33,7 @@ const emit = defineEmits<{
       </label>
 
       <label>
-        上游步骤
+        前置节点
         <select :value="predecessorId" @change="emit('update:predecessorId', ($event.target as HTMLSelectElement).value)">
           <option value="">无（流程起点）</option>
           <option v-for="n in nodeOptions" :key="n.id" :value="n.id">{{ n.label }}</option>
@@ -41,7 +41,7 @@ const emit = defineEmits<{
       </label>
 
       <label>
-        下游步骤
+        后续节点
         <select :value="successorId" @change="emit('update:successorId', ($event.target as HTMLSelectElement).value)">
           <option value="">无（流程终点）</option>
           <option v-for="n in nodeOptions" :key="`${n.id}-successor`" :value="n.id">{{ n.label }}</option>

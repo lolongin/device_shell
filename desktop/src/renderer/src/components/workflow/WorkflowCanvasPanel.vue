@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { GitBranch, Hand, MousePointer2 } from 'lucide-vue-next'
+import { GitBranch, Hand, MousePointer2, Plus } from 'lucide-vue-next'
 import WorkflowCanvas from '../WorkflowCanvas.vue'
 
 type Workflow = {
@@ -11,20 +11,24 @@ defineProps<{
   workflow: Workflow
   issues: Array<{ code: string; message: string; node_id?: string }>
   interactive: boolean
+  onOpenCatalog: () => void
   onToggleInteractive: () => void
   onNodeSelect: (nodeId: string) => void
   onConnect: (source: string, target: string, sourceHandle?: string) => void
   onNodeAdd: (...args: any[]) => void
-  onDisconnect: (edgeId: string) => void
+  onDisconnect: (edge: { id: string; source: string; target: string }) => void
+  onEdgeUpdate: (update: { id: string; source: string; target: string; nextSource: string; nextTarget: string }) => void
   onNodePositionChange: (...args: any[]) => void
+  onNodePositionsChange: (...args: any[]) => void
 }>()
 </script>
 
 <template>
   <section class="workflow-canvas">
     <div class="canvas-toolbar">
-      <div class="canvas-toolbar-title"><GitBranch :size="15" /><strong>流程画布</strong><span>{{ (workflow.nodes || []).length }} 个步骤</span><span>{{ (workflow.edges || []).length }} 条连接</span></div>
+      <div class="canvas-toolbar-title"><GitBranch :size="15" /><strong>流程画布</strong><span>{{ (workflow.nodes || []).length }} 个步骤</span></div>
       <div class="canvas-toolbar-actions">
+        <button type="button" class="canvas-add-step" title="打开节点库添加步骤" @click="onOpenCatalog"><Plus :size="13" />添加步骤</button>
         <button
           type="button"
           class="canvas-interactive-toggle"
@@ -50,7 +54,9 @@ defineProps<{
         @connect="({ source, target, sourceHandle }) => onConnect(source, target, sourceHandle || undefined)"
         @node-add="onNodeAdd"
         @disconnect="onDisconnect"
+        @edge-update="onEdgeUpdate"
         @node-position-change="onNodePositionChange"
+        @node-positions-change="onNodePositionsChange"
       />
     </div>
   </section>

@@ -10,6 +10,7 @@ type Callback = (...args: any[]) => unknown
 const props = defineProps<{
   selectedCatalogAction: Action | null
   selectedNode: Node | null
+  deviceLoopId: string
   availableDevices: any[]
   workflowInputs: any[]
   commandReferences: any[]
@@ -74,6 +75,7 @@ const emit = defineEmits<{ update: [value: any]; 'update:loopItemsMode': [value:
   <WorkflowNodeProperties
     v-else-if="props.selectedNode"
     :node="props.selectedNode"
+    :device-loop-id="props.deviceLoopId"
     :available-devices="props.availableDevices"
     :workflow-inputs="props.workflowInputs"
     :command-references="props.commandReferences"

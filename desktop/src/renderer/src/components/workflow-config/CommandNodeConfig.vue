@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { Save, Trash2, Braces } from 'lucide-vue-next'
+import { Save, Braces } from 'lucide-vue-next'
 import type { NodeConfigProps, NodeConfigEmits } from './types'
 
 const props = defineProps<NodeConfigProps>()
@@ -9,10 +9,44 @@ const emit = defineEmits<NodeConfigEmits>()
 const commandEditor = ref<HTMLTextAreaElement | null>(null)
 const commandReferenceAnchor = ref<HTMLElement | null>(null)
 const showCommandReferenceMenu = ref(false)
+const commandReferenceQuery = ref('')
+const showAllCommandReferences = ref(false)
+
+const filteredCommandReferences = computed(() => {
+  const query = commandReferenceQuery.value.trim().toLocaleLowerCase()
+  const references = props.commandReferences || []
+  if (!query) return references
+  return references.filter((item) => `${item.label} ${item.reference} ${item.hint}`.toLocaleLowerCase().includes(query))
+})
+
+const compactCommandReferences = computed(() => filteredCommandReferences.value.filter((item) => {
+  const reference = item.reference
+  return reference.startsWith('inputs.') || !reference.includes('.')
+}))
+
+const visibleCommandReferences = computed(() => {
+  if (showAllCommandReferences.value || commandReferenceQuery.value.trim()) return filteredCommandReferences.value
+  return compactCommandReferences.value
+})
+
+const hiddenCommandReferenceCount = computed(() => {
+  if (showAllCommandReferences.value || commandReferenceQuery.value.trim()) return 0
+  return Math.max(0, filteredCommandReferences.value.length - compactCommandReferences.value.length)
+})
 
 function closeCommandReferenceMenuOnOutsideClick(event: PointerEvent): void {
   if (!commandReferenceAnchor.value?.contains(event.target as Node)) {
     showCommandReferenceMenu.value = false
+    commandReferenceQuery.value = ''
+    showAllCommandReferences.value = false
+  }
+}
+
+function toggleCommandReferenceMenu(): void {
+  showCommandReferenceMenu.value = !showCommandReferenceMenu.value
+  if (!showCommandReferenceMenu.value) {
+    commandReferenceQuery.value = ''
+    showAllCommandReferences.value = false
   }
 }
 
@@ -96,14 +130,16 @@ function eventValue(event: Event): string {
             :aria-expanded="showCommandReferenceMenu"
             title="在光标位置插入变量"
             @mousedown.prevent
-            @click="showCommandReferenceMenu = !showCommandReferenceMenu"
+            @click="toggleCommandReferenceMenu"
           >
             <Braces :size="13" />插入变量
           </button>
           <div v-if="showCommandReferenceMenu" class="workflow-command-reference-menu" role="menu" aria-label="选择要插入的变量">
             <small class="workflow-command-reference-title">选择引用，插入到当前光标位置</small>
+            <input v-model="commandReferenceQuery" class="workflow-command-reference-search" type="search" placeholder="搜索变量或输出字段" aria-label="搜索变量或输出字段" />
+            <small v-if="!commandReferenceQuery.trim() && compactCommandReferences.length" class="workflow-command-reference-group">常用变量</small>
             <button
-              v-for="item in commandReferences"
+              v-for="item in visibleCommandReferences"
               :key="item.reference"
               type="button"
               role="menuitem"
@@ -116,6 +152,12 @@ function eventValue(event: Event): string {
               </span>
               <code>${{ '{' }}{{ item.reference }}{{ '}' }}</code>
             </button>
+            <button v-if="hiddenCommandReferenceCount" type="button" class="workflow-command-reference-more" @mousedown.prevent @click="showAllCommandReferences = true">
+              更多字段（{{ hiddenCommandReferenceCount }}）
+            </button>
+            <small v-if="commandReferences?.length && !visibleCommandReferences.length" class="workflow-command-reference-empty">
+              没有匹配的变量或输出字段。
+            </small>
             <small v-if="!commandReferences?.length" class="workflow-command-reference-empty">
               暂无可用变量；请先连接上游步骤或定义流程输入。
             </small>
@@ -150,21 +192,24 @@ function eventValue(event: Event): string {
         <label class="workflow-inline-toggle"><input type="checkbox" :checked="Number(node.config.timeout_seconds || 0) === 0" @change="updateConfig('timeout_seconds', ($event.target as HTMLInputElement).checked ? 0 : 30)" />永不超时</label>
     </label>
 
-    <div v-if="node.config.execution_mode !== 'device'" class="workflow-command-grid">
-      <label>
-        工作目录
-        <input :value="getConfigString('cwd')" placeholder="可选，例如 D:/scripts" @input="updateConfigString('cwd', $event)" />
-      </label>
-      <label>
-        环境变量 JSON
-        <textarea
-          :value="JSON.stringify(node.config.env || {})"
-          rows="2"
-          placeholder='可选，例如 {"MODE":"prod"}'
-          @change="updateConfigJson('env', $event)"
-        />
-      </label>
-    </div>
+    <details v-if="node.config.execution_mode !== 'device'" class="workflow-command-advanced">
+      <summary><strong>高级参数</strong><span>工作目录、环境变量</span></summary>
+      <div class="workflow-command-grid">
+        <label>
+          工作目录
+          <input :value="getConfigString('cwd')" placeholder="可选，例如 D:/scripts" @input="updateConfigString('cwd', $event)" />
+        </label>
+        <label>
+          环境变量 JSON
+          <textarea
+            :value="JSON.stringify(node.config.env || {})"
+            rows="2"
+            placeholder='可选，例如 {"MODE":"prod"}'
+            @change="updateConfigJson('env', $event)"
+          />
+        </label>
+      </div>
+    </details>
 
     <div class="workflow-command-result-contract">
       <span>输出</span>
@@ -186,9 +231,6 @@ function eventValue(event: Event): string {
       <button type="button" class="connect-button" @click="emit('save-as-action')">
         <Save :size="13" />保存为自定义 Action
       </button>
-      <button class="remove-node-button" type="button" @click="emit('remove')">
-        <Trash2 :size="13" />删除步骤
-      </button>
       <button class="connect-button" type="button" @click="emit('test')">
         测试此步骤
       </button>
@@ -207,6 +249,26 @@ function eventValue(event: Event): string {
   display: grid;
   gap: 8px;
 }
+
+.workflow-command-advanced {
+  padding-top: 8px;
+  border-top: 1px solid var(--workflow-border);
+}
+
+.workflow-command-advanced summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--workflow-muted);
+  cursor: pointer;
+  font-size: 10px;
+  list-style: none;
+}
+
+.workflow-command-advanced summary::-webkit-details-marker { display: none; }
+.workflow-command-advanced summary:hover { color: var(--workflow-text); }
+.workflow-command-advanced summary span { font-weight: 400; }
 
 .workflow-command-label-row {
   display: flex;
@@ -268,6 +330,21 @@ function eventValue(event: Event): string {
   font-size: 9px;
 }
 
+.workflow-command-reference-search {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 28px;
+  padding: 6px 8px;
+  border: 1px solid var(--workflow-border);
+  border-radius: 4px;
+  color: var(--workflow-text);
+  background: var(--workflow-surface-input);
+  font: 10px inherit;
+}
+
+.workflow-command-reference-search::placeholder { color: var(--workflow-muted); }
+.workflow-command-reference-group { padding: 4px 6px 2px; color: var(--workflow-muted); font-size: 9px; }
+
 .workflow-command-reference-menu > button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -284,6 +361,13 @@ function eventValue(event: Event): string {
 
 .workflow-command-reference-menu > button:hover {
   background: var(--workflow-surface-muted);
+}
+
+.workflow-command-reference-menu > .workflow-command-reference-more {
+  justify-content: center;
+  border-color: var(--workflow-border);
+  color: var(--workflow-focus);
+  font-size: 10px;
 }
 
 .workflow-command-reference-menu > button > span {

@@ -21,7 +21,7 @@ const emit = defineEmits<{ 'update:searchQuery': [value: string] }>()
 <template>
   <section class="workflow-action-catalog">
     <div class="panel-heading">
-      <div><strong>节点库</strong><small>点击查看配置，拖入画布添加</small></div>
+      <div><strong>节点库</strong><small>拖入画布添加</small></div>
       <span class="catalog-count">{{ actions.length }}</span>
     </div>
     <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
@@ -48,6 +48,5 @@ const emit = defineEmits<{ 'update:searchQuery': [value: string] }>()
       </button>
     </div>
     <p v-if="!actions.length" class="catalog-empty">没有匹配的动作</p>
-    <p class="node-library-hint">点击查看节点配置；拖入画布创建步骤。</p>
   </section>
 </template>

@@ -7,6 +7,7 @@ from .models import WorkflowDraft
 from .catalog import ActionCatalog
 from .expression import validate_expression
 from .contract import INPUT_PRESENTATIONS, INPUT_SOURCES, INPUT_TYPES, SEMANTIC_TYPES
+from .device_loops import device_loop_bodies
 
 
 _LOOP_DISALLOWED_ACTIONS = frozenset(
@@ -216,6 +217,12 @@ def validate_workflow(
     _workflow_stack: tuple[tuple[str, int | str], ...] = (),
 ) -> ValidationResult:
     errors: list[ValidationIssue] = []; warnings: list[ValidationIssue] = []
+    try:
+        loop_bodies = device_loop_bodies(workflow)
+    except ValueError as exc:
+        errors.append(ValidationIssue("invalid_device_loop_body", str(exc)))
+        loop_bodies = {}
+    body_owners = {body_id: loop_id for loop_id, body in loop_bodies.items() for body_id in body}
     ids = {n.id for n in workflow.nodes}
     if len(ids) != len(workflow.nodes):
         seen: set[str] = set()
@@ -424,19 +431,19 @@ def validate_workflow(
                 or (isinstance(items, str) and (not items.strip() or not _is_exact_reference(items)))
             ):
                 errors.append(ValidationIssue("invalid_loop_items", "loop items must be a list or variable reference", node.id))
-            if catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS:
+            if node.id not in loop_bodies and (catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS):
                 errors.append(ValidationIssue("invalid_loop_action", "loop child action is not executable", node.id))
         if node.action_id == "device.for_each":
             devices = settings.get("devices")
             child_action = str(settings.get("action_id") or "").strip()
             if not isinstance(devices, (list, tuple, str)) or (isinstance(devices, str) and not _is_exact_reference(devices)):
                 errors.append(ValidationIssue("invalid_device_list", "devices must be a list or variable reference", node.id))
-            if catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS:
+            if node.id not in loop_bodies and (catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS):
                 errors.append(ValidationIssue("invalid_device_action", "device child action is not executable", node.id))
         if node.action_id == "loop.until":
             child_action = str(settings.get("action_id") or "").strip()
             condition = str(settings.get("condition") or "").strip()
-            if catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS:
+            if node.id not in loop_bodies and (catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS):
                 errors.append(ValidationIssue("invalid_loop_action", "loop child action is not executable", node.id))
             if not condition:
                 errors.append(ValidationIssue("invalid_loop_condition", "loop.until condition is required", node.id))
@@ -643,7 +650,7 @@ def validate_workflow(
         # older drafts, but their runtime value is always an array of IDs.
         # Normalize that contract before checking references such as
         # `${inputs.devices}` against an action expecting an array.
-        input_schema_type = "array" if legacy_type == "devices" or semantic_type == "device_list" else ("string" if legacy_type == "file" else legacy_type)
+        input_schema_type = "array" if legacy_type == "devices" or semantic_type == "device_list" else ("string" if legacy_type in {"file", "device"} else legacy_type)
         schema: Mapping[str, Any] = {"type": input_schema_type}
         if not path:
             return schema
@@ -882,7 +889,8 @@ def validate_workflow(
                             f"script input_json must be valid JSON: {exc.msg}",
                             node.id,
                         ))
-            scan(settings_to_scan, node.id, visible, input_schema)
+            local_refs = frozenset({"device", "device_id", "index"}) if node.id in body_owners else frozenset()
+            scan(settings_to_scan, node.id, visible | set(local_refs), input_schema, local_refs)
         for edge in workflow.edges:
             if edge.source == node.id: scan(edge.condition, node.id, visible | {node.id})
     output_visible = known_inputs | (ids - condition_node_ids) | {

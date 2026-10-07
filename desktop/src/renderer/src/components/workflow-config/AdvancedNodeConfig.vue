@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ActionItem, DeviceSummary, NodeItem, ResultSource } from './types'
 
-type WorkflowReference = { id?: string; nodes?: NodeItem[] }
+type WorkflowReference = { id?: string; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; source_handle?: string }> }
 type PublishedWorkflow = { id: string; name: string; version?: string | number; step_count?: number; inputs?: Array<{ name: string; required?: boolean }>; outputs?: Array<{ name: string }> }
 type ConditionRule = { field: string; operator: string; value: string }
 type ConditionTargets = { trueTarget: string; falseTarget: string }
@@ -77,7 +78,7 @@ function toggleDevice(deviceId: string, checked: boolean): void {
 }
 function updateDeviceIds(event: Event): void {
   const value = (event.target as HTMLInputElement).value
-  if (/^\$\{inputs?\.[^}]+\}$/.test(value.trim())) {
+  if (/^\$\{[^}]+\}$/.test(value.trim())) {
     props.node.config.devices = value.trim().replace('${input.', '${inputs.')
     emit('update', props.node)
     return
@@ -86,6 +87,59 @@ function updateDeviceIds(event: Event): void {
   emit('update', props.node)
 }
 const executableActions = props.actions.filter((action) => !['device.for_each', 'loop.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'workflow.call'].includes(action.id))
+const deviceBodyMode = computed(() => props.node.config.body_mode || (
+  props.workflow?.edges?.some(edge => edge.source === props.node.id)
+  && !Object.keys(props.node.config.action_inputs as Record<string, unknown> || {}).length ? 'downstream' : 'action'))
+const deviceBodyEnd = computed(() => String(props.node.config.body_end || props.node.config.loop_end || ''))
+const deviceBodyEndOptions = computed(() => {
+  const workflowNodes = props.workflow?.nodes || []
+  const workflowEdges = props.workflow?.edges || []
+  const nodeMap = new Map(workflowNodes.map((item) => [item.id, item]))
+  const outgoing = new Map<string, Array<{ source: string; target: string; source_handle?: string }>>()
+  for (const edge of workflowEdges) outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge])
+  const loopEdges = outgoing.get(props.node.id) || []
+  const exitTargets = new Set(loopEdges.filter((edge) => ['exit', 'loop-exit', 'loop_exit'].includes(String(edge.source_handle || '').toLowerCase())).map((edge) => edge.target))
+  const first = loopEdges.find((edge) => ['body', 'loop-body', 'loop_body'].includes(String(edge.source_handle || '').toLowerCase()))
+    || loopEdges.find((edge) => !['exit', 'loop-exit', 'loop_exit'].includes(String(edge.source_handle || '').toLowerCase()))
+  const options: NodeItem[] = []
+  let current = first?.target || String(props.node.config.body_start || props.node.config.loop_start || '')
+  const seen = new Set<string>()
+  while (current && nodeMap.has(current) && !seen.has(current)) {
+    seen.add(current)
+    const candidate = nodeMap.get(current)
+    if (candidate && candidate.id !== props.node.id) options.push(candidate)
+    const next = (outgoing.get(current) || [])
+    if (next.length !== 1 || exitTargets.has(next[0].target)) break
+    current = next[0].target
+  }
+  if (deviceBodyEnd.value && !options.some((item) => item.id === deviceBodyEnd.value)) {
+    const configured = nodeMap.get(deviceBodyEnd.value)
+    if (configured) options.push(configured)
+  }
+  return options
+})
+const deviceListReferences = computed(() => [
+  ...(props.workflowInputs || []).filter(input => ['array', 'devices'].includes(input.type || 'string'))
+    .map(input => ({ value: `\${inputs.${input.name}}`, label: `流程入参 · ${input.name}` })),
+  ...props.resultSources.flatMap(source => source.fields.filter(field => ['devices', 'items', 'results', 'value'].includes(field.name))
+    .map(field => ({ value: `\${${source.id}.${field.name}}`, label: `${source.label} · ${fieldLabel(field.name)}` }))),
+])
+
+function setDeviceListSource(event: Event): void {
+  const reference = (event.target as HTMLSelectElement).value
+  props.node.config.devices = reference || []
+  emit('update', props.node)
+}
+
+function setDeviceBodyEnd(event: Event): void {
+  const value = String((event.target as HTMLSelectElement).value || '').trim()
+  if (value) props.node.config.body_end = value
+  else {
+    delete props.node.config.body_end
+    delete props.node.config.loop_end
+  }
+  emit('update', props.node)
+}
 
 function actionLabel(actionId: string): string {
   return props.actions.find((action) => action.id === actionId)?.label || actionId
@@ -153,23 +207,26 @@ function fieldLabel(name: string): string {
     <template v-if="node.action_id === 'expression.evaluate'"><label>表达式<textarea :value="configString('expression')" rows="2" @input="onUpdateConfigString('expression', $event)" /></label><label>表达式上下文 JSON<textarea :value="JSON.stringify(node.config.values || {})" rows="2" @change="onUpdateConfigJson('values', $event)" /></label></template>
 
     <template v-if="node.action_id === 'device.for_each'">
-      <label>设备列表</label>
-      <label>设备 ID 或参数引用（多个用逗号分隔）<input :value="typeof node.config.devices === 'string' ? node.config.devices : selectedDeviceIds().join(', ')" placeholder="例如：router-1, router-2 或 ${input.devices}" @change="updateDeviceIds" /></label>
-      <label>选择流程参数<select aria-label="选择设备列表参数" :value="typeof node.config.devices === 'string' && node.config.devices.startsWith('${inputs.') ? node.config.devices : ''" @change="updateDeviceIds"><option value="">手动设备列表</option><option v-for="input in workflowInputs || []" :key="input.name" :value="`\${inputs.${input.name}}`">{{ input.name }} · {{ input.type || 'string' }}</option></select></label>
-      <p class="field-hint">选择参数后会插入 <code>${input.xxx}</code> 引用；参数值应为设备 ID 数组。</p>
-      <div class="device-for-each-picker">
-        <label v-for="device in availableDevices || []" :key="device.id" class="device-for-each-option">
-          <input type="checkbox" :checked="selectedDeviceIds().includes(device.id)" @change="toggleDevice(device.id, ($event.target as HTMLInputElement).checked)" />
-          <span><strong>{{ device.name || device.id }}</strong><small>{{ device.id }}</small></span>
+      <div class="device-for-each-heading">
+        <div><strong>设备列表</strong><small>选择要遍历的目标设备</small></div>
+        <span>{{ selectedDeviceIds().length }} 已选</span>
+      </div>
+      <label>设备列表<select aria-label="选择设备列表参数" :value="typeof node.config.devices === 'string' ? node.config.devices : ''" @change="setDeviceListSource"><option value="">固定设备</option><option v-for="reference in deviceListReferences" :key="reference.value" :value="reference.value">{{ reference.label }}</option><option v-if="typeof node.config.devices === 'string' && !deviceListReferences.some(item => item.value === node.config.devices)" :value="node.config.devices">{{ node.config.devices }}</option></select></label>
+      <label>设备 ID / 引用<input :value="typeof node.config.devices === 'string' ? node.config.devices : selectedDeviceIds().join(', ')" placeholder="router-1, router-2 或 ${inputs.devices}" @change="updateDeviceIds" /></label>
+      <div v-if="typeof node.config.devices !== 'string'" class="device-for-each-picker">
+        <label v-for="device in availableDevices || []" :key="device.id" class="device-for-each-option" :class="{ selected: selectedDeviceIds().includes(device.id) }">
+          <input class="device-for-each-checkbox" type="checkbox" :checked="selectedDeviceIds().includes(device.id)" @change="toggleDevice(device.id, ($event.target as HTMLInputElement).checked)" />
+          <span><strong>{{ device.name || device.id }}</strong><small>{{ device.id }}<template v-if="device.address"> · {{ device.address }}</template></small></span>
+          <em v-if="device.status">{{ device.status }}</em>
         </label>
-        <p v-if="!(availableDevices || []).length" class="field-hint">暂无设备，请先添加或导入设备。</p>
+        <p v-if="!(availableDevices || []).length" class="device-for-each-empty">暂无设备，请先添加或导入设备。</p>
       </div>
-      <div class="workflow-loop-child-hint">
-        <strong>循环体由下游节点执行</strong>
-        <span>遍历节点会把当前设备传给后面的第一个执行节点；请将“执行命令”等动作连接在此节点之后。</span>
-      </div>
-      <label v-if="node.config.action_id">兼容动作映射<select :value="node.config.action_id" @change="updateConfigValue('action_id', $event)"><option v-for="action in executableActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
-      <label>并发数<input type="number" min="1" max="32" :value="node.config.concurrency || 1" @change="updateConfigValue('concurrency', $event)" /></label>
+      <label>循环体<select :value="deviceBodyMode" @change="updateConfigValue('body_mode', $event)"><option value="downstream">沿线自动</option><option value="bounded">连线包裹</option><option value="action">指定动作</option></select></label>
+      <label v-if="deviceBodyMode !== 'action'">循环结束步骤<select :value="deviceBodyEnd" @change="setDeviceBodyEnd"><option value="">自动到末端</option><option v-for="item in deviceBodyEndOptions" :key="item.id" :value="item.id">{{ actionLabel(item.action_id) }} · {{ item.id }}</option></select><small class="field-hint">边框内按每台设备执行；结束后的连线只执行一次。</small></label>
+      <template v-if="deviceBodyMode === 'action'">
+        <label>循环动作<select :value="node.config.action_id || ''" @change="updateConfigValue('action_id', $event)"><option value="">选择动作</option><option v-for="action in executableActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
+        <label>动作参数 JSON<textarea :value="JSON.stringify(node.config.action_inputs || {})" rows="2" @change="onUpdateConfigJson('action_inputs', $event)" /></label>
+      </template>
       <label>单台失败<select :value="node.config.failure_strategy || 'continue'" @change="updateConfigValue('failure_strategy', $event)"><option value="continue">继续其他设备</option><option value="stop">停止遍历</option></select></label>
     </template>
     <template v-else-if="node.action_id === 'loop.for_each'">
@@ -207,12 +264,22 @@ function fieldLabel(name: string): string {
 </template>
 
 <style scoped>
-.device-for-each-picker { display: grid; gap: 6px; max-height: 190px; overflow: auto; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 6px; background: var(--workflow-surface-input); }
-.device-for-each-option { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
-.device-for-each-option:hover { background: rgba(59, 130, 246, .1); }
-.device-for-each-option span { display: grid; min-width: 0; gap: 1px; }
-.device-for-each-option strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.device-for-each-option small { color: var(--workflow-muted); font-size: 10px; }
+.device-for-each-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.device-for-each-heading > div { display: grid; gap: 2px; }
+.device-for-each-heading strong { color: var(--workflow-text); font-size: 11px; }
+.device-for-each-heading small, .device-for-each-heading > span { color: var(--workflow-muted); font-size: 10px; }
+.device-for-each-heading > span { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--workflow-border); border-radius: 4px; background: var(--workflow-surface); }
+.device-for-each-picker { display: grid; gap: 4px; max-height: 220px; overflow: auto; padding: 5px; border: 1px solid var(--workflow-border); border-radius: 6px; background: var(--workflow-surface-input); scrollbar-gutter: stable; scrollbar-width: thin; }
+.device-for-each-option { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 42px; padding: 6px 8px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
+.device-for-each-option:hover { border-color: var(--workflow-border); background: var(--workflow-surface); }
+.device-for-each-option.selected { border-color: color-mix(in srgb, var(--workflow-focus) 48%, var(--workflow-border)); background: #183455; }
+.device-for-each-option input.device-for-each-checkbox { width: 15px !important; height: 15px; margin: 0; accent-color: var(--workflow-focus); }
+.device-for-each-option span { display: grid; min-width: 0; gap: 2px; }
+.device-for-each-option strong { overflow: hidden; color: var(--workflow-text); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.device-for-each-option small { overflow: hidden; color: var(--workflow-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.device-for-each-option em { max-width: 64px; overflow: hidden; color: var(--workflow-muted); font-size: 9px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.device-for-each-empty { margin: 6px; color: var(--workflow-muted); font-size: 10px; }
+:global(:root[data-theme="light"]) .device-for-each-option.selected { border-color: #93c5fd; background: #dbeafe; }
 .workflow-advanced-node-config { display: grid; gap: 10px; }
 .workflow-advanced-node-config label { display: grid; gap: 5px; color: var(--workflow-text); font-size: 11px; }
 .workflow-advanced-node-config input, .workflow-advanced-node-config select, .workflow-advanced-node-config textarea { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); font: inherit; }

@@ -7,7 +7,7 @@ export interface WorkflowConfigNode {
   config: Record<string, unknown>
 }
 
-export interface WorkflowConfigEdge { source: string; target: string }
+export interface WorkflowConfigEdge { source: string; target: string; source_handle?: string }
 export interface WorkflowConfigInput { name: string; default?: unknown }
 export interface WorkflowConfigOutput { name: string }
 export interface WorkflowConfigVersion {
@@ -82,9 +82,55 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
       .filter((item) => sourceIds.has(item.id) && item.action_id !== 'utility.condition')
       .map((item) => ({
         id: item.id,
+        actionId: item.action_id,
         label: context.actions.find((action) => action.id === item.action_id)?.label || item.id,
         fields: outputFieldsForNode(item)
       }))
+  })
+
+  // Resolve loop scope from the graph itself. A transitive upstream loop is
+  // not necessarily the owner of the selected node, so resultSources alone
+  // cannot determine whether a connection should use the current iteration.
+  const deviceLoopId = computed(() => {
+    const workflow = context.selected.value
+    const selectedNode = context.selectedNode.value
+    if (!workflow || !selectedNode) return ''
+    const nodes = new Map((workflow.nodes || []).map((node) => [node.id, node]))
+    const outgoing = new Map<string, string[]>()
+    const incoming = new Map<string, string[]>()
+    for (const edge of workflow.edges || []) {
+      if (!nodes.has(edge.source) || !nodes.has(edge.target)) continue
+      outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge.target])
+      incoming.set(edge.target, [...(incoming.get(edge.target) || []), edge.source])
+    }
+    for (const loop of workflow.nodes || []) {
+      if (loop.action_id !== 'device.for_each') continue
+      const mode = String(loop.config.body_mode || '')
+      const actionInputs = loop.config.action_inputs
+      const hasActionInputs = Boolean(actionInputs && typeof actionInputs === 'object' && !Array.isArray(actionInputs) && Object.keys(actionInputs as Record<string, unknown>).length)
+      if (mode === 'action' || (mode !== 'downstream' && mode !== 'bounded' && hasActionInputs)) continue
+      const explicitEnd = String(loop.config.body_end || loop.config.loop_end || loop.config.loop_body_end || '')
+      const explicitStart = String(loop.config.body_start || loop.config.loop_start || '')
+      const loopEdges = (workflow.edges || []).filter((edge) => edge.source === loop.id)
+      const bodyEdges = loopEdges.filter((edge) => ['body', 'loop-body', 'loop_body'].includes(String(edge.source_handle || '').toLowerCase()))
+      const inferredBody = bodyEdges.length ? bodyEdges : loopEdges.filter((edge) => !['exit', 'loop-exit', 'loop_exit'].includes(String(edge.source_handle || '').toLowerCase()))
+      let current = explicitStart || (inferredBody.length === 1 ? inferredBody[0].target : '')
+      if (!current || (loopEdges.some((edge) => ['exit', 'loop-exit', 'loop_exit'].includes(String(edge.source_handle || '').toLowerCase())) && !explicitEnd)) continue
+      const visited = new Set<string>()
+      while (current) {
+        if (current === selectedNode.id) return loop.id
+        if (explicitEnd && current === explicitEnd) break
+        const next = outgoing.get(current) || []
+        if (next.length !== 1) break
+        const childId = next[0]
+        if (visited.has(childId) || (incoming.get(childId) || []).length > 1) break
+        visited.add(childId)
+        const child = nodes.get(childId)
+        if (!child || ['device.for_each', 'loop.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'workflow.call'].includes(child.action_id)) break
+        current = childId
+      }
+    }
+    return ''
   })
 
   const loopItemsSourceId = computed(() => {
@@ -153,6 +199,11 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
       if (name) add(`inputs.${name}`, `流程输入 · ${name}`, '执行流程时提供')
     }
     const sourceIds = new Set(resultSources.value.map((source) => source.id))
+    if (deviceLoopId.value) {
+      add('device_id', '当前遍历设备', deviceLoopId.value)
+      add('device.id', '当前设备 ID', deviceLoopId.value)
+      add('index', '遍历序号', deviceLoopId.value)
+    }
     for (const node of context.selected.value?.nodes || []) {
       if (node.action_id !== 'variable.set' || !sourceIds.has(node.id)) continue
       const name = String(node.config.name || '').trim()
@@ -251,7 +302,7 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
     loopItemsMode, loopItemsReference, loopItemsSourceId, loopItemsField, loopItemsSourceFields,
     setLoopItemsSource, setLoopItemsField, outputFieldsForAction, outputFieldsForNode,
     selectedSubworkflow, selectSubworkflow, selectSubworkflowVersion, updateSubworkflowInput,
-    resultSources, commandReferences, loopUntilStopMode, loopUntilPattern,
+    resultSources, deviceLoopId, commandReferences, loopUntilStopMode, loopUntilPattern,
     setResultField, onResultFieldChange, variableValueSourceId, variableValueField,
     variableExtractEnabled, setVariableValueReference, toggleVariableExtract,
     variableExtractConfig, variableExtractString, updateVariableExtractString,

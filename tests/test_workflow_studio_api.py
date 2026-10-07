@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
 from device_tui.application.workflow_studio import build_action_catalog
-from device_tui.application.workflow_studio.models import WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowVersion
+from device_tui.application.workflow_studio.models import WorkflowDraft, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowVersion
 from device_tui.interfaces.desktop_api.routers.workflow_definitions import (
     _compile_task_plan,
     _derive_workflow_convenience_inputs,
@@ -15,6 +15,16 @@ from device_tui.application.errors import UnsupportedOperationError
 from device_tui.application.composition.workflows import build_default_activity_executor
 from device_tui.framework import ActivityContext, ActivityInvocation, WorkflowRun
 import asyncio
+
+
+def test_workflow_canvas_edges_preserve_legacy_and_explicitly_empty_states() -> None:
+    legacy = WorkflowDraft.from_dict({"id": "workflow", "name": "Legacy", "nodes": []})
+    edited = WorkflowDraft.from_dict({"id": "workflow", "name": "Edited", "nodes": [], "canvas_edges": []})
+
+    assert legacy.canvas_edges is None
+    assert legacy.to_dict()["canvas_edges"] is None
+    assert edited.canvas_edges == ()
+    assert edited.to_dict()["canvas_edges"] == []
 
 
 def test_workflow_upload_input_is_prepared_before_plan_compilation() -> None:
@@ -481,6 +491,47 @@ def test_workflow_published_versions_can_be_deleted_even_when_referenced() -> No
         assert client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"] == []
 
 
+def test_workflow_published_versions_can_be_deleted_in_bulk() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Bulk version cleanup",
+                "nodes": [{"id": "command", "action_id": "device.command", "config": {"command": "show version"}}],
+                "edges": [],
+            },
+        ).json()["workflow"]
+        workflow_id = created["id"]
+        first = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        second = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        third = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+
+        started = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={"device_id": "sim-1", "protocol": "simulated", "version": first["version"]},
+        )
+        assert started.status_code == 200
+
+        response = client.request(
+            "DELETE",
+            f"/api/v1/workflow-definitions/{workflow_id}/versions",
+            json={"versions": [third["version"], first["version"], third["version"]]},
+        )
+        assert response.status_code == 200
+        assert response.json()["deleted_versions"] == [third["version"], first["version"]]
+        assert response.json()["failed_versions"] == []
+        assert response.json()["remaining_versions"] == 1
+        assert [item["version"] for item in client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"]] == [second["version"]]
+
+
+def test_bulk_workflow_version_delete_rejects_empty_or_invalid_versions() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post("/api/v1/workflow-definitions", json={"name": "Bulk validation"}).json()["workflow"]
+        workflow_id = created["id"]
+        assert client.request("DELETE", f"/api/v1/workflow-definitions/{workflow_id}/versions", json={"versions": []}).status_code == 400
+        assert client.request("DELETE", f"/api/v1/workflow-definitions/{workflow_id}/versions", json={"versions": ["nope"]}).status_code == 400
+
+
 def test_workflow_version_listing_keeps_runtime_inputs_and_version_numbers_monotonic() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post(
@@ -708,6 +759,10 @@ def test_workflow_run_uses_latest_published_version_and_marks_reference() -> Non
         started = client.post(f"/api/v1/workflow-definitions/{workflow_id}/run", json={"device_id": "sim-1", "protocol": "simulated"})
         assert started.status_code == 200
         assert started.json()["task"]["workflow_view"]["version"] == str(published["version"])
+        task_id = started.json()["task"]["id"]
+        task = client.get(f"/api/v1/tasks/{task_id}")
+        assert task.status_code == 200
+        assert task.json()["task"]["plan_revision"] == published["version"]
 
 
 def test_workflow_run_merges_input_defaults_into_task_context() -> None:
@@ -874,6 +929,45 @@ def test_workflow_definition_creates_one_task_per_batch_target() -> None:
         body = response.json()
         assert body["target_count"] == 2
         assert [task["device_id"] for task in body["tasks"]] == ["sim-1", "sim-2"]
+
+
+def test_device_list_loop_keeps_all_selected_devices_in_one_loop_task() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Device list loop",
+                "inputs": [{"name": "dev", "type": "devices", "required": True}],
+                "nodes": [
+                    {"id": "each", "action_id": "device.for_each", "config": {"devices": "${inputs.dev}", "body_mode": "downstream"}},
+                    {"id": "connect", "action_id": "device.connect", "config": {}},
+                    {"id": "command", "action_id": "device.command", "config": {"command": "display version"}},
+                ],
+                "edges": [
+                    {"source": "each", "target": "connect"},
+                    {"source": "connect", "target": "command"},
+                ],
+            },
+        )
+        assert created.status_code == 200
+        workflow_id = created.json()["workflow"]["id"]
+        assert client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").status_code == 200
+
+        response = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={
+                "device_ids": ["sim-1", "sim-2"],
+                "protocol": "simulated",
+                "inputs": {"dev": ["sim-1", "sim-2"]},
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["batch_loop"] is True
+        assert body["target_count"] == 2
+        assert len(body["tasks"]) == 1
+        assert body["task"]["context"]["dev"] == ["sim-1", "sim-2"]
 
 
 def test_workflow_definition_maps_batch_sessions_by_device() -> None:
@@ -1196,6 +1290,123 @@ def test_workflow_definition_rejects_device_connect_target_mismatch() -> None:
         assert "selects device router-2" in str(exc)
     else:
         raise AssertionError("device.connect accepted a different target device")
+
+
+def test_device_for_each_compiles_linear_downstream_connection_body() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="per-device-connect",
+        nodes=(
+            WorkflowNode("each", "device.for_each", {"devices": ["router-1", "router-2"], "body_mode": "downstream"}),
+            WorkflowNode("connect", "device.connect", {"device_id": "SIM-TERMINAL", "timeout_seconds": 10}),
+            WorkflowNode("command", "device.command", {"command": "display version"}),
+        ),
+        edges=(WorkflowEdge("each", "connect"), WorkflowEdge("connect", "command")),
+    )
+
+    plan = _compile_task_plan(version, "SIM-TERMINAL")
+
+    assert [node.id for node in plan.nodes] == ["each"]
+    assert [step["action_id"] for step in plan.nodes[0].input_mapping["action_steps"]] == [
+        "device.wait_online", "terminal.command",
+    ]
+    assert plan.nodes[0].input_mapping["action_steps"][0]["action_inputs"]["device_id"] == "${device_id}"
+    assert plan.nodes[0].input_mapping["action_steps"][1]["action_inputs"] == {"command": "display version"}
+
+
+def test_device_for_each_explicit_boundary_keeps_after_step_outside_body() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="bounded-per-device",
+        nodes=(
+            WorkflowNode("each", "device.for_each", {"devices": ["router-1", "router-2"], "body_mode": "bounded", "body_end": "command"}),
+            WorkflowNode("connect", "device.connect", {"device_id": "SIM-TERMINAL"}),
+            WorkflowNode("command", "device.command", {"command": "display version"}),
+            WorkflowNode("after", "result.save", {"key": "complete"}),
+        ),
+        edges=(
+            WorkflowEdge("each", "connect", source_handle="loop-body"),
+            WorkflowEdge("connect", "command"),
+            WorkflowEdge("command", "after"),
+            WorkflowEdge("each", "after", source_handle="loop-exit"),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "SIM-TERMINAL")
+
+    assert [node.id for node in plan.nodes] == ["each", "after"]
+    assert [step["id"] for step in plan.nodes[0].input_mapping["action_steps"]] == ["connect", "command"]
+    assert plan.nodes[1].depends_on == ("each",)
+
+
+def test_device_for_each_loop_exit_edge_infers_body_end_for_older_drafts() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="inferred-boundary",
+        nodes=(
+            WorkflowNode("each", "device.for_each", {"devices": ["router-1"], "body_mode": "bounded"}),
+            WorkflowNode("connect", "device.connect"),
+            WorkflowNode("command", "device.command", {"command": "display version"}),
+            WorkflowNode("after", "result.save", {"key": "complete"}),
+        ),
+        edges=(
+            WorkflowEdge("each", "connect", source_handle="loop-body"),
+            WorkflowEdge("connect", "command"),
+            WorkflowEdge("each", "after", source_handle="loop-exit"),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert [node.id for node in plan.nodes] == ["each", "after"]
+    assert [step["id"] for step in plan.nodes[0].input_mapping["action_steps"]] == ["connect", "command"]
+
+
+def test_loop_for_each_graph_body_uses_the_same_container_contract() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="bounded-items",
+        nodes=(
+            WorkflowNode("each", "loop.for_each", {"items": ["a"], "body_mode": "bounded"}),
+            WorkflowNode("save", "result.save", {"key": "${item}"}),
+            WorkflowNode("after", "result.save", {"key": "complete"}),
+        ),
+        edges=(
+            WorkflowEdge("each", "save", source_handle="loop-body"),
+            WorkflowEdge("each", "after", source_handle="loop-exit"),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert [node.id for node in plan.nodes] == ["each", "after"]
+    assert [step["id"] for step in plan.nodes[0].input_mapping["action_steps"]] == ["save"]
+
+
+def test_loop_until_graph_body_uses_the_same_container_contract() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="bounded-until",
+        nodes=(
+            WorkflowNode("until", "loop.until", {"condition": "False", "max_iterations": 1, "interval_seconds": 0}),
+            WorkflowNode("save", "result.save", {"key": "iteration"}),
+            WorkflowNode("after", "result.save", {"key": "complete"}),
+        ),
+        edges=(
+            WorkflowEdge("until", "save", source_handle="loop-body"),
+            WorkflowEdge("until", "after", source_handle="loop-exit"),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+
+    assert [node.id for node in plan.nodes] == ["until", "after"]
+    assert [step["id"] for step in plan.nodes[0].input_mapping["action_steps"]] == ["save"]
 
 
 def test_workflow_definition_rejects_non_executable_loop_children_at_compile_time() -> None:

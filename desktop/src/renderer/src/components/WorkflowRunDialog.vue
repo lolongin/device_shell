@@ -274,7 +274,7 @@ onMounted(async () => {
             </div>
             <label v-if="selectedWorkflow.requires_confirmation" class="workflow-run-risk"><input v-model="confirmedRisks" type="checkbox" /><ShieldAlert :size="16" /><span>此 Workflow 包含高风险动作，确认后执行</span></label>
             <p v-if="error" class="workflow-run-error" role="alert"><CircleAlert :size="15" />{{ error }}</p>
-            <footer class="workflow-run-footer"><span v-if="usesDeviceListTarget">将为选中的设备分别创建执行任务</span><span v-else-if="selectedDevice">将使用 {{ selectedDevice.name }} 的现有连接（如可用）</span><button class="secondary-button" type="button" @click="emit('close')">取消</button><button class="primary-button" type="submit" :disabled="!canRun"><LoaderCircle v-if="running" :size="14" class="spin" /><Play v-else :size="14" />{{ running ? '正在提交' : '开始执行' }}</button></footer>
+            <footer class="workflow-run-footer"><span v-if="usesDeviceListTarget">将使用选中的设备列表执行流程</span><span v-else-if="selectedDevice">将使用 {{ selectedDevice.name }} 的现有连接（如可用）</span><button class="secondary-button" type="button" @click="emit('close')">取消</button><button class="primary-button" type="submit" :disabled="!canRun"><LoaderCircle v-if="running" :size="14" class="spin" /><Play v-else :size="14" />{{ running ? '正在提交' : '开始执行' }}</button></footer>
           </template>
           <div v-else class="workflow-run-state workflow-run-form-empty"><CircleAlert v-if="requestedVersionMissing" :size="22" /><ListChecks v-else :size="22" />{{ requestedVersionMissing ? error : '从左侧选择一个已发布 Workflow' }}</div>
         </form>

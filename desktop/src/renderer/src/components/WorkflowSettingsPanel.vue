@@ -18,6 +18,11 @@ export type WorkflowSettingsOutput = {
   presentation?: string
 }
 
+export type WorkflowSettingsReference = {
+  reference: string
+  label: string
+}
+
 const props = defineProps<{
   workflow: { name: string; description?: string; inputs?: WorkflowSettingsInput[]; outputs?: WorkflowSettingsOutput[] }
   hasUnsavedChanges: boolean
@@ -35,6 +40,7 @@ const props = defineProps<{
   updateWorkflowOutput: (index: number, key: string, value: unknown) => void
   removeWorkflowOutput: (index: number) => void
   addWorkflowOutput: () => void
+  outputReferences: WorkflowSettingsReference[]
   updateWorkflowInput: (name: string, event: Event) => void
   normalizeWorkflowInputJson: (name: string) => void
   chooseWorkflowRuntimeFile: (input: WorkflowSettingsInput) => void | Promise<void>
@@ -46,6 +52,17 @@ const emit = defineEmits<{
   'update:outputsExpanded': [value: boolean]
   'update:runtimeInputsExpanded': [value: boolean]
 }>()
+
+function outputReferenceValue(value: unknown): string {
+  const text = String(value ?? '')
+  return text.startsWith('${') && text.endsWith('}') ? text.slice(2, -1) : ''
+}
+
+function setOutputReference(index: number, reference: string): void {
+  props.updateWorkflowOutput(index, 'value', reference ? `\${${reference}}` : '')
+}
+
+const outputPresentationOptions = '文本、JSON、表格、下载、设备信息、隐藏'
 </script>
 
 <template>
@@ -89,12 +106,19 @@ const emit = defineEmits<{
       </button>
       <button type="button" class="icon-toolbar-button" title="添加流程输出" aria-label="添加流程输出" @click="addWorkflowOutput(); emit('update:outputsExpanded', true)"><Plus :size="14" /></button>
     </div>
+    <p class="workflow-output-help">在这里设置执行结果的显示方式：{{ outputPresentationOptions }}。未明确指定时，会根据结果数据自动选择。</p>
     <div v-if="outputsExpanded && workflow.outputs?.length" class="workflow-input-definitions">
       <div v-for="(output, index) in workflow.outputs" :key="index" class="workflow-input-definition workflow-output-definition">
         <label>名称<input :value="output.name" placeholder="例如：software_version" @input="updateWorkflowOutput(index, 'name', ($event.target as HTMLInputElement).value)" /></label>
         <label>类型<select :value="output.type || 'any'" @change="updateWorkflowOutput(index, 'type', ($event.target as HTMLSelectElement).value)"><option value="any">任意</option><option value="string">文本</option><option value="number">数字</option><option value="integer">整数</option><option value="boolean">布尔值</option><option value="array">数组</option><option value="object">对象</option></select></label>
         <label>呈现<select :value="output.presentation || 'text'" @change="updateWorkflowOutput(index, 'presentation', ($event.target as HTMLSelectElement).value)"><option value="text">文本</option><option value="json">JSON</option><option value="table">表格</option><option value="download">下载</option><option value="device">设备</option><option value="hidden">隐藏</option></select></label>
-        <label class="workflow-output-value">值或引用<input :value="String(output.value ?? '')" placeholder="例如：${probe.software_version}" @input="updateWorkflowOutput(index, 'value', ($event.target as HTMLInputElement).value)" /></label>
+        <label class="workflow-output-value">值或引用
+          <select :value="outputReferenceValue(output.value)" aria-label="选择流程输出来源" @change="setOutputReference(index, ($event.target as HTMLSelectElement).value)">
+            <option value="">手动填写或表达式</option>
+            <option v-for="item in outputReferences" :key="`workflow-output-${index}-${item.reference}`" :value="item.reference">{{ item.label }}</option>
+          </select>
+          <input :value="String(output.value ?? '')" placeholder="例如：${probe.software_version}" @input="updateWorkflowOutput(index, 'value', ($event.target as HTMLInputElement).value)" />
+        </label>
         <label class="workflow-input-description">说明<input :value="output.description || ''" placeholder="供调用者理解此输出" @input="updateWorkflowOutput(index, 'description', ($event.target as HTMLInputElement).value)" /></label>
         <button type="button" class="icon-toolbar-button workflow-input-delete" title="删除流程输出" aria-label="删除流程输出" @click="removeWorkflowOutput(index)"><Trash2 :size="14" /></button>
       </div>
@@ -121,7 +145,7 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.workflow-settings-panel { display: flex; flex-direction: column; min-width: 0; }
+.workflow-settings-panel { display: flex; flex-direction: column; min-width: 0; container-type: inline-size; }
 .workflow-metadata-editor, .workflow-input-editor, .workflow-runtime-inputs { min-width: 0; background: var(--workflow-surface); border-bottom: 1px solid var(--workflow-border); }
 .workflow-metadata-editor { display: grid; grid-template-columns: minmax(220px,.75fr) minmax(280px,1.25fr); gap: 8px 16px; padding: 10px 18px; }
 .workflow-contract-heading { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -132,12 +156,15 @@ const emit = defineEmits<{
 .workflow-metadata-editor input { min-height: 30px; margin-top: 4px; }
 .workflow-metadata-editor small { grid-column: 1 / -1; color: #fca5a5; font-size: 10px; }
 .workflow-input-editor { display: grid; gap: 8px; padding: 9px 16px; overflow: visible; }
+.workflow-output-help { margin: 0; color: var(--workflow-muted); font-size: 10px; line-height: 1.5; }
 .workflow-input-editor .panel-heading { display: flex; align-items: center; gap: 8px; min-height: 26px; margin-bottom: 0; }
 .workflow-input-editor .panel-heading small { flex: 1; }
 .workflow-input-definitions { display: grid; gap: 6px; }
 .workflow-input-definition { display: grid; grid-template-columns: minmax(110px, 1fr) 100px 120px auto minmax(110px, 1fr) minmax(150px, 1.4fr) auto; align-items: end; gap: 6px; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 6px; background: var(--workflow-surface); }
 .workflow-output-definition { grid-template-columns: minmax(110px, .8fr) 100px 100px minmax(180px, 1.4fr) minmax(150px, 1fr) auto; }
 .workflow-input-definition label { display: grid; gap: 4px; color: var(--workflow-muted); font-size: 10px; }
+.workflow-input-definition label { min-width: 0; }
+.workflow-input-definition input:not([type='checkbox']), .workflow-input-definition select { width: 100%; }
 .workflow-input-definition input:not([type='checkbox']), .workflow-input-definition select { box-sizing: border-box; min-width: 0; min-height: 28px; padding: 5px 6px; border: 1px solid var(--workflow-border); border-radius: 4px; color: inherit; background: var(--workflow-surface-input); }
 .workflow-input-definition .workflow-input-required { display: flex; align-items: center; gap: 5px; height: 29px; white-space: nowrap; }
 .workflow-runtime-inputs { display: grid; gap: 8px; padding: 9px 16px; overflow: visible; }
@@ -150,4 +177,15 @@ const emit = defineEmits<{
 .workflow-settings-panel .workflow-input-description, .workflow-settings-panel .workflow-output-value { min-width: 0; }
 @media (max-width: 900px) { .workflow-input-definition, .workflow-output-definition { grid-template-columns: repeat(2, minmax(0, 1fr)); } .workflow-input-definition .workflow-input-description, .workflow-output-definition .workflow-input-description { grid-column: 1 / -1; } }
 @media (max-width: 720px) { .workflow-metadata-editor { grid-template-columns: 1fr; } }
+@container (max-width: 850px) {
+  .workflow-output-definition { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 28px; }
+  .workflow-output-value, .workflow-output-definition .workflow-input-description { grid-column: 1 / -1; }
+  .workflow-output-definition .workflow-input-delete { grid-column: 4; grid-row: 1; }
+  .workflow-metadata-editor { grid-template-columns: minmax(0, 1fr); }
+}
+@container (max-width: 420px) {
+  .workflow-output-definition { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; }
+  .workflow-output-definition > label:first-child { grid-column: 1 / 3; }
+  .workflow-output-definition .workflow-input-delete { grid-column: 3; }
+}
 </style>

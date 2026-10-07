@@ -11,7 +11,9 @@ import {
   GitBranch,
   Repeat,
   AlertCircle,
-  Code2
+  Code2,
+  LogIn,
+  LogOut
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -21,6 +23,11 @@ const props = defineProps<{
     label: string
     action_id: string
     config: Record<string, unknown>
+    loopStructured?: boolean
+    virtual?: boolean
+    contractKind?: 'input' | 'result'
+    virtualLabel?: string
+    virtualSummary?: string
     state?: 'ready' | 'attention'
   }
 }>()
@@ -55,17 +62,21 @@ const ACTION_META: Record<string, NodeMeta> = {
   'variable.set': { label: '设置变量', category: 'data', tone: 'blue', icon: CheckCircle2 },
   'expression.evaluate': { label: '计算表达式', category: 'data', tone: 'purple', icon: GitBranch },
   'workflow.call': { label: '调用子流程', category: 'workflow', tone: 'blue', icon: GitBranch },
+  '__workflow_input__': { label: '流程输入', category: 'workflow', tone: 'teal', icon: LogIn },
+  '__workflow_result__': { label: '流程结果', category: 'workflow', tone: 'teal', icon: LogOut },
 }
 
 const nodeMeta = computed<NodeMeta>(() => {
   return ACTION_META[props.data.action_id] || {
-    label: props.data.action_id,
+    label: props.data.virtualLabel || props.data.action_id,
     category: 'device',
     tone: 'blue',
     icon: Terminal
   }
 })
 const isCondition = computed(() => props.data.action_id === 'utility.condition')
+const isLoop = computed(() => ['device.for_each', 'loop.for_each', 'loop.until'].includes(props.data.action_id))
+const isStructuredLoop = computed(() => isLoop.value && props.data.loopStructured)
 
 const nodeClass = computed(() => {
   return [
@@ -80,6 +91,7 @@ const IconComponent = computed(() => nodeMeta.value.icon)
 
 // 获取配置摘要（显示在节点上）
 const configSummary = computed(() => {
+  if (props.data.virtualSummary) return props.data.virtualSummary
   const config = props.data.config
   const actionId = props.data.action_id
 
@@ -99,6 +111,23 @@ const configSummary = computed(() => {
     return seconds ? `${seconds}秒` : '(未配置)'
   }
 
+  if (actionId === 'device.for_each') {
+    const devices = Array.isArray(config.devices)
+      ? `${config.devices.length} 台设备`
+      : String(config.devices || '设备列表')
+    return `${devices} · 循环框内执行`
+  }
+
+  if (actionId === 'loop.for_each') {
+    const items = Array.isArray(config.items) ? `${config.items.length} 个项目` : String(config.items || '列表')
+    return `${items} · 循环框内执行`
+  }
+
+  if (actionId === 'loop.until') {
+    const maxIterations = Number(config.max_iterations || 10)
+    return `最多 ${maxIterations} 次 · 循环框内执行`
+  }
+
   if (actionId === 'file.upload' || actionId === 'file.download') {
     const path = String(config.source || config.source_path || '')
     return path ? path.split(/[/\\]/).pop() || path : '(未配置)'
@@ -112,7 +141,9 @@ const configSummary = computed(() => {
   <div :class="[nodeClass, { selected: props.selected }]">
     <!-- 输入连接点 -->
     <Handle
+      v-if="!data.virtual && data.contractKind !== 'input'"
       type="target"
+      :id="data.contractKind === 'result' ? 'contract-input' : undefined"
       :position="Position.Top"
       class="node-handle node-handle-target"
     />
@@ -134,31 +165,33 @@ const configSummary = computed(() => {
     </div>
 
     <div class="node-body">
-      <div class="node-id">{{ data.label }}</div>
+      <div v-if="props.selected" class="node-id">{{ data.label }}</div>
       <div v-if="configSummary" class="node-config">{{ configSummary }}</div>
     </div>
 
-    <!-- 分类标签 -->
-    <div class="node-category-badge">
-      {{ nodeMeta.category === 'flow-control' ? '流程控制' :
-         nodeMeta.category === 'device' ? '设备操作' :
-         nodeMeta.category === 'transfer' ? '文件传输' :
-         nodeMeta.category === 'data' ? '变量与结果' :
-         nodeMeta.category === 'script' ? '脚本执行' : '子流程' }}
-    </div>
-
     <!-- 输出连接点 -->
-    <Handle
-      type="source"
-      :position="Position.Bottom"
-      v-if="!isCondition"
-      class="node-handle node-handle-source"
-    />
-    <template v-else>
-      <Handle type="source" id="true" :position="Position.Right" class="node-handle node-handle-true" />
-      <Handle type="source" id="false" :position="Position.Right" class="node-handle node-handle-false" />
-      <span class="branch-label branch-label-true">满足</span>
-      <span class="branch-label branch-label-false">不满足</span>
+    <template v-if="!data.virtual && data.contractKind === 'input'">
+      <Handle type="source" id="contract-output" :position="Position.Bottom" class="node-handle node-handle-source" />
+    </template>
+    <template v-else-if="!data.virtual && data.contractKind === 'result'">
+      <!-- Result is an end boundary and has no outgoing connection handle. -->
+    </template>
+    <template v-else-if="!data.virtual && isStructuredLoop">
+      <Handle type="source" id="loop-body" :position="Position.Bottom" class="node-handle node-handle-loop-body" />
+    </template>
+    <template v-else-if="!data.virtual">
+      <Handle
+        v-if="isLoop || !isCondition"
+        type="source"
+        :position="Position.Bottom"
+        class="node-handle node-handle-source"
+      />
+      <template v-else>
+        <Handle type="source" id="true" :position="Position.Right" class="node-handle node-handle-true" />
+        <Handle type="source" id="false" :position="Position.Right" class="node-handle node-handle-false" />
+        <span class="branch-label branch-label-true">满足</span>
+        <span class="branch-label branch-label-false">不满足</span>
+      </template>
     </template>
   </div>
 </template>
@@ -171,8 +204,8 @@ const configSummary = computed(() => {
   width: 232px;
   min-width: 232px;
   max-width: 232px;
-  min-height: 112px;
-  padding: 11px 13px 10px 15px;
+  min-height: 96px;
+  padding: 10px 12px 9px 14px;
   border: 1px solid rgba(100,116,139,.46);
   border-radius: 8px;
   color: var(--workflow-text, #e2e8f0);
@@ -191,7 +224,7 @@ const configSummary = computed(() => {
 .workflow-node.category-script::before { background: #2dd4bf; }
 .workflow-node.state-attention { border-color: rgba(240,180,77,.86) !important; background: rgba(161,98,7,.12); }
 .workflow-node.state-attention::before { background: #f0b44d; }
-.node-header { display: flex; align-items: center; gap: 7px; min-height: 22px; margin-bottom: 8px; padding: 0 42px 7px 0; border-bottom: 1px solid rgba(100,116,139,.2); }
+.node-header { display: flex; align-items: center; gap: 7px; min-height: 22px; margin-bottom: 5px; padding: 0 12px 6px 0; border-bottom: 1px solid rgba(100,116,139,.2); }
 .node-icon { flex: 0 0 auto; color: #60a5fa; }
 .tone-purple .node-icon { color: #a78bfa; }
 .tone-amber .node-icon { color: #f0b44d; }
@@ -202,18 +235,13 @@ const configSummary = computed(() => {
 .state-attention { color: #f0b44d; }
 .node-body { min-width: 0; margin-bottom: 3px; }
 .node-id { overflow: hidden; color: var(--workflow-subtle, rgba(226,232,240,.6)); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.node-config { min-width: 0; margin-top: 6px; padding: 5px 7px; overflow: hidden; border: 1px solid rgba(100,116,139,.18); border-radius: 5px; color: var(--workflow-muted, rgba(226,232,240,.8)); background: rgba(15,23,42,.46); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.node-category-badge { position: absolute; top: 8px; right: 9px; padding: 2px 5px; border: 1px solid currentColor; border-radius: 4px; font-size: 8px; font-weight: 700; line-height: 1.1; opacity: .75; pointer-events: none; }
-.category-device .node-category-badge { color: #93c5fd; background: rgba(37,99,235,.12); }
-.category-flow-control .node-category-badge { color: #c4b5fd; background: rgba(124,58,237,.12); }
-.category-data .node-category-badge { color: #fcd34d; background: rgba(180,83,9,.12); }
-.category-transfer .node-category-badge { color: #7dd3fc; background: rgba(14,116,144,.12); }
-.category-workflow .node-category-badge { color: #6ee7b7; background: rgba(5,150,105,.12); }
-.category-script .node-category-badge { color: #99f6e4; background: rgba(13,148,136,.14); }
+.node-config { min-width: 0; margin-top: 4px; padding: 0; overflow: hidden; color: var(--workflow-muted, rgba(226,232,240,.8)); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .node-handle { width: 10px; height: 10px; border: 2px solid #64748b; background: #0f172a; transition: border-color .16s ease, background .16s ease; }
 .node-handle:hover { width: 10px; height: 10px; border-color: #60a5fa; background: #60a5fa; }
 .node-handle-target { top: -5px; }
 .node-handle-source { bottom: -5px; }
+.node-handle-loop-body { bottom: -5px; }
+.node-handle-loop-body { left: 50%; transform: translateX(-50%); }
 .node-handle-true, .node-handle-false { right: -5px; }
 .node-handle-true { top: 38%; }
 .node-handle-false { top: 68%; }
@@ -232,6 +260,6 @@ const configSummary = computed(() => {
 :global(:root[data-theme="light"]) .workflow-node { color: #172033; background: #ffffff; border-color: #cbd5e1; box-shadow: 0 5px 14px rgba(15,23,42,.1); }
 :global(:root[data-theme="light"]) .node-label { color: #172033; }
 :global(:root[data-theme="light"]) .node-id { color: #64748b; }
-:global(:root[data-theme="light"]) .node-config { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
+:global(:root[data-theme="light"]) .node-config { color: #475569; }
 :global(:root[data-theme="light"]) .node-handle { background: #ffffff; }
 </style>
