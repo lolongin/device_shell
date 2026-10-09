@@ -12,6 +12,7 @@ const props = defineProps<{
   selectedNode: Node | null
   deviceLoopId: string
   availableDevices: any[]
+  ownedDeviceIds?: readonly string[]
   workflowInputs: any[]
   commandReferences: any[]
   resultSources: any[]
@@ -101,7 +102,10 @@ const emit = defineEmits<{ update: [value: any]; 'update:loopItemsMode': [value:
       v-if="props.advancedNode"
       :node="props.selectedNode"
       :available-devices="props.availableDevices"
+      :owned-device-ids="props.ownedDeviceIds"
       :workflow-inputs="props.workflowInputs"
+      :command-references="props.commandReferences"
+      :device-loop-id="props.deviceLoopId"
       :workflow="props.workflow"
       :published-workflows="props.publishedWorkflows"
       :subworkflow-versions="props.subworkflowVersions"

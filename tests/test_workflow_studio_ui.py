@@ -513,6 +513,13 @@ def test_workflow_reference_selectors_use_catalog_output_schema() -> None:
     assert "Object.keys(properties as Record<string, unknown>)" in catalog
 
 
+def test_device_select_offers_workflow_references_in_the_device_picker() -> None:
+    generic = Path("desktop/src/renderer/src/components/workflow-config/GenericNodeConfig.vue").read_text(encoding="utf-8")
+    assert 'aria-label="选择设备或变量"' in generic
+    assert "deviceIdReferences.filter(item => item.source === source.id)" in generic
+    assert "selectDeviceBinding(eventValue($event))" in generic
+
+
 def test_workflow_action_cards_use_the_backend_catalog_as_their_source() -> None:
     source = Path("desktop/src/renderer/src/components/WorkflowLibrary.vue").read_text(encoding="utf-8")
     catalog = Path("desktop/src/renderer/src/components/workflow-config/actionCatalog.ts").read_text(encoding="utf-8")

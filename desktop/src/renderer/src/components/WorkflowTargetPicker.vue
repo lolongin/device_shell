@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ChevronDown, Search } from 'lucide-vue-next'
+import { filterWorkflowDevices } from './workflow/device-filter'
 
 export type WorkflowTargetOption = {
   id: string
@@ -11,6 +12,7 @@ export type WorkflowTargetOption = {
 const props = defineProps<{
   modelValue: string[]
   devices: WorkflowTargetOption[]
+  ownedDeviceIds?: readonly string[]
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +24,7 @@ const trigger = ref<HTMLButtonElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 const isOpen = ref(false)
 const searchQuery = ref('')
+const mineOnly = ref(false)
 
 const selectedDevices = computed(() => props.devices.filter((device) => props.modelValue.includes(device.id)))
 const selectedLabel = computed(() => {
@@ -30,11 +33,7 @@ const selectedLabel = computed(() => {
   if (names.length <= 2) return names.join('、')
   return `${names[0]} 等 ${names.length} 台`
 })
-const filteredDevices = computed(() => {
-  const query = searchQuery.value.trim().toLocaleLowerCase()
-  if (!query) return props.devices
-  return props.devices.filter((device) => `${device.label} ${device.detail || ''}`.toLocaleLowerCase().includes(query))
-})
+const filteredDevices = computed(() => filterWorkflowDevices(props.devices, searchQuery.value, mineOnly.value ? props.ownedDeviceIds || [] : undefined))
 
 function toggleDevice(id: string, checked: boolean): void {
   const selected = new Set(props.modelValue)
@@ -121,10 +120,10 @@ onBeforeUnmount(() => {
     >
       <label class="workflow-target-search">
         <Search :size="14" aria-hidden="true" />
-        <input ref="searchInput" v-model="searchQuery" type="search" aria-label="搜索设备" placeholder="搜索设备名称或地址" />
+        <input ref="searchInput" v-model="searchQuery" type="search" aria-label="搜索设备" placeholder="搜索设备名称、ID 或地址" />
       </label>
       <div class="workflow-target-popover-heading">
-        <span>可用设备</span>
+        <label class="workflow-target-mine"><input v-model="mineOnly" type="checkbox" aria-label="运行目标仅显示我的占用" />我的占用</label>
         <button type="button" :disabled="!selectedDevices.length" @click="clearSelection">清空</button>
       </div>
       <div class="workflow-target-options" role="group" aria-label="可用设备">
@@ -152,6 +151,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .workflow-target-picker { position: relative; min-width: 0; }
+.workflow-target-mine { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.workflow-target-mine input { width: 14px; height: 14px; margin: 0; accent-color: var(--workflow-focus); }
 .workflow-target-trigger {
   display: flex;
   align-items: center;

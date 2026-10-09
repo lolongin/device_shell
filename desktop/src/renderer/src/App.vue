@@ -174,6 +174,7 @@ const workflowLibraryRef = ref<InstanceType<typeof WorkflowLibrary> | null>(null
 const quickActionsBarRef = ref<InstanceType<typeof SessionWorkspaceShell> | null>(null)
 const workflowRunDialogOpen = ref(false)
 const workflowRunDeviceId = ref('')
+const workflowRunSessionId = ref('')
 const workflowRunWorkflowId = ref('')
 const workflowRunVersion = ref<string | number | undefined>(undefined)
 const workflowRunAutoRun = ref(false)
@@ -1023,9 +1024,10 @@ function closeWorkflowPanel(): boolean {
   return true
 }
 
-function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId, workflowId = '', version?: string | number, autoRun = false): void {
+function openWorkflowRunDialog(deviceId = workspace.selectedDeviceId, workflowId = '', version?: string | number, autoRun = false, sessionId = ''): void {
   closeAppContextMenus()
   workflowRunDeviceId.value = deviceId
+  workflowRunSessionId.value = sessionId
   workflowRunWorkflowId.value = workflowId
   workflowRunVersion.value = version
   workflowRunAutoRun.value = autoRun
@@ -1588,6 +1590,7 @@ const sessionWorkspaceContext = {
     <WorkflowRunDialog
       v-if="workflowRunDialogOpen"
       :initial-device-id="workflowRunDeviceId"
+      :initial-session-id="workflowRunSessionId"
       :initial-workflow-id="workflowRunWorkflowId"
       :initial-version="workflowRunVersion"
       :auto-run="workflowRunAutoRun"

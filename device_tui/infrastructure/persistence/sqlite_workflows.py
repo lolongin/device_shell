@@ -126,6 +126,25 @@ class SQLiteWorkflowDefinitionStore(WorkflowDefinitionStore):
                 count = c.execute("UPDATE workflow_definitions SET kind='deleted' WHERE workflow_id=? AND kind='published' AND version=?", (workflow_id, int(version))).rowcount
         if not count: raise KeyError(f"workflow not found: {workflow_id}")
 
+    def delete_preserving_references(self, workflow_id: str) -> None:
+        """Remove the editable workflow and hide versions while retaining task history rows."""
+        with self._connect() as c:
+            draft = c.execute(
+                "SELECT 1 FROM workflow_definitions WHERE workflow_id=? AND kind='draft'",
+                (workflow_id,),
+            ).fetchone()
+            if draft is None:
+                raise KeyError(f"workflow not found: {workflow_id}")
+            c.execute("DELETE FROM workflow_definitions WHERE workflow_id=? AND kind='draft'", (workflow_id,))
+            c.execute(
+                "UPDATE workflow_definitions SET kind='deleted' WHERE workflow_id=? AND kind='published'",
+                (workflow_id,),
+            )
+            c.execute(
+                "DELETE FROM workflow_definitions WHERE workflow_id=? AND kind='deleted' AND referenced=0",
+                (workflow_id,),
+            )
+
     def publish(self, workflow_id: str) -> WorkflowVersion:
         draft = self.get(workflow_id)
         with self._connect() as c:

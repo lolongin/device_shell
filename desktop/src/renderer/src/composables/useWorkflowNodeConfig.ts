@@ -51,7 +51,7 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
     }
   })
 
-  function outputFieldsForAction(actionId: string): Array<{ name: string; label: string }> {
+  function outputFieldsForAction(actionId: string): Array<{ name: string; label: string; schema?: Record<string, unknown> }> {
     return context.actions.find((action) => action.id === actionId)?.outputFields || []
   }
 
@@ -179,7 +179,7 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
     applySubworkflowVersion(context.subworkflowVersions.value.find((candidate) => String(candidate.version) === version))
   }
 
-  function updateSubworkflowInput(name: string, value: string): void {
+  function updateSubworkflowInput(name: string, value: unknown): void {
     const node = context.selectedNode.value
     if (!node) return
     const inputs = node.config.inputs

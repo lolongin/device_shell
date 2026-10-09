@@ -67,6 +67,10 @@
   - 技术选型对比
   - 完整实施路线图
 
+- **[Workflow 节点输入引用设计](./superpowers/specs/2026-10-09-workflow-node-input-references-design.md)**
+  - 统一流程输入、节点输出和变量引用
+  - 节点输入绑定、类型兼容和循环/条件设计
+
 ---
 
 ## 🎯 按角色导航

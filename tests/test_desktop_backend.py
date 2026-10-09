@@ -290,8 +290,8 @@ def test_isolated_device_credential_prompt_can_resolve_defaults() -> None:
 
     assert unauthorized.status_code == 401
     assert response.status_code == 200
-    assert response.json()["username"] == "appadmin"
-    assert response.json()["password"]
+    assert response.json()["username"] == ""
+    assert response.json()["password"] == ""
 
 
 def test_device_api_includes_one_safe_simulated_terminal_row() -> None:

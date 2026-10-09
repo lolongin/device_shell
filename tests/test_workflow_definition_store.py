@@ -38,3 +38,18 @@ def test_sqlite_list_published_latest_is_grouped_by_workflow(tmp_path: Path):
 
     latest = {(item.workflow_id, int(item.version)) for item in store.list_published()}
     assert latest == {("w1", 2), ("w2", 1)}
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_definition_can_be_removed_while_hiding_referenced_history(kind, tmp_path: Path):
+    store = MemoryWorkflowDefinitionStore() if kind == "memory" else SQLiteWorkflowDefinitionStore(tmp_path / "workflow.sqlite3")
+    store.create(WorkflowDraft("w1", "Demo"))
+    published = store.publish("w1")
+    store.mark_referenced("w1", published.version)
+
+    store.delete_preserving_references("w1")
+
+    assert store.list() == []
+    assert store.list_versions("w1") == []
+    with pytest.raises(KeyError):
+        store.get("w1", published.version)

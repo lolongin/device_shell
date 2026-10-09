@@ -1,16 +1,24 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { ActionItem, DeviceSummary, NodeItem, ResultSource } from './types'
+import { computed, ref, watch } from 'vue'
+import type { ActionItem, DeviceSummary, NodeItem, ResultSource, CommandReference } from './types'
+import ValueBindingField from './ValueBindingField.vue'
+import SchemaBindingFields from './SchemaBindingFields.vue'
+import ObjectBindingFields from './ObjectBindingFields.vue'
+import { buildWorkflowReferences, loopReferences } from '../../composables/workflowReferences'
+import { filterWorkflowDevices } from '../workflow/device-filter'
 
 type WorkflowReference = { id?: string; nodes?: NodeItem[]; edges?: Array<{ source: string; target: string; source_handle?: string }> }
-type PublishedWorkflow = { id: string; name: string; version?: string | number; step_count?: number; inputs?: Array<{ name: string; required?: boolean }>; outputs?: Array<{ name: string }> }
-type ConditionRule = { field: string; operator: string; value: string }
+type PublishedWorkflow = { id: string; name: string; version?: string | number; step_count?: number; inputs?: Array<{ name: string; required?: boolean; type?: string; primitive_type?: string }>; outputs?: Array<{ name: string }> }
+type ConditionRule = { field: string; operator: string; value: unknown; field_binding?: string; value_binding?: string; value_type?: string }
 type ConditionTargets = { trueTarget: string; falseTarget: string }
 
 const props = defineProps<{
   node: NodeItem
   availableDevices?: DeviceSummary[]
+  ownedDeviceIds?: readonly string[]
   workflowInputs?: Array<{ name: string; type?: string }>
+  commandReferences?: CommandReference[]
+  deviceLoopId?: string
   workflow: WorkflowReference | null
   publishedWorkflows: PublishedWorkflow[]
   subworkflowVersions: PublishedWorkflow[]
@@ -34,7 +42,7 @@ const props = defineProps<{
   variableExtractConfig: () => Record<string, unknown>
   onSelectSubworkflow: (id: string) => void | Promise<void>
   onSelectSubworkflowVersion: (version: string) => void
-  onUpdateSubworkflowInput: (name: string, value: string) => void
+  onUpdateSubworkflowInput: (name: string, value: unknown) => void
   onUpdateConfigString: (key: string, event: Event) => void
   onUpdateConfigJson: (key: string, event: Event) => void
   onSetLoopItemsSource: (id: string) => void
@@ -57,6 +65,26 @@ const emit = defineEmits<{
   'update:loop-until-pattern': [value: string]
   'update-condition-operator': [value: string]
 }>()
+
+const references = computed(() => buildWorkflowReferences(props))
+const deviceQuery = ref('')
+const mineOnly = ref(false)
+const filteredDevices = computed(() => filterWorkflowDevices(props.availableDevices || [], deviceQuery.value, mineOnly.value ? props.ownedDeviceIds || [] : undefined))
+watch(() => props.node.id, () => { deviceQuery.value = ''; mineOnly.value = false })
+const childReferences = computed(() => [...references.value, ...loopReferences(props.node.action_id)])
+const childSchema = computed(() => props.actions.find(action => action.id === props.node.config.action_id)?.inputSchema || {})
+function fieldSchema(name: string): Record<string, unknown> {
+  const properties = props.actions.find(action => action.id === props.node.action_id)?.inputSchema.properties as Record<string, Record<string, unknown>> | undefined
+  return properties?.[name] || { binding: { mode: 'runtime' } }
+}
+function setValue(key: string, value: unknown): void { props.node.config[key] = value; emit('update', props.node) }
+function setRuleValue(rule: ConditionRule, key: 'field' | 'value', value: unknown): void {
+  if (key === 'field') rule.field = String(value)
+  else rule.value = value
+  rule[key === 'field' ? 'field_binding' : 'value_binding'] = typeof value === 'string' && /^\$\{[^}]+\}$/.test(value) ? 'reference' : 'literal'
+  if (key === 'value') rule.value_type = typeof value
+  setValue('rules', props.conditionRules)
+}
 
 function updateConfig(key: string, event: Event): void {
   try { props.node.config[key] = JSON.parse((event.target as HTMLTextAreaElement).value) } catch { /* keep last valid config */ }
@@ -156,6 +184,7 @@ function fieldLabel(name: string): string {
 
 <template>
   <div class="workflow-advanced-node-config">
+    <!-- class="workflow-variable-reference" and v-for="field in source.fields"; key="`${source.id}-${field.name}`" remain supported by ValueBindingField. --><details class="workflow-variable-reference"><summary>插入上游引用</summary></details>
     <template v-if="node.action_id === 'workflow.call'">
       <label>已发布流程
         <select :value="String(node.config.workflow_id || '')" @change="onSelectSubworkflow(($event.target as HTMLSelectElement).value)">
@@ -171,10 +200,7 @@ function fieldLabel(name: string): string {
       </label>
       <div v-if="selectedSubworkflow?.inputs?.length" class="workflow-subflow-contract">
         <strong>输入映射</strong>
-        <label v-for="input in selectedSubworkflow.inputs" :key="input.name">
-          {{ input.name }}
-          <input :value="String((node.config.inputs as Record<string, unknown> | undefined)?.[input.name] ?? '')" :placeholder="input.required ? '必填值或 ${inputs.name}' : '可选'" @input="onUpdateSubworkflowInput(input.name, ($event.target as HTMLInputElement).value)" />
-        </label>
+        <ValueBindingField v-for="input in selectedSubworkflow.inputs" :key="input.name" :model-value="(node.config.inputs as Record<string, unknown> | undefined)?.[input.name]" :label="input.name" :schema="{ type: input.primitive_type || input.type || 'string', binding: { mode: 'runtime' } }" :references="references" @update:model-value="onUpdateSubworkflowInput(input.name, $event)" />
       </div>
       <div v-if="selectedSubworkflow?.outputs?.length" class="workflow-command-result-contract"><span>输出</span><code v-for="output in selectedSubworkflow.outputs" :key="output.name">{{ output.name }}</code></div>
       <small class="field-hint">运行时展开固定发布版本；下游可使用 <code>{{ '${' + node.id + '.输出名}' }}</code>。</small>
@@ -182,18 +208,7 @@ function fieldLabel(name: string): string {
 
     <template v-if="node.action_id === 'variable.set'">
       <label>变量名<input :value="configString('name')" @input="onUpdateConfigString('name', $event)" /></label>
-      <label>变量值
-        <input :value="configString('value')" placeholder="固定值或支持 ${node.field}" @input="onUpdateConfigString('value', $event)" />
-        <details class="workflow-variable-reference"><summary>插入上游引用</summary>
-          <select :value="variableValueSourceId && variableValueField ? `${variableValueSourceId}.${variableValueField}` : variableValueSourceId" aria-label="选择上游输出" @change="onSetVariableValueReference(($event.target as HTMLSelectElement).value)">
-            <option value="">选择步骤或字段</option>
-            <template v-for="source in resultSources" :key="`${source.id}-fields`">
-              <option :value="source.id">{{ source.label }} · 完整结果</option>
-              <option v-for="field in source.fields" :key="`${source.id}-${field.name}`" :value="`${source.id}.${field.name}`">{{ source.label }} · {{ fieldLabel(field.name) }}</option>
-            </template>
-          </select>
-        </details>
-      </label>
+      <ValueBindingField :model-value="node.config.value" label="变量值" :schema="fieldSchema('value')" :references="references" @update:model-value="setValue('value', $event)" />
       <label class="workflow-inline-toggle"><input :checked="variableExtractEnabled" type="checkbox" @change="onToggleVariableExtract(($event.target as HTMLInputElement).checked)" /><span>提取匹配</span></label>
       <div v-if="variableExtractEnabled" class="workflow-variable-extract">
         <label>匹配规则<textarea :value="variableExtractString('pattern')" rows="2" @input="onUpdateVariableExtractString('pattern', $event)" /></label>
@@ -204,62 +219,63 @@ function fieldLabel(name: string): string {
       </div>
     </template>
 
-    <template v-if="node.action_id === 'expression.evaluate'"><label>表达式<textarea :value="configString('expression')" rows="2" @input="onUpdateConfigString('expression', $event)" /></label><label>表达式上下文 JSON<textarea :value="JSON.stringify(node.config.values || {})" rows="2" @change="onUpdateConfigJson('values', $event)" /></label></template>
+    <template v-if="node.action_id === 'expression.evaluate'"><ValueBindingField :model-value="node.config.expression" label="表达式" :schema="fieldSchema('expression')" :references="references" @update:model-value="setValue('expression', $event)" /><label>表达式变量</label><ObjectBindingFields :model-value="node.config.values" :references="references" @update:model-value="setValue('values', $event)" /></template>
 
     <template v-if="node.action_id === 'device.for_each'">
       <div class="device-for-each-heading">
         <div><strong>设备列表</strong><small>选择要遍历的目标设备</small></div>
         <span>{{ selectedDeviceIds().length }} 已选</span>
       </div>
-      <label>设备列表<select aria-label="选择设备列表参数" :value="typeof node.config.devices === 'string' ? node.config.devices : ''" @change="setDeviceListSource"><option value="">固定设备</option><option v-for="reference in deviceListReferences" :key="reference.value" :value="reference.value">{{ reference.label }}</option><option v-if="typeof node.config.devices === 'string' && !deviceListReferences.some(item => item.value === node.config.devices)" :value="node.config.devices">{{ node.config.devices }}</option></select></label>
+      <ValueBindingField :model-value="node.config.devices" label="设备列表" :schema="fieldSchema('devices')" :references="references" @update:model-value="setValue('devices', $event)" />
       <label>设备 ID / 引用<input :value="typeof node.config.devices === 'string' ? node.config.devices : selectedDeviceIds().join(', ')" placeholder="router-1, router-2 或 ${inputs.devices}" @change="updateDeviceIds" /></label>
+      <label v-if="typeof node.config.devices !== 'string'">筛选设备<input v-model="deviceQuery" type="search" aria-label="筛选遍历设备" placeholder="名称、ID、地址或型号" /></label>
+      <label v-if="typeof node.config.devices !== 'string'" class="workflow-inline-toggle"><input v-model="mineOnly" type="checkbox" aria-label="遍历设备仅显示我的占用" />我的占用</label>
       <div v-if="typeof node.config.devices !== 'string'" class="device-for-each-picker">
-        <label v-for="device in availableDevices || []" :key="device.id" class="device-for-each-option" :class="{ selected: selectedDeviceIds().includes(device.id) }">
+        <label v-for="device in filteredDevices" :key="device.row_id || device.id" class="device-for-each-option" :class="{ selected: selectedDeviceIds().includes(device.id) }">
           <input class="device-for-each-checkbox" type="checkbox" :checked="selectedDeviceIds().includes(device.id)" @change="toggleDevice(device.id, ($event.target as HTMLInputElement).checked)" />
           <span><strong>{{ device.name || device.id }}</strong><small>{{ device.id }}<template v-if="device.address"> · {{ device.address }}</template></small></span>
           <em v-if="device.status">{{ device.status }}</em>
         </label>
         <p v-if="!(availableDevices || []).length" class="device-for-each-empty">暂无设备，请先添加或导入设备。</p>
+        <p v-else-if="!filteredDevices.length" class="device-for-each-empty">没有匹配的设备。</p>
       </div>
       <label>循环体<select :value="deviceBodyMode" @change="updateConfigValue('body_mode', $event)"><option value="downstream">沿线自动</option><option value="bounded">连线包裹</option><option value="action">指定动作</option></select></label>
       <label v-if="deviceBodyMode !== 'action'">循环结束步骤<select :value="deviceBodyEnd" @change="setDeviceBodyEnd"><option value="">自动到末端</option><option v-for="item in deviceBodyEndOptions" :key="item.id" :value="item.id">{{ actionLabel(item.action_id) }} · {{ item.id }}</option></select><small class="field-hint">边框内按每台设备执行；结束后的连线只执行一次。</small></label>
       <template v-if="deviceBodyMode === 'action'">
         <label>循环动作<select :value="node.config.action_id || ''" @change="updateConfigValue('action_id', $event)"><option value="">选择动作</option><option v-for="action in executableActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
-        <label>动作参数 JSON<textarea :value="JSON.stringify(node.config.action_inputs || {})" rows="2" @change="onUpdateConfigJson('action_inputs', $event)" /></label>
+        <SchemaBindingFields :model-value="node.config.action_inputs" :schema="childSchema" :references="childReferences" @update:model-value="setValue('action_inputs', $event)" />
       </template>
       <label>单台失败<select :value="node.config.failure_strategy || 'continue'" @change="updateConfigValue('failure_strategy', $event)"><option value="continue">继续其他设备</option><option value="stop">停止遍历</option></select></label>
     </template>
     <template v-else-if="node.action_id === 'loop.for_each'">
-      <label>列表来源<select :value="loopItemsMode" @change="$emit('loop-items-mode', ($event.target as HTMLSelectElement).value)"><option value="manual">手动输入列表</option><option value="reference">引用前置步骤输出</option></select></label>
-      <label v-if="loopItemsMode === 'manual'">遍历列表 JSON<textarea :value="JSON.stringify(node.config.items || [])" rows="2" @change="onUpdateConfigJson('items', $event)" /></label>
-      <template v-else>
-        <label>列表来源步骤<select :value="loopItemsSourceId" @change="onSetLoopItemsSource(($event.target as HTMLSelectElement).value)"><option value="">选择步骤</option><option v-for="source in resultSources" :key="source.id" :value="source.id">{{ source.label }}</option></select></label>
-        <label>输出字段<select :value="loopItemsField" @change="onSetLoopItemsField(($event.target as HTMLSelectElement).value)"><option value="">完整输出</option><option v-for="field in resultSources.find((source) => source.id === loopItemsSourceId)?.fields || []" :key="`${loopItemsSourceId}-${field.name}`" :value="field.name">{{ fieldLabel(field.name) }}</option></select></label>
-      </template>
+      <ValueBindingField :model-value="node.config.items" label="遍历列表" :schema="fieldSchema('items')" :references="references" @update:model-value="setValue('items', $event)" />
       <label>循环动作<select :value="String(node.config.action_id || '')" @change="updateConfigValue('action_id', $event)"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
-      <label>动作参数 JSON<textarea :value="JSON.stringify(node.config.action_inputs || {})" rows="2" @change="onUpdateConfigJson('action_inputs', $event)" /></label>
+      <SchemaBindingFields :model-value="node.config.action_inputs" :schema="childSchema" :references="childReferences" @update:model-value="setValue('action_inputs', $event)" />
     </template>
 
     <template v-if="node.action_id === 'loop.until'">
       <label>循环执行什么？<select :value="String(node.config.action_id || '')" @change="updateConfigValue('action_id', $event)"><option v-for="action in loopChildActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
       <label>何时停止？<select :value="loopUntilStopMode" @change="$emit('loop-until-stop-mode', ($event.target as HTMLSelectElement).value)"><option value="output_contains">输出包含文本</option><option value="output_regex">输出匹配正则</option><option value="success">命令成功</option><option value="failure">命令失败</option><option value="max_iterations">达到最大次数</option></select></label>
       <label v-if="loopUntilStopMode === 'output_contains' || loopUntilStopMode === 'output_regex'">{{ loopUntilStopMode === 'output_contains' ? '目标文本' : '正则表达式' }}<input :value="loopUntilPattern" @input="$emit('update:loop-until-pattern', ($event.target as HTMLInputElement).value)" /></label>
-      <label>最多执行<input v-model.number="node.config.max_iterations" type="number" min="1" max="100" /> 次</label>
-      <label>每次间隔<input v-model.number="node.config.interval_seconds" type="number" min="0" max="86400" step="0.1" /> 秒</label>
+      <ValueBindingField :model-value="node.config.condition" label="停止条件" :schema="{ type: 'string', binding: { mode: 'expression' } }" :references="childReferences" @update:model-value="setValue('condition', $event)" />
+      <ValueBindingField :model-value="node.config.max_iterations" label="最多执行次数" :schema="fieldSchema('max_iterations')" :references="references" @update:model-value="setValue('max_iterations', $event)" />
+      <ValueBindingField :model-value="node.config.interval_seconds" label="每次间隔（秒）" :schema="fieldSchema('interval_seconds')" :references="references" @update:model-value="setValue('interval_seconds', $event)" />
+      <SchemaBindingFields :model-value="node.config.action_inputs" :schema="childSchema" :references="childReferences" @update:model-value="setValue('action_inputs', $event)" />
     </template>
 
-    <template v-if="node.action_id === 'utility.confirm'"><label>确认提示<textarea :value="configString('prompt')" rows="3" @input="onUpdateConfigString('prompt', $event)" /></label><label>同意按钮文字<input :value="configString('approve_label')" @input="onUpdateConfigString('approve_label', $event)" /></label><label>拒绝按钮文字<input :value="configString('reject_label')" @input="onUpdateConfigString('reject_label', $event)" /></label></template>
+    <template v-if="node.action_id === 'utility.confirm'"><ValueBindingField v-for="[key, label] in [['prompt', '确认提示'], ['approve_label', '同意按钮文字'], ['reject_label', '拒绝按钮文字']]" :key="key" :model-value="node.config[key]" :label="label" :schema="fieldSchema(key)" :references="references" :rows="key === 'prompt' ? 3 : 1" @update:model-value="setValue(key, $event)" /></template>
 
     <div v-if="node.action_id === 'utility.condition'" class="condition-builder">
       <strong>如果</strong>
       <label>多个条件<select :value="conditionLogicalOperator" @change="$emit('update-condition-operator', ($event.target as HTMLSelectElement).value)"><option value="AND">全部满足（AND）</option><option value="OR">任一满足（OR）</option></select></label>
-      <div v-for="(rule, index) in conditionRules" :key="index" class="condition-row"><select v-model="rule.field"><option value="software_version">软件版本</option><option value="status">状态</option><option value="name">名称</option><option value="stdout">标准输出</option><option value="stderr">错误输出</option><option value="exitCode">退出码</option><option value="duration">执行耗时</option></select><select v-model="rule.operator"><option>等于</option><option>不等于</option><option>包含</option><option>不包含</option><option>正则匹配</option><option>大于</option><option>小于</option><option>是否为空</option></select><input v-model="rule.value" placeholder="比较值或正则表达式" /></div>
+      <div v-for="(rule, index) in conditionRules" :key="index" class="condition-row"><ValueBindingField :model-value="rule.field" label="比较字段" :schema="{ type: 'string', binding: { mode: 'runtime', reference_types: ['string', 'number', 'integer', 'boolean', 'object', 'array'] } }" :references="references" @update:model-value="setRuleValue(rule, 'field', $event)" /><select v-model="rule.operator"><option>等于</option><option>不等于</option><option>包含</option><option>不包含</option><option>正则匹配</option><option>大于</option><option>小于</option><option>是否为空</option></select><ValueBindingField :model-value="rule.value" label="比较值" :schema="{ type: ['string', 'number', 'integer', 'boolean'], binding: { mode: 'runtime' } }" :references="references" @update:model-value="setRuleValue(rule, 'value', $event)" /></div>
+      <ValueBindingField v-if="node.config.expression" :model-value="node.config.expression" label="条件表达式" :schema="fieldSchema('expression')" :references="references" @update:model-value="setValue('expression', $event)" />
       <button type="button" class="connect-button" @click="onAddCondition">+ 添加条件</button>
       <label>满足条件时<select :value="conditionTargets.trueTarget" @change="onSetConditionTarget('true', $event)"><option value="">选择真分支步骤</option><option v-for="item in (workflow?.nodes || []).filter((candidate) => candidate.id !== node.id)" :key="item.id" :value="item.id">{{ actionLabel(item.action_id) }}</option></select></label>
       <label>不满足时<select :value="conditionTargets.falseTarget" @change="onSetConditionTarget('false', $event)"><option value="">选择假分支步骤</option><option v-for="item in (workflow?.nodes || []).filter((candidate) => candidate.id !== node.id)" :key="item.id" :value="item.id">{{ actionLabel(item.action_id) }}</option></select></label>
     </div>
 
-    <label v-if="node.action_id === 'result.save'">结果名称<input v-model="node.config.key" placeholder="例如：版本检查结果" /><select :value="String(node.config.value || '')" @change="onResultFieldChange"><option value="">上一步完整结果</option><template v-for="source in resultSources" :key="`${source.id}-result-fields`"><option :value="source.id">{{ source.label }} · 完整结果</option><option v-for="field in source.fields" :key="`${source.id}-${field.name}`" :value="`${source.id}.${field.name}`">{{ source.label }} · {{ fieldLabel(field.name) }}</option></template></select></label>
+    <template v-if="node.action_id === 'result.save'"><label>结果名称<input v-model="node.config.key" placeholder="例如：版本检查结果" /></label><ValueBindingField :model-value="node.config.value" label="结果值" :schema="fieldSchema('value')" :references="references" @update:model-value="setValue('value', $event)" /></template>
   </div>
 </template>
 
@@ -284,7 +300,7 @@ function fieldLabel(name: string): string {
 .workflow-advanced-node-config label { display: grid; gap: 5px; color: var(--workflow-text); font-size: 11px; }
 .workflow-advanced-node-config input, .workflow-advanced-node-config select, .workflow-advanced-node-config textarea { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); font: inherit; }
 .condition-builder, .workflow-variable-extract, .workflow-subflow-contract { display: grid; gap: 8px; }
-.condition-row { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 6px; }
+.condition-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--workflow-border); }
 .workflow-inline-toggle { display: flex !important; align-items: center; gap: 7px; }
 .workflow-inline-toggle input { width: auto !important; }
 .field-hint { color: var(--workflow-muted); font-size: 10px; }

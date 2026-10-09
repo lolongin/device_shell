@@ -203,7 +203,34 @@ def _schemas_compatible(
         return True
     if "number" in expected_types and "integer" in actual_types:
         actual_types.add("number")
+    if "array" in expected_types and "devices" in actual_types:
+        actual_types.add("array")
+    if "array" in actual_types and "devices" in expected_types:
+        actual_types.add("devices")
+    if "string" in expected_types:
+        if "file" in actual_types or "device" in actual_types:
+            actual_types.add("string")
+    if "string" in actual_types:
+        if "file" in expected_types or "device" in expected_types:
+            expected_types.add("string")
     return bool(expected_types & actual_types)
+
+
+def _binding_schema(schema: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(schema, Mapping):
+        return None
+    binding = schema.get("binding")
+    return binding if isinstance(binding, Mapping) else None
+
+
+def _reference_expected_schema(schema: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    binding = _binding_schema(schema)
+    if not binding:
+        return schema
+    reference_types = binding.get("reference_types")
+    if isinstance(reference_types, (list, tuple)) and reference_types:
+        return {"type": tuple(str(item) for item in reference_types)}
+    return schema
 
 
 _SUPPORTED_BRANCH_LABELS = frozenset({"true", "then", "yes", "1", "真", "是", "false", "else", "no", "0", "假", "否"})
@@ -686,7 +713,7 @@ def validate_workflow(
         source_settings = node_settings(node_by_id[source_id])
         source_value = source_settings.get("value")
         if _is_exact_reference(source_value):
-            return reference_schema(source_value, visible, resolving | {alias})[0]
+            return reference_schema(source_value[2:-1], visible, resolving | {alias})[0]
         return _schema_from_value(source_value)
 
     def reference_schema(
@@ -817,7 +844,17 @@ def validate_workflow(
                 )
         elif isinstance(value, str):
             found_refs = refs.findall(value)
-            if found_refs and not allow_embedded_reference and re.fullmatch(r"\$\{[^}]+\}", value) is None:
+            binding = _binding_schema(expected_schema)
+            binding_mode = str(binding.get("mode") or "static").casefold() if binding else "runtime"
+            static_binding = binding_mode == "static"
+            embedded_allowed = allow_embedded_reference or binding_mode in {"template", "expression"}
+            if found_refs and static_binding:
+                errors.append(ValidationIssue(
+                    "static_binding_reference",
+                    f"static config field cannot use variable reference: {value}",
+                    node_id,
+                ))
+            if found_refs and not embedded_allowed and re.fullmatch(r"\$\{[^}]+\}", value) is None:
                 errors.append(ValidationIssue("embedded_variable_ref", "variable references must occupy the full value", node_id))
             for ref in found_refs:
                 root = ref.split(".", 1)[0]
@@ -842,8 +879,9 @@ def validate_workflow(
                     )
                     errors.append(ValidationIssue(code, reference_error, node_id))
                     continue
-                if re.fullmatch(r"\$\{[^}]+\}", value) and expected_schema is not None:
-                    if not _schemas_compatible(expected_schema, source_schema):
+                if re.fullmatch(r"\$\{[^}]+\}", value) and expected_schema is not None and not static_binding:
+                    expected_reference_schema = _reference_expected_schema(expected_schema)
+                    if not _schemas_compatible(expected_reference_schema, source_schema):
                         errors.append(ValidationIssue(
                             "invalid_config_type",
                             f"config value reference {value} resolves to {source_schema.get('type') if isinstance(source_schema, Mapping) else 'an unknown type'}, expected {expected_schema.get('type')}",

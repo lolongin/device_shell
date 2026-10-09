@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from device_tui.application import DeviceTarget, TaskCreate
 from device_tui.application.tasking.protocol import (
@@ -1542,9 +1542,15 @@ async def save_workflow_definition(workflow_id: str, payload: Mapping[str, Any],
 
 
 @router.delete("/{workflow_id}", status_code=204)
-async def delete_workflow_definition(workflow_id: str, ctx=Depends(get_context)) -> None:
+async def delete_workflow_definition(workflow_id: str, preserve_history: bool = Query(default=False), ctx=Depends(get_context)) -> None:
     try:
-        ctx.desktop.workflow_definitions.delete(workflow_id)
+        if preserve_history:
+            delete_preserving_references = getattr(ctx.desktop.workflow_definitions, "delete_preserving_references", None)
+            if not callable(delete_preserving_references):
+                raise ApplicationConflictError("当前后端不支持保留任务历史删除流程")
+            delete_preserving_references(workflow_id)
+        else:
+            ctx.desktop.workflow_definitions.delete(workflow_id)
     except KeyError as exc:
         raise ResourceNotFoundError(str(exc)) from exc
     except ValueError as exc:

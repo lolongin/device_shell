@@ -2,6 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { FileUp } from 'lucide-vue-next'
 import type { NodeConfigProps, NodeConfigEmits } from './types'
+import ValueBindingField from './ValueBindingField.vue'
+import { buildWorkflowReferences, referenceCompatible } from '../../composables/workflowReferences'
 
 const props = defineProps<NodeConfigProps>()
 const emit = defineEmits<NodeConfigEmits & { 'choose-upload-source': [] }>()
@@ -27,7 +29,6 @@ const deviceReferences = computed(() => {
 const deviceReference = computed(() => /^\$\{[^}]+\}$/.test(getConfigString('device_id')))
 const deviceSelection = computed(() => {
   if (customDeviceReference.value) return '__reference'
-  if (deviceLoopBody.value) return '${device_id}'
   return getConfigString('device_id')
 })
 
@@ -36,22 +37,17 @@ watch(() => props.node.id, () => { customDeviceReference.value = false })
 watch([deviceLoopBody, () => props.node.id, () => props.node.action_id], ([inDeviceLoop]) => {
   if (!inDeviceLoop || props.node.action_id !== 'device.connect') return
   customDeviceReference.value = false
-  if (getConfigString('device_id') !== '${device_id}') updateConfig('device_id', '${device_id}')
+  if (!getConfigString('device_id')) updateConfig('device_id', '${device_id}')
 }, { immediate: true })
 
 function selectDevice(value: string): void {
-  if (deviceLoopBody.value) {
-    customDeviceReference.value = false
-    updateConfig('device_id', '${device_id}')
-    return
-  }
   customDeviceReference.value = value === '__reference'
   if (customDeviceReference.value) {
     if (!deviceReference.value) updateConfig('device_id', '${device.id}')
   } else updateConfig('device_id', value)
 }
 
-type SchemaProperty = { name: string; required: boolean; type: string; enum?: unknown[]; description?: string }
+type SchemaProperty = { name: string; required: boolean; type: string; enum?: unknown[]; description?: string; schema: Record<string, unknown>; bindingMode: string }
 type SchemaReference = { reference: string; label: string; hint: string }
 const schemaProperties = computed<SchemaProperty[]>(() => {
   const schema = props.actions?.find((item) => item.id === props.node.action_id)?.inputSchema
@@ -67,10 +63,20 @@ const schemaProperties = computed<SchemaProperty[]>(() => {
       type: typeof rawType === 'string' ? rawType : 'string',
       enum: Array.isArray(definition.enum) ? definition.enum : undefined,
       description: typeof definition.description === 'string' ? definition.description : undefined,
+      schema: definition,
+      bindingMode: String((definition.binding as { mode?: string } | undefined)?.mode || 'static'),
     }
   })
 })
 const optionalSchemaFieldCount = computed(() => schemaProperties.value.filter((field) => !field.required).length)
+const workflowReferences = computed(() => buildWorkflowReferences(props))
+const deviceIdReferences = computed(() => workflowReferences.value.filter(reference => referenceCompatible(fieldSchema('device_id'), reference)))
+function selectDeviceBinding(value: string): void {
+  updateConfig('device_id', value)
+}
+function fieldSchema(name: string): Record<string, unknown> {
+  return schemaProperties.value.find(field => field.name === name)?.schema || { type: name === 'device_id' ? ['string', 'object'] : name === 'seconds' || name === 'timeout_seconds' ? 'number' : 'string', binding: { mode: 'runtime' } }
+}
 
 watch(() => props.node.action_id, () => {
   showOptionalSchemaFields.value = false
@@ -268,11 +274,17 @@ function enumLabel(value: unknown): string {
     <template v-if="node.action_id === 'device.select'">
       <label>
         目标设备
-        <select :value="String(node.config.device_id || '')" @change="updateConfigString('device_id', $event)">
-          <option value="">选择设备</option>
+        <select :value="String(node.config.device_id || '')" aria-label="选择设备或变量" @change="selectDeviceBinding(eventValue($event))">
+          <option value="">选择固定设备或变量</option>
+          <optgroup label="固定设备">
           <option v-for="device in availableDevices" :key="device.row_id || device.id" :value="device.id">
             {{ device.name }} ({{ device.address }})
           </option>
+          </optgroup>
+          <optgroup v-for="source in [{ id: 'input', label: '流程输入' }, { id: 'node', label: '上游步骤输出' }, { id: 'variable', label: '流程变量' }, { id: 'loop', label: '循环上下文' }]" :key="source.id" :label="source.label">
+            <option v-for="reference in deviceIdReferences.filter(item => item.source === source.id)" :key="reference.reference" :value="`\${${reference.reference}}`">{{ reference.label }} · {{ reference.reference }}</option>
+          </optgroup>
+          <option v-if="typeof node.config.device_id === 'string' && node.config.device_id.startsWith('${') && !deviceIdReferences.some(item => `\${${item.reference}}` === node.config.device_id)" :value="node.config.device_id">当前引用 · {{ node.config.device_id }}</option>
         </select>
       </label>
     </template>
@@ -292,19 +304,12 @@ function enumLabel(value: unknown): string {
           </optgroup>
           <option value="__reference">自定义引用</option>
         </select>
-        <small v-if="deviceLoopBody" class="field-hint">此连接位于遍历设备范围内，将使用每一轮的 <code>${{ '{' }}device_id{{ '}' }}</code>。</small>
+        <small v-if="deviceLoopBody && getConfigString('device_id') === '${device_id}'" class="field-hint">当前循环设备 · <code>${{ '{' }}device_id{{ '}' }}</code></small>
         <input v-if="customDeviceReference" :value="getConfigString('device_id')" aria-label="设备参数引用" placeholder="${inputs.device_id}" @input="updateConfigString('device_id', $event)" />
       </label>
       <label>
         超时时间
-        <input
-          v-if="Number(node.config.timeout_seconds ?? 30) > 0"
-          :value="node.config.timeout_seconds ?? 30"
-          type="number"
-          min="1"
-          max="300"
-          @input="updateConfig('timeout_seconds', Number(eventValue($event)))"
-        />
+        <ValueBindingField v-model="node.config.timeout_seconds" label="连接超时时间" :schema="fieldSchema('timeout_seconds')" :references="workflowReferences" :rows="1" placeholder="30" />
         <span v-if="Number(node.config.timeout_seconds ?? 30) > 0" class="field-hint">秒</span>
       </label>
       <label class="workflow-inline-toggle"><input type="checkbox" :checked="Number(node.config.timeout_seconds ?? 30) === 0" @change="updateConfig('timeout_seconds', ($event.target as HTMLInputElement).checked ? 0 : 30)" />永不超时</label>
@@ -330,13 +335,7 @@ function enumLabel(value: unknown): string {
     <template v-else-if="node.action_id === 'utility.wait'">
       <label>
         等待秒数
-        <input
-          :value="node.config.seconds || 5"
-          type="number"
-          min="1"
-          max="3600"
-          @input="updateConfig('seconds', Number(eventValue($event)))"
-        />
+        <ValueBindingField v-model="node.config.seconds" label="等待秒数" :schema="fieldSchema('seconds')" :references="workflowReferences" :rows="1" placeholder="5" />
       </label>
     </template>
 
@@ -407,19 +406,11 @@ function enumLabel(value: unknown): string {
     <template v-else-if="node.action_id === 'file.download'">
       <label>
         设备源路径
-        <input
-          :value="getConfigString('source')"
-          placeholder="例如：flash:/image.cc"
-          @input="updateConfigString('source', $event)"
-        />
+        <ValueBindingField v-model="node.config.source" label="设备源路径" :schema="fieldSchema('source')" :references="workflowReferences" :rows="1" placeholder="例如：flash:/image.cc" />
       </label>
       <label>
         本地保存位置
-        <input
-          :value="getConfigString('destination')"
-          placeholder="共享目录中的相对路径"
-          @input="updateConfigString('destination', $event)"
-        />
+        <ValueBindingField v-model="node.config.destination" label="本地保存位置" :schema="fieldSchema('destination')" :references="workflowReferences" :rows="1" placeholder="共享目录中的相对路径" />
       </label>
     </template>
 
@@ -429,17 +420,11 @@ function enumLabel(value: unknown): string {
       </button>
       <label v-for="field in schemaProperties" v-show="field.required || showOptionalSchemaFields" :key="field.name">
         {{ fieldLabel(field.name) }}<em v-if="field.required">必填</em>
-        <select
-          v-if="schemaReferenceCandidates(field).length"
-          :value="schemaReference(field)"
-          :aria-label="`选择${fieldLabel(field.name)}来源`"
-          @change="setSchemaReference(field, eventValue($event))"
-        >
-          <option value="">固定值</option>
-          <option v-for="candidate in schemaReferenceCandidates(field)" :key="`${field.name}-${candidate.reference}`" :value="candidate.reference">{{ candidate.label }} · {{ candidate.hint }}</option>
-        </select>
-        <code v-if="schemaReference(field)" class="workflow-upload-reference">{{ schemaValue(field) }}</code>
-        <template v-if="field.name === 'timeout_seconds'">
+        <!-- Runtime fields use ValueBindingField; static fields stay in the schema editor below. -->
+        <template v-if="field.bindingMode !== 'static'">
+          <ValueBindingField v-model="node.config[field.name]" :label="fieldLabel(field.name)" :schema="field.schema" :references="workflowReferences" :rows="1" />
+        </template>
+        <template v-else-if="field.name === 'timeout_seconds'">
           <input v-if="!schemaReference(field) && Number(node.config.timeout_seconds || 0) > 0" :value="schemaValue(field)" type="number" min="1" max="86400" @input="updateSchemaField(field, $event)" />
           <label class="workflow-inline-toggle"><input type="checkbox" :checked="Number(node.config.timeout_seconds || 0) === 0" @change="updateConfig('timeout_seconds', ($event.target as HTMLInputElement).checked ? 0 : 30)" />永不超时</label>
         </template>

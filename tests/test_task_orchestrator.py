@@ -39,6 +39,28 @@ def test_script_input_json_resolves_nested_complete_references() -> None:
     assert resolved["input_json"] == {"message": "router-1", "count": 2}
 
 
+def test_device_select_resolves_workflow_device_object_and_keeps_serial_session() -> None:
+    from device_tui.application.workflow_plugins.utility import DeviceSelectActivityHandler
+    from device_tui.framework import ActivityContext, ActivityInvocation, ActivityStatus
+
+    task = TaskRun(
+        "bound-selection", "plan", "router-1",
+        inputs={"target": {"id": "router-1"}},
+        context={"target": {"device_id": "router-1", "session_id": "serial-session", "protocol": "serial"}},
+    )
+    node = WorkflowNode("select", "device.select", input_mapping={"device_id": "${inputs.target}"})
+    resolved = TaskOrchestrator._resolve_node_inputs(node, task.inputs, {}, context=task.context)
+    device_id, context = TaskOrchestrator._node_target(task, resolved)
+    invocation = ActivityInvocation("device.select", "selection", "run", inputs=resolved, context=context)
+    result = asyncio.run(DeviceSelectActivityHandler().execute(
+        invocation, ActivityContext(WorkflowRun("run", "wf", "1", device_id), invocation), lambda _event: None,
+    ))
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["device_id"] == "router-1"
+    assert context["target"]["session_id"] == "serial-session"
+    assert context["target"]["protocol"] == "serial"
+
+
 class FlakyHandler:
     def __init__(self) -> None:
         self.calls = 0
@@ -510,6 +532,30 @@ def test_task_orchestrator_condition_rules_accept_english_operator_aliases() -> 
 
     result = asyncio.run(orchestrator.execute(task.id, plan))
 
+    assert result.status == TaskRunStatus.SUCCEEDED
+    assert "next" in result.node_runs
+
+
+def test_task_orchestrator_resolves_condition_rule_bindings() -> None:
+    actions = ActionRegistry()
+    actions.register(Handler(), item_id="test.action")
+    orchestrator = TaskOrchestrator(WorkflowRuntime(actions=actions), Builder())
+    condition = {
+        "rules": [{
+            "field": "${inputs.actual}",
+            "field_binding": "reference",
+            "operator": "greater_than",
+            "value": "${inputs.minimum}",
+            "value_binding": "reference",
+        }],
+        "expected": True,
+    }
+    plan = TaskPlan(
+        id="bound-condition-plan",
+        nodes=(WorkflowNode("next", "test.action", run_if=condition),),
+    )
+    task = orchestrator.start(plan, device_id="d1", inputs={"actual": 5, "minimum": 3})
+    result = asyncio.run(orchestrator.execute(task.id, plan))
     assert result.status == TaskRunStatus.SUCCEEDED
     assert "next" in result.node_runs
 

@@ -665,6 +665,40 @@ def test_validation_accepts_known_workflow_input_reference_path() -> None:
     assert "invalid_config_type" not in codes
 
 
+def test_validation_rejects_static_reference_and_accepts_runtime_number_reference() -> None:
+    static = WorkflowDraft(
+        "static", "Static",
+        inputs=(WorkflowInput("device_id", type="string"),),
+        nodes=(WorkflowNode("select", "device.select", {"device_id": "${inputs.device_id}"}),),
+    )
+    dynamic = WorkflowDraft(
+        "dynamic", "Dynamic",
+        inputs=(WorkflowInput("seconds", type="number"),),
+        nodes=(WorkflowNode("wait", "utility.wait", {"seconds": "${inputs.seconds}"}),),
+    )
+    assert "static_binding_reference" not in {item.code for item in issues(static)}
+    assert "invalid_config_type" not in {item.code for item in issues(dynamic)}
+
+
+def test_validation_checks_devices_reference_as_array() -> None:
+    draft = WorkflowDraft(
+        "devices", "Devices",
+        inputs=(WorkflowInput("targets", type="devices"),),
+        nodes=(WorkflowNode("loop", "device.for_each", {"devices": "${inputs.targets}", "action_id": "result.save"}),),
+    )
+    assert "invalid_config_type" not in {item.code for item in issues(draft)}
+
+
+@pytest.mark.parametrize("input_type", ["string", "device", "object"])
+def test_device_select_accepts_workflow_input_bindings(input_type: str) -> None:
+    draft = WorkflowDraft(
+        "bound-device", "Bound device",
+        inputs=(WorkflowInput("target", type=input_type),),
+        nodes=(WorkflowNode("select", "device.select", {"device_id": "${inputs.target}"}),),
+    )
+    assert not issues(draft)
+
+
 def test_catalog_marks_confirmation_prompt_as_required() -> None:
     spec = CATALOG.get("utility.confirm")
 

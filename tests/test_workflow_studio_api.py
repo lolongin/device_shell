@@ -491,6 +491,34 @@ def test_workflow_published_versions_can_be_deleted_even_when_referenced() -> No
         assert client.get(f"/api/v1/workflow-definitions/{workflow_id}/versions").json()["versions"] == []
 
 
+def test_workflow_definition_can_be_deleted_while_preserving_referenced_task_history() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Delete with history",
+                "nodes": [{"id": "command", "action_id": "device.command", "config": {"command": "show version"}}],
+            },
+        ).json()["workflow"]
+        workflow_id = created["id"]
+        published = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()["workflow"]
+        started = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={"device_id": "sim-1", "protocol": "simulated", "version": published["version"]},
+        )
+        assert started.status_code == 200
+        task_id = started.json()["task"]["id"]
+
+        blocked = client.delete(f"/api/v1/workflow-definitions/{workflow_id}")
+        assert blocked.status_code == 409
+
+        deleted = client.delete(f"/api/v1/workflow-definitions/{workflow_id}?preserve_history=true")
+
+        assert deleted.status_code == 204
+        assert all(item["id"] != workflow_id for item in client.get("/api/v1/workflow-definitions").json()["workflows"])
+        assert client.get(f"/api/v1/tasks/{task_id}").status_code == 200
+
+
 def test_workflow_published_versions_can_be_deleted_in_bulk() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post(

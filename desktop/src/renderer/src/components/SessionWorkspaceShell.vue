@@ -269,7 +269,7 @@ defineExpose({
   </div>
   <QuickActionsBar
     ref="quickActionsBarRef"
-    @run-workflow="openWorkflowRunDialog(workspace.selectedDeviceId, $event.workflowId, undefined, $event.autoRun)"
+    @run-workflow="openWorkflowRunDialog($event.deviceId, $event.workflowId, undefined, $event.autoRun, $event.sessionId)"
   />
   <CommandWorkspace />
 </main>

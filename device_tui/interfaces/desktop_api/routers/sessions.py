@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from device_tui.application import ConnectionTarget, ControlContext, DeviceTarget, ResourceNotFoundError, SessionCredential
+from device_tui.application import ConnectionTarget, ControlContext, DeviceTarget, ResourceNotFoundError, SessionCredential, UnsupportedOperationError
 
 from ..dependencies import authorize, get_context
 from ..models import (
@@ -58,7 +58,12 @@ async def device_session_credentials(
     ctx=Depends(get_context),
 ) -> DeviceCredentialResponse:
     """Supply defaults to the isolated Electron credential prompt only."""
-    target = ctx.desktop.credentials.resolve(request.device_id, request.kind)
+    try:
+        target = ctx.desktop.credentials.resolve(request.device_id, request.kind)
+    except UnsupportedOperationError:
+        # An endpoint-less or credential-less sample/device is still valid for
+        # the isolated prompt; the user can provide a one-time credential.
+        return DeviceCredentialResponse()
     if not target.credentials:
         return DeviceCredentialResponse()
     # SSH may have fallback candidates (root/root and root/huawei).  The

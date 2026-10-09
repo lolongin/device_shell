@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, Braces, CheckCircle2, ChevronDown, Code2, Copy, Download, FileUp, GitBranch, GripVertical, LayoutPanelLeft, MoreHorizontal, Play, Plus, Redo, RotateCcw, Save, Trash2, Undo, Workflow, X } from 'lucide-vue-next'
-import { desktopApi } from '../transport/api'
+import { BackendApiError, desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { DeviceSummary, TaskRecord, WorkflowActionCatalogEntry, WorkflowScript } from '../types'
 import WorkflowCatalogPanel from './workflow/WorkflowCatalogPanel.vue'
@@ -122,6 +122,7 @@ const createName = ref('')
 const createDescription = ref('')
 const creating = ref(false)
 const deletingTemplateId = ref('')
+const deletingWorkflowId = ref('')
 const showImportPreview = ref(false)
 const importing = ref(false)
 const importFilename = ref('')
@@ -939,18 +940,42 @@ async function publish(): Promise<void> {
   await workflowPersistence.publish()
 }
 
+async function removeWorkflow(workflow: WorkflowItem): Promise<void> {
+  if (deletingWorkflowId.value) return
+  const isSelected = selected.value?.id === workflow.id
+  if (isSelected && (hasUnsavedChanges.value || hasUnsavedScriptChanges.value) && !window.confirm('当前流程有未保存修改，删除后无法恢复。确定继续吗？')) return
+  if (!window.confirm(`确定删除流程“${workflow.name}”吗？`)) return
+
+  deletingWorkflowId.value = workflow.id
+  error.value = ''
+  try {
+    try {
+      await desktopApi.deleteWorkflowDefinition(workflow.id)
+    } catch (cause) {
+      if (!(cause instanceof BackendApiError) || cause.status !== 409) throw cause
+      if (!window.confirm('该流程有已被任务引用的发布版本。继续删除会保留任务历史，但移除该流程及其版本列表。已创建的任务不会受影响。')) return
+      await desktopApi.deleteWorkflowDefinition(workflow.id, { preserveHistory: true })
+    }
+    if (isSelected) {
+      selected.value = null
+      selectedNode.value = null
+      flowTestRequestId += 1
+      flowTestOpen.value = false
+      flowTestTask.value = null
+      savedWorkflowSnapshot.value = ''
+    }
+    await refresh()
+    if (isSelected && workflows.value[0]) selectWorkflow(workflows.value[0], true)
+    runMessage.value = `已删除流程“${workflow.name}”`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    deletingWorkflowId.value = ''
+  }
+}
+
 async function remove(): Promise<void> {
-  if (!selected.value) return
-  if (hasUnsavedChanges.value && !window.confirm('当前流程有未保存修改，删除后无法恢复。确定继续吗？')) return
-  if (!window.confirm(`确定删除流程“${selected.value.name}”吗？`)) return
-  await desktopApi.deleteWorkflowDefinition(selected.value.id)
-  selected.value = null
-  selectedNode.value = null
-  flowTestRequestId += 1
-  flowTestOpen.value = false
-  flowTestTask.value = null
-  savedWorkflowSnapshot.value = ''
-  await refresh()
+  if (selected.value) await removeWorkflow(selected.value)
 }
 
 function requestClose(): boolean {
@@ -1143,7 +1168,7 @@ watch(
         <button type="button" :disabled="!canSave" @click="save"><Save :size="14" />{{ saving ? '保存中…' : '保存草稿' }}</button>
         <button type="button" :disabled="!selected" @click="validate"><CheckCircle2 :size="14" />检查流程</button>
       </div>
-      <div class="workflow-run-target"><WorkflowTargetPicker v-model="selectedDeviceIds" :devices="workflowTargetOptions" /></div>
+      <div class="workflow-run-target"><WorkflowTargetPicker v-model="selectedDeviceIds" :devices="workflowTargetOptions" :owned-device-ids="workspace.ownedDeviceIds" /></div>
       <div class="toolbar-group toolbar-group-actions">
         <details class="workflow-run-menu">
           <summary><Play :size="14" />运行<ChevronDown :size="12" /></summary>
@@ -1183,9 +1208,21 @@ watch(
     <div v-else class="workflow-library-body">
       <aside class="workflow-list-pane">
         <div class="workflow-list-title"><span>我的流程</span><small>{{ workflows.length }} 个</small></div>
-        <button v-for="item in workflows" :key="item.id" type="button" :class="{ active: selected?.id === item.id }" @click="selectWorkflow(item)">
-          <strong>{{ item.name }}</strong><small>{{ item.description || '暂无描述' }}</small><em>v{{ item.version || '草稿' }}</em>
-        </button>
+        <div v-for="item in workflows" :key="item.id" class="workflow-list-item" :class="{ active: selected?.id === item.id }">
+          <button type="button" class="workflow-list-select" :class="{ active: selected?.id === item.id }" @click="selectWorkflow(item)">
+            <strong>{{ item.name }}</strong><small>{{ item.description || '暂无描述' }}</small><em>v{{ item.version || '草稿' }}</em>
+          </button>
+          <button
+            type="button"
+            class="workflow-list-delete"
+            :disabled="deletingWorkflowId === item.id"
+            :aria-label="`删除流程 ${item.name}`"
+            title="删除流程"
+            @click.stop="removeWorkflow(item)"
+          >
+            <Trash2 :size="14" />
+          </button>
+        </div>
         <p v-if="!loading && !workflows.length" class="workflow-empty-list">还没有流程<br /><span>点击“新建流程”开始</span></p>
         <button v-if="selected" type="button" class="workflow-version-toggle" :aria-expanded="showPublishedVersions" @click="showPublishedVersions = !showPublishedVersions">
           <span><ChevronDown :size="13" :class="{ rotated: showPublishedVersions }" />发布版本</span><small>{{ publishedVersions.length }}</small>
@@ -1268,6 +1305,7 @@ watch(
           :selected-catalog-action="selectedCatalogAction"
           :selected-node="selectedNode"
           :available-devices="availableDevices"
+          :owned-device-ids="workspace.ownedDeviceIds"
           :workflow-inputs="selected.inputs || []"
           :command-references="commandReferences"
           :result-sources="resultSources"

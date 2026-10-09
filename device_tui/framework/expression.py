@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import operator
+import re
 from typing import Any, Mapping
 
 
@@ -26,10 +27,31 @@ _CMPOPS = {
 }
 _MAX_EXPRESSION_LENGTH = 4096
 _MAX_AST_NODES = 200
+_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)\}")
+
+
+def _bind_references(expression: str, values: Mapping[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
+    bound = dict(values or {})
+
+    def replace(match: re.Match[str]) -> str:
+        name = f"bindingref{len(bound)}"
+        if values is not None:
+            current: Any = values
+            for segment in match.group(1).split("."):
+                if isinstance(current, Mapping):
+                    current = current[segment]
+                elif isinstance(current, (list, tuple)) and segment.isdigit():
+                    current = current[int(segment)]
+                else:
+                    raise ValueError(f"unresolved expression reference: {match.group(0)}")
+            bound[name] = current
+        return name
+
+    return _REFERENCE.sub(replace, expression), bound
 
 
 def validate_expression(expression: str) -> None:
-    source = str(expression).strip()
+    source, _ = _bind_references(str(expression).strip())
     if not source or len(source) > _MAX_EXPRESSION_LENGTH:
         raise ValueError("unsupported expression syntax")
     try:
@@ -42,12 +64,12 @@ def validate_expression(expression: str) -> None:
 
 
 def evaluate_expression(expression: str, values: Mapping[str, Any]) -> Any:
-    source = str(expression).strip()
-    validate_expression(source)
-    tree = ast.parse(source, mode="eval")
     try:
-        return _evaluate(tree.body, values)
-    except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        source, bound = _bind_references(str(expression).strip(), values)
+        validate_expression(source)
+        tree = ast.parse(source, mode="eval")
+        return _evaluate(tree.body, bound)
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("unsupported expression"):
             raise
         raise ValueError(f"unsupported expression: {expression}") from exc

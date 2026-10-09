@@ -21,13 +21,23 @@ export type CommandReference = {
   reference: string
   label: string
   hint: string
+  type?: string
+}
+
+export type WorkflowValueReference = {
+  reference: string
+  label: string
+  source: 'input' | 'node' | 'variable' | 'loop' | 'context'
+  type: string
+  scope: string
+  hint?: string
 }
 
 export type ResultSource = {
   id: string
   actionId?: string
   label: string
-  fields: Array<{ name: string; label: string }>
+  fields: Array<{ name: string; label: string; schema?: Record<string, unknown> }>
 }
 
 export type ActionItem = {

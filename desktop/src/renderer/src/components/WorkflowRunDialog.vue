@@ -6,8 +6,11 @@ import { desktopApi } from '../transport/api'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { PublishedWorkflowDefinition, WorkflowRuntimeInput } from '../types'
 import { createWorkflowPlatformAdapter } from '../composables/useWorkflowPlatform'
+import { sessionKindLabel } from '../app/session-display'
+import { sessionStatusLabel } from '../sessionStatus'
+import { filterWorkflowDevices } from './workflow/device-filter'
 
-const props = defineProps<{ initialDeviceId?: string; initialWorkflowId?: string; initialVersion?: string | number; autoRun?: boolean }>()
+const props = defineProps<{ initialDeviceId?: string; initialSessionId?: string; initialWorkflowId?: string; initialVersion?: string | number; autoRun?: boolean }>()
 const emit = defineEmits<{ close: []; openStudio: [] }>()
 const workspace = useWorkspaceStore()
 const platform = createWorkflowPlatformAdapter(() => workspace.devices)
@@ -18,9 +21,16 @@ const loading = ref(true)
 const running = ref(false)
 const error = ref('')
 const query = ref('')
+const targetDeviceQuery = ref('')
+const targetMineOnly = ref(false)
+const inputDeviceQueries = reactive<Record<string, string>>({})
+const inputMineOnly = reactive<Record<string, boolean>>({})
 const selectedId = ref('')
-const selectedDeviceId = ref(props.initialDeviceId || workspace.selectedDeviceId)
-const selectedTargetDeviceIds = ref<string[]>(props.initialDeviceId ? [props.initialDeviceId] : (workspace.selectedDeviceId ? [workspace.selectedDeviceId] : []))
+const initialSession = workspace.sessions.find((item) => item.id === props.initialSessionId)
+const initialDeviceId = props.initialDeviceId || initialSession?.device_id || workspace.selectedDeviceId
+const selectedDeviceId = ref(initialDeviceId)
+const selectedTargetDeviceIds = ref<string[]>(initialDeviceId ? [initialDeviceId] : [])
+const selectedSessionId = ref(props.initialSessionId || defaultSessionId(initialDeviceId))
 const values = reactive<Record<string, any>>({})
 const fileDirectories = reactive<Record<string, string>>({})
 const fileNames = reactive<Record<string, string>>({})
@@ -36,11 +46,32 @@ const filteredWorkflows = computed(() => {
 const selectedWorkflow = computed(() => workflows.value.find((item) => item.id === selectedId.value) || null)
 const workflowInputs = computed(() => selectedWorkflow.value?.input_contract || selectedWorkflow.value?.inputs || [])
 const usesDeviceListTarget = computed(() => workflowInputs.value.some(isDeviceListInput))
-const selectedDevice = computed(() => workspace.devices.find((item) => item.id === selectedDeviceId.value || item.row_id === selectedDeviceId.value) || null)
+// A terminal opened from a connection profile may not appear in the device list.
+const targetDevices = computed(() => initialSession && !workspace.devices.some((item) => item.id === initialSession.device_id)
+  ? [...workspace.devices, { id: initialSession.device_id, row_id: initialSession.device_id, name: initialSession.title }]
+  : workspace.devices)
+const filteredTargetDevices = computed(() => filterWorkflowDevices(targetDevices.value, targetDeviceQuery.value, targetMineOnly.value ? workspace.ownedDeviceIds || [] : undefined))
+const selectedDevice = computed(() => targetDevices.value.find((item) => item.id === selectedDeviceId.value || item.row_id === selectedDeviceId.value) || null)
+const targetSessions = computed(() => workspace.sessions.filter((item) => item.device_id === selectedDevice.value?.id))
+const selectedSession = computed(() => targetSessions.value.find((item) => item.id === selectedSessionId.value) || null)
+const sessionUnavailable = computed(() => Boolean(selectedSessionId.value && selectedSession.value?.status !== 'connected'))
+const sessionIsTarget = computed(() => !usesDeviceListTarget.value || Boolean(selectedDevice.value && selectedTargetDeviceIds.value.includes(selectedDevice.value.id)))
+function defaultSessionId(deviceId: string): string {
+  if (workspace.activeSession?.device_id === deviceId) return workspace.activeSession.id
+  const connected = workspace.sessions.filter((item) => item.device_id === deviceId && item.status === 'connected')
+  return connected.length === 1 ? connected[0].id : ''
+}
 function isDeviceListInput(input: WorkflowRuntimeInput): boolean {
   return input.semanticType === 'device_list' || input.type === 'devices' || input.multiple === true || input.control?.id === 'device-list-picker'
 }
-const canRun = computed(() => Boolean(selectedWorkflow.value && (usesDeviceListTarget.value ? selectedTargetDeviceIds.value.length : selectedDevice.value) && !running.value && (!selectedWorkflow.value.requires_confirmation || confirmedRisks.value) && !invalidInput.value))
+const canRun = computed(() => Boolean(
+  selectedWorkflow.value
+  && (usesDeviceListTarget.value ? selectedTargetDeviceIds.value.length : selectedDevice.value)
+  && (!sessionIsTarget.value || !sessionUnavailable.value)
+  && !running.value
+  && (!selectedWorkflow.value.requires_confirmation || confirmedRisks.value)
+  && !invalidInput.value
+))
 const invalidInput = computed(() => Boolean(workflowInputs.value.some((input) => {
   const value = values[input.name]
   if (input.required && (value === undefined || value === null || (typeof value === 'string' && !value.trim()))) return true
@@ -67,6 +98,10 @@ function initialInputValue(input: WorkflowRuntimeInput): unknown {
   return input.default
 }
 function resetInputs(workflow: PublishedWorkflowDefinition | null): void {
+  targetDeviceQuery.value = ''
+  targetMineOnly.value = false
+  for (const key of Object.keys(inputDeviceQueries)) delete inputDeviceQueries[key]
+  for (const key of Object.keys(inputMineOnly)) delete inputMineOnly[key]
   for (const key of Object.keys(values)) delete values[key]
   for (const key of Object.keys(fileDirectories)) delete fileDirectories[key]
   for (const key of Object.keys(fileNames)) delete fileNames[key]
@@ -183,13 +218,18 @@ async function runWorkflow(): Promise<void> {
       if (value !== undefined && value !== '') inputs[input.name] = value
     }
     const targetIds = usesDeviceListTarget.value ? selectedTargetDeviceIds.value : [device!.id]
-    const session = workspace.sessions.find((item) => item.device_id === targetIds[0] && item.status === 'connected')
+    const session = selectedSession.value
+    const kind = session?.kind
+    const protocol = !usesDeviceListTarget.value && (kind === 'ssh' || kind === 'telnet' || kind === 'serial' || kind === 'simulated') ? kind : 'auto'
+    const sessionIds = usesDeviceListTarget.value && session?.status === 'connected' && targetIds.includes(session.device_id)
+      ? { [session.device_id]: session.id } : undefined
     const result = await desktopApi.runWorkflowDefinition(workflow.id, {
       ...(usesDeviceListTarget.value ? { device_ids: targetIds } : { device_id: targetIds[0] }),
       version: workflow.version,
-      protocol: 'auto',
+      protocol,
       inputs,
-      ...(session ? { session_id: session.id } : {}),
+      ...(!usesDeviceListTarget.value && session ? { session_id: session.id } : {}),
+      ...(sessionIds ? { session_ids: sessionIds } : {}),
       ...(workflow.requires_confirmation ? { confirmed_risks: true } : {})
     })
     const tasks = result.tasks?.length ? result.tasks : result.task ? [result.task] : []
@@ -205,10 +245,11 @@ async function runWorkflow(): Promise<void> {
   } finally { running.value = false }
 }
 watch(() => props.initialDeviceId, (value) => { if (value) selectedDeviceId.value = value })
+watch(selectedDeviceId, (value) => { selectedSessionId.value = defaultSessionId(value) })
 onMounted(async () => {
   await loadCatalog()
   const workflow = selectedWorkflow.value
-  if (props.autoRun && workflow && !(workflow.input_contract || workflow.inputs).length && !workflow.requires_confirmation && selectedDevice.value) {
+  if (props.autoRun && workflow && !(workflow.input_contract || workflow.inputs).length && !workflow.requires_confirmation && canRun.value) {
     await runWorkflow()
     return
   }
@@ -239,8 +280,28 @@ onMounted(async () => {
         <form class="workflow-run-form" @submit.prevent="runWorkflow">
           <template v-if="selectedWorkflow">
             <div class="workflow-run-summary"><div><strong>{{ selectedWorkflow.name }}</strong><small>{{ selectedWorkflow.description || '已发布版本，可直接执行' }}</small></div><span>v{{ selectedWorkflow.version }} · {{ selectedWorkflow.step_count }} 步</span></div>
-            <label v-if="!usesDeviceListTarget" class="workflow-run-field"><span>目标设备</span><select v-model="selectedDeviceId"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.row_id" :value="device.id">{{ device.name }} · {{ device.id }}</option></select></label>
-            <div v-else class="workflow-run-field"><span>目标设备（可多选）</span><div class="workflow-device-list" role="group" aria-label="目标设备选择"><label v-for="target in workspace.devices" :key="target.row_id" class="workflow-device-option"><input type="checkbox" :checked="selectedTargetDeviceIds.includes(target.id)" @change="toggleTargetDevice(target.id, ($event.target as HTMLInputElement).checked)" /><span>{{ target.name }} · {{ target.id }}</span></label></div><small class="workflow-device-selection-count">已选择 {{ selectedTargetDeviceIds.length }} 台设备</small></div>
+            <label v-if="!usesDeviceListTarget" class="workflow-run-field"><span>目标设备</span><select v-model="selectedDeviceId"><option value="" disabled>选择设备</option><option v-for="device in targetDevices" :key="device.row_id" :value="device.id">{{ device.name }} · {{ device.id }}</option></select></label>
+            <div v-if="usesDeviceListTarget" class="workflow-run-field">
+              <span>目标设备（可多选）</span>
+              <input v-model="targetDeviceQuery" type="search" aria-label="筛选目标设备" placeholder="名称、ID、地址或型号" />
+              <label class="workflow-device-mine"><input v-model="targetMineOnly" type="checkbox" aria-label="目标设备仅显示我的占用" />我的占用</label>
+              <div class="workflow-device-list" role="group" aria-label="目标设备选择">
+                <label v-for="target in filteredTargetDevices" :key="target.row_id || target.id" class="workflow-device-option"><input type="checkbox" :checked="selectedTargetDeviceIds.includes(target.id)" @change="toggleTargetDevice(target.id, ($event.target as HTMLInputElement).checked)" /><span>{{ target.name }} · {{ target.id }}</span></label>
+                <small v-if="!targetDevices.length" class="workflow-device-list-empty">暂无可选设备</small>
+                <small v-else-if="!filteredTargetDevices.length" class="workflow-device-list-empty">没有匹配的设备。</small>
+              </div>
+              <small class="workflow-device-selection-count">已选择 {{ selectedTargetDeviceIds.length }} 台设备</small>
+            </div>
+            <label v-if="selectedDevice && sessionIsTarget" class="workflow-run-field">
+              <span>目标会话<span v-if="usesDeviceListTarget">（{{ selectedDevice.name }}）</span></span>
+              <select v-model="selectedSessionId">
+                <option value="">自动建立连接</option>
+                <option v-if="selectedSessionId && !selectedSession" :value="selectedSessionId" disabled>原会话已关闭，请重新选择</option>
+                <option v-for="session in targetSessions" :key="session.id" :value="session.id" :disabled="session.status !== 'connected'">{{ sessionKindLabel(session.kind) }} · {{ session.title }} · {{ sessionStatusLabel(session.status) }}</option>
+              </select>
+              <small v-if="sessionUnavailable">目标会话已关闭或断开，请重连该会话或重新选择。</small>
+              <small v-else-if="usesDeviceListTarget">此会话仅用于 {{ selectedDevice.name }}，其他设备按各自配置连接。</small>
+            </label>
             <div v-if="workflowInputs.length" class="workflow-run-inputs">
               <template v-for="input in workflowInputs" :key="input.name">
               <label v-if="!(usesDeviceListTarget && isDeviceListInput(input))" class="workflow-run-field">
@@ -250,12 +311,15 @@ onMounted(async () => {
                   <select v-model="values[input.name]"><option value="" disabled>选择设备</option><option v-for="device in workspace.devices" :key="device.row_id" :value="device.id">{{ device.name }} · {{ device.id }}</option></select>
                 </template>
                 <template v-else-if="isDeviceListInput(input)">
+                  <input v-model="inputDeviceQueries[input.name]" type="search" :aria-label="`筛选${inputLabel(input)}设备`" placeholder="名称、ID、地址或型号" />
+                  <label class="workflow-device-mine"><input v-model="inputMineOnly[input.name]" type="checkbox" :aria-label="`${inputLabel(input)}仅显示我的占用`" />我的占用</label>
                   <div class="workflow-device-list" role="group" :aria-label="`${inputLabel(input)}设备选择`">
-                    <label v-for="device in workspace.devices" :key="device.row_id" class="workflow-device-option">
+                    <label v-for="device in filterWorkflowDevices(workspace.devices, inputDeviceQueries[input.name] || '', inputMineOnly[input.name] ? workspace.ownedDeviceIds || [] : undefined)" :key="device.row_id || device.id" class="workflow-device-option">
                       <input type="checkbox" :checked="selectedDeviceIds(input).includes(device.id)" @change="toggleDeviceId(input, device.id, ($event.target as HTMLInputElement).checked)" />
                       <span>{{ device.name }} · {{ device.id }}</span>
                     </label>
                     <small v-if="!workspace.devices.length" class="workflow-device-list-empty">暂无可选设备</small>
+                    <small v-else-if="!filterWorkflowDevices(workspace.devices, inputDeviceQueries[input.name] || '', inputMineOnly[input.name] ? workspace.ownedDeviceIds || [] : undefined).length" class="workflow-device-list-empty">没有匹配的设备。</small>
                   </div>
                   <small class="workflow-device-selection-count">已选择 {{ selectedDeviceIds(input).length }} 台设备</small>
                 </template>
@@ -274,7 +338,7 @@ onMounted(async () => {
             </div>
             <label v-if="selectedWorkflow.requires_confirmation" class="workflow-run-risk"><input v-model="confirmedRisks" type="checkbox" /><ShieldAlert :size="16" /><span>此 Workflow 包含高风险动作，确认后执行</span></label>
             <p v-if="error" class="workflow-run-error" role="alert"><CircleAlert :size="15" />{{ error }}</p>
-            <footer class="workflow-run-footer"><span v-if="usesDeviceListTarget">将使用选中的设备列表执行流程</span><span v-else-if="selectedDevice">将使用 {{ selectedDevice.name }} 的现有连接（如可用）</span><button class="secondary-button" type="button" @click="emit('close')">取消</button><button class="primary-button" type="submit" :disabled="!canRun"><LoaderCircle v-if="running" :size="14" class="spin" /><Play v-else :size="14" />{{ running ? '正在提交' : '开始执行' }}</button></footer>
+            <footer class="workflow-run-footer"><span v-if="usesDeviceListTarget">将使用选中的设备列表执行流程</span><span v-else-if="selectedSession">发送到 {{ sessionKindLabel(selectedSession.kind) }} · {{ selectedSession.title }}</span><span v-else-if="selectedDevice">将为 {{ selectedDevice.name }} 自动建立连接</span><button class="secondary-button" type="button" @click="emit('close')">取消</button><button class="primary-button" type="submit" :disabled="!canRun"><LoaderCircle v-if="running" :size="14" class="spin" /><Play v-else :size="14" />{{ running ? '正在提交' : '开始执行' }}</button></footer>
           </template>
           <div v-else class="workflow-run-state workflow-run-form-empty"><CircleAlert v-if="requestedVersionMissing" :size="22" /><ListChecks v-else :size="22" />{{ requestedVersionMissing ? error : '从左侧选择一个已发布 Workflow' }}</div>
         </form>

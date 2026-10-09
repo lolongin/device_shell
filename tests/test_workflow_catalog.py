@@ -18,6 +18,7 @@ from device_tui.application.tasking.models import WorkflowDefinition, WorkflowSt
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
 from device_tui.interfaces.desktop_api.session_hub import SessionHub
+from device_tui.application.workflow_studio.catalog import build_action_catalog
 
 
 class HealthWorkflowProvider:
@@ -139,3 +140,18 @@ def test_task_create_rejects_a_session_from_another_device() -> None:
 
     assert task.status_code == 400
     assert "does not belong" in task.json()["detail"]
+
+
+def test_workflow_action_catalog_exposes_input_binding_contract() -> None:
+    catalog = build_action_catalog()
+    wait = catalog.get("utility.wait")
+    assert wait is not None
+    assert wait.input_schema["properties"]["seconds"]["binding"] == {
+        "mode": "runtime",
+        "reference_types": ["number"],
+    }
+    assert catalog.get("device.select").input_schema["properties"]["device_id"]["binding"]["mode"] == "runtime"
+    condition = catalog.get("utility.condition")
+    assert condition is not None
+    assert condition.input_schema["properties"]["rules"]["binding"]["mode"] == "json"
+    assert condition.input_schema["properties"]["rules"]["items"]["properties"]["value"]["binding"]["mode"] == "runtime"

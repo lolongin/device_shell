@@ -424,7 +424,7 @@ class TaskOrchestrator:
         on_child_started: Callable[[str, str], None] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None, dict[str, Any] | None, str | None]:
         """Execute one independent node for a parallel batch."""
-        if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, values):
+        if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, values, context=task.context):
             return node.id, "skipped", {"status": "skipped", "reason": "condition_false"}, None, None
         node_inputs = self._resolve_node_inputs(node, task.inputs, values, context=task.context)
         node_device, node_context = self._node_target(task, node_inputs)
@@ -648,7 +648,7 @@ class TaskOrchestrator:
                     self._record_variable_output(outputs, node, projected)
                     task = replace(task, context=self._context_with_target_output(task.context, projected))
                     continue
-                if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, outputs):
+                if node.run_if is not None and not self._matches_run_if(node.run_if, task.inputs, outputs, context=task.context):
                     outputs[node.id] = {
                         "status": "skipped",
                         "reason": "condition_false",
@@ -997,9 +997,9 @@ class TaskOrchestrator:
                     parsed = None
                 else:
                     return resolve(parsed, container_path)
-            if expression.startswith("${") and expression.endswith("}"):
+            if re.fullmatch(r"\$\{[^}]+\}", expression):
                 return resolve_reference(expression, container_path)
-            if container_path and container_path[-1] == "command" and reference_pattern.search(expression):
+            if container_path and container_path[-1] in {"command", "prompt", "approve_label", "reject_label", "pattern", "source", "destination", "source_path", "source_name", "destination_path"} and reference_pattern.search(expression):
                 return reference_pattern.sub(
                     lambda match: str(resolve_reference("${" + match.group(1) + "}", container_path)),
                     expression,
@@ -1012,18 +1012,86 @@ class TaskOrchestrator:
         run_if: Mapping[str, Any],
         inputs: Mapping[str, Any],
         outputs: Mapping[str, Any],
+        *,
+        context: Mapping[str, Any] | None = None,
     ) -> bool:
         source_id = str(run_if.get("values_from") or "").strip()
         values: Mapping[str, Any] = outputs.get(source_id, {}) if source_id else {**inputs, **outputs}
+        resolution_values: dict[str, Any] = {
+            **inputs,
+            **outputs,
+            "inputs": dict(inputs),
+            "outputs": dict(outputs),
+            "context": dict(context or {}),
+        }
+
+        def resolve(value: Any) -> Any:
+            if not isinstance(value, str):
+                return value
+            exact = re.fullmatch(r"\$\{([^}]+)\}", value.strip())
+            if exact:
+                try:
+                    return TaskOrchestrator._resolve_inputs(
+                        {"value": value.strip()}, resolution_values,
+                    )["value"]
+                except (KeyError, TaskInputResolutionError, TypeError, ValueError):
+                    return value
+            if "${" in value:
+                return re.sub(
+                    r"\$\{([^}]+)\}",
+                    lambda match: str(resolve("${" + match.group(1) + "}")),
+                    value,
+                )
+            return value
+
+        def reference_value(value: Any) -> Any:
+            resolved = resolve(value)
+            if resolved is value and isinstance(value, str) and value.strip():
+                try:
+                    return TaskOrchestrator._resolve_inputs(
+                        {"value": "${" + value.strip() + "}"}, resolution_values,
+                    )["value"]
+                except (KeyError, TaskInputResolutionError, TypeError, ValueError):
+                    return value
+            return resolved
+
         expression = str(run_if.get("expression") or "").strip()
         if expression:
             expression_values = {"inputs": inputs, "outputs": outputs, **inputs, **outputs}
+            if context:
+                expression_values["context"] = context
             if source_id:
                 expression_values.update(values)
             matched = bool(evaluate_expression(expression, expression_values))
         else:
+            resolved_rules: list[dict[str, Any]] = []
+            resolved_values: dict[str, Any] = dict(values)
+            for rule_index, raw_rule in enumerate(run_if.get("rules", ())):
+                if not isinstance(raw_rule, Mapping):
+                    continue
+                rule = dict(raw_rule)
+                raw_field = rule.get("field", "")
+                field_is_reference = (
+                    str(rule.get("field_binding") or "").strip().casefold() == "reference"
+                    or (isinstance(raw_field, str) and raw_field.strip().startswith("${"))
+                )
+                if field_is_reference:
+                    left = reference_value(raw_field)
+                    # evaluate_rules resolves fields by name. Put the resolved
+                    # left side under a private key while preserving old rule
+                    # formats that use a regular output field name.
+                    rule["field"] = f"__binding_left_{rule_index}__"
+                    rule["value"] = rule.get("value", "")
+                    resolved_values[rule["field"]] = left
+                if str(rule.get("value_binding") or "").strip().casefold() == "reference":
+                    rule["value"] = reference_value(rule.get("value", ""))
+                else:
+                    rule["value"] = resolve(rule.get("value", ""))
+                resolved_rules.append(rule)
+                # Keep the resolved mapping available to the next iteration.
+                values = resolved_values
             matched = evaluate_rules(
-                [item for item in run_if.get("rules", ()) if isinstance(item, Mapping)],
+                resolved_rules,
                 values,
                 logical_operator=str(run_if.get("logical_operator") or "AND"),
             )

@@ -87,7 +87,12 @@ async function activate(action: QuickAction): Promise<void> {
   overflowOpen.value = false
   contextOpen.value = false
   if (action.type === 'workflow') {
-    emit('run-workflow', { workflowId: action.workflowId || '', autoRun: true })
+    const session = workspace.activeSession
+    emit('run-workflow', {
+      workflowId: action.workflowId || '', autoRun: true,
+      deviceId: session?.device_id || workspace.selectedDeviceId,
+      sessionId: session?.id || ''
+    })
     return
   }
   if (!workspace.activeSession) {
@@ -189,7 +194,7 @@ function removeAction(): void {
   closeMenus()
 }
 
-const emit = defineEmits<{ 'run-workflow': [payload: { workflowId: string; autoRun: boolean }] }>()
+const emit = defineEmits<{ 'run-workflow': [payload: { workflowId: string; autoRun: boolean; deviceId: string; sessionId: string }] }>()
 defineExpose({ addCommand, addWorkflow })
 </script>
 

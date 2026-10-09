@@ -13,6 +13,7 @@ class WorkflowDefinitionStore(Protocol):
     def get(self, workflow_id: str, version: int | str | None = None) -> WorkflowDraft | WorkflowVersion: ...
     def list(self, *, limit: int = 500) -> list[WorkflowDraft]: ...
     def delete(self, workflow_id: str, version: int | str | None = None) -> None: ...
+    def delete_preserving_references(self, workflow_id: str) -> None: ...
     def publish(self, workflow_id: str) -> WorkflowVersion: ...
     def list_versions(self, workflow_id: str) -> list[WorkflowVersion]: ...
     def is_referenced(self, workflow_id: str, version: int | str) -> bool: ...
@@ -71,6 +72,18 @@ class MemoryWorkflowDefinitionStore:
         if int(version) in self._deleted_versions.get(workflow_id, set()):
             raise KeyError(f"workflow version not found: {workflow_id}@{version}")
         self._deleted_versions.setdefault(workflow_id, set()).add(int(version))
+
+    def delete_preserving_references(self, workflow_id: str) -> None:
+        """Remove the editable workflow while retaining referenced history markers."""
+        if workflow_id not in self._drafts:
+            raise KeyError(f"workflow not found: {workflow_id}")
+        self._drafts.pop(workflow_id)
+        versions = self._versions.get(workflow_id, {})
+        if versions:
+            self._deleted_versions[workflow_id] = set(versions)
+        else:
+            self._versions.pop(workflow_id, None)
+            self._deleted_versions.pop(workflow_id, None)
 
     def publish(self, workflow_id: str) -> WorkflowVersion:
         draft = self.get(workflow_id)

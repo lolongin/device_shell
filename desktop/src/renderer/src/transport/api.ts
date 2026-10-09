@@ -374,7 +374,10 @@ export const desktopApi = {
       body: JSON.stringify(payload)
     }),
   validateWorkflowDefinition: (id: string, payload: Record<string, unknown>): Promise<{ valid: boolean; errors: Array<{ code: string; message: string; node_id?: string | null }>; warnings: Array<{ code: string; message: string; node_id?: string | null }> }> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/validate`, { method: 'POST', body: JSON.stringify(payload) }),
-  deleteWorkflowDefinition: (id: string): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteWorkflowDefinition: (id: string, options: { preserveHistory?: boolean } = {}): Promise<void> => {
+    const query = options.preserveHistory ? '?preserve_history=true' : ''
+    return request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}${query}`, { method: 'DELETE' })
+  },
   deleteWorkflowVersion: (id: string, version: string | number): Promise<void> => request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}`, { method: 'DELETE' }),
   deleteWorkflowVersions: (id: string, versions: Array<string | number>): Promise<{ deleted_versions: number[]; failed_versions: Array<{ version: number; message: string }>; remaining_versions: number }> =>
     request(`/api/v1/workflow-definitions/${encodeURIComponent(id)}/versions`, {

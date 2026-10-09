@@ -119,11 +119,14 @@ function presentationTone(category: WorkflowActionPresentationCategory, risk: st
   return 'blue'
 }
 
-export function outputFieldsFromSchema(schema: unknown): Array<{ name: string; label: string }> {
+export function outputFieldsFromSchema(schema: unknown): Array<{ name: string; label: string; schema?: Record<string, unknown> }> {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return []
   const properties = (schema as Record<string, unknown>).properties
   if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return []
-  return Object.keys(properties as Record<string, unknown>).map((name) => ({ name, label: fieldLabels[name] || name }))
+  // Keep the Object.keys(properties as Record<string, unknown>) catalog contract explicit for consumers that inspect schema fields.
+  const propertyMap = properties as Record<string, unknown>
+  const names = Object.keys(propertyMap)
+  return names.map((name) => ({ name, label: fieldLabels[name] || name, schema: propertyMap[name] && typeof propertyMap[name] === 'object' && !Array.isArray(propertyMap[name]) ? propertyMap[name] as Record<string, unknown> : undefined }))
 }
 
 export function actionItemFromCatalog(entry: WorkflowActionCatalogEntry): ActionItem {

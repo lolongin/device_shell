@@ -1644,6 +1644,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     statusFilter,
     cpuFilter,
     mineOnly,
+    ownedDeviceIds,
     profileQuery,
     currentUser,
     internalAuthStatus,
