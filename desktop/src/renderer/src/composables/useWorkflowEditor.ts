@@ -32,7 +32,12 @@ export function useWorkflowEditor(context: EditorContext) {
   let workflowClipboard: any = null
 const WORKFLOW_NODE_WIDTH = 232
 const WORKFLOW_NODE_HEIGHT = 128
-const INSERT_EDGE_DISTANCE = 86
+const BASE_INSERT_EDGE_DISTANCE = 86
+
+// 动态计算插入边缘检测距离（根据画布缩放）
+function getInsertEdgeDistance(scale = 1): number {
+  return BASE_INSERT_EDGE_DISTANCE / Math.max(0.5, Math.min(2, scale))
+}
 
 function nodePosition(node: NodeItem, index: number): { x: number; y: number } {
   const x = Number(node.position?.x)
@@ -52,7 +57,7 @@ function pointToSegmentDistance(point: { x: number; y: number }, start: { x: num
   return Math.hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy))
 }
 
-function findInsertEdge(position: { x: number; y: number }): WorkflowEdge | null {
+function findInsertEdge(position: { x: number; y: number }, scale = 1): WorkflowEdge | null {
   if (!selected.value) return null
   const nodes = canvasNodes.value
   const positions = new Map(nodes.map((node, index) => [node.id, nodePosition(node, index)]))
@@ -60,6 +65,7 @@ function findInsertEdge(position: { x: number; y: number }): WorkflowEdge | null
     x: position.x + WORKFLOW_NODE_WIDTH / 2,
     y: position.y + WORKFLOW_NODE_HEIGHT / 2
   }
+  const insertDistance = getInsertEdgeDistance(scale)
   let nearest: { edge: WorkflowEdge; distance: number } | null = null
   for (const edge of selected.value.edges || []) {
     const source = (selected.value.nodes || []).find((node) => node.id === edge.source)
@@ -73,7 +79,7 @@ function findInsertEdge(position: { x: number; y: number }): WorkflowEdge | null
       : { x: sourcePosition.x + WORKFLOW_NODE_WIDTH / 2, y: sourcePosition.y + WORKFLOW_NODE_HEIGHT }
     const end = { x: targetPosition.x + WORKFLOW_NODE_WIDTH / 2, y: targetPosition.y }
     const distance = pointToSegmentDistance(dropCenter, start, end)
-    if (distance <= INSERT_EDGE_DISTANCE && (!nearest || distance < nearest.distance)) nearest = { edge, distance }
+    if (distance <= insertDistance && (!nearest || distance < nearest.distance)) nearest = { edge, distance }
   }
   return nearest?.edge || null
 }
@@ -134,7 +140,7 @@ function defaultConfig(actionId: string): Record<string, unknown> {
   if (actionId === 'file.upload') return { source: '', destination: '', overwrite: true }
   if (actionId === 'file.download') return { source: '', destination: '' }
   if (actionId === 'utility.wait') return { seconds: 1 }
-  if (actionId === 'terminal.wait') return { mode: 'contains', pattern: '', timeout_seconds: 0, case_sensitive: false, send_enter: true }
+  if (actionId === 'terminal.wait') return { mode: 'contains', pattern: '', timeout_seconds: 30, case_sensitive: false, send_enter: false }
   if (actionId === 'utility.confirm') return { prompt: '请确认是否继续执行后续步骤。', approve_label: '确认继续', reject_label: '取消流程' }
   if (actionId === 'utility.condition') return { expression: '', rules: [{ field: 'software_version', operator: '小于', value: '' }], logical_operator: 'AND', true_label: '满足条件', false_label: '不满足条件' }
   if (actionId === 'result.save') return { key: '检查结果' }
@@ -235,9 +241,34 @@ function nextNodeId(actionId: string): string {
 function pasteNode(): void {
   if (!selected.value || !workflowClipboard) return
   const copied = JSON.parse(JSON.stringify(workflowClipboard)) as NodeItem
-  const position = copied.position && Number.isFinite(copied.position.x) && Number.isFinite(copied.position.y)
+
+  // 智能定位：找到合适的空白位置
+  let position = copied.position && Number.isFinite(copied.position.x) && Number.isFinite(copied.position.y)
     ? { x: copied.position.x + 40, y: copied.position.y + 40 }
     : undefined
+
+  if (position) {
+    // 检查是否与现有节点重叠，如果重叠则继续偏移
+    const existingPositions = (selected.value.nodes || [])
+      .map(n => n.position)
+      .filter((p): p is { x: number; y: number } => Boolean(p && Number.isFinite(p.x) && Number.isFinite(p.y)))
+
+    let attempts = 0
+    const maxAttempts = 10
+    while (attempts < maxAttempts) {
+      const hasOverlap = existingPositions.some(existing =>
+        Math.abs(existing.x - position!.x) < WORKFLOW_NODE_WIDTH &&
+        Math.abs(existing.y - position!.y) < WORKFLOW_NODE_HEIGHT
+      )
+
+      if (!hasOverlap) break
+
+      // 按对角线方向偏移
+      position = { x: position.x + 50, y: position.y + 50 }
+      attempts++
+    }
+  }
+
   const node: NodeItem = {
     ...copied,
     id: nextNodeId(copied.action_id),
@@ -312,17 +343,37 @@ watch(
 
 function performUndo(): void {
   if (!workflowHistory.canUndo.value) return
+  const currentSelectedNodeId = selectedNode.value?.id
   isUndoRedoAction = true
   workflowHistory.undo()
   selected.value = JSON.parse(JSON.stringify(workflowHistory.state.value))
+  // 尝试恢复选中的节点
+  if (currentSelectedNodeId && selected.value?.nodes) {
+    const restoredNode = selected.value.nodes.find(node => node.id === currentSelectedNodeId)
+    if (restoredNode) {
+      selectedNode.value = restoredNode
+    } else {
+      selectedNode.value = selected.value.nodes[0] || null
+    }
+  }
   nextTick(() => { isUndoRedoAction = false })
 }
 
 function performRedo(): void {
   if (!workflowHistory.canRedo.value) return
+  const currentSelectedNodeId = selectedNode.value?.id
   isUndoRedoAction = true
   workflowHistory.redo()
   selected.value = JSON.parse(JSON.stringify(workflowHistory.state.value))
+  // 尝试恢复选中的节点
+  if (currentSelectedNodeId && selected.value?.nodes) {
+    const restoredNode = selected.value.nodes.find(node => node.id === currentSelectedNodeId)
+    if (restoredNode) {
+      selectedNode.value = restoredNode
+    } else {
+      selectedNode.value = selected.value.nodes[0] || null
+    }
+  }
   nextTick(() => { isUndoRedoAction = false })
 }
 
@@ -341,11 +392,38 @@ async function applyAutoLayout(): Promise<void> {
     }
   )
 
-  // 更新节点位置，保留其他属性
-  selected.value.nodes = selected.value.nodes.map((node, index) => ({
-    ...node,
-    position: layoutedNodes[index]?.position || node.position
-  }))
+  // 使用动画平滑过渡到新位置
+  const startPositions = selected.value.nodes.map(n => n.position || { x: 0, y: 0 })
+  const targetPositions = layoutedNodes.map(n => n.position || { x: 0, y: 0 })
+  const duration = 300 // 动画持续时间（毫秒）
+  const startTime = performance.now()
+
+  function animate(currentTime: number): void {
+    if (!selected.value?.nodes) return
+
+    const elapsed = currentTime - startTime
+    const progress = Math.min(elapsed / duration, 1)
+    // 使用 ease-out 缓动函数
+    const eased = 1 - Math.pow(1 - progress, 3)
+
+    selected.value.nodes = selected.value.nodes.map((node, index) => {
+      const start = startPositions[index]
+      const target = targetPositions[index]
+      return {
+        ...node,
+        position: {
+          x: start.x + (target.x - start.x) * eased,
+          y: start.y + (target.y - start.y) * eased
+        }
+      }
+    })
+
+    if (progress < 1) {
+      requestAnimationFrame(animate)
+    }
+  }
+
+  requestAnimationFrame(animate)
 }
 
 // 节点位置更新

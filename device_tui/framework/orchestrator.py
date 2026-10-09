@@ -959,6 +959,9 @@ class TaskOrchestrator:
                 if isinstance(current, Mapping) and segment in current:
                     current = current[segment]
                     resolved.append(segment)
+                elif isinstance(current, (list, tuple)) and segment.isdecimal() and int(segment) < len(current):
+                    current = current[int(segment)]
+                    resolved.append(segment)
                 elif (
                     isinstance(current, Mapping)
                     and isinstance(current.get("run"), Mapping)

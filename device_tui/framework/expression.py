@@ -69,7 +69,7 @@ def evaluate_expression(expression: str, values: Mapping[str, Any]) -> Any:
         validate_expression(source)
         tree = ast.parse(source, mode="eval")
         return _evaluate(tree.body, bound)
-    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, re.error) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("unsupported expression"):
             raise
         raise ValueError(f"unsupported expression: {expression}") from exc
@@ -100,6 +100,15 @@ def _validate(node: ast.AST) -> None:
                 _validate(key)
                 _validate(value)
             return
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "regex_match" and len(node.args) == 2 and not node.keywords:
+        for arg in node.args:
+            _validate(arg)
+        if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            try:
+                re.compile(node.args[0].value)
+            except re.error as exc:
+                raise ValueError("unsupported expression regex") from exc
+        return
     elif isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
         for item in node.values:
             _validate(item)
@@ -141,6 +150,8 @@ def _evaluate(node: ast.AST, values: Mapping[str, Any]) -> Any:
         return tuple(_evaluate(item, values) for item in node.elts)
     if isinstance(node, ast.Dict):
         return {_evaluate(key, values): _evaluate(value, values) for key, value in zip(node.keys, node.values)}
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "regex_match":
+        return re.search(str(_evaluate(node.args[0], values)), str(_evaluate(node.args[1], values))) is not None
     if isinstance(node, ast.BoolOp):
         if isinstance(node.op, ast.And):
             result: Any = True

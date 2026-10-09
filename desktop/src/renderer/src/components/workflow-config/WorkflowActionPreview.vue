@@ -12,7 +12,7 @@ const inputFields = computed(() => {
   const properties = schema.properties
   if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return []
   const required = new Set(Array.isArray(schema.required) ? schema.required : [])
-  return Object.entries(properties as Record<string, unknown>).map(([name, raw]) => {
+  return Object.entries(properties as Record<string, unknown>).filter(([, raw]) => !(raw as Record<string, unknown>)?.deprecated).map(([name, raw]) => {
     const definition = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
     const presetValue = props.action.preset?.config[name]
     return {
@@ -28,6 +28,12 @@ const inputFields = computed(() => {
 
 const requiredFields = computed<PreviewField[]>(() => inputFields.value.filter((field) => field.required))
 const optionalFields = computed<PreviewField[]>(() => inputFields.value.filter((field) => !field.required))
+const outputFields = computed(() => props.action.outputFields.filter(field => !field.schema?.deprecated))
+const primaryOutputs = computed(() => {
+  const names = props.action.outputSchema.primary_fields
+  return Array.isArray(names) ? outputFields.value.filter(field => names.includes(field.name)) : outputFields.value
+})
+const otherOutputs = computed(() => outputFields.value.filter(field => !primaryOutputs.value.includes(field)))
 
 function inputLabel(name: string): string {
   const actionId = props.action.preset?.actionId || props.action.id
@@ -83,13 +89,17 @@ function defaultLabel(value: unknown): string {
     </div>
 
     <div class="preview-section">
-      <h3>可用输出 <span>{{ action.outputFields.length }}</span></h3>
-      <p v-if="!action.outputFields.length" class="preview-empty">未声明输出字段</p>
+      <h3>可用输出 <span>{{ outputFields.length }}</span></h3>
+      <p v-if="!outputFields.length" class="preview-empty">未声明输出字段</p>
       <ul v-else>
-        <li v-for="field in action.outputFields" :key="field.name">
+        <li v-for="field in primaryOutputs" :key="field.name">
           <div><b>{{ fieldLabels[field.name] || field.label }}</b><code>{{ field.name }}</code></div>
         </li>
       </ul>
+      <details v-if="otherOutputs.length">
+        <summary>其他输出（{{ otherOutputs.length }}）</summary>
+        <ul><li v-for="field in otherOutputs" :key="field.name"><div><b>{{ fieldLabels[field.name] || field.label }}</b><code>{{ field.name }}</code></div></li></ul>
+      </details>
     </div>
   </section>
 </template>
@@ -111,4 +121,6 @@ li b { font-weight: 600; }
 li small { display: block; margin-top: 5px; color: var(--workflow-muted); line-height: 1.4; }
 li em { color: var(--workflow-focus); font-size: 10px; font-style: normal; }
 .preview-empty { margin: 0; color: var(--workflow-muted); }
+details { margin-top: 10px; }
+summary { cursor: pointer; color: var(--workflow-muted); margin-bottom: 8px; }
 </style>

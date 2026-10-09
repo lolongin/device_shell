@@ -190,7 +190,9 @@ def test_device_info_activity_projects_safe_device_metadata_from_context():
     assert result.outputs["name"] == "Router A"
     assert result.outputs["address"] == "10.0.0.1:22"
     assert result.outputs["model"] == "SimRouter"
-    assert result.outputs["status"] == "connected"
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert result.outputs["status"] == "completed"
+    assert result.outputs["device_status"] == "connected"
     assert result.outputs["software_version"] == "8.120"
 
 

@@ -42,7 +42,7 @@ class VariableSetActivityHandler:
                 outputs={"name": name, "value": value, "matched": matched, "source": source},
                 evidence=({"kind": "variable_set", "name": name, "matched": matched},),
             )
-        return ActivityResult(ActivityStatus.SUCCEEDED, outputs={"name": name, "value": value}, evidence=({"kind": "variable_set", "name": name},))
+        return ActivityResult(ActivityStatus.SUCCEEDED, outputs={"name": name, "value": value, "matched": False, "source": None}, evidence=({"kind": "variable_set", "name": name},))
 
     async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:
         del invocation, context
@@ -105,7 +105,7 @@ class ForEachActivityHandler:
             except Exception as exc:
                 return ActivityResult(ActivityStatus.FAILED, error={"code": "loop_child_failed", "message": str(exc), "class": "deterministic", "index": index, "action_id": action_id}, outputs={"items": list(raw_items), "results": results, "count": index, "status": "failed"})
             results.append(dict(result))
-        return ActivityResult(ActivityStatus.SUCCEEDED, outputs={"items": list(raw_items), "results": results, "count": len(results)}, evidence=({"kind": "for_each", "count": len(results)},))
+        return ActivityResult(ActivityStatus.SUCCEEDED, outputs={"items": list(raw_items), "results": results, "count": len(results), "status": "completed"}, evidence=({"kind": "for_each", "count": len(results)},))
 
     @staticmethod
     def _resolve_inputs(values: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
@@ -115,12 +115,7 @@ class ForEachActivityHandler:
             if isinstance(value, list):
                 return [resolve(item) for item in value]
             if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-                current: Any = local
-                for segment in value[2:-1].split("."):
-                    if not isinstance(current, Mapping) or segment not in current:
-                        raise ValueError(f"unresolved loop input: {value}; missing local field: {segment}")
-                    current = current[segment]
-                return current
+                return TaskOrchestrator._resolve_inputs({"value": value}, local)["value"]
             return value
         return {key: resolve(value) for key, value in values.items()}
 
@@ -162,9 +157,14 @@ class DeviceForEachActivityHandler(ForEachActivityHandler):
         steps = invocation.inputs.get("action_steps")
         if (not action_id and not steps) or self._child_runner is None:
             return ActivityResult(ActivityStatus.FAILED, outputs={"devices": list(devices), "results": [], "count": 0, "succeeded": 0, "failed": 0, "status": "failed"}, error={"code": "device_action_invalid", "message": "device.for_each requires an executable action", "class": "deterministic"})
-        results = []
-        failed = 0
-        for index, device in enumerate(devices):
+        concurrency = invocation.inputs.get("concurrency", 1)
+        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or not 1 <= concurrency <= 32:
+            return ActivityResult(ActivityStatus.FAILED, outputs={"devices": list(devices), "results": [], "count": 0, "succeeded": 0, "failed": 0, "status": "failed"}, error={"code": "device_concurrency_invalid", "message": "concurrency must be an integer between 1 and 32", "class": "deterministic"})
+        failure_strategy = invocation.inputs.get("failure_strategy", "continue")
+        if failure_strategy not in {"stop", "continue"}:
+            return ActivityResult(ActivityStatus.FAILED, error={"code": "device_failure_strategy_invalid", "message": "failure_strategy must be stop or continue", "class": "deterministic"})
+
+        async def run_device(index: int, device: Any) -> tuple[dict[str, Any], bool]:
             device_id = ""
             lease = None
             try:
@@ -191,17 +191,55 @@ class DeviceForEachActivityHandler(ForEachActivityHandler):
                     child_inputs = self._resolve_inputs(dict(invocation.inputs.get("action_inputs") or {}), local)
                     child_inputs["device_id"] = device_id
                     result = await self._child_runner(action_id, child_inputs, child_context, report)
-                results.append({"device_id": device_id, **dict(result)})
+                step_failed = any(
+                    str(step.get("execution_status") or step.get("status") or "").casefold() in {"failed", "unknown", "cancelled"}
+                    for step in result.get("steps", {}).values() if isinstance(step, Mapping)
+                )
+                child_failed = step_failed or str(result.get("execution_status") or result.get("status") or "").casefold() in {"failed", "unknown", "cancelled"}
+                return {**dict(result), "device_id": device_id, "execution_status": "failed" if child_failed else "succeeded"}, child_failed
             except Exception as exc:
-                failed += 1
-                results.append({"device_id": device_id, "status": "failed", "error": {"message": str(exc)}})
-                if invocation.inputs.get("failure_strategy", "continue") == "stop":
-                    break
+                return {"device_id": device_id, "status": "failed", "execution_status": "failed", "error": {"message": str(exc)}}, True
             finally:
                 if lease is not None:
                     self._resources.release(lease)
+        rows: dict[int, tuple[dict[str, Any], bool]] = {}
+        next_index = 0
+        stopped = False
+        device_locks: dict[str, asyncio.Lock] = {}
+
+        async def worker() -> None:
+            nonlocal next_index, stopped
+            while not stopped and next_index < len(devices):
+                index = next_index
+                next_index += 1
+                device = devices[index]
+                try:
+                    lock_key = device_id_value(device)
+                except ValueError:
+                    lock_key = f"invalid-device-{index}"
+                lock = device_locks.setdefault(lock_key, asyncio.Lock())
+                # Duplicate device IDs must never share a terminal concurrently.
+                async with lock:
+                    if stopped:
+                        return
+                    row = await run_device(index, device)
+                rows[index] = row
+                if row[1] and failure_strategy == "stop":
+                    stopped = True
+
+        workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, len(devices)))]
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for worker_task in workers:
+                if not worker_task.done():
+                    worker_task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+        results = [row[0] for _, row in sorted(rows.items())]
+        failed = sum(row[1] for row in rows.values())
         succeeded = len(results) - failed
-        return ActivityResult(ActivityStatus.FAILED if failed and invocation.inputs.get("failure_strategy") == "stop" else ActivityStatus.SUCCEEDED, outputs={"devices": list(devices), "results": results, "count": len(results), "succeeded": succeeded, "failed": failed})
+        status = ActivityStatus.FAILED if failed and failure_strategy == "stop" else ActivityStatus.SUCCEEDED
+        return ActivityResult(status, outputs={"devices": list(devices), "results": results, "count": len(results), "succeeded": succeeded, "failed": failed, "status": "partial_failure" if failed else "completed"}, error={"code": "device_child_failed", "message": "device iteration failed", "class": "deterministic"} if status == ActivityStatus.FAILED else None)
 
     async def _run_steps(
         self, steps: list[dict[str, Any]], local: dict[str, Any], context: ActivityContext,
@@ -355,7 +393,7 @@ class TerminalWaitActivityHandler:
                     after_sequence = int(getattr(managed_get(session_id), "sequence", 0) or 0)
                 except (KeyError, TypeError, ValueError):
                     pass
-        if bool(invocation.inputs.get("send_enter", True)):
+        if bool(invocation.inputs.get("send_enter", False)):
             write = getattr(self._terminal_hub, "write", None)
             if callable(write):
                 try:
@@ -479,6 +517,14 @@ class UntilActivityHandler:
                         )
                     child_result = dict(await self._child_runner(action_id, child_inputs, context, report))
             except Exception as exc:
+                child_result = {"status": "failed", "output": "", "error": {"message": str(exc)}}
+                try:
+                    failure_matched = bool(evaluate_expression(condition, {"result": child_result, "iteration": iteration, "outputs": child_result}))
+                except ValueError:
+                    failure_matched = False
+                if failure_matched:
+                    results.append(child_result)
+                    return ActivityResult(ActivityStatus.SUCCEEDED, outputs={"status": "matched", "matched": True, "iterations": iteration, "result": child_result, "results": results})
                 return ActivityResult(ActivityStatus.FAILED, outputs={"status": "failed", "matched": False, "iterations": iteration - 1, "result": results[-1] if results else {}, "results": results}, error={"code": "loop_until_child_failed", "message": str(exc), "class": "deterministic", "iteration": iteration})
             results.append(child_result)
             previous_result = child_result
@@ -570,7 +616,9 @@ class ResultSaveActivityHandler:
 
     async def execute(self, invocation: ActivityInvocation, context: ActivityContext, report: Any) -> ActivityResult:
         del context, report
-        key = str(invocation.inputs.get("key") or invocation.invocation_id).strip()
+        key = str(invocation.inputs.get("key") or "").strip()
+        if not key:
+            key = str(invocation.context.get("node_id") or invocation.context.get("step_id") or "result").strip() or "result"
         value = invocation.inputs.get("value", invocation.inputs.get("data"))
         return ActivityResult(
             status=ActivityStatus.SUCCEEDED,

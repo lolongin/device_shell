@@ -20,7 +20,7 @@ export interface WorkflowConfigVersion {
 export interface WorkflowConfigAction {
   id: string
   label: string
-  outputFields?: Array<{ name: string; label: string }>
+  outputFields?: Array<{ name: string; label: string; schema?: Record<string, unknown> }>
 }
 
 interface NodeConfigContext {
@@ -55,7 +55,46 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
     return context.actions.find((action) => action.id === actionId)?.outputFields || []
   }
 
-  function outputFieldsForNode(node: WorkflowConfigNode): Array<{ name: string; label: string }> {
+  function outputFieldsForNode(node: WorkflowConfigNode): Array<{ name: string; label: string; schema?: Record<string, unknown> }> {
+    if (['loop.for_each', 'device.for_each', 'loop.until'].includes(node.action_id)) {
+      const workflow = context.selected.value
+      const edges = workflow?.edges || []
+      const exitHandles = ['exit', 'loop-exit', 'loop_exit']
+      const loopEdges = edges.filter(edge => edge.source === node.id)
+      const explicitBody = loopEdges.find(edge => ['body', 'loop-body', 'loop_body'].includes(String(edge.source_handle || '').toLowerCase()))
+      const end = String(node.config.body_end || node.config.loop_end || node.config.loop_body_end || '')
+      const graphMode = ['downstream', 'bounded'].includes(String(node.config.body_mode || '')) || Boolean(explicitBody)
+        || (node.action_id === 'device.for_each' && node.config.body_mode !== 'action' && loopEdges.length && !Object.keys(node.config.action_inputs as Record<string, unknown> || {}).length)
+      const exits = new Set(loopEdges.filter(edge => exitHandles.includes(String(edge.source_handle || '').toLowerCase())).map(edge => edge.target))
+      const body: WorkflowConfigNode[] = []
+      let current = graphMode ? String(node.config.body_start || node.config.loop_start || explicitBody?.target
+        || loopEdges.find(edge => !exitHandles.includes(String(edge.source_handle || '').toLowerCase()))?.target || '') : ''
+      const visited = new Set<string>([node.id])
+      while (current && !visited.has(current) && !exits.has(current)) {
+        visited.add(current)
+        const step = workflow?.nodes?.find(item => item.id === current)
+        if (!step || ['loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'workflow.call'].includes(step.action_id)) break
+        body.push(step)
+        if (current === end) break
+        const next = edges.filter(edge => edge.source === current)
+        if (next.length !== 1 || edges.filter(edge => edge.target === next[0].target).length > 1) break
+        current = next[0].target
+      }
+      const childFields = body.length ? outputFieldsForNode(body[body.length - 1]) : outputFieldsForAction(String(node.config.action_id || ''))
+      const properties: Record<string, unknown> = Object.fromEntries(childFields.map(field => [field.name, field.schema || {}]))
+      properties.status = { type: 'string' }
+      if (body.length) properties.steps = { type: 'object', properties: Object.fromEntries(body.map(step => [step.id, {
+        type: 'object', properties: Object.fromEntries(outputFieldsForNode(step).map(field => [field.name, field.schema || {}])),
+      }])) }
+      if (node.action_id === 'device.for_each') {
+        properties.device_id = { type: 'string' }
+        properties.execution_status = { type: 'string' }
+      }
+      const childSchema = { type: 'object', properties }
+      return outputFieldsForAction(node.action_id).map(field => ({ ...field, schema:
+        field.name === 'results' ? { type: 'array', items: childSchema }
+          : field.name === 'result' ? childSchema : field.schema }))
+    }
     if (node.action_id !== 'workflow.call') return outputFieldsForAction(node.action_id)
     const workflowId = String(node.config.workflow_id || '')
     const version = String(node.config.version || '')
@@ -211,7 +250,13 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
     }
     for (const source of resultSources.value) {
       add(source.id, `步骤输出 · ${source.label}`, `完整结果 · ${source.id}`)
-      for (const field of source.fields) add(`${source.id}.${field.name}`, `${source.label} · ${field.label}`, source.id)
+      const expand = (path: string, label: string, schema: Record<string, unknown>, depth = 0): void => {
+        add(path, label, source.id)
+        if (depth >= 5) return
+        for (const [name, raw] of Object.entries(schema.properties as Record<string, Record<string, unknown>> || {})) expand(`${path}.${name}`, `${label} · ${name}`, raw, depth + 1)
+        if (schema.type === 'array' && schema.items && typeof schema.items === 'object') expand(`${path}.0`, `${label} · [0]`, schema.items as Record<string, unknown>, depth + 1)
+      }
+      for (const field of source.fields) expand(`${source.id}.${field.name}`, `${source.label} · ${field.label}`, field.schema || {})
     }
     return references
   })
@@ -221,12 +266,18 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
       const node = context.selectedNode.value
       if (node?.action_id !== 'loop.until') return ''
       const condition = String(node.config.condition || '')
+      const regexPattern = condition.match(/^regex_match\(("(?:[^"\\]|\\.)*"),\s*result\.output\)$/)?.[1]
+      if (regexPattern) { try { return JSON.parse(regexPattern) as string } catch { return '' } }
+      const literalPattern = condition.match(/^("(?:[^"\\]|\\.)*")\s+in\s+result\.output$/)?.[1]
+      if (literalPattern) { try { return JSON.parse(literalPattern) as string } catch { return '' } }
       return (condition.match(/'([^']+)'\s+in\s+result\.output/) || condition.match(/"([^"]+)"\s+in\s+result\.output/))?.[1] || ''
     },
     set: (pattern) => {
       const node = context.selectedNode.value
       if (node?.action_id !== 'loop.until' || !['output_contains', 'output_regex'].includes(loopUntilStopMode.value)) return
-      node.config.condition = pattern ? `'${pattern}' in result.output` : "'' in result.output"
+      node.config.condition = loopUntilStopMode.value === 'output_regex'
+        ? `regex_match(${JSON.stringify(pattern)}, result.output)`
+        : `${JSON.stringify(pattern)} in result.output`
     }
   })
 
@@ -238,7 +289,7 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
       if (condition === 'False' || condition === 'false' || condition === '0' || !condition.trim()) return 'max_iterations'
       if (condition.includes("'succeeded'") || condition.includes('"succeeded"')) return 'success'
       if (condition.includes("'failed'") || condition.includes('"failed"')) return 'failure'
-      if (condition.includes('.match(') || condition.includes('re.search')) return 'output_regex'
+      if (condition.startsWith('regex_match(') || condition.includes('.match(') || condition.includes('re.search')) return 'output_regex'
       return condition.includes(' in ') || condition.includes('.contains') ? 'output_contains' : 'max_iterations'
     },
     set: (mode) => {
@@ -246,7 +297,8 @@ export function useWorkflowNodeConfig(context: NodeConfigContext) {
       if (node?.action_id !== 'loop.until') return
       if (mode === 'success') node.config.condition = "result.status == 'succeeded'"
       else if (mode === 'failure') node.config.condition = "result.status == 'failed'"
-      else if (mode === 'output_regex' || mode === 'output_contains') node.config.condition = loopUntilPattern.value ? `'${loopUntilPattern.value}' in result.output` : "'' in result.output"
+      else if (mode === 'output_regex') node.config.condition = `regex_match(${JSON.stringify(loopUntilPattern.value)}, result.output)`
+      else if (mode === 'output_contains') node.config.condition = `${JSON.stringify(loopUntilPattern.value)} in result.output`
       else node.config.condition = 'False'
     }
   })

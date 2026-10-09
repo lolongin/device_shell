@@ -91,6 +91,9 @@ def test_terminal_adapter_maps_operation_progress_and_verifies_completion():
     verified, outputs, evidence = asyncio.run(run())
     assert verified is True
     assert outputs["verified"] is True
+    assert outputs["bytes_transferred"] == outputs["total_bytes"] == 100
+    assert outputs["source_path"] == "firmware.bin"
+    assert outputs["destination_path"] == "firmware.bin"
     assert evidence[0]["operation_id"] == "op-1"
     assert control.request[0] == DeviceTarget(device_id="device-1", session_id="session-1", protocol="auto")
     assert any(event.type == "transfer.operation.observed" for event in events)

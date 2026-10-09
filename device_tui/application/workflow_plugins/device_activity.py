@@ -140,6 +140,7 @@ class DeviceActivityHandler:
                 "address": "",
                 "model": "",
                 "version": "",
+                "device_status": "",
             }
             if isinstance(device_values, Mapping):
                 address = (
@@ -154,9 +155,9 @@ class DeviceActivityHandler:
                     "address": str(address or ""),
                     "model": str(device_values.get("model") or ""),
                     "version": str(device_values.get("version") or ""),
+                    "device_status": str(device_values.get("status") or ""),
                 }
-                outputs["device_id"] = str(device_values.get("id") or "")
-                outputs["status"] = str(device_values.get("status") or outputs.get("status") or "")
+                outputs["device_id"] = str(device_values.get("id") or outputs.get("device_id") or "")
             match = re.search(r"\b(?:v|version\s*)?(\d+(?:\.\d+)+)\b", str(outputs.get("output") or ""), re.IGNORECASE)
             if match:
                 software_version = match.group(1)
@@ -174,6 +175,7 @@ class DeviceActivityHandler:
         operation_id = str(outputs.get("operation_id") or outputs.get("execution_id") or "")
         raw_status = str(outputs.get("status") or "completed").casefold()
         succeeded = raw_status in {"success", "succeeded", "completed", "ok", "ready"}
+        outputs["execution_status"] = "succeeded" if succeeded else "failed"
         report(self._event("device.activity.completed", invocation, {
             "operation": operation,
             "operation_id": operation_id,
@@ -230,6 +232,14 @@ class DeviceActivityHandler:
         except (TypeError, ValueError):
             normalized.setdefault("port", 0)
         normalized.setdefault("evidence", [])
+        normalized["execution_status"] = (
+            "succeeded" if str(normalized["status"]).casefold() in {"success", "succeeded", "completed", "ok", "ready"}
+            else status if status in {"unknown", "cancelled"} else "failed"
+        )
+        if operation == "device.info":
+            for field in ("name", "address", "model", "version", "software_version", "device_status"):
+                normalized.setdefault(field, "")
+            normalized.setdefault("requested_fields", [])
         return normalized
 
     @staticmethod

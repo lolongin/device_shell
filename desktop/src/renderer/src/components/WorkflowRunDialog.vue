@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { CircleAlert, FileUp, ListChecks, LoaderCircle, Play, Search, ShieldAlert, X } from 'lucide-vue-next'
 import { useDialogFocus } from '../composables/useDialogFocus'
 import { desktopApi } from '../transport/api'
@@ -37,6 +37,8 @@ const fileNames = reactive<Record<string, string>>({})
 const confirmedRisks = ref(false)
 const requestedVersionMissing = ref(false)
 const dialogVisible = ref(!props.autoRun)
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
 
 const filteredWorkflows = computed(() => {
   const needle = query.value.trim().toLowerCase()
@@ -72,23 +74,40 @@ const canRun = computed(() => Boolean(
   && (!selectedWorkflow.value.requires_confirmation || confirmedRisks.value)
   && !invalidInput.value
 ))
-const invalidInput = computed(() => Boolean(workflowInputs.value.some((input) => {
-  const value = values[input.name]
-  if (input.required && (value === undefined || value === null || (typeof value === 'string' && !value.trim()))) return true
-  const primitiveType = input.primitiveType || input.type
-  if (isDeviceListInput(input)) return false
-  if ((primitiveType === 'integer' || primitiveType === 'number') && value !== undefined && value !== '') {
-    const parsed = Number(value)
-    if (!Number.isFinite(parsed) || (primitiveType === 'integer' && !Number.isInteger(parsed))) return true
+const inputErrors = computed(() => {
+  const errors: Record<string, string> = {}
+  for (const input of workflowInputs.value) {
+    const value = values[input.name]
+    if (input.required && (value === undefined || value === null || (typeof value === 'string' && !value.trim()))) {
+      errors[input.name] = '此字段为必填项'
+      continue
+    }
+    const primitiveType = input.primitiveType || input.type
+    if (isDeviceListInput(input)) continue
+    if ((primitiveType === 'integer' || primitiveType === 'number') && value !== undefined && value !== '') {
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed)) {
+        errors[input.name] = '请输入有效的数字'
+      } else if (primitiveType === 'integer' && !Number.isInteger(parsed)) {
+        errors[input.name] = '请输入整数'
+      }
+    }
+    if ((primitiveType === 'array' || primitiveType === 'object') && value !== undefined && value !== '') {
+      try {
+        const parsed = JSON.parse(String(value))
+        if (primitiveType === 'array' && !Array.isArray(parsed)) {
+          errors[input.name] = '请输入有效的 JSON 数组'
+        } else if (primitiveType === 'object' && (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')) {
+          errors[input.name] = '请输入有效的 JSON 对象'
+        }
+      } catch {
+        errors[input.name] = `请输入有效的 JSON ${primitiveType === 'array' ? '数组' : '对象'}`
+      }
+    }
   }
-  if ((primitiveType === 'array' || primitiveType === 'object') && value !== undefined && value !== '') {
-    try {
-      const parsed = JSON.parse(String(value))
-      if (primitiveType === 'array' ? !Array.isArray(parsed) : !parsed || Array.isArray(parsed) || typeof parsed !== 'object') return true
-    } catch { return true }
-  }
-  return false
-})))
+  return errors
+})
+const invalidInput = computed(() => Object.keys(inputErrors.value).length > 0)
 
 function inputLabel(input: WorkflowRuntimeInput): string { return input.name.replaceAll('_', ' ') }
 function initialInputValue(input: WorkflowRuntimeInput): unknown {
@@ -126,6 +145,18 @@ function toggleTargetDevice(deviceId: string, checked: boolean): void {
   else selected.delete(deviceId)
   selectedTargetDeviceIds.value = Array.from(selected)
 }
+function selectAllTargetDevices(): void {
+  selectedTargetDeviceIds.value = filteredTargetDevices.value.map(device => device.id)
+}
+function clearAllTargetDevices(): void {
+  selectedTargetDeviceIds.value = []
+}
+function invertTargetDevices(): void {
+  const selected = new Set(selectedTargetDeviceIds.value)
+  selectedTargetDeviceIds.value = filteredTargetDevices.value
+    .filter(device => !selected.has(device.id))
+    .map(device => device.id)
+}
 function inputType(input: WorkflowRuntimeInput): string {
   const primitiveType = input.primitiveType || input.type
   if (primitiveType === 'integer' || primitiveType === 'number') return 'number'
@@ -153,6 +184,18 @@ function toggleDeviceId(input: WorkflowRuntimeInput, deviceId: string, checked: 
   if (checked) selected.add(deviceId)
   else selected.delete(deviceId)
   values[input.name] = Array.from(selected)
+}
+function selectAllDevices(input: WorkflowRuntimeInput): void {
+  const filtered = filterWorkflowDevices(workspace.devices, inputDeviceQueries[input.name] || '', inputMineOnly[input.name] ? workspace.ownedDeviceIds || [] : undefined)
+  values[input.name] = filtered.map(device => device.id)
+}
+function clearAllDevices(input: WorkflowRuntimeInput): void {
+  values[input.name] = []
+}
+function invertDevices(input: WorkflowRuntimeInput): void {
+  const filtered = filterWorkflowDevices(workspace.devices, inputDeviceQueries[input.name] || '', inputMineOnly[input.name] ? workspace.ownedDeviceIds || [] : undefined)
+  const selected = new Set(selectedDeviceIds(input))
+  values[input.name] = filtered.filter(device => !selected.has(device.id)).map(device => device.id)
 }
 async function chooseFile(input: WorkflowRuntimeInput): Promise<void> {
   const selected = await platform.pickFile(input)
@@ -239,15 +282,17 @@ async function runWorkflow(): Promise<void> {
       if (device) workspace.selectDevice(device.row_id)
       workspace.upgradePanelOpen = true
     }
-    emit('close')
+    if (!disposed) emit('close')
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
+    dialogVisible.value = true
   } finally { running.value = false }
 }
 watch(() => props.initialDeviceId, (value) => { if (value) selectedDeviceId.value = value })
 watch(selectedDeviceId, (value) => { selectedSessionId.value = defaultSessionId(value) })
 onMounted(async () => {
   await loadCatalog()
+  if (disposed) return
   const workflow = selectedWorkflow.value
   if (props.autoRun && workflow && !(workflow.input_contract || workflow.inputs).length && !workflow.requires_confirmation && canRun.value) {
     await runWorkflow()
@@ -285,6 +330,11 @@ onMounted(async () => {
               <span>目标设备（可多选）</span>
               <input v-model="targetDeviceQuery" type="search" aria-label="筛选目标设备" placeholder="名称、ID、地址或型号" />
               <label class="workflow-device-mine"><input v-model="targetMineOnly" type="checkbox" aria-label="目标设备仅显示我的占用" />我的占用</label>
+              <div class="workflow-device-selection-actions">
+                <button type="button" class="device-selection-action" @click="selectAllTargetDevices">全选</button>
+                <button type="button" class="device-selection-action" @click="clearAllTargetDevices">清空</button>
+                <button type="button" class="device-selection-action" @click="invertTargetDevices">反选</button>
+              </div>
               <div class="workflow-device-list" role="group" aria-label="目标设备选择">
                 <label v-for="target in filteredTargetDevices" :key="target.row_id || target.id" class="workflow-device-option"><input type="checkbox" :checked="selectedTargetDeviceIds.includes(target.id)" @change="toggleTargetDevice(target.id, ($event.target as HTMLInputElement).checked)" /><span>{{ target.name }} · {{ target.id }}</span></label>
                 <small v-if="!targetDevices.length" class="workflow-device-list-empty">暂无可选设备</small>
@@ -304,7 +354,7 @@ onMounted(async () => {
             </label>
             <div v-if="workflowInputs.length" class="workflow-run-inputs">
               <template v-for="input in workflowInputs" :key="input.name">
-              <label v-if="!(usesDeviceListTarget && isDeviceListInput(input))" class="workflow-run-field">
+              <label v-if="!(usesDeviceListTarget && isDeviceListInput(input))" class="workflow-run-field" :class="{ 'has-error': inputErrors[input.name] }">
                 <span>{{ inputLabel(input) }}<em v-if="input.required">必填</em></span>
                 <small v-if="input.description">{{ input.description }}</small>
                 <template v-if="input.control?.id === 'device-picker' || input.semanticType === 'device'">
@@ -313,6 +363,11 @@ onMounted(async () => {
                 <template v-else-if="isDeviceListInput(input)">
                   <input v-model="inputDeviceQueries[input.name]" type="search" :aria-label="`筛选${inputLabel(input)}设备`" placeholder="名称、ID、地址或型号" />
                   <label class="workflow-device-mine"><input v-model="inputMineOnly[input.name]" type="checkbox" :aria-label="`${inputLabel(input)}仅显示我的占用`" />我的占用</label>
+                  <div class="workflow-device-selection-actions">
+                    <button type="button" class="device-selection-action" @click="selectAllDevices(input)">全选</button>
+                    <button type="button" class="device-selection-action" @click="clearAllDevices(input)">清空</button>
+                    <button type="button" class="device-selection-action" @click="invertDevices(input)">反选</button>
+                  </div>
                   <div class="workflow-device-list" role="group" :aria-label="`${inputLabel(input)}设备选择`">
                     <label v-for="device in filterWorkflowDevices(workspace.devices, inputDeviceQueries[input.name] || '', inputMineOnly[input.name] ? workspace.ownedDeviceIds || [] : undefined)" :key="device.row_id || device.id" class="workflow-device-option">
                       <input type="checkbox" :checked="selectedDeviceIds(input).includes(device.id)" @change="toggleDeviceId(input, device.id, ($event.target as HTMLInputElement).checked)" />
@@ -328,11 +383,12 @@ onMounted(async () => {
                     <div class="workflow-run-file-row"><input :value="fileDirectories[input.name]" placeholder="本机文件夹路径" @input="updateRuntimeFilePart(input, 'directory', $event)" /><button class="workflow-run-file" type="button" @click="chooseDirectory(input)"><FileUp :size="14" />选择文件夹</button></div>
                     <input :value="fileNames[input.name]" placeholder="文件名，例如 image.cc" @input="updateRuntimeFilePart(input, 'name', $event)" />
                   </div>
-                  <div v-else class="workflow-run-file-row"><input v-model="values[input.name]" :placeholder="String(input.uiHints?.placeholder || '选择本机文件')" readonly /><button class="workflow-run-file" type="button" @click="chooseFile(input)"><FileUp :size="14" />选择文件</button></div>
+                  <div v-else class="workflow-run-file-row"><input v-model="values[input.name]" :placeholder="String(input.uiHints?.placeholder || '点击按钮选择本机文件')" readonly /><button class="workflow-run-file" type="button" @click="chooseFile(input)"><FileUp :size="14" />选择文件</button></div>
                 </template>
                 <textarea v-else-if="(input.primitiveType || input.type) === 'array' || (input.primitiveType || input.type) === 'object'" v-model="values[input.name]" rows="3" :placeholder="(input.primitiveType || input.type) === 'array' ? '[...]' : '{...}'" />
                 <input v-else-if="(input.primitiveType || input.type) === 'boolean'" v-model="values[input.name]" type="checkbox" />
                 <input v-else v-model="values[input.name]" :type="inputType(input)" :step="input.type === 'number' ? 'any' : (input.primitiveType || input.type) === 'number' ? 'any' : (input.primitiveType || input.type) === 'integer' ? '1' : undefined" />
+                <small v-if="inputErrors[input.name]" class="workflow-input-error" role="alert">{{ inputErrors[input.name] }}</small>
               </label>
               </template>
             </div>
@@ -347,3 +403,45 @@ onMounted(async () => {
   </div>
   </Teleport>
 </template>
+
+<style scoped>
+.workflow-run-field.has-error input,
+.workflow-run-field.has-error select,
+.workflow-run-field.has-error textarea {
+  border-color: #ef4444;
+}
+
+.workflow-input-error {
+  display: block;
+  margin-top: 4px;
+  color: #ef4444;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workflow-device-selection-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.device-selection-action {
+  padding: 4px 10px;
+  border: 1px solid var(--workflow-border, #3a3a3a);
+  border-radius: 4px;
+  background: var(--workflow-surface, #1e1e1e);
+  color: var(--workflow-text, #e0e0e0);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.device-selection-action:hover {
+  background: var(--workflow-surface-hover, #2a2a2a);
+  border-color: var(--accent, #3b82f6);
+}
+
+.device-selection-action:active {
+  transform: scale(0.98);
+}
+</style>

@@ -30,10 +30,10 @@ class ShellCommandActivityHandler:
         if mode not in {"shell", "bash"}:
             return self._invalid("execution_mode must be shell or bash")
         try:
-            timeout = float(invocation.inputs.get("timeout_seconds") or 30)
+            timeout = float(invocation.inputs.get("timeout_seconds", 30))
         except (TypeError, ValueError):
             return self._invalid("timeout_seconds must be a number")
-        if timeout <= 0 or timeout > 86_400:
+        if timeout < 0 or timeout > 86_400:
             return self._invalid("timeout_seconds must be between 0 and 86400")
         try:
             max_output_chars = int(invocation.inputs.get("max_output_chars") or 1_048_576)
@@ -72,7 +72,7 @@ class ShellCommandActivityHandler:
             )
             self._processes[invocation.invocation_id] = process
             try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=None if timeout == 0 else timeout)
             except asyncio.TimeoutError:
                 await self._stop(process)
                 stdout_bytes, stderr_bytes = await process.communicate()

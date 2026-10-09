@@ -126,6 +126,14 @@ def test_workflow_editor_input_selection_in_real_dom(tmp_path: Path) -> None:
       import { parse, compileScript } from '@vue/compiler-sfc'
       const directory = process.argv[1]
       const fixture = fs.readFileSync(path.join(directory, 'fixture.json'), 'utf8')
+      const appSource = fs.readFileSync('src/renderer/src/App.vue', 'utf8')
+      const runnerState = appSource.slice(appSource.indexOf('const workflowRunDialogOpen ='), appSource.indexOf('const selectedProfileId ='))
+      const openRunner = appSource.slice(appSource.indexOf('function openWorkflowRunDialog('), appSource.indexOf('function addQuickCommand('))
+      const panelActions = appSource.slice(appSource.indexOf('function toggleWorkflowPanel('), appSource.indexOf('function openWorkflowRunDialog('))
+      const runnerTemplate = appSource.slice(appSource.indexOf('<WorkflowRunDialog\n'), appSource.indexOf('\n    <div', appSource.indexOf('<WorkflowRunDialog\n')))
+      const parentSource = '<script setup lang="ts">import { ref } from "vue"; import WorkflowRunDialog from "./src/renderer/src/components/WorkflowRunDialog.vue"; import QuickActionsBar from "./src/renderer/src/components/QuickActionsBar.vue"; import { useWorkspaceStore } from "./src/renderer/src/stores/workspace"; const workspace = useWorkspaceStore(); const workflowPanelOpen = ref(false); const workflowLibraryRef = ref(null); function closeAppContextMenus() {};' + runnerState + panelActions + openRunner + '; function openWorkflowStudioFromRunner() { workflowRunDialogOpen.value = false }; defineExpose({ openWorkflowRunDialog });</script><template><button aria-label="Toggle Studio" @click="toggleWorkflowPanel">Studio</button><div v-show="!workflowPanelOpen" class="test-session-workspace"><QuickActionsBar @run-workflow="openWorkflowRunDialog($event.deviceId, $event.workflowId, undefined, $event.autoRun, $event.sessionId)" /></div><div v-if="workflowPanelOpen" class="test-workflow-studio">Studio</div>' + runnerTemplate + '</template>'
+      const { descriptor: parentDescriptor } = parse(parentSource, { filename: 'RunnerParent.vue' })
+      const parentComponent = compileScript(parentDescriptor, { id: 'runner-parent', inlineTemplate: true }).content
       const result = await build({
         stdin: { contents: `
           import WorkflowLibrary from './src/renderer/src/components/WorkflowLibrary.vue'
@@ -133,6 +141,7 @@ def test_workflow_editor_input_selection_in_real_dom(tmp_path: Path) -> None:
           import { useWorkspaceStore } from './src/renderer/src/stores/workspace'
           import { createApp, nextTick } from 'vue'
           import { createPinia } from 'pinia'
+          import RunnerParent from 'runner-parent'
           globalThis.runWorkflowInputRegression = async () => {
             const fixture = ${fixture}
             const saved = []
@@ -303,10 +312,99 @@ def test_workflow_editor_input_selection_in_real_dom(tmp_path: Path) -> None:
             check(JSON.stringify(runs[0].device_ids) === JSON.stringify(['fixed-device', 'edge-device']), 'Filtered run changed target devices')
             check(JSON.stringify(runs[0].inputs.devices) === JSON.stringify(runs[0].device_ids), 'Filtered run changed workflow device input')
             runApp.unmount()
+            localStorage.setItem('odyterm.desktop-v2.quick-actions', JSON.stringify([{ id: 'quick-action', type: 'workflow', name: 'Quick serial', workflowId: 'quick' }]))
+            workspace.sessions = [
+              { id: 'telnet-session', device_id: 'fixed-device', kind: 'telnet', status: 'connected', title: 'Telnet' },
+              { id: 'serial-session', device_id: 'fixed-device', kind: 'serial', status: 'connected', title: 'Serial' },
+            ]
+            workspace.activeSessionId = 'serial-session'
+            const parentApp = createApp(RunnerParent).use(pinia)
+            const parent = parentApp.mount('#app')
+            const successfulRuns = []
+            window.desktopApi.request = async request => {
+              if (request.path.endsWith('/published')) return { status: 200, body: JSON.stringify({ workflows: [{ id: 'quick', name: 'Quick', version: 1, inputs: [] }] }) }
+              if (request.path.endsWith('/run')) {
+                successfulRuns.push(JSON.parse(request.body))
+                return { status: 200, body: JSON.stringify({ task: { id: 'success-' + successfulRuns.length, device_id: 'fixed-device', session_id: 'serial-session', status: 'completed' } }) }
+              }
+              throw new Error('Unexpected successful run request: ' + request.path)
+            }
+            for (let cycle = 1; cycle <= 3; cycle++) {
+              document.querySelector('.quick-action-button').click()
+              await waitFor(() => successfulRuns.length === cycle && !document.querySelector('.workflow-run-dialog'), 'Successful quick Workflow did not submit and close: ' + cycle)
+              check(workspace.activeTaskId === 'success-' + cycle && workspace.tasks[0].status === 'completed', 'Successful task was not registered')
+              check(workspace.activeSessionId === 'serial-session', 'Successful quick Workflow changed the active session')
+              document.querySelector('[aria-label="Toggle Studio"]').click()
+              await nextTick()
+              check(document.querySelector('.test-workflow-studio') && document.querySelector('.test-session-workspace').style.display === 'none', 'Studio did not hide the terminal workspace')
+              check(!workspace.upgradePanelOpen, 'Studio did not close the task panel')
+              document.querySelector('[aria-label="Toggle Studio"]').click()
+              await nextTick()
+              check(!document.querySelector('.test-workflow-studio') && document.querySelector('.test-session-workspace').style.display !== 'none', 'Returning from Studio did not reveal quick actions')
+            }
+            check(successfulRuns.every(run => run.protocol === 'serial' && run.session_id === 'serial-session'), 'Repeated successful Workflow switched to Telnet')
+            let pendingCatalog
+            let catalogRequests = 0
+            window.desktopApi.request = async request => {
+              if (request.path.endsWith('/published')) {
+                catalogRequests++
+                if (catalogRequests === 1) await new Promise(resolve => { pendingCatalog = resolve })
+                return { status: 200, body: JSON.stringify({ workflows: [{ id: 'quick', name: 'Quick', version: 1, inputs: [] }] }) }
+              }
+              throw new Error('Replaced catalog loader must not submit a Workflow')
+            }
+            document.querySelector('.quick-action-button').click()
+            await waitFor(() => pendingCatalog, 'Quick catalog request did not start')
+            document.querySelector('[aria-label="Toggle Studio"]').click()
+            await nextTick()
+            document.querySelector('[aria-label="Toggle Studio"]').click()
+            await nextTick()
+            parent.openWorkflowRunDialog()
+            await waitFor(() => {
+              const backdrop = document.querySelector('.workflow-run-backdrop')
+              return backdrop && backdrop.style.display !== 'none' && document.querySelector('.workflow-run-list button')
+            }, 'Manual Workflow entry stayed hidden after successful task and pending quick activation')
+            pendingCatalog()
+            await new Promise(resolve => setTimeout(resolve, 20))
+            check(document.querySelector('.workflow-run-dialog') && workspace.activeTaskId === 'success-3', 'Old catalog loader replaced the current runner or successful task')
+            let attempts = 0
+            const pendingRuns = []
+            window.desktopApi.request = async request => {
+              if (request.path.endsWith('/published')) return { status: 200, body: JSON.stringify({ workflows: [{ id: 'quick', name: 'Quick', version: 1, inputs: [] }] }) }
+              if (request.path.endsWith('/run')) {
+                attempts++
+                if (attempts === 1) return { status: 500, body: JSON.stringify({ detail: 'Automatic submission failed' }) }
+                await new Promise(resolve => pendingRuns.push(resolve))
+                return { status: 200, body: '{}' }
+              }
+              throw new Error('Unexpected repeat request: ' + request.path)
+            }
+            document.querySelector('.quick-action-button').click()
+            const failure = await waitFor(() => document.querySelector('.workflow-run-error[role="alert"]'), 'Failed quick execution did not reveal its error')
+            check(failure.closest('.workflow-run-backdrop').style.display !== 'none', 'Quick execution error dialog stayed hidden')
+            check(workspace.tasks[0].status === 'completed', 'Failed submission must leave the previous successful task intact')
+            parent.openWorkflowRunDialog()
+            await waitFor(() => {
+              const backdrop = document.querySelector('.workflow-run-backdrop')
+              return backdrop && backdrop.style.display !== 'none' && !document.querySelector('.workflow-run-error')
+            }, 'Manual Workflow entry reused the hidden or failed quick runner')
+            check(attempts === 1, 'Opening the manual runner must not auto-submit a task')
+            parent.openWorkflowRunDialog('fixed-device', 'quick', undefined, true)
+            await waitFor(() => attempts === 2 && pendingRuns.length === 1, 'Second quick activation did not execute again')
+            parent.openWorkflowRunDialog('fixed-device', 'quick', undefined, true)
+            await waitFor(() => attempts === 3 && pendingRuns.length === 2, 'Third activation did not create a new runner')
+            pendingRuns[0]()
+            await new Promise(resolve => setTimeout(resolve, 20))
+            check(document.querySelector('.workflow-run-dialog'), 'Old completion closed the current runner')
+            pendingRuns[1]()
+            await waitFor(() => !document.querySelector('.workflow-run-dialog'), 'Current successful run did not close its dialog')
+            parentApp.unmount()
             return 'Workflow input DOM regression passed'
           }
         `, resolveDir: process.cwd(), loader: 'ts' },
         plugins: [{ name: 'vue-sfc', setup(builder) {
+          builder.onResolve({ filter: /^runner-parent$/ }, () => ({ path: 'runner-parent', namespace: 'runner-parent' }))
+          builder.onLoad({ filter: /.*/, namespace: 'runner-parent' }, () => ({ contents: parentComponent, loader: 'ts', resolveDir: process.cwd() }))
           builder.onLoad({ filter: /\.vue$/ }, args => {
             const { descriptor } = parse(fs.readFileSync(args.path, 'utf8'), { filename: args.path })
             const compiled = compileScript(descriptor, { id: args.path, inlineTemplate: true, fs: {

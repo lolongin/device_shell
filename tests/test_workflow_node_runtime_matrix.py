@@ -253,6 +253,28 @@ def test_compiled_for_each_preserves_loop_item_reference_in_real_execution() -> 
     assert [item["value"] for item in result.outputs["loop"]["results"]] == ["a", "b"]
 
 
+def test_compiled_loop_result_field_reaches_downstream_node() -> None:
+    from device_tui.application.workflow_studio import validate_workflow
+    version = WorkflowVersion(
+        workflow_id="wf", version=1, name="loop-result-binding",
+        nodes=(
+            StudioNode("loop", "loop.for_each", {
+                "items": ["a", "b"], "action_id": "variable.set",
+                "action_inputs": {"name": "current", "value": "${item}"},
+            }),
+            StudioNode("save", "result.save", {"value": "${loop.results.1.value}"}),
+        ), edges=(WorkflowEdge("loop", "save"),),
+    )
+    assert not validate_workflow(version, build_action_catalog()).errors
+    plan = _compile_task_plan(version, "router-1")
+    orchestrator = _build_activity_orchestrator()
+    task = orchestrator.start(plan, device_id="router-1")
+    result = asyncio.run(orchestrator.execute(task.id, plan))
+    assert result.status.value == "succeeded"
+    assert result.outputs["save"]["value"] == "b"
+    assert result.outputs["save"]["key"] == "save"
+
+
 def test_device_for_each_resolves_input_list_and_child_device_reference() -> None:
     from device_tui.application.composition.workflows import build_default_activity_executor, build_default_adapter_registry, build_default_workflow_registry
     from device_tui.application.workflow_plugins.device_bridge import build_device_action_registry

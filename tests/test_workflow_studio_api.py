@@ -15,6 +15,8 @@ from device_tui.application.errors import UnsupportedOperationError
 from device_tui.application.composition.workflows import build_default_activity_executor
 from device_tui.framework import ActivityContext, ActivityInvocation, WorkflowRun
 import asyncio
+import time
+import pytest
 
 
 def test_workflow_canvas_edges_preserve_legacy_and_explicitly_empty_states() -> None:
@@ -1623,7 +1625,8 @@ def test_custom_actions_support_catalog_nodes_and_published_workflows() -> None:
         assert client.delete(f"/api/v1/workflow-definitions/custom-actions/{action['id']}").status_code == 204
 
 
-def test_subworkflow_api_expands_inputs_outputs_and_protects_versions() -> None:
+@pytest.mark.parametrize("nested", [False, True], ids=["direct", "nested"])
+def test_subworkflow_api_expands_inputs_outputs_and_protects_versions(nested: bool) -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         child = client.post(
             "/api/v1/workflow-definitions",
@@ -1645,6 +1648,28 @@ def test_subworkflow_api_expands_inputs_outputs_and_protects_versions() -> None:
         ).json()["workflow"]
         assert child_version["outputs"][0]["name"] == "echo"
 
+        called_id = child["id"]
+        called_version = child_version["version"]
+        if nested:
+            middle = client.post(
+                "/api/v1/workflow-definitions",
+                json={
+                    "name": "Echo middle",
+                    "inputs": [{"name": "message", "type": "string", "required": True}],
+                    "nodes": [{
+                        "id": "child_call", "action_id": "workflow.call",
+                        "config": {"workflow_id": called_id, "version": called_version,
+                                   "inputs": {"message": "${inputs.message}"}},
+                    }],
+                    "outputs": [{"name": "echo", "value": "${child_call.echo}", "type": "string"}],
+                },
+            ).json()["workflow"]
+            middle_version = client.post(
+                f"/api/v1/workflow-definitions/{middle['id']}/publish"
+            ).json()["workflow"]
+            called_id = middle["id"]
+            called_version = middle_version["version"]
+
         parent = client.post(
             "/api/v1/workflow-definitions",
             json={
@@ -1655,8 +1680,8 @@ def test_subworkflow_api_expands_inputs_outputs_and_protects_versions() -> None:
                         "id": "call",
                         "action_id": "workflow.call",
                         "config": {
-                            "workflow_id": child["id"],
-                            "version": child_version["version"],
+                            "workflow_id": called_id,
+                            "version": called_version,
                             "inputs": {"message": "${inputs.message}"},
                         },
                     },
@@ -1684,11 +1709,19 @@ def test_subworkflow_api_expands_inputs_outputs_and_protects_versions() -> None:
         )
         assert preview.status_code == 200
         steps = preview.json()["preview"]["steps"]
-        assert [(step["id"], step["depends_on"]) for step in steps] == [
+        expected_steps = [
             ("call__capture", []),
             ("call", ["call__capture"]),
             ("save", ["call"]),
         ]
+        if nested:
+            expected_steps = [
+                ("call__child_call__capture", []),
+                ("call__child_call", ["call__child_call__capture"]),
+                ("call", ["call__child_call"]),
+                ("save", ["call"]),
+            ]
+        assert [(step["id"], step["depends_on"]) for step in steps] == expected_steps
 
         parent_version = client.post(
             f"/api/v1/workflow-definitions/{parent['id']}/publish"
@@ -1707,6 +1740,17 @@ def test_subworkflow_api_expands_inputs_outputs_and_protects_versions() -> None:
             },
         )
         assert started.status_code == 200
+        task_id = started.json()["task"]["id"]
+        deadline = time.monotonic() + 3
+        while True:
+            task = client.get(f"/api/v1/tasks/{task_id}").json()["task"]
+            if task["status"] in {"completed", "failed", "cancelled"} or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert task["status"] == "completed", task["message"]
+        run = client.app.state.desktop_application.task_service.get_plan(task_id)
+        assert run.outputs["call"]["outputs"] == {"echo": "hello"}
+        assert run.outputs["save"]["value"] == "hello"
         parent_versions = client.get(
             f"/api/v1/workflow-definitions/{parent['id']}/versions"
         ).json()["versions"]

@@ -172,7 +172,7 @@ def _schema_from_value(value: Any) -> dict[str, Any] | None:
     if isinstance(value, str):
         return {"type": "string"}
     if isinstance(value, Mapping):
-        return {"type": "object"}
+        return {"type": "object", "properties": {str(key): _schema_from_value(item) or {} for key, item in value.items()}}
     if isinstance(value, (list, tuple)):
         return {"type": "array"}
     if value is None:
@@ -364,6 +364,8 @@ def validate_workflow(
             if execution_mode not in {"device", "shell", "bash"}:
                 errors.append(ValidationIssue("invalid_execution_mode", "execution_mode must be device, shell, or bash", node.id))
             timeout = settings.get("timeout_seconds", 30)
+            if _is_exact_reference(timeout):
+                timeout = 30
             try:
                 timeout_value = float(timeout)
             except (TypeError, ValueError):
@@ -382,6 +384,8 @@ def validate_workflow(
             if not isinstance(script, str) or not script.strip():
                 errors.append(ValidationIssue("missing_script", "script content is required", node.id, fix_suggestion=_get_config_suggestion(node.action_id, "script")))
             timeout = settings.get("timeout_seconds", 300)
+            if _is_exact_reference(timeout):
+                timeout = 300
             try:
                 timeout_value = float(timeout)
             except (TypeError, ValueError):
@@ -390,13 +394,15 @@ def validate_workflow(
                 if timeout_value < 0 or timeout_value > 86_400:
                     errors.append(ValidationIssue("number_out_of_range", "script timeout_seconds must be between 0 and 86400", node.id))
             max_output = settings.get("max_output_chars", 1_048_576)
-            if not isinstance(max_output, int) or isinstance(max_output, bool) or max_output < 1_024 or max_output > 16_777_216:
+            if not _is_exact_reference(max_output) and (not isinstance(max_output, int) or isinstance(max_output, bool) or max_output < 1_024 or max_output > 16_777_216):
                 errors.append(ValidationIssue("number_out_of_range", "script max_output_chars must be between 1024 and 16777216", node.id))
         if node.action_id == "terminal.wait":
             mode = str(settings.get("mode") or "contains").strip().lower()
-            if mode not in {"contains", "regex"}:
+            if not _is_exact_reference(mode) and mode not in {"contains", "regex"}:
                 errors.append(ValidationIssue("invalid_terminal_match_mode", "terminal match mode must be contains or regex", node.id))
             timeout = settings.get("timeout_seconds", 30)
+            if _is_exact_reference(timeout):
+                timeout = 30
             try:
                 timeout_value = float(timeout)
             except (TypeError, ValueError):
@@ -404,7 +410,7 @@ def validate_workflow(
             else:
                 if timeout_value < 0 or timeout_value > 86_400:
                     errors.append(ValidationIssue("number_out_of_range", "timeout_seconds must be between 0 and 86400", node.id))
-            if mode == "regex":
+            if mode == "regex" and not _is_exact_reference(settings.get("pattern")):
                 pattern = str(settings.get("pattern") or "")
                 try:
                     re.compile(pattern)
@@ -467,6 +473,9 @@ def validate_workflow(
                 errors.append(ValidationIssue("invalid_device_list", "devices must be a list or variable reference", node.id))
             if node.id not in loop_bodies and (catalog.get(child_action) is None or child_action in _LOOP_DISALLOWED_ACTIONS):
                 errors.append(ValidationIssue("invalid_device_action", "device child action is not executable", node.id))
+            concurrency = settings.get("concurrency", 1)
+            if not _is_exact_reference(concurrency) and (not isinstance(concurrency, int) or isinstance(concurrency, bool) or not 1 <= concurrency <= 32):
+                errors.append(ValidationIssue("number_out_of_range", "concurrency must be an integer between 1 and 32", node.id))
         if node.action_id == "loop.until":
             child_action = str(settings.get("action_id") or "").strip()
             condition = str(settings.get("condition") or "").strip()
@@ -481,7 +490,7 @@ def validate_workflow(
                     errors.append(ValidationIssue("invalid_loop_condition", str(exc), node.id))
             for key, minimum, maximum in (("max_iterations", 1, 100), ("interval_seconds", 0, 86_400)):
                 value = settings.get(key)
-                if value in (None, ""):
+                if value in (None, "") or _is_exact_reference(value):
                     continue
                 try:
                     number = float(value)
@@ -653,6 +662,30 @@ def validate_workflow(
             properties["outputs"] = {"type": "object", "properties": declared}
             return {"type": "object", "properties": properties}
         spec = catalog.get(node.action_id) if node is not None else None
+        if node is not None and spec is not None and node.action_id in {"loop.for_each", "device.for_each", "loop.until"}:
+            settings = node_settings(node)
+            body = loop_bodies.get(node.id, ())
+            child_spec = catalog.get(str(settings.get("action_id") or ""))
+            child_schema = child_spec.output_schema if child_spec is not None else {"type": "object", "additionalProperties": True}
+            child_schema = {**child_schema, "properties": {**dict(child_schema.get("properties") or {}), "status": {"type": "string"}}}
+            if body:
+                step_schemas = {step_id: output_schema(step_id) or {} for step_id in body}
+                last_schema = step_schemas[body[-1]]
+                child_schema = {"type": "object", "properties": {
+                    **dict(last_schema.get("properties") or {}),
+                    "steps": {"type": "object", "properties": step_schemas},
+                }}
+            if node.action_id == "device.for_each":
+                child_schema = {"type": "object", "properties": {
+                    **dict(child_schema.get("properties") or {}), "device_id": {"type": "string"},
+                    "execution_status": {"type": "string"},
+                    "status": {"type": "string"}, "error": {"type": ["object", "null"], "additionalProperties": True},
+                }}
+            properties = dict(spec.output_schema.get("properties") or {})
+            properties["results"] = {"type": "array", "items": child_schema}
+            if node.action_id == "loop.until":
+                properties["result"] = child_schema
+            return {"type": "object", "properties": properties}
         return spec.output_schema if spec is not None else None
 
     def schema_property(schema: Mapping[str, Any] | None, path: list[str]) -> Mapping[str, Any] | None:
@@ -660,8 +693,21 @@ def validate_workflow(
         for segment in path:
             if not isinstance(current, Mapping):
                 return None
+            if current == {}:
+                continue
+            if "array" in _schema_types(current) and segment.isdecimal():
+                candidate = current.get("items")
+                current = candidate if isinstance(candidate, Mapping) else {}
+                continue
             properties = current.get("properties")
             if not isinstance(properties, Mapping) or segment not in properties:
+                additional = current.get("additionalProperties")
+                if additional is True:
+                    current = {}
+                    continue
+                if isinstance(additional, Mapping):
+                    current = additional
+                    continue
                 return None
             candidate = properties[segment]
             current = candidate if isinstance(candidate, Mapping) else None

@@ -7,6 +7,26 @@ import { buildWorkflowReferences, referenceCompatible } from '../../composables/
 
 const props = defineProps<NodeConfigProps>()
 const emit = defineEmits<NodeConfigEmits & { 'choose-upload-source': [] }>()
+
+const OPTIONAL_FIELDS_STORAGE_KEY = 'device-tui.workflow-optional-fields-expanded'
+function loadOptionalFieldsState(): Record<string, boolean> {
+  try {
+    const stored = window.localStorage.getItem(OPTIONAL_FIELDS_STORAGE_KEY)
+    return stored ? JSON.parse(stored) : {}
+  } catch {
+    return {}
+  }
+}
+function saveOptionalFieldsState(actionId: string, expanded: boolean): void {
+  try {
+    const state = loadOptionalFieldsState()
+    state[actionId] = expanded
+    window.localStorage.setItem(OPTIONAL_FIELDS_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // localStorage 可选
+  }
+}
+
 const showOptionalSchemaFields = ref(false)
 const customDeviceReference = ref(false)
 const deviceLoopBody = computed(() => Boolean(props.deviceLoopId))
@@ -78,9 +98,15 @@ function fieldSchema(name: string): Record<string, unknown> {
   return schemaProperties.value.find(field => field.name === name)?.schema || { type: name === 'device_id' ? ['string', 'object'] : name === 'seconds' || name === 'timeout_seconds' ? 'number' : 'string', binding: { mode: 'runtime' } }
 }
 
-watch(() => props.node.action_id, () => {
-  showOptionalSchemaFields.value = false
+watch(() => props.node.action_id, (actionId) => {
+  const savedState = loadOptionalFieldsState()
+  showOptionalSchemaFields.value = savedState[actionId] ?? false
 })
+
+function toggleOptionalFields(): void {
+  showOptionalSchemaFields.value = !showOptionalSchemaFields.value
+  saveOptionalFieldsState(props.node.action_id, showOptionalSchemaFields.value)
+}
 
 const uploadInputs = computed(() => (props.workflowInputs || [])
   .filter((input) => String(input.name || '').trim() && ['file', 'string'].includes(input.type || 'string')))
@@ -317,18 +343,8 @@ function enumLabel(value: unknown): string {
 
     <!-- Device Info -->
     <template v-else-if="node.action_id === 'device.info'">
-      <label>
-        采集字段
-        <select :value="node.config.fields" multiple size="4" @change="updateConfig('fields', Array.from(($event.target as HTMLSelectElement).selectedOptions).map(o => o.value))">
-          <option value="name">名称</option>
-          <option value="address">地址</option>
-          <option value="model">型号</option>
-          <option value="software_version">软件版本</option>
-          <option value="status">状态</option>
-          <option value="output">原始输出</option>
-        </select>
-        <small class="field-hint">可多选，后续条件和保存结果可使用这些字段。</small>
-      </label>
+      <ValueBindingField v-model="node.config.session_id" label="终端会话" :schema="fieldSchema('session_id')" :references="workflowReferences" :rows="1" />
+      <ValueBindingField v-model="node.config.timeout_seconds" label="查询超时（秒）" :schema="fieldSchema('timeout_seconds')" :references="workflowReferences" :rows="1" placeholder="30" />
     </template>
 
     <!-- Utility Wait -->
@@ -415,7 +431,7 @@ function enumLabel(value: unknown): string {
     </template>
 
     <div v-else class="schema-node-fields">
-      <button v-if="optionalSchemaFieldCount" type="button" class="schema-advanced-toggle" :aria-expanded="showOptionalSchemaFields" @click="showOptionalSchemaFields = !showOptionalSchemaFields">
+      <button v-if="optionalSchemaFieldCount" type="button" class="schema-advanced-toggle" :aria-expanded="showOptionalSchemaFields" @click="toggleOptionalFields">
         <span>高级参数</span><small>{{ optionalSchemaFieldCount }} 个可选参数</small><strong>{{ showOptionalSchemaFields ? '收起' : '展开' }}</strong>
       </button>
       <label v-for="field in schemaProperties" v-show="field.required || showOptionalSchemaFields" :key="field.name">

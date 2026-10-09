@@ -9,6 +9,15 @@ export const fieldLabels: Record<string, string> = {
   cli_status: '终端状态',
   data: '结构化数据',
   device_id: '设备',
+  device_status: '设备状态',
+  execution_status: '执行状态',
+  bytes_transferred: '已传输字节',
+  total_bytes: '总字节数',
+  progress_percent: '传输进度',
+  stage: '传输阶段',
+  source_path: '源路径',
+  destination_path: '最终目标路径',
+  result_parsed: '结构化结果已解析',
   error: '错误',
   evidence: '校验证据',
   exit_code: '退出码',
@@ -48,6 +57,8 @@ export const fieldLabels: Record<string, string> = {
 }
 
 export const inputFieldLabels: Record<string, string> = {
+  session_id: '终端会话',
+  concurrency: '并发设备数',
   devices: '设备列表',
   source: '源文件路径',
   destination: '目标路径',

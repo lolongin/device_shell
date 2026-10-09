@@ -95,7 +95,7 @@ def test_variable_set_returns_named_value() -> None:
         )
     )
     assert result.status == ActivityStatus.SUCCEEDED
-    assert result.outputs == {"name": "package", "value": "target.cc"}
+    assert result.outputs == {"name": "package", "value": "target.cc", "matched": False, "source": None}
 
 
 def test_variable_set_can_extract_a_capture_group() -> None:

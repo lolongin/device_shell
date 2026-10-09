@@ -851,6 +851,9 @@ async def create_workflow_script(payload: Mapping[str, Any], ctx=Depends(get_con
         raise UnsupportedOperationError("script name is required")
     if len(name) > 120:
         raise UnsupportedOperationError("script name is too long")
+    language = str(payload.get("language") or "python").strip().lower()
+    if language not in {"python", "powershell", "bash"}:
+        raise UnsupportedOperationError("unsupported script language")
     scripts = _load_workflow_scripts(ctx.desktop.settings)
     if len(scripts) >= _WORKFLOW_SCRIPT_LIMIT:
         raise UnsupportedOperationError(f"script limit reached ({_WORKFLOW_SCRIPT_LIMIT})")
@@ -858,7 +861,7 @@ async def create_workflow_script(payload: Mapping[str, Any], ctx=Depends(get_con
     input_schema = _normalize_workflow_script_input_schema(payload.get("input_schema") or [])
     script_source = str(payload.get("script") or payload.get("content") or "")
     input_schema, entrypoint, input_schema_error = _analyze_workflow_script(
-        str(payload.get("language") or "python").strip().lower(),
+        language,
         script_source,
         input_schema,
     )
@@ -866,7 +869,7 @@ async def create_workflow_script(payload: Mapping[str, Any], ctx=Depends(get_con
         "id": str(payload.get("id") or f"script_{uuid4().hex[:12]}"),
         "name": name,
         "description": str(payload.get("description") or "").strip(),
-        "language": str(payload.get("language") or "python").strip().lower(),
+        "language": language,
         "script": script_source,
         "input_schema": input_schema,
         "input_schema_source": "function" if entrypoint else "manual",
@@ -875,8 +878,6 @@ async def create_workflow_script(payload: Mapping[str, Any], ctx=Depends(get_con
         "created_at": now,
         "updated_at": now,
     }
-    if script["language"] not in {"python", "powershell", "bash"}:
-        raise UnsupportedOperationError("unsupported script language")
     scripts.append(script)
     ctx.desktop.settings.set(_WORKFLOW_SCRIPTS_SETTING, scripts)
     return {"script": script}

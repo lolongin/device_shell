@@ -122,7 +122,7 @@ class TerminalTransferAdapter(TransferAdapter):
             context=context,
         )
         report(self._event("transfer.operation.queued", invocation, self._operation_payload(operation)))
-        return TransferHandle(operation.operation_id, metadata={"direction": direction})
+        return TransferHandle(operation.operation_id, metadata={"direction": direction, "source_path": str(inputs.get("source_path") or ""), "destination_path": destination_path})
 
     @staticmethod
     def _effective_destination(inputs: Mapping[str, Any]) -> str:
@@ -156,13 +156,13 @@ class TerminalTransferAdapter(TransferAdapter):
             if operation.status == "completed":
                 return TransferObservation(
                     "completed",
-                    outputs=self._operation_outputs(operation),
+                    outputs={**handle.metadata, **self._operation_outputs(operation)},
                     evidence=(self._operation_evidence(operation),),
                 )
             if operation.status in {"failed", "cancelled"}:
                 return TransferObservation(
                     operation.status,
-                    outputs=self._operation_outputs(operation),
+                    outputs={**handle.metadata, **self._operation_outputs(operation)},
                     evidence=(self._operation_evidence(operation),),
                 )
             # A process restart turns in-flight operations into interrupted;
@@ -170,13 +170,13 @@ class TerminalTransferAdapter(TransferAdapter):
             if operation.status == "interrupted":
                 return TransferObservation(
                     "unknown",
-                    outputs=self._operation_outputs(operation),
+                    outputs={**handle.metadata, **self._operation_outputs(operation)},
                     evidence=(self._operation_evidence(operation),),
                 )
             if time.monotonic() >= deadline:
                 return TransferObservation(
                     "unknown",
-                    outputs=self._operation_outputs(operation),
+                    outputs={**handle.metadata, **self._operation_outputs(operation)},
                     evidence=(self._operation_evidence(operation),),
                 )
             await asyncio.sleep(self._poll_interval)
@@ -202,7 +202,7 @@ class TerminalTransferAdapter(TransferAdapter):
             return False, {"bytes_transferred": transferred, "total_bytes": total}, (
                 self._operation_evidence(operation),
             )
-        return True, self._operation_outputs(operation) | {"verified": True}, (
+        return True, {**handle.metadata, **self._operation_outputs(operation), "verified": True}, (
             self._operation_evidence(operation),
         )
 
@@ -241,6 +241,7 @@ class TerminalTransferAdapter(TransferAdapter):
             "bytes_transferred": operation.bytes_transferred,
             "total_bytes": operation.total_bytes,
             "data": dict(operation.data),
+            **{key: str(operation.data[key]) for key in ("source_path", "destination_path") if operation.data.get(key)},
         }
 
     @staticmethod

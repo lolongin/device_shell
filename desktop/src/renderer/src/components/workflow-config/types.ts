@@ -49,7 +49,7 @@ export type ActionItem = {
   inputSchema: Record<string, unknown>
   outputSchema: Record<string, unknown>
   risk: string
-  outputFields: Array<{ name: string; label: string }>
+  outputFields: Array<{ name: string; label: string; schema?: Record<string, unknown> }>
   preset?: {
     actionId: string
     config: Record<string, unknown>

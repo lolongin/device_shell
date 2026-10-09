@@ -75,7 +75,7 @@ class TransferActivityHandler:
             report(self._event("transfer.started", invocation, {"skipped": True}))
             report(self._event("transfer.completed", invocation, {"skipped": True}))
             report(self._event("transfer.verification.passed", invocation, {"skipped": True}))
-            return ActivityResult(ActivityStatus.SUCCEEDED, outputs=outputs, evidence=({
+            return ActivityResult(ActivityStatus.SUCCEEDED, outputs=self._normalize_outputs(outputs, status="completed", verified=True), evidence=({
                 "kind": "transfer_skip",
                 "reason": "destination_already_present",
             },))
@@ -166,13 +166,20 @@ class TransferActivityHandler:
         verified: bool = False,
     ) -> dict[str, Any]:
         normalized = dict(outputs)
-        normalized.setdefault("status", status)
+        normalized["status"] = status
         normalized.setdefault("operation_id", operation_id)
         normalized.setdefault("verified", verified)
         normalized.setdefault("skipped", False)
         normalized.setdefault("skip_reason", "")
         normalized.setdefault("output", "")
         normalized.setdefault("evidence", [])
+        normalized.setdefault("stage", "")
+        normalized.setdefault("progress_percent", 0)
+        normalized.setdefault("bytes_transferred", 0)
+        normalized.setdefault("total_bytes", 0)
+        normalized.setdefault("source_path", "")
+        normalized.setdefault("destination_path", "")
+        normalized.setdefault("data", {})
         return normalized
 
     @classmethod

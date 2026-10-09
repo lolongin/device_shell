@@ -92,6 +92,7 @@ def build_device_action_registry(
             "result.save",
             "variable.set",
             "expression.evaluate",
+            "workflow.outputs",
             "loop.for_each",
             "device.for_each",
             "loop.until",

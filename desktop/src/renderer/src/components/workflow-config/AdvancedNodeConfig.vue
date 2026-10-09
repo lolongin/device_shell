@@ -85,6 +85,11 @@ function setRuleValue(rule: ConditionRule, key: 'field' | 'value', value: unknow
   if (key === 'value') rule.value_type = typeof value
   setValue('rules', props.conditionRules)
 }
+function removeConditionRule(index: number): void {
+  const rules = [...props.conditionRules]
+  rules.splice(index, 1)
+  setValue('rules', rules)
+}
 
 function updateConfig(key: string, event: Event): void {
   try { props.node.config[key] = JSON.parse((event.target as HTMLTextAreaElement).value) } catch { /* keep last valid config */ }
@@ -245,6 +250,7 @@ function fieldLabel(name: string): string {
         <label>循环动作<select :value="node.config.action_id || ''" @change="updateConfigValue('action_id', $event)"><option value="">选择动作</option><option v-for="action in executableActions" :key="action.id" :value="action.id">{{ action.label }}</option></select></label>
         <SchemaBindingFields :model-value="node.config.action_inputs" :schema="childSchema" :references="childReferences" @update:model-value="setValue('action_inputs', $event)" />
       </template>
+      <ValueBindingField :model-value="node.config.concurrency ?? 1" label="并发设备数" :schema="fieldSchema('concurrency')" :references="references" @update:model-value="setValue('concurrency', $event)" />
       <label>单台失败<select :value="node.config.failure_strategy || 'continue'" @change="updateConfigValue('failure_strategy', $event)"><option value="continue">继续其他设备</option><option value="stop">停止遍历</option></select></label>
     </template>
     <template v-else-if="node.action_id === 'loop.for_each'">
@@ -268,14 +274,19 @@ function fieldLabel(name: string): string {
     <div v-if="node.action_id === 'utility.condition'" class="condition-builder">
       <strong>如果</strong>
       <label>多个条件<select :value="conditionLogicalOperator" @change="$emit('update-condition-operator', ($event.target as HTMLSelectElement).value)"><option value="AND">全部满足（AND）</option><option value="OR">任一满足（OR）</option></select></label>
-      <div v-for="(rule, index) in conditionRules" :key="index" class="condition-row"><ValueBindingField :model-value="rule.field" label="比较字段" :schema="{ type: 'string', binding: { mode: 'runtime', reference_types: ['string', 'number', 'integer', 'boolean', 'object', 'array'] } }" :references="references" @update:model-value="setRuleValue(rule, 'field', $event)" /><select v-model="rule.operator"><option>等于</option><option>不等于</option><option>包含</option><option>不包含</option><option>正则匹配</option><option>大于</option><option>小于</option><option>是否为空</option></select><ValueBindingField :model-value="rule.value" label="比较值" :schema="{ type: ['string', 'number', 'integer', 'boolean'], binding: { mode: 'runtime' } }" :references="references" @update:model-value="setRuleValue(rule, 'value', $event)" /></div>
+      <div v-for="(rule, index) in conditionRules" :key="index" class="condition-row">
+        <ValueBindingField :model-value="rule.field" label="比较字段" :schema="{ type: 'string', binding: { mode: 'runtime', reference_types: ['string', 'number', 'integer', 'boolean', 'object', 'array'] } }" :references="references" @update:model-value="setRuleValue(rule, 'field', $event)" />
+        <select v-model="rule.operator"><option>等于</option><option>不等于</option><option>包含</option><option>不包含</option><option>正则匹配</option><option>大于</option><option>小于</option><option>是否为空</option></select>
+        <ValueBindingField :model-value="rule.value" label="比较值" :schema="{ type: ['string', 'number', 'integer', 'boolean'], binding: { mode: 'runtime' } }" :references="references" @update:model-value="setRuleValue(rule, 'value', $event)" />
+        <button v-if="conditionRules.length > 1" type="button" class="condition-rule-delete" title="删除此条件" @click="removeConditionRule(index)">×</button>
+      </div>
       <ValueBindingField v-if="node.config.expression" :model-value="node.config.expression" label="条件表达式" :schema="fieldSchema('expression')" :references="references" @update:model-value="setValue('expression', $event)" />
       <button type="button" class="connect-button" @click="onAddCondition">+ 添加条件</button>
       <label>满足条件时<select :value="conditionTargets.trueTarget" @change="onSetConditionTarget('true', $event)"><option value="">选择真分支步骤</option><option v-for="item in (workflow?.nodes || []).filter((candidate) => candidate.id !== node.id)" :key="item.id" :value="item.id">{{ actionLabel(item.action_id) }}</option></select></label>
       <label>不满足时<select :value="conditionTargets.falseTarget" @change="onSetConditionTarget('false', $event)"><option value="">选择假分支步骤</option><option v-for="item in (workflow?.nodes || []).filter((candidate) => candidate.id !== node.id)" :key="item.id" :value="item.id">{{ actionLabel(item.action_id) }}</option></select></label>
     </div>
 
-    <template v-if="node.action_id === 'result.save'"><label>结果名称<input v-model="node.config.key" placeholder="例如：版本检查结果" /></label><ValueBindingField :model-value="node.config.value" label="结果值" :schema="fieldSchema('value')" :references="references" @update:model-value="setValue('value', $event)" /></template>
+    <template v-if="node.action_id === 'result.save'"><label>结果名称<input v-model="node.config.key" placeholder="留空使用步骤 ID" /><small class="field-hint">留空时使用步骤 ID：{{ node.id }}</small></label><ValueBindingField :model-value="node.config.value" label="结果值" :schema="fieldSchema('value')" :references="references" @update:model-value="setValue('value', $event)" /></template>
   </div>
 </template>
 
@@ -300,7 +311,9 @@ function fieldLabel(name: string): string {
 .workflow-advanced-node-config label { display: grid; gap: 5px; color: var(--workflow-text); font-size: 11px; }
 .workflow-advanced-node-config input, .workflow-advanced-node-config select, .workflow-advanced-node-config textarea { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); font: inherit; }
 .condition-builder, .workflow-variable-extract, .workflow-subflow-contract { display: grid; gap: 8px; }
-.condition-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--workflow-border); }
+.condition-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--workflow-border); align-items: start; }
+.condition-rule-delete { width: 28px; height: 28px; padding: 0; border: 1px solid var(--workflow-border); border-radius: 4px; background: var(--workflow-surface); color: var(--workflow-muted); font-size: 20px; line-height: 1; cursor: pointer; transition: all 0.15s ease; }
+.condition-rule-delete:hover { background: #ef4444; color: white; border-color: #ef4444; }
 .workflow-inline-toggle { display: flex !important; align-items: center; gap: 7px; }
 .workflow-inline-toggle input { width: auto !important; }
 .field-hint { color: var(--workflow-muted); font-size: 10px; }

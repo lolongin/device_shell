@@ -98,12 +98,23 @@ def build_action_catalog() -> ActionCatalog:
             )
             for name, value in props.items()
         }
+        public_outputs = dict(outputs or {})
+        primary_fields = {
+            "device.connect": ("execution_status", "device_id", "session_id", "cli_status", "error"),
+            "device.ssh": ("execution_status", "device_id", "session_id", "host", "port", "error"),
+            "device.telnet": ("execution_status", "device_id", "session_id", "host", "port", "error"),
+            "device.info": ("execution_status", "device_id", "name", "address", "model", "software_version", "device_status", "output"),
+            "device.reboot": ("execution_status", "operation_id", "device_id", "output", "error"),
+            "device.command": ("output", "stderr", "exit_code", "execution_status", "error"),
+        }.get(id)
+        if primary_fields:
+            public_outputs["primary_fields"] = list(primary_fields)
         return ActionSpec(
             id,
             display_name,
             category,
             {"type": "object", "properties": normalized_props, "required": list(required)},
-            outputs or {},
+            public_outputs,
             risk,
             id,
         )
@@ -127,6 +138,13 @@ def build_action_catalog() -> ActionCatalog:
         skip_reason={"type": "string"},
         output={"type": "string"},
         evidence={"type": "array"},
+        stage={"type": "string"},
+        progress_percent={"type": "number"},
+        bytes_transferred={"type": "integer"},
+        total_bytes={"type": "integer"},
+        source_path={"type": "string"},
+        destination_path={"type": "string"},
+        data={"type": "object", "additionalProperties": True},
     )
     return ActionCatalog(tuple([
         a("device.select", "选择设备", "device", ("device_id",), outputs=output(device_id={"type": "string"}, status={"type": "string"}), runtime_fields=("device_id",), device_id={"type": ["string", "object"]}),
@@ -144,9 +162,13 @@ def build_action_catalog() -> ActionCatalog:
                 **execution_outputs["properties"],
                 software_version={"type": "string"},
                 requested_fields={"type": "array"},
+                device_status={"type": "string"},
             ),
             static_fields=("fields",),
-            fields={"type": "array", "items": {"type": "string"}},
+            runtime_fields=("timeout_seconds", "session_id"),
+            timeout_seconds={"type": "number"},
+            session_id={"type": "string"},
+            fields={"type": "array", "items": {"type": "string"}, "deprecated": True},
         ),
         a("device.ssh", "SSH 连接", "connection", (), outputs=execution_outputs, runtime_fields=("host", "port"), host={"type": "string"}, port={"type": "integer"}),
         a("device.telnet", "Telnet 连接", "connection", (), outputs=execution_outputs, runtime_fields=("host", "port"), host={"type": "string"}, port={"type": "integer"}),
@@ -157,7 +179,7 @@ def build_action_catalog() -> ActionCatalog:
             ("command",),
             outputs=execution_outputs,
             template_fields=("command",),
-            runtime_fields=("timeout_seconds", "cwd", "env", "retry_attempts", "retry_backoff_seconds"),
+            runtime_fields=("timeout_seconds", "cwd", "env"),
             command={"type": "string"},
             execution_mode={"type": "string", "enum": ["device", "shell", "bash"]},
             timeout_seconds={"type": "number"},
@@ -176,13 +198,14 @@ def build_action_catalog() -> ActionCatalog:
                 output={"type": "string"},
                 stdout={"type": "string"},
                 stderr={"type": "string"},
-                returncode={"type": ["integer", "null"]},
+                returncode={"type": ["integer", "null"], "deprecated": True},
                 exit_code={"type": ["integer", "null"]},
-                exitCode={"type": ["integer", "null"]},
+                exitCode={"type": ["integer", "null"], "deprecated": True},
                 status={"type": "string"},
                 result={},
+                result_parsed={"type": "boolean"},
             ),
-            runtime_fields=("input_json", "cwd", "env", "timeout_seconds", "max_output_chars", "retry_attempts", "retry_backoff_seconds"),
+            runtime_fields=("input_json", "cwd", "env", "timeout_seconds", "max_output_chars"),
             language={"type": "string", "enum": ["python", "powershell", "bash"]},
             script={"type": "string"},
             input_json={"type": ["string", "object", "array", "number", "boolean", "null"]},
@@ -211,7 +234,7 @@ def build_action_catalog() -> ActionCatalog:
         ),
         a("device.reboot", "重启设备", "device", outputs=execution_outputs, risk="high"),
         a("utility.wait", "等待", "control", ("seconds",), outputs=output(seconds={"type": "number"}, status={"type": "string"}), runtime_fields=("seconds",), seconds={"type": "number"}),
-        a("terminal.wait", "等待终端输出", "control", ("pattern",), outputs=output(status={"type": "string"}, matched={"type": "boolean"}, output={"type": "string"}, sequence={"type": "integer"}, session_id={"type": "string"}), template_fields=("pattern",), runtime_fields=("mode", "case_sensitive", "send_enter", "timeout_seconds", "after_sequence"), mode={"type": "string", "enum": ["contains", "regex"]}, pattern={"type": "string"}, case_sensitive={"type": "boolean"}, send_enter={"type": "boolean"}, timeout_seconds={"type": "number"}, after_sequence={"type": "integer"}),
+        a("terminal.wait", "等待终端输出", "control", ("pattern",), outputs=output(status={"type": "string"}, matched={"type": "boolean"}, output={"type": "string"}, sequence={"type": "integer"}, session_id={"type": "string"}), template_fields=("pattern",), runtime_fields=("mode", "case_sensitive", "send_enter", "timeout_seconds", "after_sequence", "session_id", "device_id"), mode={"type": "string", "enum": ["contains", "regex"]}, pattern={"type": "string"}, case_sensitive={"type": "boolean"}, send_enter={"type": "boolean", "default": False}, timeout_seconds={"type": "number"}, after_sequence={"type": "integer"}, session_id={"type": "string"}, device_id={"type": "string"}),
         a(
             "utility.condition",
             "条件判断",
@@ -235,7 +258,7 @@ def build_action_catalog() -> ActionCatalog:
             logical_operator={"type": "string", "enum": ["AND", "OR"]},
         ),
         a("utility.confirm", "人工确认", "control", ("prompt",), outputs=output(approved={"type": "boolean"}, option_id={"type": "string"}, reason={"type": "string"}, status={"type": "string"}), template_fields=("prompt", "approve_label", "reject_label"), prompt={"type": "string"}, approve_label={"type": "string"}, reject_label={"type": "string"}),
-        a("result.save", "保存结果", "result", (), outputs=output(status={"type": "string"}, key={"type": "string"}, value={}), static_fields=("key",), runtime_fields=("value",), key={"type": "string"}, value={"type": ["string", "number", "boolean", "object", "array", "null"]}),
+        a("result.save", "保存结果", "result", (), outputs=output(status={"type": "string"}, key={"type": "string"}, value={}), static_fields=("key",), runtime_fields=("value",), key={"type": "string", "description": "可选；留空时使用节点 ID"}, value={"type": ["string", "number", "boolean", "object", "array", "null"]}),
         a(
             "variable.set",
             "设置变量",
@@ -258,8 +281,8 @@ def build_action_catalog() -> ActionCatalog:
             },
         ),
         a("expression.evaluate", "计算表达式", "control", ("expression",), outputs=output(value={}, status={"type": "string"}), runtime_fields=("values",), expression={"type": "string", "binding": {"mode": "expression", "reference_types": ["string", "number", "integer", "boolean", "object", "array"]}}, values={"type": "object", "binding": {"mode": "json"}}),
-        a("loop.for_each", "循环 FOR", "control", ("items", "action_id"), outputs=output(items={"type": "array", "items": {}}, results={"type": "array", "items": {"type": "object"}}, count={"type": "integer"}), runtime_fields=("items", "action_inputs"), static_fields=("action_id",), items={"type": "array", "items": {}}, action_id={"type": "string"}, action_inputs={"type": "object"}),
-        a("device.for_each", "遍历设备", "device", ("devices",), outputs=output(devices={"type": "array", "items": {"type": "string"}}, results={"type": "array", "items": {"type": "object"}}, count={"type": "integer"}, succeeded={"type": "integer"}, failed={"type": "integer"}), runtime_fields=("devices", "action_inputs", "concurrency"), static_fields=("body_mode", "body_start", "body_end", "action_id", "failure_strategy"), devices={"type": "array", "items": {"type": "string"}}, body_mode={"type": "string", "enum": ["downstream", "bounded", "action"]}, body_start={"type": "string"}, body_end={"type": "string"}, action_id={"type": "string"}, action_inputs={"type": "object"}, concurrency={"type": "integer"}, failure_strategy={"type": "string", "enum": ["stop", "continue"]}),
+        a("loop.for_each", "循环 FOR", "control", ("items", "action_id"), outputs=output(items={"type": "array", "items": {}}, results={"type": "array", "items": {"type": "object"}}, count={"type": "integer"}, status={"type": "string"}), runtime_fields=("items", "action_inputs"), static_fields=("action_id",), items={"type": "array", "items": {}}, action_id={"type": "string"}, action_inputs={"type": "object"}),
+        a("device.for_each", "遍历设备", "device", ("devices",), outputs=output(devices={"type": "array", "items": {"type": "string"}}, results={"type": "array", "items": {"type": "object"}}, count={"type": "integer"}, succeeded={"type": "integer"}, failed={"type": "integer"}, status={"type": "string"}), runtime_fields=("devices", "action_inputs", "concurrency"), static_fields=("body_mode", "body_start", "body_end", "action_id", "failure_strategy"), devices={"type": "array", "items": {"type": "string"}}, body_mode={"type": "string", "enum": ["downstream", "bounded", "action"]}, body_start={"type": "string"}, body_end={"type": "string"}, action_id={"type": "string"}, action_inputs={"type": "object"}, concurrency={"type": "integer", "minimum": 1, "maximum": 32, "default": 1}, failure_strategy={"type": "string", "enum": ["stop", "continue"]}),
         a("loop.until", "循环直到满足", "control", ("action_id", "condition"), outputs=output(status={"type": "string"}, matched={"type": "boolean"}, iterations={"type": "integer"}, result={"type": "object"}, results={"type": "array", "items": {"type": "object"}}), template_fields=("condition",), runtime_fields=("action_inputs", "max_iterations", "interval_seconds"), static_fields=("action_id",), action_id={"type": "string"}, action_inputs={"type": "object"}, condition={"type": "string"}, max_iterations={"type": "integer"}, interval_seconds={"type": "number"}),
         a(
             "workflow.call",

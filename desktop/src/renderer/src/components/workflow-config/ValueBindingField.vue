@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Copy, X } from 'lucide-vue-next'
+import { Copy, X, ChevronDown } from 'lucide-vue-next'
+import ReferencePickerPopup from './ReferencePickerPopup.vue'
 import type { WorkflowValueReference } from './types'
 import { referenceCompatible, schemaTypes, type BindingSchema } from '../../composables/workflowReferences'
 
@@ -16,6 +17,8 @@ const emit = defineEmits<{ 'update:modelValue': [value: unknown] }>()
 const explicitMode = ref('')
 const search = ref('')
 const error = ref('')
+const showReferencePicker = ref(false)
+const referenceButton = ref<HTMLElement | null>(null)
 const binding = computed(() => props.schema.binding as { mode?: string } | undefined)
 const isStatic = computed(() => binding.value?.mode === 'static')
 const expression = computed(() => binding.value?.mode === 'expression')
@@ -40,6 +43,13 @@ function chooseReference(reference: string): void {
   if (!reference) return
   const token = '${' + reference + '}'
   emit('update:modelValue', mode.value === 'template' || expression.value ? text.value + token : token)
+  showReferencePicker.value = false
+}
+function openReferencePicker(): void {
+  showReferencePicker.value = true
+}
+function closeReferencePicker(): void {
+  showReferencePicker.value = false
 }
 function copyReference(): void { void navigator.clipboard?.writeText(text.value) }
 function updateLiteral(event: Event): void {
@@ -59,8 +69,31 @@ function updateLiteral(event: Event): void {
   <div class="value-binding-field">
     <div class="binding-heading"><label>{{ label }}</label><div v-if="!isStatic && !expression" class="binding-modes" role="group" :aria-label="`${label}绑定方式`"><button v-for="item in [{ id: 'literal', label: '固定' }, { id: 'reference', label: '引用' }, ...(templateAllowed ? [{ id: 'template', label: '模板' }] : [])]" :key="item.id" type="button" :aria-pressed="mode === item.id" @click="chooseMode(item.id)">{{ item.label }}</button></div></div>
     <template v-if="!isStatic && (mode !== 'literal' || expression)">
-      <input v-model="search" type="search" :aria-label="`${label}搜索引用`" placeholder="搜索变量或步骤" />
-      <select :value="mode === 'reference' ? exactReference : ''" :aria-label="`${label}引用来源`" @change="chooseReference(($event.target as HTMLSelectElement).value)"><option value="">{{ expression || mode === 'template' ? '插入引用' : '选择引用' }}</option><optgroup v-for="source in sources.filter(source => filtered.some(reference => reference.source === source.id))" :key="source.id" :label="source.label"><option v-for="reference in filtered.filter(reference => reference.source === source.id)" :key="reference.reference" :value="reference.reference">{{ reference.label }} · {{ reference.type }} · {{ reference.scope }}</option></optgroup><option v-if="invalidReference" :value="exactReference">{{ exactReference }}</option></select>
+      <!-- 使用新的引用选择器 -->
+      <div class="reference-selector-container">
+        <button
+          ref="referenceButton"
+          type="button"
+          class="reference-selector-btn"
+          @click="openReferencePicker"
+        >
+          <ChevronDown :size="14" />
+          <span>{{ expression || mode === 'template' ? '插入引用' : '选择引用' }}</span>
+        </button>
+
+        <Teleport to="body">
+          <ReferencePickerPopup
+            v-if="showReferencePicker"
+            :references="candidates"
+            :model-value="exactReference"
+            :mode="mode === 'template' || expression ? 'template' : 'single'"
+            :placeholder="`搜索${label}引用`"
+            @select="chooseReference"
+            @close="closeReferencePicker"
+          />
+        </Teleport>
+      </div>
+
       <div v-if="mode === 'reference' && !expression" class="binding-reference"><input :value="text" :aria-label="`${label}引用表达式`" placeholder="${inputs.name}" @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)" /><button type="button" title="复制引用" :aria-label="`复制${label}引用`" @click="copyReference"><Copy :size="13" /></button><button type="button" title="清除引用" :aria-label="`清除${label}引用`" @click="chooseMode('literal')"><X :size="13" /></button></div>
       <textarea v-else :value="text" :rows="rows" :aria-label="label" :placeholder="placeholder" @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)" />
       <small v-if="invalidReference" class="binding-error">引用不可见或类型不匹配</small>
@@ -82,6 +115,35 @@ function updateLiteral(event: Event): void {
 .binding-modes { display: flex; gap: 1px; }
 .binding-modes button { padding: 3px 6px; border: 1px solid var(--workflow-border); color: var(--workflow-muted); background: var(--workflow-surface-input); cursor: pointer; font: inherit; }
 .binding-modes button[aria-pressed="true"] { color: var(--workflow-text); border-color: var(--workflow-focus); }
+
+.reference-selector-container {
+  position: relative;
+}
+
+.reference-selector-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--workflow-border, #3a3a3a);
+  border-radius: 6px;
+  background: var(--workflow-surface-input, #0a0a0a);
+  color: var(--workflow-text, #e0e0e0);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.reference-selector-btn:hover {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.reference-selector-btn:active {
+  transform: scale(0.98);
+}
+
 input, select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--workflow-border); border-radius: 5px; color: inherit; background: var(--workflow-surface-input); font: inherit; }
 input[type="checkbox"] { width: 15px; height: 15px; }
 textarea { resize: vertical; }

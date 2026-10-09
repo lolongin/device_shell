@@ -32,7 +32,7 @@ class LocalProcessAdapter:
         *,
         cwd: str | None = None,
         env: Mapping[str, str] | None = None,
-        timeout_seconds: float = 3_600,
+        timeout_seconds: float | None = 3_600,
         max_output_chars: int = 1_048_576,
         on_output: Callable[[str], None] | None = None,
     ) -> ProcessExecutionResult:
@@ -75,7 +75,7 @@ class LocalProcessAdapter:
                 )
                 await process.wait()
 
-            await asyncio.wait_for(collect_all(), timeout=max(0.01, timeout_seconds))
+            await asyncio.wait_for(collect_all(), timeout=None if timeout_seconds is None else max(0.01, timeout_seconds))
             stdout = "".join(streams["stdout"])
             stderr = "".join(streams["stderr"])
             return ProcessExecutionResult(

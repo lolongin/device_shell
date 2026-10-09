@@ -46,11 +46,11 @@ class ProcessActivityHandler:
         if not argv or not all(isinstance(item, (str, int, float)) for item in argv):
             return self._invalid_input("process Activity argv must contain command arguments")
         try:
-            timeout = float(inputs.get("timeout_seconds") or 3_600)
+            timeout = float(inputs.get("timeout_seconds", 300))
         except (TypeError, ValueError):
             return self._invalid_input("timeout_seconds must be a number")
-        if timeout <= 0:
-            return self._invalid_input("timeout_seconds must be greater than zero")
+        if timeout < 0 or timeout > 86_400:
+            return self._invalid_input("timeout_seconds must be between 0 and 86400")
 
         def output(text: str) -> None:
             report(Event(
@@ -97,7 +97,7 @@ class ProcessActivityHandler:
                 argv,
                 cwd=str(script_inputs.get("cwd") or "") or None,
                 env=env,
-                timeout_seconds=timeout,
+                timeout_seconds=timeout or None,
                 max_output_chars=int(script_inputs.get("max_output_chars") or 1_048_576),
                 on_output=output,
             )
@@ -161,12 +161,14 @@ class ProcessActivityHandler:
         stdout = getattr(result, "stdout", result.output)
         stderr = getattr(result, "stderr", "")
         parsed_result: Any = None
+        result_parsed = False
         if self.activity_id == "script.run":
             for line in reversed(stdout.splitlines()):
                 if not line.strip():
                     continue
                 try:
                     parsed_result = json.loads(line)
+                    result_parsed = True
                 except json.JSONDecodeError:
                     parsed_result = None
                 break
@@ -182,6 +184,7 @@ class ProcessActivityHandler:
         }
         if self.activity_id == "script.run":
             outputs["result"] = parsed_result
+            outputs["result_parsed"] = result_parsed
         return ActivityResult(
             status=status,
             outputs={**outputs, **({"artifact_path": artifact_path} if artifact_path else {})},

@@ -6,6 +6,8 @@ import pytest
 @pytest.mark.parametrize("scenario", [
     "serial", "no_device", "temporary", "changed_focus", "closed", "disconnected",
     "quick_action", "switch_device", "choose_telnet", "batch", "batch_disconnected",
+    "auto_failure_retry", "auto_target_disappears",
+    "replaced_pending_run", "closed_pending_catalog",
 ])
 def test_quick_workflow_uses_the_selected_terminal_session(scenario: str) -> None:
     script = r"""
@@ -25,12 +27,21 @@ def test_quick_workflow_uses_the_selected_terminal_session(scenario: str) -> Non
         selectDevice() {},
         get activeSession() { return this.sessions.find(item => item.id === this.activeSessionId) || null }
       })
-      const calls = [], events = [], mounted = []
+      const calls = [], events = [], mounted = [], unmounted = []
+      let finishRun, finishCatalog
       const workflow = { id: 'workflow', version: 1, name: 'Command', inputs: [], requires_confirmation: false }
       if (scenario.startsWith('batch')) workflow.inputs = [{ name: 'devices', type: 'devices', semanticType: 'device_list' }]
       const api = {
-        publishedWorkflowDefinitions: async () => ({ workflows: [workflow] }),
-        runWorkflowDefinition: async (id, payload) => { calls.push(payload); return {} }
+        publishedWorkflowDefinitions: async () => {
+          if (scenario === 'closed_pending_catalog') await new Promise(resolve => { finishCatalog = resolve })
+          return { workflows: [workflow] }
+        },
+        runWorkflowDefinition: async (id, payload) => {
+          calls.push(payload)
+          if (scenario === 'auto_failure_retry' && calls.length === 1) throw new Error('Submission failed')
+          if (scenario === 'replaced_pending_run') await new Promise(resolve => { finishRun = resolve })
+          return {}
+        }
       }
       global.localStorage = { getItem: () => '[]', setItem() {} }
       function setup(filename, props) {
@@ -39,7 +50,7 @@ def test_quick_workflow_uses_the_selected_terminal_session(scenario: str) -> Non
         const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
         const exports = {}
         function dependencies(id) {
-          if (id === 'vue') return { ...vue, onMounted: fn => mounted.push(fn), onBeforeUnmount() {} }
+          if (id === 'vue') return { ...vue, onMounted: fn => mounted.push(fn), onBeforeUnmount: fn => unmounted.push(fn) }
           if (id.endsWith('/stores/workspace')) return { useWorkspaceStore: () => workspace }
           if (id.endsWith('/transport/api')) return { desktopApi: api }
           if (id.endsWith('/useDialogFocus')) return { useDialogFocus: () => ({ handleDialogKeydown() {} }) }
@@ -79,7 +90,42 @@ def test_quick_workflow_uses_the_selected_terminal_session(scenario: str) -> Non
         if (scenario === 'changed_focus') workspace.activeSessionId = telnet.id
         if (scenario === 'closed') workspace.sessions = [telnet]
         if (scenario === 'disconnected' || scenario === 'batch_disconnected') workspace.sessions[1].status = 'disconnected'
+        if (scenario === 'auto_target_disappears') {
+          const catalog = api.publishedWorkflowDefinitions
+          api.publishedWorkflowDefinitions = async () => {
+            const result = await catalog()
+            queueMicrotask(() => { workspace.sessions[1].status = 'disconnected' })
+            return result
+          }
+        }
+        if (['replaced_pending_run', 'closed_pending_catalog'].includes(scenario)) {
+          const pending = Promise.all(mounted.map(hook => hook()))
+          for (let attempt = 0; attempt < 20 && !(finishRun || finishCatalog); attempt++) await Promise.resolve()
+          assert.ok(finishRun || finishCatalog, 'Expected pending request')
+          for (const hook of unmounted) hook()
+          if (finishRun) finishRun()
+          else finishCatalog()
+          await pending
+          if (scenario === 'closed_pending_catalog') assert.equal(calls.length, 0, 'Closed runner must not start an automatic run after catalog loads')
+          assert.equal(events.filter(event => event[0] === 'close').length, 0, 'Old runner completion must not close the replacement dialog')
+          return
+        }
         for (const hook of mounted) await hook()
+        if (scenario === 'auto_failure_retry') {
+          assert.equal(runner.dialogVisible.value, true, 'Failed automatic run must reveal its error dialog')
+          assert.equal(runner.error.value, 'Submission failed')
+          assert.equal(runner.running.value, false, 'Failure must release submission state')
+          await runner.runWorkflow()
+          assert.equal(calls.length, 2, 'Failed automatic run must allow retry')
+          assert.equal(calls[1].session_id, serial.id)
+          assert.equal(events.filter(event => event[0] === 'close').length, 1)
+          return
+        }
+        if (scenario === 'auto_target_disappears') {
+          assert.equal(calls.length, 0)
+          assert.equal(runner.dialogVisible.value, true, 'Unavailable automatic target must reveal the dialog')
+          return
+        }
         if (['closed', 'disconnected', 'batch_disconnected'].includes(scenario)) {
           await runner.runWorkflow()
           assert.equal(calls.length, 0, 'closed serial session must not fall back to Telnet')
