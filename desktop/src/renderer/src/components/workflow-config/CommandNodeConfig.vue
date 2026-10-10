@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, inject, onMounted, onBeforeUnmount } from 'vue'
+import { referenceEditorKey } from './reference-editor'
 import { Save, Braces } from 'lucide-vue-next'
 import type { NodeConfigProps, NodeConfigEmits } from './types'
 
 const props = defineProps<NodeConfigProps>()
+const referenceEditor = inject(referenceEditorKey, null)
 const emit = defineEmits<NodeConfigEmits>()
 
 const commandEditor = ref<HTMLTextAreaElement | null>(null)
@@ -231,7 +233,7 @@ function eventValue(event: Event): string {
       <button type="button" class="connect-button" @click="emit('save-as-action')">
         <Save :size="13" />保存为自定义 Action
       </button>
-      <button class="connect-button" type="button" @click="emit('test')">
+      <button v-if="!referenceEditor" class="connect-button" type="button" @click="emit('test')">
         测试此步骤
       </button>
     </div>

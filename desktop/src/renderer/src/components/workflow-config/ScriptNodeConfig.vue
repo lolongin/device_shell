@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
+import { referenceEditorKey } from './reference-editor'
 import { Code2, ExternalLink, Play, Save, AlertTriangle } from 'lucide-vue-next'
 import type { NodeConfigProps, NodeConfigEmits } from './types'
 import WorkflowScriptEditor from '../WorkflowScriptEditor.vue'
 
 const props = defineProps<NodeConfigProps & { scriptSaving?: boolean }>()
+const referenceEditor = inject(referenceEditorKey, null)
 const emit = defineEmits<NodeConfigEmits & { 'open-script-studio': [scriptId: string]; 'save-script': [] }>()
 
 const scriptNodeInputMode = ref<'form' | 'json'>('form')
@@ -296,7 +298,7 @@ async function copyOutputReference(fieldName: string): Promise<void> {
     </section>
 
     <div class="config-actions">
-      <button type="button" class="connect-button" @click="emit('test')"><Play :size="13" />测试此步骤</button>
+      <button v-if="!referenceEditor" type="button" class="connect-button" @click="emit('test')"><Play :size="13" />测试此步骤</button>
       <button type="button" class="connect-button" @click="emit('save-as-action')"><Save :size="13" />保存为自定义 Action</button>
     </div>
   </div>

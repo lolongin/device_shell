@@ -1,17 +1,17 @@
 import { ref } from 'vue'
 
 const CATALOG_WIDTH_KEY = 'device-tui.workflow-catalog-width'
-const PROPERTIES_WIDTH_KEY = 'device-tui.workflow-properties-width'
+const PROPERTIES_WIDTH_KEY = 'device-tui.workflow-properties-width-v2'
 
 export function useWorkflowPanelLayout() {
   const workflowCatalogWidth = ref(224)
   const resizingWorkflowCatalog = ref(false)
-  const workflowPropertiesWidth = ref(312)
+  const workflowPropertiesWidth = ref(640)
   const resizingWorkflowProperties = ref(false)
   let catalogResizeStartX = 0
   let catalogResizeStartWidth = 224
   let propertiesResizeStartX = 0
-  let propertiesResizeStartWidth = 312
+  let propertiesResizeStartWidth = 640
 
   function catalogResizeLimit(): { min: number; max: number } {
     return {
@@ -21,7 +21,7 @@ export function useWorkflowPanelLayout() {
   }
 
   function propertiesResizeLimit(): { min: number; max: number } {
-    return { min: 260, max: Math.max(420, Math.min(760, Math.floor(window.innerWidth * 0.58))) }
+    return { min: 380, max: Math.max(520, Math.min(760, Math.floor(window.innerWidth * 0.58))) }
   }
 
   function handleCatalogResize(event: PointerEvent): void {
@@ -80,14 +80,14 @@ export function useWorkflowPanelLayout() {
 
   function restoreWorkflowPanelWidths(): void {
     try {
-      const saved = Number(window.localStorage.getItem(CATALOG_WIDTH_KEY))
+      const saved = Number(window.localStorage.getItem(CATALOG_WIDTH_KEY) || 224)
       if (Number.isFinite(saved)) {
         const limits = catalogResizeLimit()
         workflowCatalogWidth.value = Math.min(limits.max, Math.max(limits.min, saved))
       }
     } catch { /* storage is optional */ }
     try {
-      const saved = Number(window.localStorage.getItem(PROPERTIES_WIDTH_KEY))
+      const saved = Number(window.localStorage.getItem(PROPERTIES_WIDTH_KEY) || 640)
       if (Number.isFinite(saved)) {
         const limits = propertiesResizeLimit()
         workflowPropertiesWidth.value = Math.min(limits.max, Math.max(limits.min, saved))

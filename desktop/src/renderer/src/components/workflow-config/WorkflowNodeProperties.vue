@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Trash2 } from 'lucide-vue-next'
+import { computed, provide, ref, watch } from 'vue'
+import { Trash2, Play, Search } from 'lucide-vue-next'
+import { buildWorkflowReferences } from '../../composables/workflowReferences'
+import { referenceEditorKey, type ReferenceTarget } from './reference-editor'
 import BaseNodeConfig from './BaseNodeConfig.vue'
 import CommandNodeConfig from './CommandNodeConfig.vue'
 import GenericNodeConfig from './GenericNodeConfig.vue'
@@ -54,6 +56,17 @@ const inputFields = computed(() => {
   }))
 })
 
+const editorTab = ref('inputs')
+const referenceQuery = ref('')
+const referenceTarget = ref<ReferenceTarget | null>(null)
+provide(referenceEditorKey, { target: referenceTarget })
+watch(() => props.node?.id, () => { editorTab.value = 'inputs'; referenceTarget.value = null })
+const visibleReferences = computed(() => {
+  const references = referenceTarget.value?.candidates || buildWorkflowReferences(props)
+  const query = referenceQuery.value.toLowerCase().trim()
+  return references.filter(item => `${item.label} ${item.reference}`.toLowerCase().includes(query))
+})
+const referenceGroups = [{ id: 'input', label: '流程输入' }, { id: 'node', label: '上游步骤输出' }, { id: 'variable', label: '流程变量' }, { id: 'loop', label: '循环上下文' }, { id: 'context', label: '运行上下文' }]
 function inputLabel(name: string): string {
   if (props.node?.action_id === 'file.upload') {
     if (name === 'source') return '本机文件路径'
@@ -83,6 +96,11 @@ function inputSourceValue(name: string): string {
 
 <template>
   <section v-if="node" class="workflow-properties" aria-label="步骤设置">
+    <header class="step-editor-heading"><small>{{ node.action_id }}</small><h2>{{ selectedAction?.label || node.action_id }}</h2><span>{{ node.id }}</span></header>
+    <nav class="step-editor-tabs" aria-label="步骤编辑视图"><button v-for="tab in [{ id: 'inputs', label: '步骤输入' }, { id: 'test', label: '测试步骤' }, { id: 'settings', label: '执行设置' }]" :key="tab.id" type="button" :class="{ active: editorTab === tab.id }" @click="editorTab = tab.id">{{ tab.label }}</button></nav>
+    <div class="step-editor-body" :class="{ 'without-references': editorTab !== 'inputs' }">
+    <div class="step-editor-form">
+    <div v-show="editorTab === 'settings'">
     <!-- 基础配置：步骤名称、上下游连接 -->
     <BaseNodeConfig
       :node="node"
@@ -101,6 +119,8 @@ function inputSourceValue(name: string): string {
       </button>
     </div>
 
+    </div>
+    <div v-show="editorTab === 'inputs'">
     <details v-if="selectedAction" class="workflow-io-contract" :open="node.action_id === 'file.upload' || node.action_id === 'file.download'">
       <summary>输入与输出 <span>必填 {{ inputFields.filter(field => field.required).length }} · 输出 {{ selectedAction.outputFields.length }}</span></summary>
       <div class="workflow-io-row">
@@ -175,7 +195,9 @@ function inputSourceValue(name: string): string {
       @choose-upload-source="emit('choose-upload-source')"
     />
 
-    <details v-if="!['variable.set', 'utility.condition', 'utility.wait', 'utility.confirm', 'script.run'].includes(node.action_id)" class="workflow-advanced-node-options">
+    </div>
+    <div v-if="editorTab === 'test'" class="step-test-view"><h3>测试步骤</h3><button type="button" @click="emit('test')"><Play :size="14" />测试此步骤</button></div>
+    <details v-show="editorTab === 'settings'" v-if="!['variable.set', 'utility.condition', 'utility.wait', 'utility.confirm', 'script.run'].includes(node.action_id)" class="workflow-advanced-node-options" open>
       <summary><strong>高级参数</strong><span>重试、并行与重复执行</span></summary>
       <div class="workflow-common-node-options">
         <label>失败重试次数<input :value="node.config.retry_attempts ?? 1" type="number" min="1" max="5" @input="updateConfig('retry_attempts', Number(($event.target as HTMLInputElement).value))" /></label>
@@ -184,6 +206,14 @@ function inputSourceValue(name: string): string {
         <label v-if="!['utility.condition', 'utility.confirm'].includes(node.action_id)">重复执行次数<input :value="node.config.repeat_count ?? 1" type="number" min="1" max="20" @input="updateConfig('repeat_count', Number(($event.target as HTMLInputElement).value))" /></label>
       </div>
     </details>
+    </div>
+    <aside v-show="editorTab === 'inputs'" class="step-reference-browser" aria-label="可用引用">
+      <strong>可用引用</strong><label class="reference-search"><Search :size="13" /><input v-model="referenceQuery" placeholder="搜索参数或步骤" aria-label="搜索可用引用" /></label>
+      <small v-if="referenceTarget">{{ referenceTarget.label }}</small>
+      <template v-for="group in referenceGroups" :key="group.id"><div v-if="visibleReferences.some(item => item.source === group.id)" class="reference-group">{{ group.label }}</div><button v-for="item in visibleReferences.filter(item => item.source === group.id)" :key="item.reference" type="button" :disabled="!referenceTarget" :title="item.reference" @click="referenceTarget?.select(item.reference)"><span>{{ item.label }}</span><small>{{ item.type }}</small><code>{{ item.reference }}</code></button></template>
+      <small v-if="!visibleReferences.length">暂无匹配引用</small>
+    </aside>
+    </div>
   </section>
   <section v-else class="workflow-properties workflow-empty">
     选择一个步骤编辑参数
@@ -191,6 +221,29 @@ function inputSourceValue(name: string): string {
 </template>
 
 <style scoped>
+.step-editor-heading { padding: 4px 0 18px; }
+.step-editor-heading small, .step-editor-heading span { color: var(--workflow-muted); font-size: 12px; overflow-wrap: anywhere; }
+.step-editor-heading h2 { margin: 8px 0; font-size: 20px; }
+.step-editor-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--workflow-border); }
+.step-editor-tabs button { padding: 12px 0; border: 0; border-radius: 0; background: transparent; color: var(--workflow-muted); font-size: 13px; cursor: pointer; }
+.step-editor-tabs button.active { color: var(--workflow-focus); box-shadow: inset 0 -2px var(--workflow-focus); }
+.step-editor-body { display: grid; grid-template-columns: minmax(0, 1fr) 200px; min-width: 0; }
+.step-editor-body.without-references { grid-template-columns: minmax(0, 1fr); }
+.workflow-properties { container-type: inline-size; }
+@container (max-width: 490px) { .step-editor-body { grid-template-columns: 1fr; } .step-reference-browser { border-left: 0; border-top: 1px solid var(--workflow-border); padding-left: 0; } }
+.step-editor-form { min-width: 0; padding: 20px 18px 20px 0; }
+.step-reference-browser { min-width: 0; padding: 20px 0 20px 16px; border-left: 1px solid var(--workflow-border); }
+.step-reference-browser strong { font-size: 13px; }
+.reference-search { display: flex; align-items: center; gap: 6px; margin: 14px 0; }
+.reference-search input { width: 100%; min-width: 0; }
+.reference-group { margin: 18px 0 6px; color: var(--workflow-muted); font-size: 12px; }
+.step-reference-browser button { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; text-align: left; gap: 6px; padding: 9px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--workflow-text); cursor: pointer; }
+.step-reference-browser button:hover:not(:disabled) { background: var(--workflow-surface-input); }
+.step-reference-browser button:disabled { cursor: default; }
+.step-reference-browser small { color: var(--workflow-muted); font-size: 11px; }
+.step-reference-browser code { grid-column: 1 / -1; font-size: 10px; overflow-wrap: anywhere; color: var(--workflow-muted); }
+.step-test-view button { display: inline-flex; align-items: center; gap: 8px; }
+@media (max-width: 720px) { .step-editor-body { grid-template-columns: 1fr; } .step-reference-browser { border-left: 0; border-top: 1px solid var(--workflow-border); padding-left: 0; } }
 .workflow-properties {
   display: flex;
   flex-direction: column;

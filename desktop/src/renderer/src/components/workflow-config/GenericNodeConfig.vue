@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
+import { referenceEditorKey } from './reference-editor'
 import { FileUp } from 'lucide-vue-next'
 import type { NodeConfigProps, NodeConfigEmits } from './types'
 import ValueBindingField from './ValueBindingField.vue'
 import { buildWorkflowReferences, referenceCompatible } from '../../composables/workflowReferences'
 
 const props = defineProps<NodeConfigProps>()
+const referenceEditor = inject(referenceEditorKey, null)
 const emit = defineEmits<NodeConfigEmits & { 'choose-upload-source': [] }>()
 
 const OPTIONAL_FIELDS_STORAGE_KEY = 'device-tui.workflow-optional-fields-expanded'
@@ -335,7 +337,7 @@ function enumLabel(value: unknown): string {
       </label>
       <label>
         超时时间
-        <ValueBindingField v-model="node.config.timeout_seconds" label="连接超时时间" :schema="fieldSchema('timeout_seconds')" :references="workflowReferences" :rows="1" placeholder="30" />
+        <ValueBindingField v-model="node.config.timeout_seconds" hide-label label="连接超时时间" :schema="fieldSchema('timeout_seconds')" :references="workflowReferences" :rows="1" placeholder="30" />
         <span v-if="Number(node.config.timeout_seconds ?? 30) > 0" class="field-hint">秒</span>
       </label>
       <label class="workflow-inline-toggle"><input type="checkbox" :checked="Number(node.config.timeout_seconds ?? 30) === 0" @change="updateConfig('timeout_seconds', ($event.target as HTMLInputElement).checked ? 0 : 30)" />永不超时</label>
@@ -351,7 +353,7 @@ function enumLabel(value: unknown): string {
     <template v-else-if="node.action_id === 'utility.wait'">
       <label>
         等待秒数
-        <ValueBindingField v-model="node.config.seconds" label="等待秒数" :schema="fieldSchema('seconds')" :references="workflowReferences" :rows="1" placeholder="5" />
+        <ValueBindingField v-model="node.config.seconds" hide-label label="等待秒数" :schema="fieldSchema('seconds')" :references="workflowReferences" :rows="1" placeholder="5" />
       </label>
     </template>
 
@@ -422,11 +424,11 @@ function enumLabel(value: unknown): string {
     <template v-else-if="node.action_id === 'file.download'">
       <label>
         设备源路径
-        <ValueBindingField v-model="node.config.source" label="设备源路径" :schema="fieldSchema('source')" :references="workflowReferences" :rows="1" placeholder="例如：flash:/image.cc" />
+        <ValueBindingField v-model="node.config.source" hide-label label="设备源路径" :schema="fieldSchema('source')" :references="workflowReferences" :rows="1" placeholder="例如：flash:/image.cc" />
       </label>
       <label>
         本地保存位置
-        <ValueBindingField v-model="node.config.destination" label="本地保存位置" :schema="fieldSchema('destination')" :references="workflowReferences" :rows="1" placeholder="共享目录中的相对路径" />
+        <ValueBindingField v-model="node.config.destination" hide-label label="本地保存位置" :schema="fieldSchema('destination')" :references="workflowReferences" :rows="1" placeholder="共享目录中的相对路径" />
       </label>
     </template>
 
@@ -438,7 +440,7 @@ function enumLabel(value: unknown): string {
         {{ fieldLabel(field.name) }}<em v-if="field.required">必填</em>
         <!-- Runtime fields use ValueBindingField; static fields stay in the schema editor below. -->
         <template v-if="field.bindingMode !== 'static'">
-          <ValueBindingField v-model="node.config[field.name]" :label="fieldLabel(field.name)" :schema="field.schema" :references="workflowReferences" :rows="1" />
+          <ValueBindingField v-model="node.config[field.name]" hide-label :label="fieldLabel(field.name)" :schema="field.schema" :references="workflowReferences" :rows="1" />
         </template>
         <template v-else-if="field.name === 'timeout_seconds'">
           <input v-if="!schemaReference(field) && Number(node.config.timeout_seconds || 0) > 0" :value="schemaValue(field)" type="number" min="1" max="86400" @input="updateSchemaField(field, $event)" />
@@ -456,7 +458,7 @@ function enumLabel(value: unknown): string {
     </div>
 
     <!-- 通用操作按钮 -->
-    <div class="config-actions">
+    <div v-if="!referenceEditor" class="config-actions">
       <button v-if="node.action_id !== 'variable.set'" class="connect-button" type="button" @click="emit('test')">
         测试此步骤
       </button>

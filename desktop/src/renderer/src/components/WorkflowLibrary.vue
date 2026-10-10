@@ -1224,6 +1224,10 @@ watch(
           </button>
         </div>
         <p v-if="!loading && !workflows.length" class="workflow-empty-list">还没有流程<br /><span>点击“新建流程”开始</span></p>
+        <nav v-if="selected" class="workflow-step-navigation" aria-label="流程步骤">
+          <strong>流程步骤 · {{ canvasNodes.length }}</strong>
+          <button v-for="(node, index) in canvasNodes" :key="node.id" type="button" :class="{ active: selectedNode?.id === node.id }" @click="showStepSettings(node.id)"><span>{{ String(index + 1).padStart(2, '0') }}　{{ nodeLabel(node) }}</span><small>{{ node.id }}</small></button>
+        </nav>
         <button v-if="selected" type="button" class="workflow-version-toggle" :aria-expanded="showPublishedVersions" @click="showPublishedVersions = !showPublishedVersions">
           <span><ChevronDown :size="13" :class="{ rotated: showPublishedVersions }" />发布版本</span><small>{{ publishedVersions.length }}</small>
         </button>
@@ -1240,7 +1244,7 @@ watch(
           :on-remove-many="removePublishedVersions"
         />
       </aside>
-      <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step', 'catalog-collapsed': !catalogOpen }" :style="{ '--workflow-catalog-width': catalogOpen ? `${workflowCatalogWidth}px` : '0px', '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
+        <main v-if="selected" class="workflow-studio-grid" :class="{ 'flow-test-mode': flowTestOpen, 'step-settings-mode': rightRailMode === 'step', 'catalog-collapsed': !catalogOpen }" :style="{ '--workflow-catalog-width': catalogOpen ? `${workflowCatalogWidth}px` : '0px', '--workflow-properties-width': flowTestOpen ? 'min(46vw, 760px)' : `${workflowPropertiesWidth}px` }">
         <WorkflowInspectorShell
           :mode="rightRailMode"
           :flow-test-open="flowTestOpen"
@@ -1882,11 +1886,16 @@ watch(
 
 
 /* Canonical studio layout. The inspector shell owns its internal layout and scroll. */
+.workflow-step-navigation { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--workflow-border); }
+.workflow-step-navigation > strong { display: block; padding: 0 8px 10px; color: var(--workflow-muted); font-size: 12px; }
+.workflow-step-navigation button { display: grid; width: 100%; text-align: left; padding: 10px 8px; gap: 5px; }
+.workflow-step-navigation button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-library-body { grid-template-columns: 178px minmax(0, 1fr); }
 .workflow-library-body > main.workflow-studio-grid {
   display: grid;
   position: relative;
   grid-template-areas: 'catalog canvas inspector';
-  grid-template-columns: var(--workflow-catalog-width, 224px) minmax(0, 1fr) var(--workflow-properties-width, 312px);
+  grid-template-columns: var(--workflow-catalog-width, 224px) minmax(0, 1fr) var(--workflow-properties-width, 640px);
   grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100%;
@@ -1946,6 +1955,27 @@ watch(
   right: calc(var(--workflow-properties-width, 312px) - 4px);
 }
 
+/* The step editor is the primary work surface. Keep its fields readable at the default width. */
+.workflow-studio-grid > .workflow-right-rail {
+  background: var(--workflow-surface, #111827);
+}
+.workflow-studio-grid.step-settings-mode > .workflow-right-rail .workflow-right-rail-switcher {
+  padding: 10px 16px;
+  background: var(--workflow-surface, #111827);
+}
+.workflow-studio-grid.step-settings-mode > .workflow-right-rail .workflow-inspector-content {
+  padding: 0;
+}
+.workflow-studio-grid.step-settings-mode > .workflow-right-rail :deep(.workflow-properties) {
+  padding: 18px 20px 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.workflow-studio-grid.step-settings-mode > .workflow-right-rail :deep(.workflow-properties .workflow-io-contract) {
+  border-radius: 5px;
+}
+
 @media (max-width: 980px) {
   .workflow-library-body > main.workflow-studio-grid {
     grid-template-areas: 'catalog canvas' 'inspector inspector';
@@ -1970,7 +2000,7 @@ watch(
 /* When the catalog is closed, give the canvas the entire center column. */
 .workflow-library-body > main.workflow-studio-grid.catalog-collapsed {
   grid-template-areas: 'canvas inspector';
-  grid-template-columns: minmax(0, 1fr) var(--workflow-properties-width, 312px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--workflow-properties-width, 640px));
 }
 .workflow-library-body > main.workflow-studio-grid.catalog-collapsed > .workflow-catalog-resizer { display: none; }
 @media (max-width: 980px) {

@@ -1,0 +1,36 @@
+
+> odyterm-desktop@0.1.0 dev
+> electron-vite dev
+
+vite v7.3.6 building ssr environment for development...
+transforming...
+✓ 19 modules transformed.
+rendering chunks...
+out/main/index.js  240.40 kB
+✓ built in 171ms
+
+electron main process built successfully
+
+-----
+
+vite v7.3.6 building ssr environment for development...
+transforming...
+✓ 2 modules transformed.
+rendering chunks...
+out/preload/credential.js  0.81 kB
+out/preload/index.js       5.07 kB
+✓ built in 21ms
+
+electron preload scripts built successfully
+
+-----
+
+Port 5173 is in use, trying another one...
+dev server running for the electron renderer process at:
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+
+starting electron app...
+
+

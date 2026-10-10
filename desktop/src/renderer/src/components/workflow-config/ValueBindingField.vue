@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch, onBeforeUnmount } from 'vue'
+import { referenceEditorKey, type ReferenceTarget } from './reference-editor'
 import { Copy, X, ChevronDown } from 'lucide-vue-next'
 import ReferencePickerPopup from './ReferencePickerPopup.vue'
 import type { WorkflowValueReference } from './types'
@@ -12,6 +13,7 @@ const props = withDefaults(defineProps<{
   references?: WorkflowValueReference[]
   placeholder?: string
   rows?: number
+  hideLabel?: boolean
 }>(), { schema: () => ({ type: 'string', binding: { mode: 'runtime' } }), references: () => [], rows: 2 })
 const emit = defineEmits<{ 'update:modelValue': [value: unknown] }>()
 const explicitMode = ref('')
@@ -19,6 +21,14 @@ const search = ref('')
 const error = ref('')
 const showReferencePicker = ref(false)
 const referenceButton = ref<HTMLElement | null>(null)
+const referenceEditor = inject(referenceEditorKey, null)
+let activeTarget: ReferenceTarget | null = null
+function activateReference(): void {
+  if (!referenceEditor || isStatic.value) return
+  activeTarget = { label: props.label, candidates: candidates.value, select: (reference) => { if (mode.value === 'literal') explicitMode.value = 'reference'; chooseReference(reference) } }
+  referenceEditor.target.value = activeTarget
+}
+onBeforeUnmount(() => { if (referenceEditor && referenceEditor.target.value?.select === activeTarget?.select) referenceEditor.target.value = null })
 const binding = computed(() => props.schema.binding as { mode?: string } | undefined)
 const isStatic = computed(() => binding.value?.mode === 'static')
 const expression = computed(() => binding.value?.mode === 'expression')
@@ -46,6 +56,7 @@ function chooseReference(reference: string): void {
   showReferencePicker.value = false
 }
 function openReferencePicker(): void {
+  if (referenceEditor) { activateReference(); return }
   showReferencePicker.value = true
 }
 function closeReferencePicker(): void {
@@ -66,8 +77,8 @@ function updateLiteral(event: Event): void {
 </script>
 
 <template>
-  <div class="value-binding-field">
-    <div class="binding-heading"><label>{{ label }}</label><div v-if="!isStatic && !expression" class="binding-modes" role="group" :aria-label="`${label}绑定方式`"><button v-for="item in [{ id: 'literal', label: '固定' }, { id: 'reference', label: '引用' }, ...(templateAllowed ? [{ id: 'template', label: '模板' }] : [])]" :key="item.id" type="button" :aria-pressed="mode === item.id" @click="chooseMode(item.id)">{{ item.label }}</button></div></div>
+  <div class="value-binding-field" @focusin="activateReference">
+    <div class="binding-heading"><label v-if="!hideLabel">{{ label }}</label><div v-if="!isStatic && !expression" class="binding-modes" role="group" :aria-label="`${label}绑定方式`"><button v-for="item in [{ id: 'literal', label: '固定' }, { id: 'reference', label: '引用' }, ...(templateAllowed ? [{ id: 'template', label: '模板' }] : [])]" :key="item.id" type="button" :aria-pressed="mode === item.id" @click="chooseMode(item.id)">{{ item.label }}</button></div></div>
     <template v-if="!isStatic && (mode !== 'literal' || expression)">
       <!-- 使用新的引用选择器 -->
       <div class="reference-selector-container">
