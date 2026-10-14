@@ -37,12 +37,17 @@ export function useWorkflowPersistence(options: {
     const workflow = options.selected.value
     if (!workflow) return false
     options.sync()
+    const submittedSnapshot = options.snapshot(workflow)
+    const payload = JSON.parse(JSON.stringify(workflow)) as WorkflowItem
     options.saving.value = true
     try {
-      const result = await desktopApi.saveWorkflowDefinition(workflow.id, workflow)
+      const result = await desktopApi.saveWorkflowDefinition(workflow.id, payload)
       const saved = result.workflow as WorkflowItem
-      options.selected.value = saved
-      options.savedSnapshot.value = options.snapshot(saved)
+      // A slow response must not replace edits made while the request was pending.
+      if (options.selected.value === workflow) {
+        if (options.snapshot(workflow) === submittedSnapshot) options.selected.value = saved
+        options.savedSnapshot.value = options.snapshot(saved)
+      }
       options.onPersisted?.(saved)
       return true
     } catch (cause) {

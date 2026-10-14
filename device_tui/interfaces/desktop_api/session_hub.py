@@ -742,7 +742,9 @@ class SessionHub:
 
     @staticmethod
     def _clamp_term_size(cols: int, rows: int) -> tuple[int, int]:
-        return max(20, min(1_000, int(cols))), max(5, min(500, int(rows)))
+        # Match xterm's minimum grid even in a narrow/short split pane. Raising
+        # the remote size makes its output wrap at a different column locally.
+        return max(2, min(1_000, int(cols))), max(1, min(500, int(rows)))
 
     @staticmethod
     def _default_title(target: ConnectionTarget) -> str:

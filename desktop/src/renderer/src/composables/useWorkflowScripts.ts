@@ -361,12 +361,14 @@ export function useWorkflowScripts(options: {
       options.setError(validationMessage)
       return false
     }
+    const submittedSnapshot = workflowScriptSnapshot(script)
+    const payload = JSON.parse(JSON.stringify(script)) as WorkflowScript
     scriptSaving.value = true
     try {
-      const result = await desktopApi.saveWorkflowScript(script.id, script)
+      const result = await desktopApi.saveWorkflowScript(script.id, payload)
       const index = scripts.value.findIndex((item) => item.id === result.script.id)
       const normalized = normalizeWorkflowScript(result.script)
-      if (index >= 0) scripts.value[index] = normalized
+      if (index >= 0 && workflowScriptSnapshot(scripts.value[index]) === submittedSnapshot) scripts.value[index] = normalized
       savedScriptSnapshots.value[normalized.id] = workflowScriptSnapshot(normalized)
       options.setRunMessage('脚本已保存。')
       return true

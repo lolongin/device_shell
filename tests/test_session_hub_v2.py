@@ -155,6 +155,22 @@ def test_hub_serializes_concurrent_writes_for_one_session() -> None:
     asyncio.run(scenario())
 
 
+def test_hub_preserves_narrow_terminal_grid_when_resizing_and_reconnecting() -> None:
+    async def scenario() -> None:
+        factory = FakeAdapterFactory()
+        hub = SessionHub(factory)  # type: ignore[arg-type]
+        created = await hub.create(_target())
+        await hub.resize(created.id, 17, 2)
+
+        assert factory.adapters[0].resize_calls == [(17, 2)]
+        assert hub.get(created.id).term_size == (17, 2)
+        await hub.reconnect(created.id)
+        assert factory.adapters[1].connect_calls[0][1] == (17, 2)
+        await hub.close_all()
+
+    asyncio.run(scenario())
+
+
 def test_failed_connection_remains_available_for_reconnect() -> None:
     async def scenario() -> None:
         factory = FakeAdapterFactory(fail=True)

@@ -126,10 +126,10 @@ def test_workflow_editor_input_selection_in_real_dom(tmp_path: Path) -> None:
       import { parse, compileScript } from '@vue/compiler-sfc'
       const directory = process.argv[1]
       const fixture = fs.readFileSync(path.join(directory, 'fixture.json'), 'utf8')
-      const appSource = fs.readFileSync('src/renderer/src/App.vue', 'utf8')
+      const appSource = fs.readFileSync('src/renderer/src/App.vue', 'utf8').replace(/\r\n/g, '\n')
       const runnerState = appSource.slice(appSource.indexOf('const workflowRunDialogOpen ='), appSource.indexOf('const selectedProfileId ='))
       const openRunner = appSource.slice(appSource.indexOf('function openWorkflowRunDialog('), appSource.indexOf('function addQuickCommand('))
-      const panelActions = appSource.slice(appSource.indexOf('function toggleWorkflowPanel('), appSource.indexOf('function openWorkflowRunDialog('))
+      const panelActions = appSource.slice(appSource.indexOf('async function toggleWorkflowPanel('), appSource.indexOf('function openWorkflowRunDialog('))
       const runnerTemplate = appSource.slice(appSource.indexOf('<WorkflowRunDialog\n'), appSource.indexOf('\n    <div', appSource.indexOf('<WorkflowRunDialog\n')))
       const parentSource = '<script setup lang="ts">import { ref } from "vue"; import WorkflowRunDialog from "./src/renderer/src/components/WorkflowRunDialog.vue"; import QuickActionsBar from "./src/renderer/src/components/QuickActionsBar.vue"; import { useWorkspaceStore } from "./src/renderer/src/stores/workspace"; const workspace = useWorkspaceStore(); const workflowPanelOpen = ref(false); const workflowLibraryRef = ref(null); function closeAppContextMenus() {};' + runnerState + panelActions + openRunner + '; function openWorkflowStudioFromRunner() { workflowRunDialogOpen.value = false }; defineExpose({ openWorkflowRunDialog });</script><template><button aria-label="Toggle Studio" @click="toggleWorkflowPanel">Studio</button><div v-show="!workflowPanelOpen" class="test-session-workspace"><QuickActionsBar @run-workflow="openWorkflowRunDialog($event.deviceId, $event.workflowId, undefined, $event.autoRun, $event.sessionId)" /></div><div v-if="workflowPanelOpen" class="test-workflow-studio">Studio</div>' + runnerTemplate + '</template>'
       const { descriptor: parentDescriptor } = parse(parentSource, { filename: 'RunnerParent.vue' })
@@ -339,7 +339,7 @@ def test_workflow_editor_input_selection_in_real_dom(tmp_path: Path) -> None:
               check(document.querySelector('.test-workflow-studio') && document.querySelector('.test-session-workspace').style.display === 'none', 'Studio did not hide the terminal workspace')
               check(!workspace.upgradePanelOpen, 'Studio did not close the task panel')
               document.querySelector('[aria-label="Toggle Studio"]').click()
-              await nextTick()
+              await waitFor(() => !document.querySelector('.test-workflow-studio'), 'Studio did not finish closing')
               check(!document.querySelector('.test-workflow-studio') && document.querySelector('.test-session-workspace').style.display !== 'none', 'Returning from Studio did not reveal quick actions')
             }
             check(successfulRuns.every(run => run.protocol === 'serial' && run.session_id === 'serial-session'), 'Repeated successful Workflow switched to Telnet')

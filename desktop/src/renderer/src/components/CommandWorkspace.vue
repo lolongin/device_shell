@@ -45,6 +45,7 @@ const selectionEnd = ref(0)
 const saveState = ref<'saved' | 'dirty' | 'saving' | 'error'>('saved')
 const dispatchFeedback = ref('')
 const commandGroupContextMenu = ref<{ groupId: string; name: string; x: number; y: number } | null>(null)
+const commandGroupContextMenuPosition = ref({ x: 0, y: 0 })
 const commandGroupContextMenuElement = ref<HTMLElement | null>(null)
 const commandGroupContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const draggedGroupId = ref('')
@@ -379,11 +380,14 @@ function closeEditorContextMenuAndRestoreFocus(): void {
 
 function openCommandGroupContextMenu(event: MouseEvent, groupId: string, name: string): void {
   announceContextMenuOpen()
-  commandGroupContextMenuReturnFocus.value = contextMenuTrigger(event)
+  commandGroupContextMenuReturnFocus.value = (event.currentTarget as HTMLElement | null)
+    ?.querySelector<HTMLElement>('[role="tab"]') || contextMenuTrigger(event)
+  commandGroupContextMenuPosition.value = { x: event.clientX, y: event.clientY }
   commandGroupContextMenu.value = {
     groupId,
     name,
-    ...clampContextMenuPoint(event.clientX, event.clientY)
+    x: event.clientX,
+    y: event.clientY
   }
 }
 
@@ -397,6 +401,10 @@ function handleCommandGroupKeydown(event: KeyboardEvent, groupId: string, name: 
     announceContextMenuOpen()
     const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
     commandGroupContextMenuReturnFocus.value = event.currentTarget as HTMLElement | null
+    commandGroupContextMenuPosition.value = {
+      x: rect ? rect.left + 20 : 180,
+      y: rect ? rect.bottom + 4 : 180
+    }
     commandGroupContextMenu.value = {
       groupId,
       name,
@@ -511,8 +519,12 @@ watch(commandGroupContextMenu, async (menu) => {
   if (!menu) return
   await nextTick()
   if (commandGroupContextMenu.value !== menu) return
-  const point = clampContextMenuElement(commandGroupContextMenuElement.value, menu.x, menu.y)
-  if (point.x !== menu.x || point.y !== menu.y) commandGroupContextMenu.value = { ...menu, ...point }
+  const element = commandGroupContextMenuElement.value
+  const height = element?.getBoundingClientRect().height || 0
+  // Bottom tabs open upward from the click instead of pinning every menu to
+  // the same viewport edge, so subsequent clicks keep their own anchor.
+  const y = menu.y + height > window.innerHeight - 8 ? menu.y - height : menu.y
+  commandGroupContextMenuPosition.value = clampContextMenuElement(element, menu.x, y)
   focusFirstContextMenuItem(commandGroupContextMenuElement.value)
 })
 
@@ -688,7 +700,8 @@ onMounted(() => {
 })
 
 function handleGlobalContextMenuClick(event: MouseEvent): void {
-  if (commandWorkspace.value?.contains(event.target as Node)) return
+  if (commandWorkspace.value?.contains(event.target as Node)
+    || commandGroupContextMenuElement.value?.contains(event.target as Node)) return
   closeCommandGroupContextMenu()
   closeEditorContextMenu()
 }
@@ -756,6 +769,7 @@ onBeforeUnmount(() => {
             @dragover="handleCommandGroupDragOver($event, group.id)"
             @drop="dropCommandGroup($event, group.id)"
             @dragend="resetCommandGroupDrag"
+            @contextmenu.prevent="openCommandGroupContextMenu($event, group.id, group.name)"
           >
             <button
               type="button"
@@ -763,7 +777,6 @@ onBeforeUnmount(() => {
               :title="group.name"
               :aria-selected="group.id === workspace.currentCommandGroupId"
               @click="selectGroup(group.id)"
-              @contextmenu.prevent="openCommandGroupContextMenu($event, group.id, group.name)"
               @keydown="handleCommandGroupKeydown($event, group.id, group.name)"
             >{{ group.name }}</button>
             <button
@@ -778,12 +791,13 @@ onBeforeUnmount(() => {
             <Plus :size="14" />
           </button>
         </div>
+        <Teleport to="body">
         <div
           v-if="commandGroupContextMenu"
           ref="commandGroupContextMenuElement"
           class="command-context-menu"
           role="menu"
-          :style="{ left: `${commandGroupContextMenu.x}px`, top: `${commandGroupContextMenu.y}px` }"
+          :style="{ left: `${commandGroupContextMenuPosition.x}px`, top: `${commandGroupContextMenuPosition.y}px` }"
           @click.stop
           @keydown="handleContextMenuKeydown($event, commandGroupContextMenuElement, closeCommandGroupContextMenuAndRestoreFocus)"
         >
@@ -802,6 +816,7 @@ onBeforeUnmount(() => {
             @click="removeGroup(commandGroupContextMenu.groupId, commandGroupContextMenu.name)"
           >删除页签</button>
         </div>
+        </Teleport>
         <div class="command-header-actions">
           <span class="command-save-state" :data-state="saveState" aria-live="polite">
             <Check v-if="saveState === 'saved'" :size="12" />

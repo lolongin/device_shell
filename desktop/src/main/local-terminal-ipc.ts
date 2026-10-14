@@ -82,7 +82,7 @@ ipcMain.handle('local-terminal:resize', (event, sessionId: unknown, cols: unknow
   }
   const session = terminals.get(sessionId)
   if (!session?.process) return false
-  session.process.resize(Math.max(2, Math.floor(cols)), Math.max(2, Math.floor(rows)))
+  session.process.resize(Math.max(2, Math.floor(cols)), Math.max(1, Math.floor(rows)))
   return true
 })
 ipcMain.handle('local-terminal:close', (event, sessionId: unknown): boolean => {

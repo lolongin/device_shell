@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MoreHorizontal, Pencil, Plus, Star, Trash2, Workflow } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
-import { announceContextMenuOpen, subscribeContextMenuOpen } from '../contextMenu'
+import {
+  announceContextMenuOpen, clampContextMenuElement, contextMenuTrigger,
+  focusFirstContextMenuItem, handleContextMenuKeydown, restoreContextMenuFocus, subscribeContextMenuOpen
+} from '../contextMenu'
+import QuickActionRenameDialog from './QuickActionRenameDialog.vue'
 
 type QuickAction = {
   id: string
@@ -19,6 +23,10 @@ const actions = ref<QuickAction[]>(loadActions())
 const overflowOpen = ref(false)
 const contextOpen = ref(false)
 const contextId = ref('')
+const contextPoint = ref({ x: 0, y: 0 })
+const contextElement = ref<HTMLElement | null>(null)
+const contextReturnFocus = ref<HTMLElement | null>(null)
+const renamingAction = ref<QuickAction | null>(null)
 const draggedId = ref('')
 const dragOverId = ref('')
 const quickActionsRoot = ref<HTMLElement | null>(null)
@@ -103,11 +111,22 @@ async function activate(action: QuickAction): Promise<void> {
   if (!workspace.error) workspace.notice = `已发送快捷命令：${action.name}`
 }
 
-function openContext(event: MouseEvent, id: string): void {
+async function openContext(event: MouseEvent, id: string): Promise<void> {
   event.preventDefault()
   announceContextMenuOpen()
+  contextReturnFocus.value = contextMenuTrigger(event)
+  contextPoint.value = { x: event.clientX, y: event.clientY }
   contextId.value = id
   contextOpen.value = true
+  await nextTick()
+  if (!contextOpen.value || contextId.value !== id) return
+  contextPoint.value = clampContextMenuElement(contextElement.value, contextPoint.value.x, contextPoint.value.y)
+  focusFirstContextMenuItem(contextElement.value)
+}
+
+function closeContextAndRestoreFocus(): void {
+  closeMenus()
+  restoreContextMenuFocus(contextReturnFocus.value)
 }
 
 function closeMenus(): void {
@@ -119,11 +138,16 @@ function closeMenus(): void {
 function renameAction(): void {
   const action = contextAction.value
   if (!action) return
-  const name = window.prompt('快捷项名称', action.name)?.trim()
-  if (!name) return
-  action.name = name
-  persist()
+  renamingAction.value = action
   closeMenus()
+}
+
+function saveActionName(name: string): void {
+  const action = actions.value.find((item) => item.id === renamingAction.value?.id)
+  if (!action || !name.trim()) return
+  action.name = name.trim()
+  persist()
+  renamingAction.value = null
 }
 
 function startDrag(event: DragEvent, id: string): void {
@@ -165,12 +189,12 @@ function finishDrag(): void {
 }
 
 function handleGlobalClick(event: MouseEvent): void {
-  if (quickActionsRoot.value?.contains(event.target as Node)) return
+  if (quickActionsRoot.value?.contains(event.target as Node) || contextElement.value?.contains(event.target as Node)) return
   closeMenus()
 }
 
 function handleGlobalContextMenu(event: MouseEvent): void {
-  if (quickActionsRoot.value?.contains(event.target as Node)) return
+  if (quickActionsRoot.value?.contains(event.target as Node) || contextElement.value?.contains(event.target as Node)) return
   closeMenus()
 }
 
@@ -224,12 +248,18 @@ defineExpose({ addCommand, addWorkflow })
       </div>
     </details>
     <span v-if="!actions.length" class="quick-actions-empty">从命令编辑器或 Workflow 添加</span>
-    <div v-if="contextOpen && contextAction" class="quick-actions-context" role="menu">
+    <Teleport to="body">
+    <div v-if="contextOpen && contextAction" ref="contextElement" class="quick-actions-context" role="menu"
+      :style="{ left: `${contextPoint.x}px`, top: `${contextPoint.y}px` }" @click.stop
+      @keydown="handleContextMenuKeydown($event, contextElement, closeContextAndRestoreFocus)">
       <strong>{{ contextAction.name }}</strong>
       <button type="button" role="menuitem" @click="renameAction"><Pencil :size="12" />重命名</button>
       <button type="button" role="menuitem" class="danger" @click="removeAction"><Trash2 :size="12" />移除</button>
     </div>
+    </Teleport>
   </div>
+  <QuickActionRenameDialog v-if="renamingAction" :name="renamingAction.name" :return-focus="contextReturnFocus"
+    @close="renamingAction = null" @save="saveActionName" />
   <div v-if="commandDialogOpen" class="quick-command-dialog-backdrop" @mousedown.self="commandDialogOpen = false">
     <form class="quick-command-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-command-dialog-title" @submit.prevent="submitCommand">
       <h3 id="quick-command-dialog-title">添加快捷命令</h3>
@@ -257,7 +287,7 @@ defineExpose({ addCommand, addWorkflow })
 .quick-actions-overflow button { padding: 7px 8px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .quick-actions-overflow button:hover { background: var(--surface-hover); }
 .quick-actions-empty { color: var(--muted); font-size: 10px; white-space: nowrap; }
-.quick-actions-context { position: absolute; z-index: 60; top: calc(100% + 5px); left: 50px; display: grid; gap: 2px; min-width: 150px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 12px 28px rgba(0,0,0,.25); }
+.quick-actions-context { position: fixed; z-index: 80; display: grid; gap: 2px; min-width: 150px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 12px 28px rgba(0,0,0,.25); }
 .quick-actions-context strong { padding: 4px 6px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .quick-actions-context button { display: flex; align-items: center; gap: 6px; padding: 6px; border: 0; border-radius: 4px; color: var(--text); background: transparent; font-size: 11px; text-align: left; cursor: pointer; }
 .quick-actions-context button:hover { background: var(--surface-hover); }

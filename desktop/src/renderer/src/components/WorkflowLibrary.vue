@@ -100,6 +100,8 @@ const issues = ref<Issue[]>([])
 const error = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const navigationSaving = ref(false)
+const hasUnsavedWorkspaceScripts = computed(() => scripts.value.some((script) => scriptSnapshot(script) !== savedScriptSnapshots.value[script.id]))
 const running = ref(false)
 const runMessage = ref('')
 const flowTestOpen = ref(false)
@@ -549,8 +551,9 @@ async function refreshPublishedVersions(workflowId: string): Promise<void> {
   }
 }
 
-function selectWorkflow(item: WorkflowItem, force = false): void {
-  if (!force && selected.value?.id !== item.id && hasUnsavedChanges.value && !window.confirm('当前流程有未保存修改，切换后将丢失这些修改。确定继续吗？')) return
+async function selectWorkflow(item: WorkflowItem, force = false): Promise<void> {
+  if (!force && selected.value?.id === item.id) return
+  if (!force && !await saveWorkspaceDrafts()) return
   const nextWorkflow = cloneWorkflow(item)
   normalizeLoopUntilNodes(nextWorkflow.nodes || [])
   selected.value = nextWorkflow
@@ -978,8 +981,34 @@ async function remove(): Promise<void> {
   if (selected.value) await removeWorkflow(selected.value)
 }
 
-function requestClose(): boolean {
-  if ((hasUnsavedChanges.value || hasUnsavedScriptChanges.value) && !window.confirm('当前工作区有未保存修改，关闭后将丢失这些修改。确定关闭吗？')) return false
+async function saveWorkspaceDrafts(): Promise<boolean> {
+  if (navigationSaving.value || saving.value || scriptSaving.value) return false
+  navigationSaving.value = true
+  error.value = ''
+  try {
+    // Drafts may contain unfinished nodes; execution validation belongs to run/publish.
+    syncCurrentWorkflowState()
+    while (hasUnsavedChanges.value || hasUnsavedWorkspaceScripts.value) {
+      if (hasUnsavedChanges.value && !await persistCurrentWorkflow()) {
+        runMessage.value = `草稿保存失败，修改已保留，请稍后重试：${error.value}`
+        return false
+      }
+      for (const script of scripts.value) {
+        if (scriptSnapshot(script) !== savedScriptSnapshots.value[script.id] && !await saveScriptResource(script)) {
+          runMessage.value = `脚本“${script.name}”保存失败，修改已保留：${error.value}`
+          return false
+        }
+      }
+      syncCurrentWorkflowState()
+    }
+    return true
+  } finally {
+    navigationSaving.value = false
+  }
+}
+
+async function requestClose(): Promise<boolean> {
+  if (!await saveWorkspaceDrafts()) return false
   emit('close')
   return true
 }
@@ -1121,12 +1150,12 @@ watch(
 </script>
 
 <template>
-  <section class="workflow-library" aria-label="Workflow Library">
+  <section class="workflow-library" aria-label="Workflow Library" :aria-busy="navigationSaving">
     <header class="workflow-library-header">
       <div class="workflow-brand"><span class="workflow-brand-mark"><Workflow :size="17" /></span><div><strong>Workflow Studio</strong><small>低代码自动化工作台</small></div></div>
-      <div class="workflow-library-header-actions"><span v-if="hasUnsavedChanges || hasUnsavedScriptChanges" class="workflow-dirty-state">未保存修改</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" @click="requestClose"><X :size="16" /></button></div>
+      <div class="workflow-library-header-actions"><span v-if="navigationSaving" class="workflow-dirty-state" role="status">正在保存草稿…</span><span v-else-if="hasUnsavedChanges || hasUnsavedWorkspaceScripts" class="workflow-dirty-state">切换时自动保存草稿</span><button type="button" class="workflow-run-header-button" title="运行已发布 Workflow" @click="emit('run-published')"><Play :size="14" />运行已发布</button><button type="button" title="关闭" :disabled="navigationSaving" @click="requestClose"><X :size="16" /></button></div>
     </header>
-    <div class="workflow-library-toolbar">
+    <div class="workflow-library-toolbar" :inert="navigationSaving">
       <div class="toolbar-group toolbar-group-primary">
         <button type="button" :class="{ 'studio-mode-active': studioMode === 'flow' }" @click="studioMode = 'flow'"><Workflow :size="14" />Flow</button>
         <div ref="createMenuRef" class="workflow-create-anchor">
@@ -1199,13 +1228,14 @@ watch(
     <p v-if="runMessage" class="workflow-run-message">{{ runMessage }}</p><p v-if="hasBranching" class="workflow-branch-notice"><GitBranch :size="14" />包含条件分支：运行时只执行匹配条件的一侧。</p>
     <WorkflowScriptStudio
       v-if="studioMode === 'scripts'"
+      :inert="navigationSaving"
       :selected-device-id="selectedDeviceId"
       :available-devices="availableDevices"
       :device-label="deviceLabel"
       :controller="workflowScripts"
       @update:selected-device-id="selectedDeviceId = $event"
     />
-    <div v-else class="workflow-library-body">
+    <div v-else class="workflow-library-body" :inert="navigationSaving">
       <aside class="workflow-list-pane">
         <div class="workflow-list-title"><span>我的流程</span><small>{{ workflows.length }} 个</small></div>
         <div v-for="item in workflows" :key="item.id" class="workflow-list-item" :class="{ active: selected?.id === item.id }">

@@ -965,8 +965,8 @@ function connectionDisabledReason(device: DeviceSummary | null, kind: 'ssh' | 't
   return connectionDisabledReasonImpl(device, kind, workspace.openingKind)
 }
 
-function setSection(section: 'devices' | 'temporary' | 'server'): void {
-  if (!closeWorkflowPanel()) return
+async function setSection(section: 'devices' | 'temporary' | 'server'): Promise<void> {
+  if (!await closeWorkflowPanel()) return
   workspace.transferPanelOpen = false
   workspace.upgradePanelOpen = false
   workspace.packageBuildPanelOpen = false
@@ -978,8 +978,8 @@ function setSection(section: 'devices' | 'temporary' | 'server'): void {
   }
 }
 
-function openSessionTransfer(sessionId: string): void {
-  if (!closeWorkflowPanel()) return
+async function openSessionTransfer(sessionId: string): Promise<void> {
+  if (!await closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.transferPanelOpen = true
   workspace.upgradePanelOpen = false
@@ -987,8 +987,8 @@ function openSessionTransfer(sessionId: string): void {
   workspace.aiPanelOpen = false
 }
 
-function openSessionUpgrade(sessionId: string): void {
-  if (!closeWorkflowPanel()) return
+async function openSessionUpgrade(sessionId: string): Promise<void> {
+  if (!await closeWorkflowPanel()) return
   workspace.activeSessionId = sessionId
   workspace.upgradePanelOpen = true
   workspace.transferPanelOpen = false
@@ -996,9 +996,9 @@ function openSessionUpgrade(sessionId: string): void {
   workspace.aiPanelOpen = false
 }
 
-function toggleTransferPanel(): void {
+async function toggleTransferPanel(): Promise<void> {
   const open = !workspace.transferPanelOpen
-  if (open && !closeWorkflowPanel()) return
+  if (open && !await closeWorkflowPanel()) return
   workspace.transferPanelOpen = open
   if (open) {
     workspace.upgradePanelOpen = false
@@ -1006,9 +1006,9 @@ function toggleTransferPanel(): void {
   }
 }
 
-function toggleWorkflowPanel(): void {
+async function toggleWorkflowPanel(): Promise<void> {
   const open = !workflowPanelOpen.value
-  if (!open && !closeWorkflowPanel()) return
+  if (!open && !await closeWorkflowPanel()) return
   workflowPanelOpen.value = open
   if (open) {
     workspace.transferPanelOpen = false
@@ -1018,9 +1018,9 @@ function toggleWorkflowPanel(): void {
   }
 }
 
-function closeWorkflowPanel(): boolean {
+async function closeWorkflowPanel(): Promise<boolean> {
   if (!workflowPanelOpen.value) return true
-  if (workflowLibraryRef.value && !workflowLibraryRef.value.requestClose()) return false
+  if (workflowLibraryRef.value && !await workflowLibraryRef.value.requestClose()) return false
   workflowPanelOpen.value = false
   return true
 }
@@ -1059,9 +1059,9 @@ function openLocalTerminal(): void {
   void workspace.openLocalTerminal()
 }
 
-function toggleUpgradePanel(): void {
+async function toggleUpgradePanel(): Promise<void> {
   const open = !workspace.upgradePanelOpen
-  if (open && !closeWorkflowPanel()) return
+  if (open && !await closeWorkflowPanel()) return
   workspace.upgradePanelOpen = open
   if (open) {
     workspace.transferPanelOpen = false
@@ -1069,9 +1069,9 @@ function toggleUpgradePanel(): void {
   }
 }
 
-function togglePackageBuildPanel(): void {
+async function togglePackageBuildPanel(): Promise<void> {
   const open = !workspace.packageBuildPanelOpen
-  if (open && !closeWorkflowPanel()) return
+  if (open && !await closeWorkflowPanel()) return
   workspace.packageBuildPanelOpen = open
   if (open) {
     workspace.transferPanelOpen = false

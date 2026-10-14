@@ -64,6 +64,7 @@ def test_quick_workflow_uses_the_selected_terminal_session(scenario: str) -> Non
             return helperExports
           }
           if (id === 'lucide-vue-next') return {}
+          if (id === './QuickActionRenameDialog.vue') return {}
           if (id === './workflow/device-filter') {
             const helper = fs.readFileSync('src/renderer/src/components/workflow/device-filter.ts', 'utf8')
             const helperExports = {}
