@@ -66,13 +66,21 @@ async def update_command_preferences(request: CommandWorkspacePreferencesRequest
 async def command_suggestions(query: str = Query(min_length=1, max_length=10_000), session_id: str = Query(default="", max_length=160), limit: int = Query(default=5, ge=1, le=20), history_only: bool = Query(default=False), ctx=Depends(get_context)) -> CommandSuggestionResponse:
     device_id = ""
     session_kind = ""
+    environment = "auto"
     if session_id:
         session = next((item for item in ctx.desktop.sessions.list_sessions() if item.id == session_id), None)
         if session is None:
             raise ResourceNotFoundError(f"Unknown session: {session_id}", details={"resource": "session", "session_id": session_id})
         device_id = session.device_id
         session_kind = session.kind
-    return CommandSuggestionResponse(suggestions=ctx.desktop.commands.suggestions(query, device_id=device_id, session_kind=session_kind, limit=limit, history_only=history_only))
+        device = ctx.desktop.devices.require_device(device_id)
+        if not device.is_simulated:
+            device_type = device.device_type.casefold()
+            if any(marker in device_type for marker in ("linux", "unix", "ubuntu", "debian", "centos", "red hat")):
+                environment = "linux"
+            elif device_type:
+                environment = "network"
+    return CommandSuggestionResponse(suggestions=ctx.desktop.commands.suggestions(query, device_id=device_id, session_kind=session_kind, environment=environment, limit=limit, history_only=history_only))
 
 
 @router.post("/commands/send", response_model=CommandDispatchResponse)

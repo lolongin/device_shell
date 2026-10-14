@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from device_tui.application.commands.suggestions import (
     CommandHistoryItem,
     deserialize_command_history_item,
@@ -53,6 +55,31 @@ def test_command_suggestions_support_substring_and_defaults() -> None:
     assert suggestions[0] == "display version"
 
 
+def test_command_suggestions_include_common_shell_defaults() -> None:
+    suggestions = suggest_commands([], "ls")
+
+    assert suggestions[0] == "ls -la"
+
+
+def test_command_suggestions_use_environment_specific_defaults() -> None:
+    linux = suggest_commands([], "ip", environment="linux")
+    network = suggest_commands([], "ls", environment="network")
+
+    assert linux[0] == "ip addr"
+    assert network == []
+
+
+def test_most_used_candidate_stays_first_within_environment() -> None:
+    history = [
+        CommandHistoryItem(command="display interface brief", count=8),
+        CommandHistoryItem(command="display ip interface brief", count=1),
+    ]
+
+    suggestions = suggest_commands(history, "display", environment="network")
+
+    assert suggestions[0] == "display interface brief"
+
+
 def test_command_suggestions_can_use_history_only_for_terminal_hints() -> None:
     history = [CommandHistoryItem(command="display version", count=1, last_used_at=100)]
 
@@ -98,6 +125,44 @@ def test_command_suggestions_prefer_prefix_matches_over_substring_matches() -> N
     assert suggestions[0] == "reboot"
 
 
+def test_command_suggestions_keep_most_used_command_ahead_of_recent_one() -> None:
+    history = [
+        CommandHistoryItem(command="show interfaces", count=5, last_used_at=1),
+        CommandHistoryItem(command="show version", count=1, last_used_at=time.time()),
+    ]
+
+    suggestions = suggest_commands(history, "show", include_defaults=False)
+
+    assert suggestions[0] == "show interfaces"
+
+
+def test_command_suggestions_match_tokens_and_keep_full_prefix_first() -> None:
+    history = [
+        CommandHistoryItem(command="display interface brief", count=1, last_used_at=100),
+        CommandHistoryItem(command="display ip interface brief", count=50, last_used_at=500),
+    ]
+
+    suggestions = suggest_commands(history, "display int", include_defaults=False)
+
+    assert suggestions == ["display interface brief"]
+
+
+def test_command_suggestions_deduplicate_case_variants_and_clamp_limit() -> None:
+    history = [
+        CommandHistoryItem(command="Display Version", count=1, last_used_at=100),
+        CommandHistoryItem(command="display version", count=3, last_used_at=200),
+    ]
+
+    assert suggest_commands(history, "dis", include_defaults=False) == ["display version"]
+    assert suggest_commands(history, "dis", include_defaults=False, limit=-1) == []
+
+
+def test_command_history_negative_limit_returns_no_entries() -> None:
+    history = [CommandHistoryItem(command="display version", count=1, last_used_at=100)]
+
+    assert record_command_history(history, "save", now=200, limit=-1) == []
+
+
 def test_command_history_round_trip() -> None:
     item = CommandHistoryItem(
         command="display current-configuration",
@@ -138,4 +203,14 @@ def test_infer_completed_command_from_terminal_line_ignores_history_suffix_after
             "root@box:~# cat /proc/disp status",
         )
         == ""
+    )
+
+
+def test_infer_completed_command_from_terminal_line_refreshes_after_shell_history_recall() -> None:
+    assert (
+        infer_completed_command_from_terminal_line(
+            "display version",
+            "root@box:~# display interface brief",
+        )
+        == "display interface brief"
     )

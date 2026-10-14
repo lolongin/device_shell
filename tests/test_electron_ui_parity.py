@@ -897,20 +897,39 @@ def test_electron_terminal_completion_keeps_acceptance_explicit() -> None:
     assert "function syncPendingCommandFromTerminalLine" in terminal
     assert "function syncInputModelFromTerminalLine" in terminal
     assert "let nativeCompletionPending = false" in terminal
+    assert "let pendingHistoryRecord = false" in terminal
+    assert "function resolvePendingHistoryRecord" in terminal
+    assert "else if (command) deferTerminalCommandRecord(command)" in terminal
     assert "syncPendingCommandFromTerminalLine()" in terminal
     assert "terminal.buffer.active" in terminal
-    assert "event.key === 'ArrowRight' && inputCursor.value === inputLine.value.length" in terminal
-    assert "if (event.key === 'ArrowLeft')" in terminal
+    assert "event.key === 'ArrowRight'" in terminal
+    assert "if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key))" in terminal
     assert "clearCompletions()" in terminal
     assert "const sendPromise = sendTerminalInput(suffix)" in terminal
-    assert "aria-label=\"命令补齐建议，按右方向键接受\"" in terminal
+    assert "aria-label=\"命令补齐建议，按 Ctrl 加右方向键接受\"" in terminal
     assert 'class="terminal-completion-hint"' in terminal
     assert 'class="terminal-completion-action"' in terminal
-    assert 'aria-label="按右方向键补全命令"' in terminal
+    assert 'aria-label="按 Ctrl 加右方向键补全命令"' in terminal
     assert ".terminal-completion-hint" in styles
     assert ".terminal-completion-action" in styles
     assert "text-overflow: ellipsis" in styles
     assert "commandSuggestions: (query: string, sessionId = '', limit = 8, historyOnly = false)" in api
+
+
+def test_electron_terminal_completion_matches_terminal_metrics_and_preserves_arrow_keys() -> None:
+    terminal = TERMINAL_PANE.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "desktopApi.commandSuggestions(inputLine.value, props.session.id, 8, false)" in terminal
+    assert "const fontFamily = terminal.options.fontFamily || 'monospace'" in terminal
+    assert "fontSize: `${fontSize}px`" in terminal
+    assert "lineHeight: `${cellHeight}px`" in terminal
+    assert "event.key === 'ArrowRight'" in terminal
+    assert "event.ctrlKey || event.metaKey" in terminal
+    assert "if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key))" in terminal
+    assert "按 Ctrl+→ 补全" in terminal
+    completion_style = styles[styles.index(".terminal-completion-hint"):styles.index(".terminal-completion-action")]
+    assert "font: inherit" not in completion_style
 
 
 def test_electron_session_context_menu_matches_tab_manager_and_terminal_scope() -> None:

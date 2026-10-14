@@ -39,11 +39,12 @@ Keyboard behavior is intentionally explicit:
 
 - `Tab` is always forwarded unchanged to the device shell so native shell
   completion keeps its normal behavior.
-- `ArrowRight` accepts the candidate when the hint is visible and the
-  cursor is at the line end. Otherwise it is forwarded unchanged.
+- `Ctrl+ArrowRight` (or `Cmd+ArrowRight` on macOS) accepts the candidate when
+  the hint is visible and the cursor is at the line end. Plain ArrowRight is
+  always forwarded unchanged.
 - `ArrowUp` and `ArrowDown` always retain the shell's normal history behavior.
-- `ArrowLeft` always moves the shell cursor and closes the hint; it
-  never accepts a candidate.
+- `ArrowLeft`, `ArrowUp`, and `ArrowDown` always move through the shell input
+  and close the hint; they never accept a candidate.
 - `Escape` closes the hint without sending input.
 - `Enter` keeps the existing reconnect and send behavior.
 
@@ -101,7 +102,8 @@ Add focused renderer-facing unit coverage for the pure input-state helpers:
 
 - printable input and backspace update text and cursor offsets;
 - left/right movement keeps the cursor model correct;
-- right-arrow accepts only when a candidate is visible; Tab always reaches the shell;
+- Ctrl/Command+right-arrow accepts only when a candidate is visible; plain
+  arrow keys and Tab always reach the shell;
 - left-arrow never accepts a candidate;
 - the single top-ranked candidate is the only visible result;
 - Enter, Ctrl+C, and Ctrl+U reset the line;

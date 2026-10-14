@@ -233,6 +233,7 @@ class CommandService:
         *,
         device_id: str = "",
         session_kind: str = "",
+        environment: str = "auto",
         limit: int = 5,
         history_only: bool = False,
     ) -> list[str]:
@@ -249,6 +250,7 @@ class CommandService:
             query,
             device_id=device_id,
             session_kind=session_kind,
+            environment=environment,
             limit=max(1, min(limit, 20)),
             include_defaults=not history_only,
         )

@@ -101,6 +101,7 @@ const socketReady = ref(false)
 let unsubscribeLocalData: (() => void) | null = null
 let unsubscribeLocalStatus: (() => void) | null = null
 let resizeObserver: ResizeObserver | null = null
+let resizeFrame: number | null = null
 let themeObserver: MutationObserver | null = null
 let unsubscribeContextMenuOpen: (() => void) | null = null
 let lastSequence = 0
@@ -108,10 +109,13 @@ let pendingCommand = ''
 let outputTail = ''
 let pendingOutput = ''
 let outputFlushTimer: ReturnType<typeof setTimeout> | null = null
+let pendingHistoryExpiry: ReturnType<typeof setTimeout> | null = null
 let completionTimer: ReturnType<typeof setTimeout> | null = null
 let completionRequestId = 0
 let completionApplying = false
 let nativeCompletionPending = false
+let pendingHistoryRecord = false
+let pendingHistoryPrefix = ''
 const TERMINAL_OUTPUT_BATCH_MS = 8
 const TERMINAL_OUTPUT_BATCH_MAX_CHARS = 64 * 1024
 
@@ -147,6 +151,8 @@ function flushTerminalOutput(): void {
   pendingOutput = ''
   terminal?.write(output)
   outputTail = `${outputTail}${output}`.slice(-512)
+  syncPendingCommandFromTerminalLine()
+  resolvePendingHistoryRecord()
   syncInputModelFromTerminalLine(true)
 }
 
@@ -176,6 +182,7 @@ async function connect(): Promise<void> {
         lastSequence = event.sequence
         flushTerminalOutput()
         connectionStatus.value = event.status
+        if (event.status === 'connected') fitTerminal()
         if (!['connected', 'connecting'].includes(event.status)) invalidateInputModel()
         else scheduleCompletions()
         if (event.error) terminal?.writeln(`\r\n\x1b[31m[本地终端] ${event.error}\x1b[0m`)
@@ -187,6 +194,7 @@ async function connect(): Promise<void> {
         queueTerminalOutput(snapshot.output)
       }
       connectionStatus.value = snapshot.session.status
+      fitTerminal()
       if (['connected', 'connecting'].includes(connectionStatus.value)) scheduleCompletions()
     } catch (cause) {
       connectionStatus.value = 'error'
@@ -201,7 +209,7 @@ async function connect(): Promise<void> {
     socket = new WebSocket(url)
     socket.addEventListener('open', () => {
       socketReady.value = true
-      sendResize()
+      fitTerminal()
       scheduleCompletions()
     })
     socket.addEventListener('message', (message) => {
@@ -223,6 +231,7 @@ async function connect(): Promise<void> {
       if (event.type === 'terminal.status' && event.status) {
         flushTerminalOutput()
         connectionStatus.value = event.status
+        if (event.status === 'connected') fitTerminal()
         emit('status', props.session.id, event.status, event.sequence)
       }
     })
@@ -251,7 +260,7 @@ async function connect(): Promise<void> {
 }
 
 function sendResize(): void {
-  if (!terminal) return
+  if (!terminal || !container.value?.clientWidth || !container.value.clientHeight) return
   if (isLocal.value) {
     if (['connected', 'connecting'].includes(connectionStatus.value)) {
       void window.desktopApi.resizeLocalTerminal(props.session.id, terminal.cols, terminal.rows).catch(() => false)
@@ -268,6 +277,23 @@ function sendResize(): void {
   )
 }
 
+function fitTerminal(): void {
+  // Warm tabs stay mounted while hidden. Keep their last usable grid so output
+  // received in the background is not wrapped to a hidden element's size.
+  if (!terminal || !container.value?.clientWidth || !container.value.clientHeight) return
+  fitAddon?.fit()
+  sendResize()
+  updateCompletionPosition()
+}
+
+function scheduleTerminalFit(): void {
+  if (resizeFrame !== null) return
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = null
+    fitTerminal()
+  })
+}
+
 async function reconnect(): Promise<void> {
   if (reconnecting.value) return
   invalidateInputModel()
@@ -278,6 +304,7 @@ async function reconnect(): Promise<void> {
       ? await window.desktopApi.reconnectLocalTerminal(props.session.id)
       : await desktopApi.reconnectSession(props.session.id)
     connectionStatus.value = session.status
+    fitTerminal()
     emit('status', props.session.id, session.status, session.sequence)
     if (socket?.readyState !== WebSocket.OPEN) await connect()
   } catch (cause) {
@@ -534,8 +561,7 @@ function handleSharedFontSize(event: Event): void {
   if (!Number.isFinite(requested)) return
   fontSize.value = Math.max(9, Math.min(28, requested))
   if (terminal) terminal.options.fontSize = fontSize.value
-  fitAddon?.fit()
-  sendResize()
+  scheduleTerminalFit()
 }
 
 function handleTerminalFocusRequest(event: Event): void {
@@ -633,11 +659,18 @@ function updateCompletionPosition(): void {
   const cellWidth = screenRect.width / terminal.cols
   const cellHeight = screenRect.height / terminal.rows
   const left = screenRect.left - hostRect.left + terminal.buffer.active.cursorX * cellWidth
-  const top = screenRect.top - hostRect.top + terminal.buffer.active.cursorY * cellHeight
+  const rowTop = screenRect.top - hostRect.top + terminal.buffer.active.cursorY * cellHeight
+  const fontSize = terminal.options.fontSize || 13
+  const fontFamily = terminal.options.fontFamily || 'monospace'
+  const lineBoxHeight = fontSize * (terminal.options.lineHeight || 1)
+  const top = rowTop + Math.max(0, (cellHeight - lineBoxHeight) / 2)
   completionHintStyle.value = {
     left: `${Math.max(0, left)}px`,
     top: `${Math.max(0, top)}px`,
-    maxWidth: `${Math.max(0, hostRect.width - left - 12)}px`
+    maxWidth: `${Math.max(0, hostRect.width - left - 12)}px`,
+    fontFamily,
+    fontSize: `${fontSize}px`,
+    lineHeight: `${cellHeight}px`
   }
   completionActionStyle.value = { top: `${Math.max(0, top)}px` }
 }
@@ -680,12 +713,53 @@ function inferCompletedCommandFromTerminalLine(prefix: string, terminalLine: str
       return candidate
     }
   }
+  // Shell history can replace the complete line while the shadow model still
+  // contains the previous command. Trust the current prompt suffix for normal
+  // commands; path queries remain conservative to avoid copying old arguments.
+  if (!typedParts.some((part) => part.includes('/') || part.includes('\\'))) {
+    for (const delimiter of ['>', '#', '$', ']']) {
+      const index = line.lastIndexOf(delimiter)
+      if (index >= 0) {
+        const current = line.slice(index + 1).trim()
+        if (current) return current
+      }
+    }
+  }
   return ''
 }
 
 function syncPendingCommandFromTerminalLine(): void {
+  if (!pendingCommand || !terminal) return
   const completed = inferCompletedCommandFromTerminalLine(pendingCommand, currentTerminalLine())
   if (completed) pendingCommand = completed
+}
+
+function persistTerminalCommand(command: string): void {
+  const normalized = command.trim()
+  if (!normalized || sensitivePromptActive()) return
+  void desktopApi.recordCommand(props.session.id, normalized).catch(() => undefined)
+}
+
+function clearPendingHistoryRecord(): void {
+  pendingHistoryRecord = false
+  pendingHistoryPrefix = ''
+  if (pendingHistoryExpiry) clearTimeout(pendingHistoryExpiry)
+  pendingHistoryExpiry = null
+}
+
+function resolvePendingHistoryRecord(): void {
+  if (!pendingHistoryRecord || !terminal) return
+  const completed = inferCompletedCommandFromTerminalLine(pendingHistoryPrefix, currentTerminalLine())
+  if (!completed) return
+  persistTerminalCommand(completed)
+  clearPendingHistoryRecord()
+}
+
+function deferTerminalCommandRecord(command: string): void {
+  clearPendingHistoryRecord()
+  pendingHistoryRecord = true
+  pendingHistoryPrefix = command.trim()
+  pendingHistoryExpiry = setTimeout(clearPendingHistoryRecord, 1_000)
 }
 
 function syncInputModelFromTerminalLine(finalizeNativeCompletion = false): void {
@@ -718,7 +792,7 @@ function scheduleCompletions(): void {
     try {
       let suggestions: string[]
       try {
-        const response = await desktopApi.commandSuggestions(inputLine.value, props.session.id, 8, true)
+        const response = await desktopApi.commandSuggestions(inputLine.value, props.session.id, 8, false)
         suggestions = response.suggestions
       } catch {
         // Older bundled backends may not know history_only; use the history payload directly.
@@ -856,19 +930,23 @@ async function acceptCompletion(): Promise<void> {
 function handleCompletionKey(event: KeyboardEvent): boolean {
   if (event.type !== 'keydown') return true
   if (completionVisible.value) {
-    if (event.key === 'ArrowRight' && inputCursor.value === inputLine.value.length) {
+    if (
+      event.key === 'ArrowRight'
+      && (event.ctrlKey || event.metaKey)
+      && inputCursor.value === inputLine.value.length
+    ) {
       event.preventDefault()
       void acceptCompletion()
       return false
-    }
-    if (event.key === 'ArrowLeft') {
-      clearCompletions()
-      return true
     }
     if (event.key === 'Escape') {
       clearCompletions()
       event.preventDefault()
       return false
+    }
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      clearCompletions()
+      return true
     }
   }
   return handleClipboardShortcut(event)
@@ -887,12 +965,8 @@ function recordTerminalInput(data: string): void {
   for (const character of data) {
     if (character === '\r' || character === '\n') {
       const command = pendingCommand.trim()
-      const sensitivePrompt = /(?:password|passwd|secret|token|密码|口令)\s*[:：]?\s*$/i.test(
-        outputTail.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
-      )
-      if (command && !sensitivePrompt) {
-        void desktopApi.recordCommand(props.session.id, command).catch(() => undefined)
-      }
+      if (inputModelValid.value) persistTerminalCommand(command)
+      else if (command) deferTerminalCommandRecord(command)
       pendingCommand = ''
       outputTail = ''
     } else if (character === '\x7f' || character === '\b') {
@@ -929,11 +1003,13 @@ function handleShortcut(event: KeyboardEvent): void {
 watch(() => props.session.status, (status) => {
   if (!status) return
   connectionStatus.value = status
+  if (status === 'connected') scheduleTerminalFit()
   if (!['connected', 'connecting'].includes(status)) invalidateInputModel()
 })
 
 watch(() => props.session.id, () => {
   resetInputModel()
+  clearPendingHistoryRecord()
   outputTail = ''
 })
 
@@ -942,9 +1018,7 @@ watch(() => props.active, async (active) => {
   await nextTick()
   window.requestAnimationFrame(() => {
     if (!props.active) return
-    fitAddon?.fit()
-    sendResize()
-    updateCompletionPosition()
+    fitTerminal()
     terminal?.focus()
   })
 })
@@ -978,7 +1052,7 @@ onMounted(async () => {
   terminal.loadAddon(searchAddon)
   terminal.open(container.value)
   terminal.attachCustomKeyEventHandler(handleTerminalClipboardShortcut)
-  if (props.active) fitAddon.fit()
+  fitTerminal()
   terminal.onData((data) => {
     if ((data === '\r' || data === '\n') && canReconnect.value) {
       void reconnect()
@@ -989,11 +1063,7 @@ onMounted(async () => {
     applyTerminalInputModel(data)
     void sendTerminalInput(data)
   })
-  resizeObserver = new ResizeObserver(() => {
-    fitAddon?.fit()
-    sendResize()
-    updateCompletionPosition()
-  })
+  resizeObserver = new ResizeObserver(scheduleTerminalFit)
   resizeObserver.observe(container.value)
   themeObserver = new MutationObserver(applyTerminalTheme)
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
@@ -1007,11 +1077,13 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unsubscribeContextMenuOpen?.()
   resizeObserver?.disconnect()
+  if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
   themeObserver?.disconnect()
   window.removeEventListener('keydown', handleShortcut, true)
   window.removeEventListener('odyterm:terminal-font-size', handleSharedFontSize)
   window.removeEventListener('odyterm:focus-terminal', handleTerminalFocusRequest)
   flushTerminalOutput()
+  clearPendingHistoryRecord()
   socket?.close()
   socketReady.value = false
   unsubscribeLocalData?.()
@@ -1043,7 +1115,7 @@ onBeforeUnmount(() => {
         class="terminal-completion-hint"
         data-testid="terminal-completion-hint"
         role="status"
-        aria-label="命令补齐建议，按右方向键接受"
+        aria-label="命令补齐建议，按 Ctrl 加右方向键接受"
         :title="completionCandidate"
         :style="completionHintStyle"
       >
@@ -1053,10 +1125,10 @@ onBeforeUnmount(() => {
         v-if="completionVisible"
         class="terminal-completion-action"
         role="status"
-        aria-label="按右方向键补全命令"
+        aria-label="按 Ctrl 加右方向键补全命令"
         :style="completionActionStyle"
       >
-        按 → 补全
+        按 Ctrl+→ 补全
       </div>
     </div>
     <div v-if="recoveryMessage" class="terminal-recovery-banner" :data-state="connectionStatus" role="status">

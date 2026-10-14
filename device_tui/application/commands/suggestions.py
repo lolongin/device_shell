@@ -8,7 +8,15 @@ import time
 from typing import Any
 
 
-DEFAULT_COMMAND_SUGGESTIONS = [
+LINUX_COMMAND_SUGGESTIONS = [
+    "ls -la",
+    "pwd",
+    "ip addr",
+    "ip route",
+    "systemctl status",
+]
+
+NETWORK_COMMAND_SUGGESTIONS = [
     "display version",
     "display current-configuration",
     "display interface brief",
@@ -43,6 +51,18 @@ def infer_completed_command_from_terminal_line(prefix: str, terminal_line: str) 
     for candidate in candidates:
         if _candidate_matches_typed_prefix(candidate, typed):
             return candidate.strip()
+    # A shell history recall can replace the whole input line. In that case
+    # the shadow model still contains the previous command, so prefix matching
+    # cannot identify the command that is actually waiting at the prompt.
+    # Trust the prompt suffix for ordinary commands; path queries stay
+    # conservative because old arguments must never be copied into history.
+    if not any("/" in part or "\\" in part for part in typed.casefold().split()):
+        for delimiter in (">", "#", "$", "]"):
+            index = line.rfind(delimiter)
+            if index >= 0:
+                current = line[index + 1 :].strip()
+                if current:
+                    return current
     return ""
 
 
@@ -105,8 +125,11 @@ def record_command_history(
     limit: int = 1000,
 ) -> list[CommandHistoryItem]:
     normalized = normalize_command_text(command)
+    history_limit = max(0, int(limit))
     if not normalized:
         return history
+    if history_limit == 0:
+        return []
     timestamp = time.time() if now is None else now
     for item in history:
         if item.command == normalized and item.device_id == device_id and item.session_kind == session_kind:
@@ -124,7 +147,7 @@ def record_command_history(
             )
         )
     history.sort(key=lambda item: (item.last_used_at, item.count), reverse=True)
-    return history[:limit]
+    return history[:history_limit]
 
 
 def suggest_commands(
@@ -135,48 +158,105 @@ def suggest_commands(
     session_kind: str = "",
     limit: int = 5,
     include_defaults: bool = True,
+    environment: str = "auto",
 ) -> list[str]:
     normalized_query = normalize_command_text(query).casefold()
-    if not normalized_query:
+    result_limit = max(0, int(limit))
+    if not normalized_query or result_limit == 0:
         return []
-    candidates: dict[str, tuple[float, int]] = {}
+    # Key candidates by their folded text. History can contain entries written
+    # with different casing (or imported from older stores), but the terminal
+    # should only show one prediction for the same command.
+    # Keep frequency and context as separate ranking dimensions. Folding them
+    # into one score makes a recent but rarely used command able to displace a
+    # command the user relies on repeatedly.
+    candidates: dict[str, tuple[str, float, int, int, int, float]] = {}
     now = time.time()
 
+    defaults = _default_commands_for_environment(environment)
+
+    def add_candidate(
+        command: str,
+        score: float,
+        source_priority: int,
+        *,
+        count: int = 0,
+        match_tier: int,
+        context_score: float = 0.0,
+    ) -> None:
+        if score <= 0:
+            return
+        key = command.casefold()
+        current = candidates.get(key)
+        candidate = (command, score, source_priority, max(count, 0), match_tier, context_score)
+        if current is None:
+            candidates[key] = candidate
+            return
+        if _candidate_rank(candidate) < _candidate_rank(current):
+            candidates[key] = candidate
+
     if include_defaults:
-        for command in DEFAULT_COMMAND_SUGGESTIONS:
+        for command in defaults:
             score = _score_command(command, normalized_query, 0, 0, now, default=True)
-            if score > 0:
-                candidates[command] = _best_candidate(candidates.get(command), score, 2)
+            add_candidate(
+                command,
+                score,
+                2,
+                match_tier=_match_tier(command, normalized_query),
+            )
 
     for item in history:
         if _path_query_has_history_suffix(item.command, normalized_query):
             continue
         score = _score_command(item.command, normalized_query, item.count, item.last_used_at, now)
+        context_score = 0.0
         if item.device_id and item.device_id == device_id:
-            score += 30
+            context_score += 30
         if item.session_kind and item.session_kind == session_kind:
-            score += 12
-        if score > 0:
-            candidates[item.command] = _best_candidate(candidates.get(item.command), score, 0)
+            context_score += 12
+        add_candidate(
+            item.command,
+            score + context_score,
+            0,
+            count=item.count,
+            match_tier=_match_tier(item.command, normalized_query),
+            context_score=context_score,
+        )
 
     ranked = [
-        (command, score, source_priority)
-        for command, (score, source_priority) in candidates.items()
-        if score > 0 and command.casefold() != normalized_query
+        (command, score, source_priority, count, match_tier, context_score)
+        for command, score, source_priority, count, match_tier, context_score in candidates.values()
+        if command.casefold() != normalized_query
     ]
-    ranked.sort(key=lambda pair: (-pair[1], pair[2], pair[0]))
-    return [command for command, _score, _source_priority in ranked[:limit]]
+    ranked.sort(key=lambda pair: (-pair[4], -pair[3], -pair[5], -pair[1], pair[2], pair[0]))
+    return [command for command, *_details in ranked[:result_limit]]
 
 
-def _best_candidate(current: tuple[float, int] | None, score: float, source_priority: int) -> tuple[float, int]:
-    if current is None:
-        return score, source_priority
-    current_score, current_priority = current
-    if score > current_score:
-        return score, source_priority
-    if score == current_score and source_priority < current_priority:
-        return score, source_priority
-    return current
+def _default_commands_for_environment(environment: str) -> list[str]:
+    normalized = environment.strip().casefold()
+    if normalized in {"linux", "unix"}:
+        return LINUX_COMMAND_SUGGESTIONS
+    if normalized in {"network", "vrp", "device"}:
+        return NETWORK_COMMAND_SUGGESTIONS
+    return [*LINUX_COMMAND_SUGGESTIONS, *NETWORK_COMMAND_SUGGESTIONS]
+
+
+def _candidate_rank(candidate: tuple[str, float, int, int, int, float]) -> tuple[float, float, float, float, int]:
+    _command, score, source_priority, count, match_tier, context_score = candidate
+    return (-match_tier, -count, -context_score, -score, source_priority)
+
+
+def _match_tier(command: str, query: str) -> int:
+    lowered = command.casefold()
+    if lowered.startswith(query):
+        return 4
+    if _token_prefix_match(lowered, query):
+        return 3
+    if query in lowered:
+        return 2
+    if _fuzzy_initials_match(lowered, query):
+        return 1
+    return 0
 
 
 def _score_command(
@@ -189,24 +269,44 @@ def _score_command(
     default: bool = False,
 ) -> float:
     lowered = command.casefold()
-    if lowered.startswith(query):
-        score = 120.0
+    match_tier = _match_tier(lowered, query)
+    if match_tier == 4:
+        # Keep match quality in a separate, wide tier. A high-frequency
+        # fuzzy match must not displace a low-frequency exact prefix match.
+        score = 4_000.0
         first_word = lowered.split(maxsplit=1)[0]
         if first_word == query:
-            score += 16
-    elif query in lowered:
-        score = 46.0
-    elif _fuzzy_initials_match(lowered, query):
-        score = 32.0
+            score += 80.0
+    elif match_tier == 3:
+        # Match the command word by word, e.g. ``display int`` ->
+        # ``display interface brief``. Keep this below a full-line prefix so
+        # the most obvious completion still wins when both are available.
+        score = 3_000.0
+    elif match_tier == 2:
+        score = 2_000.0
+    elif match_tier == 1:
+        score = 1_000.0
     else:
         return 0.0
-    score += min(count, 50) * 3
+    # Frequency is deliberately stronger than freshness within the same
+    # match tier, so the most-used command remains the stable top prediction.
+    score += min(max(count, 0), 50) * 10
     if last_used_at > 0:
-        age_hours = max((now - last_used_at) / 3600, 0)
-        score += max(0.0, 32.0 - age_hours)
+        age_days = max((now - last_used_at) / 86_400, 0)
+        score += max(0.0, 8.0 - age_days)
     if default:
         score -= 18
     return score
+
+
+def _token_prefix_match(command: str, query: str) -> bool:
+    """Return whether every typed token prefixes the corresponding command token."""
+    command_parts = command.split()
+    query_parts = query.split()
+    return bool(query_parts) and len(command_parts) >= len(query_parts) and all(
+        command_part.startswith(query_part)
+        for command_part, query_part in zip(command_parts, query_parts)
+    )
 
 
 def _path_query_has_history_suffix(command: str, query: str) -> bool:

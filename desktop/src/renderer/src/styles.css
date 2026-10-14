@@ -1138,7 +1138,7 @@ h3 { margin-bottom: 8px; font-size: 16px; }
   border-radius: 999px;
   background-clip: padding-box;
 }
-.terminal-completion-hint { position: absolute; z-index: 20; display: block; overflow: hidden; padding: 0; color: rgba(203, 213, 225, 0.62); background: transparent; font: inherit; line-height: inherit; pointer-events: none; text-overflow: ellipsis; white-space: pre; }
+.terminal-completion-hint { position: absolute; z-index: 20; display: block; overflow: hidden; padding: 0; color: rgba(203, 213, 225, 0.62); background: transparent; font-weight: 400; letter-spacing: 0; pointer-events: none; text-overflow: ellipsis; white-space: pre; }
 :root[data-theme="light"] .terminal-completion-hint { color: rgba(51, 65, 85, 0.76); }
 .terminal-completion-action { position: absolute; right: 14px; z-index: 20; padding: 1px 6px; border: 1px solid rgba(148, 163, 184, 0.28); border-radius: 4px; color: rgba(203, 213, 225, 0.72); background: rgba(15, 23, 42, 0.76); font-size: 10px; line-height: 16px; pointer-events: none; white-space: nowrap; }
 :root[data-theme="light"] .terminal-completion-action { border-color: rgba(71, 85, 105, 0.26); color: rgba(51, 65, 85, 0.82); background: rgba(248, 250, 252, 0.9); }
