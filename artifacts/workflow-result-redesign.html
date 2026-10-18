@@ -1,0 +1,983 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workflow 结果面板 · 改进效果预览</title>
+<style>
+  :root {
+    --bg: #020617;
+    --surface: #08101d;
+    --surface-raised: #0f172a;
+    --surface-hover: #111c2f;
+    --line: #243244;
+    --line-strong: #334155;
+    --text: #f8fafc;
+    --muted: #a7b4c7;
+    --soft: #718096;
+    --accent: #38bdf8;
+    --accent-dim: rgba(56, 189, 248, .12);
+    --ok: #22c55e;
+    --ok-dim: rgba(34, 197, 94, .12);
+    --warn: #f59e0b;
+    --bad: #f43f5e;
+    --ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    --mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    color: var(--text);
+    font-family: var(--ui);
+    background:
+      radial-gradient(1100px 520px at 12% -12%, rgba(56, 189, 248, .10), transparent 62%),
+      radial-gradient(900px 460px at 96% 0%, rgba(34, 197, 94, .07), transparent 58%),
+      #030814;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background-image: linear-gradient(rgba(148, 163, 184, .055) 1px, transparent 1px), linear-gradient(90deg, rgba(148, 163, 184, .055) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse at 50% 0%, #000 12%, transparent 72%);
+    pointer-events: none;
+  }
+  .board { position: relative; max-width: 1240px; margin: 0 auto; padding: 38px 26px 60px; }
+
+  /* ---------- board head ---------- */
+  .board-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 22px; }
+  .kicker { margin: 0 0 10px; color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .22em; }
+  h1 { margin: 0 0 8px; font-size: 30px; font-weight: 600; letter-spacing: -.015em; }
+  .lede { margin: 0; max-width: 620px; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+  .controls { display: grid; gap: 10px; justify-items: end; }
+  .seg { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: rgba(8, 16, 29, .8); }
+  .seg button {
+    padding: 7px 12px; border: 0; border-radius: 6px; color: var(--muted); background: transparent;
+    cursor: pointer; font-family: var(--ui); font-size: 11.5px; white-space: nowrap;
+    transition: color .16s ease, background .16s ease;
+  }
+  .seg button:hover { color: var(--text); background: rgba(148, 163, 184, .07); }
+  .seg button[aria-pressed="true"] { color: #04121f; background: var(--accent); font-weight: 650; }
+  .hint { margin: 20px 0 14px; min-height: 20px; color: var(--muted); font-size: 12px; }
+  .hint b { color: var(--text); font-weight: 600; }
+
+  /* ---------- app frame ---------- */
+  .frame {
+    position: relative;
+    margin: 0 auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 0 34px 80px -34px rgba(0, 0, 0, .85), inset 0 1px 0 rgba(255, 255, 255, .035);
+    overflow: hidden;
+    transition: max-width .3s ease;
+  }
+  .frame.is-narrow { max-width: 690px; }
+  .frame-bar {
+    display: flex; align-items: center; gap: 9px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(148, 163, 184, .07), rgba(8, 16, 29, .2));
+    color: var(--soft); font-size: 10.5px;
+  }
+  .frame-bar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(56, 189, 248, .12); }
+  .frame-title { color: var(--muted); }
+  .frame-meta { margin-left: auto; font-family: var(--mono); }
+  .stage { padding: 16px; }
+
+  /* ---------- outcome strip ---------- */
+  .outcome {
+    display: flex; align-items: center; gap: 13px; flex-wrap: wrap;
+    padding: 13px 15px; border: 1px solid var(--line); border-radius: 9px;
+    background: linear-gradient(120deg, rgba(34, 197, 94, .07), rgba(8, 16, 29, .2) 46%);
+  }
+  .outcome[data-tone="bad"] { background: linear-gradient(120deg, rgba(244, 63, 94, .09), rgba(8, 16, 29, .2) 46%); }
+  .outcome-mark {
+    display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto;
+    border: 1px solid rgba(34, 197, 94, .45); border-radius: 50%;
+    color: #86efac; background: var(--ok-dim); font-size: 15px;
+  }
+  .outcome-copy { display: grid; gap: 3px; min-width: 0; }
+  .outcome-copy > span { color: var(--soft); font-family: var(--mono); font-size: 9px; letter-spacing: .14em; }
+  .outcome-copy > strong { font-size: 14px; font-weight: 650; }
+  .outcome-copy > p { margin: 0; color: var(--muted); font-size: 11px; }
+  .outcome-metrics { display: flex; align-items: stretch; gap: 0; margin-left: auto; }
+  .outcome-metrics > div { display: grid; gap: 2px; justify-items: end; padding: 0 14px; border-left: 1px solid var(--line); }
+  .outcome-metrics b { font-family: var(--mono); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .outcome-metrics small { color: var(--soft); font-size: 9.5px; }
+  .outcome-metrics .ok b { color: #86efac; }
+  .outcome-metrics .bad b { color: #fda4af; }
+
+  /* ---------- results block ---------- */
+  .results { margin-top: 16px; display: grid; gap: 11px; }
+  .results-head { display: flex; align-items: center; gap: 9px; }
+  .results-head .kicker { margin: 0; }
+  .results-head > strong { font-size: 12px; font-weight: 600; }
+  .results-head .count { color: var(--soft); font-size: 10.5px; }
+  .results-head .head-actions { margin-left: auto; display: flex; gap: 6px; }
+  .ghost {
+    padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--muted); background: transparent; cursor: pointer; font-size: 10.5px;
+  }
+  .ghost:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+
+  /* ---------- output card ---------- */
+  .card {
+    border: 1px solid var(--line); border-radius: 10px; background:
+      linear-gradient(180deg, rgba(255, 255, 255, .022), transparent 110px), var(--surface);
+    overflow: hidden;
+  }
+  .card-head { display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px 10px; }
+  .card-title { display: grid; gap: 3px; min-width: 0; }
+  .card-title strong { font-size: 12.5px; font-weight: 650; }
+  .card-title small { color: var(--soft); font-size: 10.5px; }
+  .card-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .tag {
+    padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--soft); font-family: var(--mono); font-size: 9px; letter-spacing: .04em;
+  }
+  .tag[data-kind="table"] { color: #7dd3fc; border-color: rgba(56, 189, 248, .35); background: rgba(56, 189, 248, .08); }
+  .tag[data-kind="text"] { color: #c4b5fd; border-color: rgba(167, 139, 250, .3); background: rgba(167, 139, 250, .08); }
+  .tag[data-kind="json"] { color: #fcd34d; border-color: rgba(252, 211, 77, .28); background: rgba(252, 211, 77, .07); }
+  .icon-btn {
+    display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 8px;
+    border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: transparent;
+    cursor: pointer; font-size: 10.5px;
+  }
+  .icon-btn:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+
+  /* ---------- KPI card ---------- */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); border-top: 1px solid var(--line); }
+  .kpi { display: grid; gap: 5px; padding: 14px 13px; border-right: 1px solid var(--line); }
+  .kpi:last-child { border-right: 0; }
+  .kpi > span { color: var(--soft); font-size: 9.5px; letter-spacing: .1em; }
+  .kpi > b { font-family: var(--mono); font-size: 21px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .kpi > small { color: var(--soft); font-size: 10px; }
+  .kpi.ok > b { color: #86efac; }
+  .device-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 13px 13px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px;
+    border: 1px solid var(--line); border-radius: 999px; color: var(--muted);
+    background: rgba(15, 23, 42, .6); font-family: var(--mono); font-size: 10px;
+  }
+  .chip .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px rgba(34, 197, 94, .7); }
+
+  /* ---------- table ---------- */
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 0 13px 10px; }
+  .search {
+    flex: 1 1 190px; max-width: 300px; display: flex; align-items: center; gap: 7px;
+    padding: 0 9px; height: 29px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--surface-raised); color: var(--soft);
+  }
+  .search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: 11px var(--ui); }
+  .search input::placeholder { color: var(--soft); }
+  .rowcount { color: var(--soft); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+  .toolbar .spacer { flex: 1; }
+  .table-scroll { max-height: 330px; overflow: auto; border-top: 1px solid var(--line); }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 11.5px; }
+  thead th {
+    position: sticky; top: 0; z-index: 1; padding: 0; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface) 92%, #fff); text-align: left; white-space: nowrap;
+  }
+  thead th button {
+    width: 100%; display: flex; align-items: center; gap: 6px; padding: 9px 12px;
+    border: 0; background: transparent; color: var(--muted); cursor: pointer;
+    font: 600 10.5px var(--ui); letter-spacing: .02em;
+  }
+  thead th button:hover { color: var(--accent); }
+  thead th .sort { color: var(--accent); opacity: .35; font-size: 10px; }
+  thead th[data-sorted] .sort { opacity: 1; }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); vertical-align: middle; }
+  tbody tr.row:hover { background: rgba(56, 189, 248, .045); }
+  tbody tr.row { cursor: pointer; }
+  tbody tr.detail[hidden] { display: none; }
+  td.mono, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .cell-device { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; }
+  .chev { display: inline-grid; place-items: center; width: 16px; height: 16px; color: var(--soft); font-size: 9px; transition: transform .18s ease; }
+  tr.row[aria-expanded="true"] .chev { transform: rotate(90deg); color: var(--accent); }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+  .status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 7px rgba(34, 197, 94, .65); }
+  .status.bad .dot { background: var(--bad); box-shadow: 0 0 7px rgba(244, 63, 94, .6); }
+  .status.bad { color: #fda4af; }
+  .pkg-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .pkg { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; color: #bae6fd; background: rgba(56, 189, 248, .06); font-family: var(--mono); font-size: 9.5px; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; color: #a5b4fc; }
+  .detail-cell { padding: 0 !important; border-bottom: 1px solid var(--line) !important; background: rgba(2, 6, 23, .55); }
+  .steps { display: grid; gap: 0; padding: 10px 12px 12px 38px; }
+  .step { position: relative; display: grid; grid-template-columns: 86px 1fr auto; gap: 10px; align-items: baseline; padding: 7px 0 7px 14px; }
+  .step::before { content: ""; position: absolute; left: 0; top: 15px; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+  .step::after { content: ""; position: absolute; left: 2.5px; top: 21px; bottom: -4px; width: 1px; background: color-mix(in srgb, var(--line-strong) 70%, transparent); }
+  .step:last-child::after { display: none; }
+  .step small { color: var(--soft); font-family: var(--mono); font-size: 9px; letter-spacing: .05em; }
+  .step b { font-size: 11px; font-weight: 550; }
+  .step code { color: #bae6fd; font-family: var(--mono); font-size: 10px; background: rgba(56, 189, 248, .07); border: 1px solid rgba(56, 189, 248, .16); border-radius: 4px; padding: 1px 6px; }
+  .step .t { color: var(--soft); font-family: var(--mono); font-size: 9.5px; }
+  .table-foot { display: flex; align-items: center; gap: 10px; padding: 9px 13px; color: var(--soft); font-size: 10px; border-top: 1px solid var(--line); }
+  .table-foot .spacer { flex: 1; }
+  .empty { display: grid; place-items: center; gap: 4px; padding: 34px; color: var(--soft); font-size: 11px; }
+
+  /* column popover */
+  .pop { position: relative; }
+  .pop-panel {
+    position: absolute; right: 0; top: 32px; z-index: 5; min-width: 168px; display: none;
+    padding: 8px; border: 1px solid var(--line-strong); border-radius: 8px;
+    background: var(--surface-raised); box-shadow: 0 22px 44px -18px #000;
+  }
+  .pop.open .pop-panel { display: grid; gap: 2px; }
+  .pop-panel label { display: flex; align-items: center; gap: 8px; padding: 6px 7px; border-radius: 5px; color: var(--muted); font-size: 11px; cursor: pointer; }
+  .pop-panel label:hover { background: rgba(148, 163, 184, .08); color: var(--text); }
+  .pop-panel input { accent-color: var(--accent); }
+
+  /* ---------- scalar / hero outputs ---------- */
+  .hero-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 10px; }
+  .hero {
+    position: relative; display: grid; gap: 6px; padding: 14px 15px 16px;
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(255, 255, 255, .022), transparent 88px), var(--surface);
+  }
+  .hero::after { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 2px; border-radius: 2px; background: linear-gradient(180deg, var(--accent), transparent); opacity: .7; }
+  .hero > span { color: var(--soft); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; }
+  .hero > b { font-family: var(--mono); font-size: 19px; font-weight: 600; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  .hero > small { color: var(--soft); font-size: 10px; }
+  .hero .path { color: #bae6fd; }
+
+  /* ---------- json tree ---------- */
+  .json-tools { display: flex; align-items: center; gap: 8px; padding: 0 13px 10px; }
+  .tree { padding: 4px 13px 13px; font-family: var(--mono); font-size: 10.5px; line-height: 1.75; max-height: 260px; overflow: auto; }
+  .tree details { margin-left: 2px; }
+  .tree summary { cursor: pointer; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 6px; }
+  .tree summary::-webkit-details-marker { display: none; }
+  .tree summary::before { content: "▸"; color: var(--soft); font-size: 9px; transition: transform .15s ease; }
+  .tree details[open] > summary::before { transform: rotate(90deg); }
+  .tree .k { color: #93c5fd; }
+  .tree .s { color: #86efac; }
+  .tree .n { color: #c4b5fd; }
+  .tree .b { color: #fca5a5; }
+  .tree .null { color: var(--soft); }
+  .tree .row { margin-left: 13px; }
+  .tree mark { padding: 0 1px; border-radius: 2px; color: #04121f; background: #fcd34d; }
+
+  /* ---------- toast ---------- */
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 12px);
+    padding: 9px 14px; border: 1px solid var(--line-strong); border-radius: 7px;
+    color: var(--text); background: #0b1526; font-size: 11.5px; opacity: 0; pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease; box-shadow: 0 18px 40px -20px #000; z-index: 50;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- before (current) ---------- */
+  .before-note { margin: 0 0 12px; padding: 9px 11px; border: 1px dashed rgba(244, 63, 94, .4); border-radius: 7px; color: #fda4af; background: rgba(244, 63, 94, .05); font-size: 11px; }
+  .b-card { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden; }
+  .b-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+  .b-head strong { font-size: 11px; font-weight: 600; }
+  .b-head small { color: var(--soft); font-size: 9.5px; }
+  .b-head .b-tools { margin-left: auto; display: flex; gap: 5px; align-items: center; }
+  .b-chip { padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--soft); font: 9px var(--mono); }
+  .b-btn { padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface); font-size: 10px; cursor: default; }
+  .b-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--soft); font-size: 9.5px; }
+  .b-search { flex: 1; max-width: 240px; height: 24px; display: flex; align-items: center; padding: 0 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--soft); background: var(--surface-raised); font-size: 10px; }
+  .b-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  .b-table th { text-align: left; padding: 7px 8px; color: var(--soft); border-bottom: 1px solid var(--line); font-weight: 600; font-size: 10px; white-space: nowrap; }
+  .b-table td { padding: 7px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); vertical-align: top; }
+  .b-table td.clip { max-width: 230px; }
+  .b-clip { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 9.5px; color: #fcd34d; }
+  .b-view { margin-left: 5px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: #7dd3fc; font-size: 9px; }
+  .b-foot { display: flex; align-items: center; gap: 8px; padding: 6px 9px; color: var(--soft); font-size: 9.5px; }
+  .b-foot .spacer { flex: 1; }
+  .b-json { margin: 0; padding: 9px; max-height: 150px; overflow: hidden; color: #c4b5fd; background: var(--surface-raised); font: 10px/1.6 var(--mono); white-space: pre; }
+  .b-preview { display: grid; gap: 3px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); }
+  .b-preview > div { display: grid; grid-template-columns: minmax(88px, 30%) minmax(0, 1fr); gap: 8px; font-size: 10px; }
+  .b-preview dt { color: var(--soft); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .b-preview dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+  .b-literal { color: #fca5a5; }
+  .b-gap { display: grid; gap: 9px; }
+  .b-results-head { display: flex; align-items: center; gap: 7px; padding: 0 0 8px; }
+  .b-results-head .kicker { margin: 0; font-size: 9px; }
+  .b-results-head strong { font-size: 12px; }
+  .b-results-head small { color: var(--soft); font-size: 10px; }
+  .b-section { margin-top: 12px; }
+  .b-input { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--soft); font-size: 10.5px; }
+  .b-input b { color: var(--text); font-family: var(--mono); font-size: 10.5px; }
+
+  /* ---------- notes ---------- */
+  .notes { display: grid; gap: 6px; margin: 18px 0 0; padding: 0; list-style: none; }
+  .notes li { display: flex; gap: 9px; align-items: baseline; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+  .notes li::before { content: "→"; color: var(--accent); font-family: var(--mono); font-size: 10px; }
+  .notes li b { color: var(--text); font-weight: 600; }
+  .foot { margin-top: 26px; color: var(--soft); font-size: 10.5px; }
+
+  .anim { animation: rise .34s cubic-bezier(.2, .7, .3, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+  @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+
+  @media (max-width: 900px) {
+    .board { padding: 26px 14px 44px; }
+    h1 { font-size: 24px; }
+    .board-head { align-items: flex-start; }
+    .controls { justify-items: start; }
+    .outcome-metrics { margin-left: 0; width: 100%; }
+    .outcome-metrics > div:first-child { border-left: 0; padding-left: 0; }
+    .seg { flex-wrap: wrap; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .anim { animation: none; }
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="board">
+  <header class="board-head">
+    <div>
+      <p class="kicker">WORKFLOW · RESULT PRESENTATION</p>
+      <h1>结果面板改进效果</h1>
+      <p class="lede">同一份真实运行记录（本机 <code>odyterm.sqlite3</code> 最近一次运行）在两种呈现下的对照。切换场景与版本即可比较。</p>
+    </div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="数据场景">
+        <button data-scenario="loop" aria-pressed="true">多设备 · 巡检汇总</button>
+        <button data-scenario="single" aria-pressed="false">单设备 · 系统包查询</button>
+        <button data-scenario="studio" aria-pressed="false">Studio · 测试运行</button>
+      </div>
+      <div class="seg" role="group" aria-label="呈现版本">
+        <button data-mode="before" aria-pressed="false">现状</button>
+        <button data-mode="after" aria-pressed="true">改进后</button>
+      </div>
+    </div>
+  </header>
+
+  <p class="hint" id="hint"></p>
+
+  <div class="frame" id="frame">
+    <div class="frame-bar">
+      <span class="dot"></span>
+      <span class="frame-title" id="frameTitle">任务中心 · 执行结果</span>
+      <span class="frame-meta" id="frameMeta"></span>
+    </div>
+    <div class="stage" id="stage"></div>
+  </div>
+
+  <ul class="notes" id="notes"></ul>
+
+  <p class="foot">数据来源：<code>%APPDATA%\odyterm-desktop\odyterm.sqlite3</code> 中最近一次真实运行。样式复用应用现有主题变量（深色）。</p>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const LOOP = {
+    title: "多设备CC包检查汇总",
+    task: "3c0b02f1",
+    version: "v1",
+    devices: [
+      {
+        id: "ENSP-AR-001", ok: true, cc: 2,
+        packages: ["IKEV1_V600R025C10SPC100.cc", "ensp-ar.cc"],
+        next: "flash:/ensp-ar.cc",
+        steps: [
+          { label: "connect_device", name: "连接设备", detail: "display version", t: "0.0s" },
+          { label: "inspect_cc", name: "检查 CC 包", detail: "dir flash:", t: "0.0s" },
+          { label: "shape_result", name: "整理结果", detail: "cc_count = 2", t: "0.0s" }
+        ]
+      },
+      {
+        id: "SIM-TERMINAL", ok: true, cc: 2,
+        packages: ["current.cc", "old.cc"],
+        next: "flash:/current.cc",
+        steps: [
+          { label: "connect_device", name: "连接设备", detail: "display version", t: "0.0s" },
+          { label: "inspect_cc", name: "检查 CC 包", detail: "dir flash:", t: "0.0s" },
+          { label: "shape_result", name: "整理结果", detail: "cc_count = 2", t: "0.0s" }
+        ]
+      }
+    ],
+    raw: {
+      each: {
+        count: 2, failed: 0,
+        devices: ["ENSP-AR-001", "SIM-TERMINAL"],
+        results: [
+          {
+            device_id: "ENSP-AR-001", execution_status: "succeeded", status: "succeeded",
+            value: { device_id: "ENSP-AR-001", cc_count: 2, cc_packages: ["IKEV1_V600R025C10SPC100.cc", "ensp-ar.cc"], next_startup: "flash:/ensp-ar.cc" },
+            steps: { connect_device: "succeeded", inspect_cc: "succeeded", shape_result: "succeeded" }
+          },
+          {
+            device_id: "SIM-TERMINAL", execution_status: "succeeded", status: "succeeded",
+            value: { device_id: "SIM-TERMINAL", cc_count: 2, cc_packages: ["current.cc", "old.cc"], next_startup: "flash:/current.cc" },
+            steps: { connect_device: "succeeded", inspect_cc: "succeeded", shape_result: "succeeded" }
+          }
+        ]
+      },
+      summary: {
+        status: "evaluated",
+        value: { device_count: 2, devices: ["ENSP-AR-001", "SIM-TERMINAL"] },
+        run: { evidence: [{ kind: "expression" }] }
+      }
+    }
+  };
+
+  const SINGLE = {
+    title: "查询设备系统包",
+    task: "caded59f",
+    version: "v1",
+    inputs: { device_id: "ENSP-AR-001" },
+    outputs: [
+      { name: "software_version", label: "软件版本", value: "1.25.1.1", desc: "当前运行的软件版本", kind: "text", template: "${query_package.result.software_version}" },
+      { name: "running_system_package", label: "运行系统包", value: "flash:/ensp-ar.cc", desc: "当前启动的系统包文件", kind: "text", template: "${query_package.result.running_system_package}" },
+      { name: "next_system_package", label: "下次启动系统包", value: "flash:/ensp-ar.cc", desc: "下次启动使用的系统包文件", kind: "text", template: "${query_package.result.next_system_package}" },
+      { name: "packages_on_flash", label: "Flash 中的系统包文件列表", value: ["ensp-ar.cc"], desc: "1 个文件 · 表格呈现", kind: "list", template: "${query_package.result.packages_on_flash}" },
+      { name: "result", label: "完整查询结果", desc: "包含原始命令输出", kind: "json", template: "${query_package.result}" }
+    ],
+    raw: {
+      query_package: {
+        status: "succeeded", exit_code: 0,
+        result: {
+          software_version: "1.25.1.1",
+          running_system_package: "flash:/ensp-ar.cc",
+          next_system_package: "flash:/ensp-ar.cc",
+          model: "YunShan",
+          packages_on_flash: ["ensp-ar.cc"],
+          commands_ok: true
+        },
+        evidence: [{ kind: "cli_readiness", probe_command: "display version" }]
+      }
+    },
+    beforeNames: ["select_device", "connect_device", "query_package"]
+  };
+
+  const STUDIO = {
+    title: "查询设备系统包",
+    task: "测试运行",
+    version: "draft",
+    inputs: { device_id: "ENSP-AR-001" },
+    outputs: SINGLE.outputs,
+    raw: SINGLE.raw
+  };
+
+  const state = { scenario: "loop", mode: "after" };
+
+  const el = (id) => document.getElementById(id);
+  const stage = el("stage");
+  const hint = el("hint");
+  const notes = el("notes");
+  const frame = el("frame");
+
+  const esc = (value) => String(value).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  function toast(message) {
+    const node = el("toast");
+    node.textContent = message;
+    node.classList.add("show");
+    window.clearTimeout(toast.timer);
+    toast.timer = window.setTimeout(() => node.classList.remove("show"), 1600);
+  }
+
+  async function copy(text, label) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(label);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = text;
+      document.body.append(area);
+      area.select();
+      try { document.execCommand("copy"); toast(label); } catch { toast("复制失败，请检查剪贴板权限"); }
+      area.remove();
+    }
+  }
+
+  function download(filename, content) {
+    const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 800);
+    toast(`已导出 ${filename}`);
+  }
+
+  /* ---------- JSON tree ---------- */
+  function primitive(value) {
+    if (value === null) return '<span class="null">null</span>';
+    if (typeof value === "string") return `<span class="s">"${esc(value)}"</span>`;
+    if (typeof value === "number") return `<span class="n">${value}</span>`;
+    if (typeof value === "boolean") return `<span class="b">${value}</span>`;
+    return esc(String(value));
+  }
+
+  function tree(value, key, depth) {
+    const open = depth < 2 ? " open" : "";
+    if (Array.isArray(value)) {
+      if (!value.length) return `<div class="row"><span class="k">${esc(key)}</span>: <span class="null">[]</span></div>`;
+      const items = value.slice(0, 12).map((item, index) => tree(item, String(index), depth + 1)).join("");
+      const more = value.length > 12 ? `<div class="row"><span class="null">… 还有 ${value.length - 12} 项</span></div>` : "";
+      return `<details${open}><summary><span class="k">${esc(key)}</span> <span class="null">[${value.length}]</span></summary>${items}${more}</details>`;
+    }
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value);
+      if (!entries.length) return `<div class="row"><span class="k">${esc(key)}</span>: <span class="null">{}</span></div>`;
+      const rows = entries.map(([childKey, child]) => tree(child, childKey, depth + 1)).join("");
+      return `<details${open}><summary><span class="k">${esc(key)}</span> <span class="null">{${entries.length}}</span></summary>${rows}</details>`;
+    }
+    return `<div class="row"><span class="k">${esc(key)}</span>: ${primitive(value)}</div>`;
+  }
+
+  function filterTree(node, query) {
+    if (!query) return;
+    const text = node.innerText.toLowerCase();
+    if (!text.includes(query)) {
+      node.closest("details")?.classList.add("is-muted");
+    }
+    node.querySelectorAll("details").forEach((item) => item.open = true);
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const hits = [];
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode;
+      if (textNode.nodeValue.toLowerCase().includes(query)) hits.push(textNode);
+    }
+    hits.forEach((textNode) => {
+      const index = textNode.nodeValue.toLowerCase().indexOf(query);
+      const range = document.createRange();
+      range.setStart(textNode, index);
+      range.setEnd(textNode, index + query.length);
+      const mark = document.createElement("mark");
+      range.surroundContents(mark);
+    });
+  }
+
+  /* ---------- AFTER · loop ---------- */
+  function afterLoop() {
+    const rows = LOOP.devices;
+    return `
+      ${outcomeStrip({ title: "已完成", detail: `2 台设备 · 5/5 步骤 · 0 失败`, devices: 2, done: 5, failed: 0, outputs: 3 })}
+      <section class="results">
+        <header class="results-head">
+          <span class="kicker">RESULTS</span><strong>流程输出</strong>
+          <span class="count" id="outCount">3 个结果</span>
+          <span class="head-actions"><button class="ghost" data-act="copydoc">复制全部</button></span>
+        </header>
+
+        <article class="card anim" style="--i:0">
+          <div class="card-head">
+            <div class="card-title"><strong>巡检汇总</strong><small>由 summary 节点输出，已解析为业务字段</small></div>
+            <div class="card-tools"><span class="tag" data-kind="json">对象 · 3 字段</span><button class="icon-btn" data-act="copy-summary">复制</button></div>
+          </div>
+          <div class="kpis">
+            <div class="kpi"><span>设备总数</span><b>2</b><small>本次巡检范围</small></div>
+            <div class="kpi ok"><span>成功</span><b>2</b><small>全部设备返回结果</small></div>
+            <div class="kpi"><span>失败</span><b>0</b><small>无异常设备</small></div>
+            <div class="kpi"><span>CC 包合计</span><b>4</b><small>2 台设备各 2 个</small></div>
+          </div>
+          <div class="device-chips">
+            ${rows.map((row) => `<span class="chip"><span class="dot"></span>${esc(row.id)}</span>`).join("")}
+          </div>
+        </article>
+
+        <article class="card anim" style="--i:1">
+          <div class="card-head">
+            <div class="card-title"><strong>设备巡检明细</strong><small>each 循环 → 每台设备一行；展开行查看步骤</small></div>
+            <div class="card-tools"><span class="tag" data-kind="table">表格 · 2 行</span><button class="icon-btn" data-act="copy-table">复制 CSV</button><button class="icon-btn" data-act="export-table">导出</button></div>
+          </div>
+          <div class="toolbar">
+            <label class="search"><span aria-hidden="true">⌕</span><input id="tableSearch" type="search" placeholder="筛选设备或安装包…" aria-label="筛选设备" /></label>
+            <span class="rowcount" id="rowCount">1–2 / 2 行</span>
+            <span class="spacer"></span>
+            <div class="pop" id="colPop">
+              <button class="icon-btn" data-act="cols" aria-haspopup="true" aria-expanded="false">列 ▾</button>
+              <div class="pop-panel" role="group" aria-label="显示列">
+                <label><input type="checkbox" data-col="status" checked /> 状态</label>
+                <label><input type="checkbox" data-col="cc" checked /> CC 包数量</label>
+                <label><input type="checkbox" data-col="packages" checked /> CC 包</label>
+                <label><input type="checkbox" data-col="next" checked /> 下次启动包</label>
+              </div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table id="deviceTable">
+              <thead>
+                <tr>
+                  <th style="width:32px"></th>
+                  <th data-col="device"><button data-sort="id">设备 <span class="sort">↕</span></button></th>
+                  <th data-col="status" style="width:92px"><button data-sort="status">状态 <span class="sort">↕</span></button></th>
+                  <th data-col="cc" style="width:104px"><button data-sort="cc">CC 包数 <span class="sort">↕</span></button></th>
+                  <th data-col="packages"><button data-sort="packages">CC 包 <span class="sort">↕</span></button></th>
+                  <th data-col="next"><button data-sort="next">下次启动包 <span class="sort">↕</span></button></th>
+                </tr>
+              </thead>
+              <tbody id="deviceBody"></tbody>
+            </table>
+            <div class="empty" id="tableEmpty" hidden><strong>没有匹配的行</strong><span>调整筛选内容后重试。</span></div>
+          </div>
+          <div class="table-foot"><span>2 行 · 全部为仿真/真实设备混合</span><span class="spacer"></span><span>双击行可查看原始记录</span></div>
+        </article>
+
+        <article class="card anim" style="--i:2">
+          <div class="card-head">
+            <div class="card-title"><strong>原始输出</strong><small>执行记录、evidence、步骤明细都收在这里，按需展开</small></div>
+            <div class="card-tools"><span class="tag" data-kind="json">JSON</span><button class="icon-btn" data-act="copy-raw">复制</button></div>
+          </div>
+          <div class="json-tools">
+            <label class="search"><span aria-hidden="true">⌕</span><input id="jsonSearch" type="search" placeholder="在 JSON 中搜索…" aria-label="搜索原始输出" /></label>
+          </div>
+          <div class="tree" id="jsonTree">${tree(LOOP.raw, "outputs", 0)}</div>
+        </article>
+      </section>`;
+  }
+
+  function outcomeStrip({ title, detail, devices, done, failed, outputs = 3 }) {
+    return `<section class="outcome" data-tone="${failed ? "bad" : "ok"}">
+      <div class="outcome-mark">${failed ? "!" : "✓"}</div>
+      <div class="outcome-copy"><span>EXECUTION</span><strong>${title}</strong><p>${detail}</p></div>
+      <div class="outcome-metrics">
+        <div><b>${devices}</b><small>设备</small></div>
+        <div class="ok"><b>${done}</b><small>步骤完成</small></div>
+        <div class="bad"><b>${failed}</b><small>失败</small></div>
+        ${outputs == null ? "" : `<div><b>${outputs}</b><small>输出</small></div>`}
+      </div>
+    </section>`;
+  }
+
+  function renderRows(rows, query, sort) {
+    const filtered = rows.filter((row) => {
+      if (!query) return true;
+      const haystack = [row.id, row.next, ...row.packages, row.ok ? "成功 succeeded" : "失败 failed"].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+    const sorted = [...filtered].sort((a, b) => {
+      if (!sort) return 0;
+      const pick = (row) => sort.key === "id" ? row.id : sort.key === "status" ? Number(row.ok) : sort.key === "cc" ? row.cc : sort.key === "packages" ? row.packages.join(",") : row.next;
+      const left = pick(a), right = pick(b);
+      return (left > right ? 1 : left < right ? -1 : 0) * sort.dir;
+    });
+
+    const body = el("deviceBody");
+    if (!body) return;
+    body.innerHTML = sorted.map((row, index) => `
+      <tr class="row" data-row="${index}" aria-expanded="false">
+        <td><span class="chev">▶</span></td>
+        <td><span class="cell-device">${esc(row.id)}</span></td>
+        <td data-col="status"><span class="status ${row.ok ? "" : "bad"}"><span class="dot"></span>${row.ok ? "成功" : "失败"}</span></td>
+        <td data-col="cc"><span class="num">${row.cc}</span></td>
+        <td data-col="packages"><span class="pkg-list">${row.packages.map((pkg) => `<span class="pkg">${esc(pkg)}</span>`).join("")}</span></td>
+        <td data-col="next"><span class="mono" style="color:#bae6fd">${esc(row.next)}</span></td>
+      </tr>
+      <tr class="detail" hidden>
+        <td class="detail-cell" colspan="6">
+          <div class="steps">
+            ${row.steps.map((step) => `<div class="step"><small>${esc(step.label)}</small><span><b>${esc(step.name)}</b> <code>${esc(step.detail)}</code></span><span class="t">${esc(step.t)}</span></div>`).join("")}
+          </div>
+        </td>
+      </tr>`).join("");
+
+    const empty = el("tableEmpty");
+    if (empty) empty.hidden = sorted.length > 0;
+    const count = el("rowCount");
+    if (count) count.textContent = sorted.length ? `1–${sorted.length} / ${sorted.length} 行` : "0 行";
+    const outCount = el("outCount");
+    if (outCount) outCount.textContent = "3 个结果";
+
+    body.querySelectorAll("tr.row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const detail = row.nextElementSibling;
+        const open = row.getAttribute("aria-expanded") === "true";
+        row.setAttribute("aria-expanded", String(!open));
+        detail.hidden = open;
+      });
+    });
+  }
+
+  /* ---------- AFTER · scalar cards ---------- */
+  function afterSingle(source, options) {
+    const isStudio = Boolean(options?.studio);
+    const outputs = source.outputs;
+    const scalars = outputs.filter((output) => output.kind === "text");
+    const lists = outputs.filter((output) => output.kind === "list");
+    const payloads = outputs.filter((output) => output.kind === "json");
+    let order = 0;
+    const header = isStudio
+      ? `<div class="b-input" style="margin-bottom:12px"><span>本次输入</span><b>device_id = ${esc(source.inputs.device_id)}</b></div>`
+      : outcomeStrip({ title: "已完成", detail: "1 台设备 · 3/3 步骤 · 0 失败", devices: 1, done: 3, failed: 0, outputs: outputs.length });
+    return `
+      ${header}
+      <section class="results">
+        <header class="results-head">
+          <span class="kicker">RESULTS</span><strong>流程输出</strong>
+          <span class="count">${outputs.length} 个结果 · 全部已解析</span>
+          <span class="head-actions"><button class="ghost" data-act="copydoc">复制全部</button></span>
+        </header>
+        <div class="hero-grid">
+          ${scalars.map((output) => `
+            <article class="hero anim" style="--i:${order++}">
+              <span>${esc(output.label)}</span>
+              <b class="${String(output.value).startsWith("flash:") ? "path" : ""}">${esc(output.value)}</b>
+              <small>${esc(output.desc)}</small>
+            </article>`).join("")}
+        </div>
+        ${lists.map((output) => `
+          <article class="card anim" style="--i:${order++}">
+            <div class="card-head">
+              <div class="card-title"><strong>${esc(output.label)}</strong><small>${esc(output.desc)}</small></div>
+              <div class="card-tools"><span class="tag" data-kind="table">表格 · ${output.value.length} 项</span><button class="icon-btn" data-act="copy-list">复制</button></div>
+            </div>
+            <div class="pkg-list" style="padding:0 13px 14px">${output.value.map((item) => `<span class="pkg">${esc(item)}</span>`).join("")}</div>
+          </article>`).join("")}
+        ${payloads.map((output) => `
+          <article class="card anim" style="--i:${order++}">
+            <div class="card-head">
+              <div class="card-title"><strong>${esc(output.label)}</strong><small>${esc(output.desc)}</small></div>
+              <div class="card-tools"><span class="tag" data-kind="json">JSON</span><button class="icon-btn" data-act="copy-raw">复制</button></div>
+            </div>
+            <div class="json-tools">
+              <label class="search"><span aria-hidden="true">⌕</span><input id="jsonSearch" type="search" placeholder="在 JSON 中搜索…" aria-label="搜索完整结果" /></label>
+            </div>
+            <div class="tree" id="jsonTree">${tree(source.raw.query_package.result, "result", 0)}</div>
+          </article>`).join("")}
+      </section>`;
+  }
+
+  /* ---------- BEFORE ---------- */
+  function beforeLoop() {
+    return `
+      ${outcomeStrip({ title: "已完成", detail: "已完成 5/5 个步骤，结果已写入任务记录。", devices: 2, done: 5, failed: 0, outputs: null })}
+      <section class="results">
+        <header class="b-results-head">
+          <span class="kicker">RESULTS</span><strong>流程输出</strong><small>2 个结果</small>
+        </header>
+        <p class="before-note">每个循环设备的结果被压进 <b>each</b>，汇总被压进 <b>summary</b>；状态列和业务汇总都没有出现在结果区。</p>
+        <div class="b-gap">
+          <article class="b-card">
+            <div class="b-head"><strong>each</strong><span class="b-tools"><span class="b-chip">表格</span><span class="b-btn">复制 JSON</span></span></div>
+            <div class="b-toolbar"><span class="b-search">⌕ 筛选表格…</span><span>1–2 / 2 行</span><span style="margin-left:auto">换行</span><span>复制 CSV</span><span>导出 CSV</span></div>
+            <table class="b-table">
+              <thead><tr><th>device_id</th><th>cc_count</th><th>cc_packages</th><th>next_startup</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">ENSP-AR-001</td><td class="mono">2</td><td class="clip"><span class="b-clip">["IKEV1_V600R025C10SPC100.cc","ensp-ar.cc"]</span><span class="b-view">查看</span></td><td class="clip"><span class="b-clip">flash:/ensp-ar.cc</span></td></tr>
+                <tr><td class="mono">SIM-TERMINAL</td><td class="mono">2</td><td class="clip"><span class="b-clip">["current.cc","old.cc"]</span><span class="b-view">查看</span></td><td class="clip"><span class="b-clip">flash:/current.cc</span></td></tr>
+              </tbody>
+            </table>
+            <div class="b-foot"><span>每页 20 行</span><span class="spacer"></span><span>第 1 / 1 页</span></div>
+          </article>
+          <article class="b-card">
+            <div class="b-head"><strong>summary</strong><span class="b-tools"><span class="b-chip">JSON</span><span class="b-btn">复制 JSON</span></span></div>
+            <div class="b-preview" style="margin:0 9px 9px">
+              <div><dt>evidence</dt><dd>[{"kind":"expression","result":{"device_count":2,…</dd></div>
+              <div><dt>run</dt><dd>{"evidence":[{"kind":"expression","result":{…</dd></div>
+              <div><dt>status</dt><dd>"evaluated"</dd></div>
+              <div><dt>value</dt><dd>{"device_count":2,"devices":["ENSP-AR-001",…</dd></div>
+            </div>
+            <div class="b-foot" style="border-top:1px solid var(--line)"><span>4 个字段</span><span class="spacer"></span><span style="color:#7dd3fc">查看完整 JSON</span></div>
+          </article>
+        </div>
+      </section>`;
+  }
+
+  function beforeSingle(source) {
+    const cards = source.beforeNames.map((name) => {
+      const preview = name === "query_package"
+        ? `<div><dt>evidence</dt><dd>[{"kind":"cli_readiness","probe_command":"display ve…</dd></div><div><dt>exitCode</dt><dd>0</dd></div><div><dt>output</dt><dd>"display current-configuration…"</dd></div><div><dt>result</dt><dd>{"commands_ok":true,"device":"","model":"YunShan",…</dd></div>`
+        : `<div><dt>device_id</dt><dd>"ENSP-AR-001"</dd></div><div><dt>duration</dt><dd>0.0</dd></div><div><dt>error</dt><dd>null</dd></div><div><dt>evidence</dt><dd>[{"cli_status":"ready","kind":"cli_readiness",…</dd></div>`;
+      return `<article class="b-card">
+        <div class="b-head"><strong>${name}</strong><span class="b-tools"><span class="b-chip">${name === "query_package" ? "JSON" : "对象"}</span><span class="b-btn">复制 JSON</span></span></div>
+        <div class="b-preview" style="margin:0 9px 9px">${preview}</div>
+        <div class="b-foot" style="border-top:1px solid var(--line)"><span>4 个字段</span><span class="spacer"></span><span style="color:#7dd3fc">查看完整 JSON</span></div>
+      </article>`;
+    }).join("");
+    return `
+      ${outcomeStrip({ title: "已完成", detail: "已完成 3/3 个步骤，结果已写入任务记录。", devices: 1, done: 3, failed: 0, outputs: null })}
+      <section class="results">
+        <header class="b-results-head"><span class="kicker">RESULTS</span><strong>流程输出</strong><small>3 个结果</small></header>
+        <p class="before-note">工作流里声明了 5 个输出（软件版本、运行系统包、下次启动包…），但任务快照没有带上输出定义，结果区回退成 3 个节点的执行记录。</p>
+        <div class="b-gap">${cards}</div>
+      </section>`;
+  }
+
+  function beforeStudio(source) {
+    return `
+      <div class="b-input"><span>本次输入</span><b>device_id = ${esc(source.inputs.device_id)}</b></div>
+      <section class="b-section">
+        <header class="b-results-head"><span class="kicker">RESULTS</span><strong>流程输出</strong><small>${source.outputs.length} 个结果</small></header>
+        <div class="b-gap">
+          ${source.outputs.map((output) => `
+            <article class="b-card">
+              <div class="b-head"><strong>${esc(output.name)}</strong><span class="b-tools"><span class="b-chip">${output.kind === "json" ? "JSON" : output.kind === "list" ? "表格" : "文本"}</span><span class="b-btn">复制 JSON</span></span></div>
+              <pre class="b-json b-literal">${esc(output.template)}</pre>
+            </article>`).join("")}
+        </div>
+      </section>`;
+  }
+
+  /* ---------- notes ---------- */
+  const NOTES = {
+    "loop:after": [
+      "<b>每台设备一行</b>：循环结果不再压进一格 JSON，状态、CC 包、启动包各自成列。",
+      "<b>汇总先行</b>：设备数 / 成功 / 失败 / 输出数在顶部一眼可读。",
+      "<b>行内展开步骤</b>：connect → inspect → shape 三段就在该设备下方，不用去翻原始 JSON。",
+      "<b>原始数据收进 JSON 树</b>：evidence、probe_output 留在原地，可搜索、按层展开。"
+    ],
+    "loop:before": [
+      "<b>看不到状态</b>：表格只剩 device_id / cc_count / cc_packages / next_startup，成功失败信息被挤掉。",
+      "<b>没有汇总</b>：2 台设备、成功 2、失败 0 需要自己数。",
+      "<b>summary 是一坨 JSON 预览</b>：evidence / run / value 嵌套三层，业务值埋在 value 里。",
+      "<b>步骤与执行记录无处安放</b>：只能整段展开原始 JSON。"
+    ],
+    "single:after": [
+      "<b>5 个声明输出全部落地</b>：软件版本、运行系统包、下次启动包、Flash 包列表、完整结果。",
+      "<b>按类型选呈现</b>：标量用大字号数据卡，列表用表格，完整结果折叠成可搜索 JSON 树。",
+      "<b>原始输出独立折叠</b>：需要排查时再展开，不占主视线。"
+    ],
+    "single:before": [
+      "<b>5 个声明输出全部丢失</b>：结果区只剩 3 个节点的执行记录卡。",
+      "<b>真正的答案被埋</b>：1.25.1.1 藏在 query_package.result 里，要展开原始 JSON 才看得到。",
+      "<b>噪声占主导</b>：evidence、probe_output、exitCode 抢走了注意力。"
+    ],
+    "studio:before": [
+      "<b>5 个输出全部是字面量</b>：${query_package.result.software_version} 原样渲染，运行时输出没有回填到输出定义。",
+      "<b>测试运行看不出结果</b>：跑完了仍不知道版本是多少。"
+    ],
+    "studio:after": [
+      "<b>同一套解析规则</b>：Studio 测试运行与任务中心一致，输出名 → 解析值。",
+      "<b>窄栏也成立</b>：卡片在 46vw 的右侧栏里自动堆叠，不挤压。",
+      "<b>输入 → 输出 → 过程</b>：阅读顺序固定，不需要在面板里找。"
+    ]
+  };
+
+  const HINTS = {
+    "loop:after": "改进后：结果区先给结论（设备数、成功失败），再给每台设备一行业务数据，原始执行记录折叠在最后。",
+    "loop:before": "现状：结果区展示的是节点 <b>each</b> 和 <b>summary</b> 的原始形状——状态列丢失、没有汇总，业务值埋在 JSON 里。",
+    "single:after": "改进后：工作流里声明的 5 个输出直接呈现为业务卡片，解析后的值来自本次运行。",
+    "single:before": "现状：任务快照没带上 outputs 定义，回退成把 3 个节点的执行记录当结果展示。",
+    "studio:after": "改进后：Studio 的测试运行复用同一套输出解析与渲染，右侧窄栏同样可读。",
+    "studio:before": "现状：声明式输出未解析，测试面板直接显示 ${...} 字面量。"
+  };
+
+  function render() {
+    const scenario = state.scenario;
+    const mode = state.mode;
+    const key = `${scenario}:${mode}`;
+
+    hint.innerHTML = HINTS[key] || "";
+    notes.innerHTML = (NOTES[key] || []).map((item) => `<li>${item}</li>`).join("");
+    frame.classList.toggle("is-narrow", scenario === "studio");
+    el("frameTitle").textContent = scenario === "studio" ? "Workflow Studio · 测试运行" : "任务中心 · 执行结果";
+
+    let html = "";
+    if (scenario === "loop") {
+      el("frameMeta").textContent = `Task ${LOOP.task} · ${LOOP.version}`;
+      html = mode === "after" ? afterLoop() : beforeLoop();
+    } else if (scenario === "single") {
+      el("frameMeta").textContent = `Task ${SINGLE.task} · ${SINGLE.version}`;
+      html = mode === "after" ? afterSingle(SINGLE) : beforeSingle(SINGLE);
+    } else {
+      el("frameMeta").textContent = `${STUDIO.version}`;
+      html = mode === "after" ? afterSingle(STUDIO, { studio: true }) : beforeStudio(STUDIO);
+    }
+    stage.innerHTML = html;
+
+    if (mode === "after" && scenario === "loop") wireTable();
+    if (mode === "after") wireCommon(scenario);
+  }
+
+  function tableCsv() {
+    const cell = (value) => `"${String(value).replaceAll('"', '""')}"`;
+    const header = ["device_id", "status", "cc_count", "cc_packages", "next_startup"].map(cell).join(",");
+    const rows = LOOP.devices.map((row) => [row.id, "succeeded", row.cc, row.packages.join(" | "), row.next].map(cell).join(","));
+    return [header, ...rows].join("\r\n");
+  }
+
+  function wireCommon(scenario) {
+    const source = scenario === "loop" ? LOOP : scenario === "studio" ? STUDIO : SINGLE;
+    stage.querySelectorAll("[data-act]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const act = button.dataset.act;
+        if (act === "copy-summary") copy(JSON.stringify(LOOP.raw.summary, null, 2), "已复制巡检汇总 JSON");
+        else if (act === "copy-raw") copy(JSON.stringify(source.raw, null, 2), "已复制原始输出");
+        else if (act === "copydoc") copy(JSON.stringify(source.raw, null, 2), "已复制全部输出");
+        else if (act === "copy-table") copy(tableCsv(), "已复制 2 行表格数据");
+        else if (act === "copy-list") copy((source.outputs?.find((item) => item.kind === "list")?.value || []).join("\n"), "已复制文件列表");
+        else if (act === "export-table") download("device-results.csv", `\uFEFF${tableCsv()}`);
+        else if (act === "cols") {
+          const pop = el("colPop");
+          pop.classList.toggle("open");
+          button.setAttribute("aria-expanded", String(pop.classList.contains("open")));
+        }
+      });
+    });
+
+    const search = el("jsonSearch");
+    if (search) {
+      search.addEventListener("input", () => {
+        const box = el("jsonTree");
+        box.innerHTML = tree(source.raw, "outputs", 0);
+        filterTree(box, search.value.trim().toLowerCase());
+      });
+    }
+  }
+
+  function wireTable() {
+    let query = "";
+    let sort = { key: "id", dir: 1 };
+    renderRows(LOOP.devices, query, sort);
+
+    const search = el("tableSearch");
+    search?.addEventListener("input", () => {
+      query = search.value.trim().toLowerCase();
+      renderRows(LOOP.devices, query, sort);
+    });
+
+    stage.querySelectorAll("[data-sort]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const key = button.dataset.sort;
+        sort = sort.key === key ? { key, dir: -sort.dir } : { key, dir: 1 };
+        stage.querySelectorAll("thead th").forEach((th) => th.removeAttribute("data-sorted"));
+        button.closest("th").setAttribute("data-sorted", "");
+        stage.querySelectorAll("[data-sort]").forEach((item) => {
+          item.querySelector(".sort").textContent = item.dataset.sort === key ? (sort.dir === 1 ? "↑" : "↓") : "↕";
+        });
+        renderRows(LOOP.devices, query, sort);
+      });
+    });
+
+    stage.querySelectorAll("[data-col] input").forEach((input) => {
+      input.addEventListener("change", () => {
+        const col = input.dataset.col;
+        const visible = input.checked;
+        stage.querySelectorAll(`th[data-col="${col}"], td[data-col="${col}"]`).forEach((cell) => {
+          cell.style.display = visible ? "" : "none";
+        });
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-scenario]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.scenario = button.dataset.scenario;
+      document.querySelectorAll("[data-scenario]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+      render();
+    });
+  });
+  document.querySelectorAll("[data-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.mode = button.dataset.mode;
+      document.querySelectorAll("[data-mode]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+      render();
+    });
+  });
+  document.addEventListener("click", (event) => {
+    const pop = el("colPop");
+    if (pop && pop.classList.contains("open") && !pop.contains(event.target)) {
+      pop.classList.remove("open");
+      pop.querySelector("[data-act='cols']")?.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

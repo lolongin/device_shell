@@ -97,6 +97,7 @@ const {
 const eventValue = scriptEventValue
 const eventChecked = scriptEventChecked
 const issues = ref<Issue[]>([])
+const validationIssuesVisible = ref(true)
 const error = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -153,6 +154,26 @@ const customActionDescription = ref('')
 const customActionSaving = ref(false)
 const customActionWorkflowVersion = ref<PublishedVersionItem | null>(null)
 let flowTestRequestId = 0
+
+const issueSignature = computed(() => issues.value.map((issue) => `${issue.code}|${issue.node_id || ''}|${issue.message}`).join('\u0000'))
+
+watch(issueSignature, (signature, previousSignature) => {
+  if (signature && signature !== previousSignature) validationIssuesVisible.value = true
+})
+
+function closeValidationIssues(): void {
+  validationIssuesVisible.value = false
+}
+
+function showValidationIssues(): void {
+  validationIssuesVisible.value = true
+}
+
+async function revalidateWorkflow(): Promise<void> {
+  showValidationIssues()
+  await validate()
+}
+
 const workflowInputs = useWorkflowInputs({
   selected,
   selectedNode,
@@ -1019,7 +1040,6 @@ const requiredConfigByAction: Record<string, string[]> = {
   'device.command': ['command'],
   'script.run': ['script'],
   'device.select': ['device_id'],
-  'expression.evaluate': ['expression'],
   'file.upload': ['source'],
   'file.download': ['source', 'destination'],
   'loop.for_each': ['items', 'action_id'],
@@ -1355,7 +1375,7 @@ watch(
           :subworkflow-versions="subworkflowVersions"
           :selected-subworkflow="selectedSubworkflow"
           :loop-child-actions="loopChildActions"
-          :advanced-node="Boolean(selectedNode && ['variable.set', 'expression.evaluate', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(selectedNode.action_id))"
+          :advanced-node="Boolean(selectedNode && ['variable.set', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(selectedNode.action_id))"
           :loop-items-mode="loopItemsMode"
           :loop-items-source-id="loopItemsSourceId"
           :loop-items-field="loopItemsField"
@@ -1466,8 +1486,11 @@ watch(
       :on-confirm="confirmRunFromPreview"
       @update:confirmed-risks="confirmedRisks = $event"
     />
-    <div v-if="issues.length" class="workflow-issues" role="alert"><strong><AlertTriangle :size="14" />需要处理的问题</strong><button v-for="issue in issues" :key="`${issue.code}-${issue.node_id || 'workflow'}-${issue.message}`" type="button" class="workflow-issue" @click="focusIssue(issue)"><span>{{ issueText(issue) }}</span><small>点击定位</small></button></div>
-    <footer v-if="selected" class="workflow-validation-bar" :class="{ invalid: issues.length, valid: !issues.length }"><span v-if="issues.length"><AlertTriangle :size="15" />还有 {{ issues.length }} 个问题需要处理</span><span v-else><CheckCircle2 :size="15" />流程结构看起来没问题</span><button v-if="issues.length" type="button" @click="validate">重新检查</button></footer>
+    <div v-if="issues.length && validationIssuesVisible" class="workflow-issues" role="alert">
+      <div class="workflow-issues-header"><strong><AlertTriangle :size="14" />需要处理的问题</strong><button type="button" class="workflow-issues-close" title="关闭问题提示" aria-label="关闭问题提示" @click="closeValidationIssues"><X :size="14" /></button></div>
+      <button v-for="issue in issues" :key="`${issue.code}-${issue.node_id || 'workflow'}-${issue.message}`" type="button" class="workflow-issue" @click="focusIssue(issue)"><span>{{ issueText(issue) }}</span><small>点击定位</small></button>
+    </div>
+    <footer v-if="selected" class="workflow-validation-bar" :class="{ invalid: issues.length, valid: !issues.length }"><span v-if="issues.length"><AlertTriangle :size="15" />还有 {{ issues.length }} 个问题需要处理</span><span v-else><CheckCircle2 :size="15" />流程结构看起来没问题</span><button v-if="issues.length && !validationIssuesVisible" type="button" @click="showValidationIssues">查看问题</button><button v-if="issues.length" type="button" @click="revalidateWorkflow">重新检查</button></footer>
   </section>
 </template>
 
@@ -1591,10 +1614,14 @@ watch(
 .condition-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
 .condition-row select, .condition-row input { min-width: 0; padding: 6px; border: 1px solid var(--workflow-border); border-radius: 4px; background: rgba(15,23,42,.7); color: inherit; }
 .workflow-issues { display: grid; gap: 6px; margin: 0; padding: 10px 20px; border-bottom: 1px solid rgba(248, 113, 113, .25); background: rgba(127, 29, 29, .16); color: #fecaca; font-size: 12px; }
-.workflow-issues > strong { display: flex; align-items: center; gap: 6px; }
+.workflow-issues-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workflow-issues-header strong { display: flex; align-items: center; gap: 6px; }
+.workflow-issues-close { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #fca5a5; cursor: pointer; }
+.workflow-issues-close:hover { border-color: rgba(252, 165, 165, .45); background: rgba(127, 29, 29, .35); color: #fee2e2; }
 .workflow-issue { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 7px 9px; border: 1px solid rgba(248, 113, 113, .25); border-radius: 5px; background: rgba(127, 29, 29, .2); color: #fee2e2; text-align: left; cursor: pointer; }
 .workflow-issue:hover { border-color: rgba(252, 165, 165, .65); background: rgba(127, 29, 29, .35); }
 .workflow-issue small { flex: 0 0 auto; color: #fca5a5; }
+.workflow-validation-bar button + button { margin-left: 0; }
 .workflow-branch-notice { display: flex; align-items: center; gap: 6px; margin: 0; padding: 7px 20px; color: #fcd34d; background: rgba(180, 83, 9, .14); font-size: 12px; }
 .workflow-search { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; padding: 5px 7px; border: 1px solid var(--workflow-border); border-radius: 5px; color: rgba(226, 232, 240, .55); }
 .workflow-search input { min-width: 0; margin: 0; padding: 2px; border: 0; background: transparent; color: inherit; outline: 0; }

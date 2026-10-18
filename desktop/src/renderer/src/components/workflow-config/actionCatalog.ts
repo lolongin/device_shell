@@ -113,7 +113,7 @@ export function requiredInputLabels(schema: Record<string, unknown>): string[] {
 }
 
 function presentationCategory(entry: WorkflowActionCatalogEntry): WorkflowActionPresentationCategory {
-  if (entry.id === 'variable.set' || entry.id === 'expression.evaluate' || entry.category === 'result') return 'data'
+  if (entry.id === 'variable.set' || entry.category === 'result') return 'data'
   if (entry.id.startsWith('loop.') || entry.category === 'control') return 'flow-control'
   if (entry.id.startsWith('file.') || entry.category === 'transfer') return 'transfer'
   if (entry.id === 'workflow.call' || entry.category === 'workflow') return 'workflow'

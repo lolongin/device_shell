@@ -648,6 +648,7 @@ def test_workflow_action_catalog_exposes_referenceable_outputs() -> None:
 
     assert response.status_code == 200
     actions = {item["id"]: item for item in response.json()["actions"]}
+    assert "expression.evaluate" not in actions
     expected_fields = {
         "device.command": {
             "output",
@@ -666,7 +667,6 @@ def test_workflow_action_catalog_exposes_referenceable_outputs() -> None:
         "device.telnet": {"session_id", "device_id", "status", "cli_status"},
         "terminal.wait": {"output", "status", "matched", "sequence", "session_id"},
         "variable.set": {"name", "value", "matched", "source"},
-        "expression.evaluate": {"value", "status"},
         "loop.for_each": {"items", "results", "count"},
         "loop.until": {"status", "matched", "iterations", "result", "results"},
         "result.save": {"key", "value", "status"},

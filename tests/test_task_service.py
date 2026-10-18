@@ -74,6 +74,7 @@ def test_task_service_projects_generic_task_workflow_for_the_desktop() -> None:
         id="ui-plan",
         name="检查设备",
         steps=(WorkflowStep("command", action=Action("command")),),
+        metadata={"workflow_outputs": [{"name": "software_version", "value": "${command.result}"}]},
     )
     record = service.create(TaskCreate(
         workflow=workflow,
@@ -89,6 +90,7 @@ def test_task_service_projects_generic_task_workflow_for_the_desktop() -> None:
         "action_id": "command",
         "operation": "command",
     }]
+    assert record.workflow_view["outputs"] == [{"name": "software_version", "value": "${command.result}"}]
 
 
 def test_task_service_projects_generic_steps_in_plan_execution_order() -> None:

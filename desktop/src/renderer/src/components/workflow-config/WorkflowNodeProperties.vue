@@ -151,7 +151,7 @@ function inputSourceValue(name: string): string {
       </details>
     </details>
 
-    <template v-if="['variable.set', 'expression.evaluate', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(node.action_id)">
+    <template v-if="['variable.set', 'loop.for_each', 'device.for_each', 'loop.until', 'utility.condition', 'utility.confirm', 'result.save', 'workflow.call'].includes(node.action_id)">
       <slot />
     </template>
     <ScriptNodeConfig

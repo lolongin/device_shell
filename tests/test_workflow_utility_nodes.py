@@ -74,6 +74,46 @@ def test_device_for_each_downstream_body_rebinds_target_and_session_per_device()
     ]
 
 
+def test_device_for_each_projects_last_structured_result_without_expression_node() -> None:
+    async def child(action_id, inputs, context, report):
+        del context, report
+        if action_id == "variable.set":
+            return {"status": "succeeded", "name": inputs["name"], "value": inputs["value"]}
+        return {
+            "status": "succeeded",
+            "result": {
+                "cc_packages": ["package-a", "package-b"],
+                "cc_count": 2,
+                "next_startup": "normal",
+            },
+        }
+
+    invocation = ActivityInvocation(
+        "device.for_each", "inv-1", "run-1",
+        inputs={
+            "devices": ["router-1"],
+            "action_steps": [
+                {"id": "extract", "action_id": "variable.set", "action_inputs": {"name": "software_version", "value": "8.200"}},
+                {"id": "inspect", "action_id": "script.run", "action_inputs": {}},
+            ],
+        },
+    )
+
+    result = asyncio.run(DeviceForEachActivityHandler(child).execute(
+        invocation,
+        ActivityContext(WorkflowRun("run-1", "wf", "1", "router-1"), invocation),
+        lambda _event: None,
+    ))
+
+    row = result.outputs["results"][0]
+    assert row["device_id"] == "router-1"
+    assert row["cc_packages"] == ["package-a", "package-b"]
+    assert row["cc_count"] == 2
+    assert row["next_startup"] == "normal"
+    assert row["software_version"] == "8.200"
+    assert row["result"]["cc_count"] == 2
+
+
 def test_expression_evaluator_supports_bounded_boolean_expression() -> None:
     assert evaluate_expression("inputs.version < 10 and inputs.ready", {"inputs": {"version": 8, "ready": True}}) is True
 

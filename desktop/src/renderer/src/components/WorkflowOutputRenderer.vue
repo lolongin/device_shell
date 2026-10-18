@@ -56,9 +56,23 @@ function displayValue(value: unknown): string {
 function cellText(value: unknown): string {
   if (value === null || value === undefined) return ''
   if (typeof value === 'object') {
-    try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+    try { return JSON.stringify(value) } catch { return String(value) }
   }
   return String(value)
+}
+
+function jsonOverview(value: unknown): string {
+  if (Array.isArray(value)) return `${value.length} 项`
+  if (value && typeof value === 'object') return `${Object.keys(value).length} 个字段`
+  return '文本'
+}
+
+function jsonPreview(value: unknown): Array<{ key: string; value: string }> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.entries(value as Record<string, unknown>).slice(0, 4).map(([key, item]) => ({
+    key,
+    value: cellText(item) || '—'
+  }))
 }
 
 function configuredColumns(value: unknown): TableColumn[] {
@@ -70,6 +84,23 @@ function configuredColumns(value: unknown): TableColumn[] {
     const key = String(column.key ?? column.field ?? column.dataIndex ?? column.accessorKey ?? column.name ?? column.id ?? column.label ?? '')
     return key ? { key, label: String(column.label ?? column.title ?? key) } : null
   }).filter((item): item is TableColumn => item !== null)
+}
+
+function tableRow(row: unknown): Record<string, unknown> {
+  if (Array.isArray(row)) return Object.fromEntries(row.map((value, index) => [String(index), value]))
+  if (!row || typeof row !== 'object') return { value: row }
+  const record = row as Record<string, unknown>
+  const result = record.value
+  // Loop/action results wrap the useful row under `value` alongside execution
+  // metadata. Promote only the business fields for the table view; the full
+  // execution record remains available through JSON copy and raw inspection.
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return record
+  const businessFields = result as Record<string, unknown>
+  const flattened: Record<string, unknown> = { ...businessFields }
+  if (!Object.prototype.hasOwnProperty.call(flattened, 'device_id') && record.device_id !== undefined) {
+    flattened.device_id = record.device_id
+  }
+  return flattened
 }
 
 function normalizeTable(value: unknown, preferredColumns: unknown): TableModel {
@@ -108,12 +139,14 @@ function normalizeTable(value: unknown, preferredColumns: unknown): TableModel {
   }
   if (!columns.length && rawRows.some((row) => row === null || typeof row !== 'object')) columns.push({ key: 'value', label: '结果' })
 
-  const rows = rawRows.map((row) => {
-    if (Array.isArray(row)) return Object.fromEntries(columns.map((column, index) => [column.key, row[index]]))
-    if (row && typeof row === 'object') return row as Record<string, unknown>
-    return { value: row }
-  })
-  return { columns, rows }
+  const normalizedRows = rawRows.map(tableRow)
+  const visibleKeys = new Set(normalizedRows.flatMap((row) => Object.keys(row)))
+  const visibleColumns = columns.filter((column) => visibleKeys.has(column.key))
+  for (const key of visibleKeys) {
+    if (!visibleColumns.some((column) => column.key === key)) visibleColumns.push({ key, label: key })
+  }
+  const rows = normalizedRows
+  return { columns: visibleColumns, rows }
 }
 
 function inferredRenderer(output: OutputDefinition, value: unknown): string {
@@ -256,7 +289,6 @@ function downloadName(output: RenderedOutput): string {
       <div><span class="workflow-output-kicker">RESULTS</span><strong>流程输出</strong></div>
       <small>{{ renderedOutputs.length }} 个结果</small>
     </div>
-    <p class="workflow-output-hint">当前呈现方式会标在每项结果旁；可在工作流设置的「流程输出」中选择文本、JSON、表格、下载、设备信息或隐藏。</p>
     <article v-for="output in renderedOutputs" :key="output.name" v-show="output.rendererId !== 'hidden'" class="workflow-output-rendered-item">
       <header class="workflow-output-item-heading">
         <div class="workflow-output-title"><strong>{{ output.name }}</strong><small v-if="output.description">{{ output.description }}</small></div>
@@ -292,7 +324,17 @@ function downloadName(output: RenderedOutput): string {
 
       <a v-else-if="output.rendererId === 'download' && downloadUrl(output.value)" class="workflow-output-download" :href="downloadUrl(output.value)" :download="downloadName(output)"><span aria-hidden="true">↓</span><span><strong>下载结果</strong><small>{{ downloadName(output) }}<template v-if="output.mimeType || output.mime_type"> · {{ output.mimeType || output.mime_type }}</template></small></span></a>
       <dl v-else-if="output.rendererId === 'device' && output.value && typeof output.value === 'object' && !Array.isArray(output.value)" class="workflow-output-device"><template v-for="(value, key) in output.value as Record<string, unknown>" :key="key"><dt>{{ key }}</dt><dd>{{ displayValue(value) }}</dd></template></dl>
-      <pre v-else class="workflow-output-value" :class="{ 'is-json': output.rendererId === 'json' }">{{ displayValue(output.value) }}</pre>
+      <template v-else-if="output.rendererId === 'json'">
+        <dl v-if="jsonPreview(output.value).length" class="workflow-output-json-preview">
+          <div v-for="item in jsonPreview(output.value)" :key="item.key"><dt>{{ item.key }}</dt><dd :title="item.value">{{ item.value }}</dd></div>
+          <small v-if="output.value && typeof output.value === 'object' && !Array.isArray(output.value) && Object.keys(output.value as Record<string, unknown>).length > 4">还有 {{ Object.keys(output.value as Record<string, unknown>).length - 4 }} 个字段，展开查看完整 JSON</small>
+        </dl>
+        <details class="workflow-output-json">
+        <summary><span>{{ jsonOverview(output.value) }}</span><span>查看完整 JSON</span></summary>
+        <pre class="workflow-output-value is-json">{{ displayValue(output.value) }}</pre>
+        </details>
+      </template>
+      <pre v-else class="workflow-output-value">{{ displayValue(output.value) }}</pre>
     </article>
     <p v-if="copyNotice" class="workflow-output-copy-notice" role="status" aria-live="polite">{{ copyNotice }}</p>
   </section>
@@ -305,7 +347,6 @@ function downloadName(output: RenderedOutput): string {
 .workflow-output-renderer-heading strong { color: var(--workflow-text, var(--text)); font-size: 12px; }
 .workflow-output-kicker { color: #38bdf8; font-size: 9px; font-weight: 750; letter-spacing: .11em; }
 .workflow-output-renderer-heading > small, .workflow-output-title > small { color: var(--workflow-muted, var(--muted)); font-size: 10px; }
-.workflow-output-hint { margin: -4px 0 0; color: var(--workflow-muted, var(--muted)); font-size: 10px; line-height: 1.45; }
 .workflow-output-rendered-item { display: grid; gap: 8px; min-width: 0; padding: 0; border: 0; background: transparent; }
 .workflow-output-title { display: grid; gap: 2px; min-width: 0; }
 .workflow-output-title > strong { overflow: hidden; color: var(--workflow-text, var(--text)); font-size: 11px; text-overflow: ellipsis; }
@@ -323,16 +364,16 @@ function downloadName(output: RenderedOutput): string {
 .workflow-table-search input { width: 100%; min-width: 0; height: 25px; border: 0; outline: none; color: var(--workflow-text, var(--text)); background: transparent; font-size: 10px; }
 .workflow-table-count { margin-right: 4px; font: 11px ui-monospace, Consolas, monospace; white-space: nowrap; }
 .workflow-table-scroll { max-height: 360px; overflow: auto; scrollbar-color: var(--line-strong) transparent; }
-.workflow-result-table { width: max-content; min-width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: var(--workflow-text, var(--text)); font-size: 11px; }
-.workflow-result-table th { position: sticky; top: 0; z-index: 1; width: 110px; min-width: 110px; padding: 0; border-bottom: 1px solid var(--workflow-border, var(--line)); color: var(--workflow-muted, var(--muted)); background: var(--workflow-surface, var(--surface)); text-align: left; white-space: nowrap; }
-.workflow-result-table th:first-child { width: 124px; min-width: 124px; }
+.workflow-result-table { width: max-content; min-width: 100%; table-layout: auto; border-collapse: separate; border-spacing: 0; color: var(--workflow-text, var(--text)); font-size: 11px; }
+.workflow-result-table th { position: sticky; top: 0; z-index: 1; min-width: 118px; max-width: 260px; padding: 0; border-bottom: 1px solid var(--workflow-border, var(--line)); color: var(--workflow-muted, var(--muted)); background: var(--workflow-surface, var(--surface)); text-align: left; white-space: nowrap; }
+.workflow-result-table th:first-child { min-width: 140px; }
 .workflow-result-table th + th, .workflow-result-table td + td { border-left: 1px solid color-mix(in srgb, var(--workflow-border, var(--line)) 62%, transparent); }
 .workflow-result-table th button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 0; color: inherit; background: transparent; cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
 .workflow-result-table th button:hover { color: #7dd3fc; background: color-mix(in srgb, #38bdf8 7%, transparent); }
 .workflow-sort-indicator { color: #38bdf8; font-size: 12px; }
 .workflow-sort-indicator.is-idle { opacity: .35; }
-.workflow-result-table td { width: 110px; min-width: 110px; max-width: 110px; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--workflow-border, var(--line)) 50%, transparent); vertical-align: top; }
-.workflow-result-table td:first-child { width: 124px; min-width: 124px; max-width: 124px; }
+.workflow-result-table td { min-width: 118px; max-width: 260px; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--workflow-border, var(--line)) 50%, transparent); vertical-align: top; }
+.workflow-result-table td:first-child { min-width: 140px; }
 .workflow-result-table tbody tr:nth-child(even) { background: color-mix(in srgb, var(--workflow-surface, var(--surface)) 68%, transparent); }
 .workflow-result-table tbody tr:hover { background: color-mix(in srgb, #38bdf8 8%, var(--workflow-surface, var(--surface))); }
 .workflow-cell-value { display: block; overflow: hidden; color: var(--workflow-text, var(--text)); text-overflow: ellipsis; white-space: nowrap; }
@@ -356,6 +397,17 @@ function downloadName(output: RenderedOutput): string {
 .workflow-table-pagination button:disabled { opacity: .38; cursor: default; }
 .workflow-output-value { max-height: 240px; overflow: auto; margin: 0; padding: 9px; border-radius: 5px; color: var(--workflow-text, var(--text)); background: var(--workflow-surface-input, var(--surface)); font: 11px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workflow-output-value.is-json { color: #c4b5fd; }
+.workflow-output-json-preview { display: grid; gap: 5px; margin: 0; padding: 8px 9px; border: 1px solid var(--workflow-border, var(--line)); border-radius: 6px; background: var(--workflow-surface-input, var(--surface)); }
+.workflow-output-json-preview > div { display: grid; grid-template-columns: minmax(92px, 34%) minmax(0, 1fr); gap: 8px; min-width: 0; align-items: baseline; }
+.workflow-output-json-preview dt { overflow: hidden; color: var(--workflow-muted, var(--muted)); font: 10px ui-monospace, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-output-json-preview dd { min-width: 0; margin: 0; overflow: hidden; color: var(--workflow-text, var(--text)); font: 11px ui-monospace, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-output-json-preview small { color: var(--workflow-muted, var(--muted)); font-size: 10px; }
+.workflow-output-json { overflow: hidden; border: 1px solid var(--workflow-border, var(--line)); border-radius: 6px; background: var(--workflow-surface-input, var(--surface)); }
+.workflow-output-json summary { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 9px; color: var(--workflow-muted, var(--muted)); cursor: pointer; font-size: 10px; list-style: none; }
+.workflow-output-json summary::-webkit-details-marker { display: none; }
+.workflow-output-json summary span:last-child { color: #7dd3fc; }
+.workflow-output-json[open] summary { border-bottom: 1px solid var(--workflow-border, var(--line)); }
+.workflow-output-json .workflow-output-value { max-height: 240px; border-radius: 0; }
 .workflow-output-download { display: flex; align-items: center; gap: 10px; width: max-content; max-width: 100%; padding: 9px 12px; border: 1px solid color-mix(in srgb, #38bdf8 45%, var(--workflow-border, var(--line))); border-radius: 6px; color: #7dd3fc; background: color-mix(in srgb, #38bdf8 8%, transparent); text-decoration: none; }
 .workflow-output-download > span:first-child { font-size: 18px; }
 .workflow-output-download > span:last-child { display: grid; gap: 2px; min-width: 0; }

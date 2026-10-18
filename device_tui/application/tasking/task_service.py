@@ -585,6 +585,7 @@ class TaskService:
             "id": str(getattr(workflow, "id", "") or (plan.id if plan is not None else "workflow")),
             "version": str(getattr(workflow, "version", "") or (plan.version if plan is not None else "1")),
             "name": str(getattr(workflow, "name", "") or ""),
+            "outputs": list(metadata.get("workflow_outputs") or ()),
             "states": states,
         }
 

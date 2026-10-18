@@ -43,18 +43,6 @@ workflow:
           group: 1
           convert: string
           trim: true
-    - id: save_version
-      action: result.save
-      with:
-        key: software_version
-        value: ${extract_version.value}
-    - id: shape_result
-      action: expression.evaluate
-      with:
-        expression: "{'设备': device_id, '软件版本': software_version}"
-        values:
-          device_id: ${device_id}
-          software_version: ${software_version}
   edges:
     - from: each
       to: connect_device
@@ -62,7 +50,3 @@ workflow:
       to: read_version
     - from: read_version
       to: extract_version
-    - from: extract_version
-      to: save_version
-    - from: save_version
-      to: shape_result

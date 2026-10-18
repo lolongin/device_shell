@@ -7,7 +7,7 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/dev.mjs",
     "build": "npm run typecheck && electron-vite build",
     "build:backend": "powershell -ExecutionPolicy Bypass -File scripts/build-python-backend.ps1",
     "dist": "npm run build && npm run build:backend && electron-builder --config electron-builder.yml --publish never",

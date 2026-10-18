@@ -287,7 +287,11 @@ const nodes = computed(() => {
     {
       id: '__workflow_result__', actionId: '__workflow_result__', label: '流程结果',
       summary: props.workflow.outputs?.length
-        ? (props.workflow.outputs as Array<{ name?: string; presentation?: string }>).map((output) => `${output.name || '未命名'} · ${output.presentation || '自动'}`).join('，')
+        ? (() => {
+            const names = (props.workflow.outputs as Array<{ name?: string }>).map((output) => output.name || '未命名')
+            const preview = names.slice(0, 2).join(' · ')
+            return `${names.length} 个结果${preview ? ` · ${preview}` : ''}${names.length > 2 ? ` · +${names.length - 2}` : ''}`
+          })()
         : '点击定义最终输出',
       contractKind: 'result',
       position: freeformPositions?.get('__workflow_result__') || { x: 80, y: Math.max(70, ...positionedNodes.map((node) => node.position.y + NODE_HEIGHT + 40)) }

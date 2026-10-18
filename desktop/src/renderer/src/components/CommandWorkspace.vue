@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Heading,
   Pencil,
   Plus,
   RadioTower,
@@ -32,6 +33,7 @@ const editor = ref<HTMLTextAreaElement | null>(null)
 const lineNumberGutter = ref<HTMLElement | null>(null)
 const findInput = ref<HTMLInputElement | null>(null)
 const content = ref('')
+const titleLineIndices = ref(new Set<number>())
 const renameValue = ref('')
 const renameInput = ref<HTMLInputElement | null>(null)
 const renameGroupId = ref('')
@@ -64,6 +66,7 @@ const editorContextMenu = ref<{ x: number; y: number; hasSelection: boolean; has
 const editorContextMenuElement = ref<HTMLElement | null>(null)
 const editorContextMenuReturnFocus = ref<HTMLElement | null>(null)
 const COMMAND_PANEL_HEIGHT_KEY = 'odyterm.desktop-v2.command-panel-height'
+const COMMAND_TITLE_LINES_KEY = 'odyterm.desktop-v2.command-title-lines'
 const COMMAND_PANEL_MIN_HEIGHT = 180
 const COMMAND_PANEL_DEFAULT_HEIGHT = 300
 const commandPanelMaxHeight = ref(680)
@@ -75,6 +78,7 @@ let resizeStartY = 0
 let resizeStartHeight = 0
 let panelResizing = false
 let editorGroupId = ''
+let skipTitleReconcileForContent: string | null = null
 let unsubscribeContextMenuOpen: (() => void) | null = null
 
 const currentGroup = computed(() => workspace.currentCommandGroup)
@@ -107,6 +111,13 @@ const totalLineCount = computed(() => Math.max(1, content.value.split(/\r?\n/).l
 const lineNumberText = computed(() =>
   Array.from({ length: totalLineCount.value }, (_, index) => String(index + 1)).join('\n')
 )
+const renderedCommandLines = computed(() => content.value.split(/\r?\n/).map((text, index) => {
+  if (titleLineIndices.value.has(index)) return { kind: 'heading', indent: '', token: '', rest: text }
+  const command = text.match(/^(\s*)(\S+)(.*)$/)
+  return command
+    ? { kind: 'command', indent: command[1], token: command[2], rest: command[3] }
+    : { kind: 'blank', indent: '', token: '', rest: text }
+}))
 const currentLineNumber = computed(() =>
   Math.max(1, content.value.slice(0, selectionStart.value).split(/\r?\n/).length)
 )
@@ -126,6 +137,55 @@ const saveStateLabel = computed(() => ({
 function storedCommandPanelHeight(): number {
   const value = Number(localStorage.getItem(COMMAND_PANEL_HEIGHT_KEY) || COMMAND_PANEL_DEFAULT_HEIGHT)
   return Number.isFinite(value) ? Math.max(COMMAND_PANEL_MIN_HEIGHT, Math.round(value)) : COMMAND_PANEL_DEFAULT_HEIGHT
+}
+
+function storedCommandTitleLines(): Record<string, number[]> {
+  try {
+    const value = JSON.parse(localStorage.getItem(COMMAND_TITLE_LINES_KEY) || '{}') as Record<string, unknown>
+    return Object.fromEntries(Object.entries(value).map(([groupId, lines]) => [
+      groupId,
+      Array.isArray(lines) ? lines.filter((line): line is number => Number.isInteger(line) && line >= 0) : []
+    ]))
+  } catch {
+    return {}
+  }
+}
+
+function persistCommandTitleLines(groupId: string, lines: Set<number>): void {
+  if (!groupId) return
+  const stored = storedCommandTitleLines()
+  if (lines.size) stored[groupId] = [...lines].sort((left, right) => left - right)
+  else delete stored[groupId]
+  localStorage.setItem(COMMAND_TITLE_LINES_KEY, JSON.stringify(stored))
+}
+
+function reconcileTitleLines(previousText: string, nextText: string): void {
+  const current = titleLineIndices.value
+  if (!editorGroupId || !current.size || previousText === nextText) return
+  if (!nextText) {
+    titleLineIndices.value = new Set()
+    persistCommandTitleLines(editorGroupId, titleLineIndices.value)
+    return
+  }
+  let prefix = 0
+  while (prefix < previousText.length && prefix < nextText.length && previousText[prefix] === nextText[prefix]) prefix += 1
+  let suffix = 0
+  while (suffix < previousText.length - prefix && suffix < nextText.length - prefix
+    && previousText[previousText.length - suffix - 1] === nextText[nextText.length - suffix - 1]) suffix += 1
+  const previousChangedEnd = previousText.length - suffix
+  const nextChangedEnd = nextText.length - suffix
+  const startLine = previousText.slice(0, prefix).split('\n').length - 1
+  const previousEndLine = previousText.slice(0, previousChangedEnd).split('\n').length - 1
+  const nextEndLine = nextText.slice(0, nextChangedEnd).split('\n').length - 1
+  const lineDelta = nextEndLine - previousEndLine
+  const next = new Set<number>()
+  for (const line of current) {
+    if (line < startLine) next.add(line)
+    else if (line > previousEndLine) next.add(line + lineDelta)
+    else if (line === startLine) next.add(startLine)
+  }
+  titleLineIndices.value = next
+  persistCommandTitleLines(editorGroupId, next)
 }
 
 function availableCommandPanelHeight(): number {
@@ -222,7 +282,7 @@ function restoreEditorViewState(groupId: string, focus = false): void {
   element.setSelectionRange(start, end, state.selectionDirection)
   if (focus) element.focus({ preventScroll: true })
   element.scrollTop = state.scrollTop
-  if (lineNumberGutter.value) lineNumberGutter.value.scrollTop = state.scrollTop
+  syncEditorScroll()
   updateSelectionState()
 }
 
@@ -232,7 +292,22 @@ watch(
     const groupChanged = editorGroupId !== (nextGroupId || '')
     if (groupChanged) rememberEditorViewState()
     editorGroupId = nextGroupId || ''
-    content.value = nextContent || ''
+    const storedLines = new Set(storedCommandTitleLines()[editorGroupId] || [])
+    const lines = (nextContent || '').split(/\r?\n/)
+    let migratedLegacyTitle = false
+    const normalizedLines = lines.map((line, index) => {
+      const legacyTitle = line.match(/^# (.*)$/)
+      if (!legacyTitle) return line
+      storedLines.add(index)
+      migratedLegacyTitle = true
+      return legacyTitle[1]
+    })
+    titleLineIndices.value = storedLines
+    persistCommandTitleLines(editorGroupId, storedLines)
+    const normalizedContent = normalizedLines.join('\n')
+    skipTitleReconcileForContent = normalizedContent
+    content.value = normalizedContent
+    if (migratedLegacyTitle) void nextTick(() => void saveContent())
     saveState.value = 'saved'
     if (groupChanged) {
       await nextTick()
@@ -251,7 +326,9 @@ watch(() => workspace.commandPanelOpen, async (open) => {
   restoreEditorViewState(editorGroupId)
 })
 
-watch(content, () => {
+watch(content, (nextContent, previousContent) => {
+  if (skipTitleReconcileForContent === nextContent) skipTitleReconcileForContent = null
+  else reconcileTitleLines(previousContent, nextContent)
   if (!currentGroup.value || content.value === currentGroup.value.content) {
     if (saveState.value !== 'saving') saveState.value = 'saved'
     return
@@ -446,6 +523,18 @@ function selectCurrentCommandLine(): void {
   closeEditorContextMenu()
 }
 
+function toggleCurrentLineTitle(): void {
+  const element = editor.value
+  if (!element) return
+  const line = currentLineNumber.value - 1
+  const next = new Set(titleLineIndices.value)
+  if (next.has(line)) next.delete(line)
+  else next.add(line)
+  titleLineIndices.value = next
+  persistCommandTitleLines(editorGroupId, next)
+  element.focus({ preventScroll: true })
+}
+
 async function copySelectedCommand(): Promise<void> {
   const command = selectedCommand()
   if (command) await window.desktopApi.writeClipboardText(command)
@@ -602,6 +691,11 @@ function handleEditorActivity(): void {
 function syncEditorScroll(): void {
   if (!editor.value || !lineNumberGutter.value) return
   lineNumberGutter.value.scrollTop = editor.value.scrollTop
+  const rendered = commandWorkspace.value?.querySelector<HTMLElement>('.command-code-render')
+  if (rendered) {
+    rendered.scrollTop = editor.value.scrollTop
+    rendered.scrollLeft = editor.value.scrollLeft
+  }
   rememberEditorViewState()
 }
 
@@ -857,8 +951,10 @@ onBeforeUnmount(() => {
         <div class="command-editor-meta">
           <div>
             <span class="command-editor-title"><BookOpenText :size="13" />命令编辑</span>
+            <strong v-if="currentGroup" class="command-editor-group-title" :title="currentGroup.name">{{ currentGroup.name }}</strong>
             <span>第 {{ currentLineNumber }} / {{ totalLineCount }} 行</span>
             <span>{{ dispatchScopeLabel }}</span>
+            <button class="command-title-toggle" type="button" :title="`将当前行${renderedCommandLines[currentLineNumber - 1]?.kind === 'heading' ? '取消标题' : '设为标题'}`" @click="toggleCurrentLineTitle"><Heading :size="12" />{{ renderedCommandLines[currentLineNumber - 1]?.kind === 'heading' ? '取消标题' : '设为标题' }}</button>
           </div>
           <div class="command-dispatch-actions command-editor-controls">
             <div class="command-dispatch-context" aria-live="polite">
@@ -893,6 +989,12 @@ onBeforeUnmount(() => {
             class="command-line-numbers"
             aria-hidden="true"
           >{{ lineNumberText }}</div>
+          <pre class="command-code-render" aria-hidden="true"><span
+            v-for="(line, index) in renderedCommandLines"
+            :key="index"
+            class="command-code-line"
+            :class="`is-${line.kind}`"
+          ><template v-if="line.kind === 'command'">{{ line.indent }}{{ line.token }}{{ line.rest }}</template><template v-else>{{ line.rest || ' ' }}</template></span></pre>
           <textarea
             ref="editor"
             v-model="content"

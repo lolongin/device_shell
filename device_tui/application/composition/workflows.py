@@ -29,6 +29,7 @@ from ..workflow_plugins.utility import (
     VariableSetActivityHandler,
     WaitActivityHandler,
     WorkflowOutputsActivityHandler,
+    project_structured_output,
 )
 from device_tui.framework import ActivityContext, ActivityInvocation
 from uuid import uuid4
@@ -111,6 +112,8 @@ def build_default_activity_executor(
                 "type": "object",
                 "properties": {
                     "output": {"type": "string"},
+                    "result": {"type": ["object", "array", "string", "number", "boolean", "null"], "additionalProperties": True},
+                    "result_parsed": {"type": "boolean"},
                     "returncode": {"type": ["integer", "null"]},
                 },
             },
@@ -213,7 +216,7 @@ def build_default_activity_executor(
         result = await executor.execute(invocation, ActivityContext(parent_context.workflow_run, invocation), report)
         if str(result.status) != "succeeded":
             raise RuntimeError((result.error or {}).get("message", "loop child failed"))
-        return {**result.outputs, "status": str(result.status)}
+        return {**project_structured_output(result.outputs), "status": str(result.status)}
 
     executor.register_handler(ForEachActivityHandler(run_child))
     executor.register_handler(DeviceForEachActivityHandler(run_child, resources))

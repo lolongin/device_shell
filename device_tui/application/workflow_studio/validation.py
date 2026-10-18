@@ -286,6 +286,20 @@ def validate_workflow(
     for node in workflow.nodes:
         spec = catalog.get(node.action_id)
         if spec is None:
+            # ``expression.evaluate`` is intentionally no longer advertised
+            # by the node catalog, but validate legacy drafts clearly so an
+            # existing workflow can still be repaired and published.
+            if node.action_id == "expression.evaluate":
+                settings = node_settings(node)
+                expression = str(settings.get("expression") or "").strip()
+                if not expression:
+                    errors.append(ValidationIssue("invalid_expression", "expression is required", node.id))
+                else:
+                    try:
+                        validate_expression(expression)
+                    except ValueError as exc:
+                        errors.append(ValidationIssue("invalid_expression", str(exc), node.id))
+                continue
             errors.append(_create_issue(
                 "unknown_action",
                 f"unknown action: {node.action_id}",

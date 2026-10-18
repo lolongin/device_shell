@@ -60,7 +60,6 @@ const ACTION_META: Record<string, NodeMeta> = {
   'utility.confirm': { label: '人工确认', category: 'flow-control', tone: 'amber', icon: AlertCircle },
   'result.save': { label: '保存结果', category: 'data', tone: 'blue', icon: CheckCircle2 },
   'variable.set': { label: '设置变量', category: 'data', tone: 'blue', icon: CheckCircle2 },
-  'expression.evaluate': { label: '计算表达式', category: 'data', tone: 'purple', icon: GitBranch },
   'workflow.call': { label: '调用子流程', category: 'workflow', tone: 'blue', icon: GitBranch },
   '__workflow_input__': { label: '流程输入', category: 'workflow', tone: 'teal', icon: LogIn },
   '__workflow_result__': { label: '流程结果', category: 'workflow', tone: 'teal', icon: LogOut },
@@ -166,7 +165,7 @@ const configSummary = computed(() => {
 
     <div class="node-body">
       <div v-if="props.selected" class="node-id">{{ data.label }}</div>
-      <div v-if="configSummary" class="node-config">{{ configSummary }}</div>
+      <div v-if="configSummary" class="node-config" :title="configSummary">{{ configSummary }}</div>
     </div>
 
     <!-- 输出连接点 -->

@@ -226,7 +226,6 @@ function fieldLabel(name: string): string {
       </div>
     </template>
 
-    <template v-if="node.action_id === 'expression.evaluate'"><ValueBindingField :model-value="node.config.expression" label="表达式" :schema="fieldSchema('expression')" :references="references" @update:model-value="setValue('expression', $event)" /><label>表达式变量</label><ObjectBindingFields :model-value="node.config.values" :references="references" @update:model-value="setValue('values', $event)" /></template>
 
     <template v-if="node.action_id === 'device.for_each'">
       <div class="device-for-each-heading">

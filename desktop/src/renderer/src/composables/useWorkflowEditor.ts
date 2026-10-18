@@ -145,7 +145,6 @@ function defaultConfig(actionId: string): Record<string, unknown> {
   if (actionId === 'utility.condition') return { expression: '', rules: [{ field: 'software_version', operator: '小于', value: '' }], logical_operator: 'AND', true_label: '满足条件', false_label: '不满足条件' }
   if (actionId === 'result.save') return { key: '检查结果' }
   if (actionId === 'variable.set') return { name: '', value: '' }
-  if (actionId === 'expression.evaluate') return { expression: '', values: {} }
   if (actionId === 'loop.for_each') return { items: [], action_id: 'result.save', action_inputs: {} }
   if (actionId === 'device.for_each') return { devices: [], body_mode: 'downstream', concurrency: 1, failure_strategy: 'continue' }
   if (actionId === 'loop.until') return { action_id: 'device.command', action_inputs: { command: 'display version' }, condition: "False", max_iterations: 10, interval_seconds: 2 }

@@ -49,6 +49,11 @@ class VariableSetActivityHandler:
 
 
 class ExpressionActivityHandler:
+    """Compatibility handler for workflows created before expression nodes were removed.
+
+    New workflows cannot create this action.  The restricted evaluator remains
+    available to condition and until nodes, which still need predicates.
+    """
     activity_id = "expression.evaluate"
 
     async def execute(self, invocation: ActivityInvocation, context: ActivityContext, report: Any) -> ActivityResult:
@@ -64,6 +69,34 @@ class ExpressionActivityHandler:
 
 
 ChildRunner = Callable[[str, dict[str, Any], ActivityContext, Any], Awaitable[dict[str, Any]]]
+
+
+def project_structured_output(output: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose structured action results without requiring a wrapping node.
+
+    Process based actions keep their parsed JSON under ``result`` so their
+    transport metadata remains available.  When that value is an object, its
+    fields are also promoted to the current data-flow object.  Reserved action
+    fields win on collision, making this projection backwards compatible.
+    """
+    projected = dict(output)
+    structured = projected.get("result")
+    if isinstance(structured, Mapping):
+        for key, value in structured.items():
+            projected.setdefault(str(key), value)
+    return projected
+
+
+def _project_named_values(steps: list[dict[str, Any]], step_results: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    named_values: dict[str, Any] = {}
+    for step in steps:
+        if step.get("action_id") != "variable.set":
+            continue
+        step_result = step_results.get(str(step.get("id")), {})
+        name = str(step_result.get("name") or "").strip()
+        if name:
+            named_values[name] = step_result.get("value")
+    return named_values
 
 
 class ForEachActivityHandler:
@@ -134,7 +167,7 @@ class ForEachActivityHandler:
             step_id = str(step["id"])
             outputs[step_id] = result
             step_results[step_id] = result
-        return {**result, "steps": step_results}
+        return {**project_structured_output(result), **_project_named_values(steps, step_results), "steps": step_results}
 
     async def cancel(self, invocation: ActivityInvocation, context: ActivityContext) -> None:
         del invocation, context
@@ -283,7 +316,7 @@ class DeviceForEachActivityHandler(ForEachActivityHandler):
                 outputs[str(result["name"])] = result.get("value")
             values = TaskOrchestrator._context_with_target_output(context.invocation.context, result)
             context = replace(context, invocation=replace(context.invocation, context=values))
-        return {**result, "steps": step_results}
+        return {**project_structured_output(result), **_project_named_values(steps, step_results), "steps": step_results}
 
 
 class WaitActivityHandler:
@@ -665,4 +698,4 @@ class WorkflowOutputsActivityHandler:
         del invocation, context
 
 
-__all__ = ["DeviceSelectActivityHandler", "ExpressionActivityHandler", "ForEachActivityHandler", "ResultSaveActivityHandler", "TerminalWaitActivityHandler", "UntilActivityHandler", "VariableSetActivityHandler", "WaitActivityHandler", "WorkflowOutputsActivityHandler"]
+__all__ = ["DeviceSelectActivityHandler", "ExpressionActivityHandler", "ForEachActivityHandler", "ResultSaveActivityHandler", "TerminalWaitActivityHandler", "UntilActivityHandler", "VariableSetActivityHandler", "WaitActivityHandler", "WorkflowOutputsActivityHandler", "project_structured_output"]
