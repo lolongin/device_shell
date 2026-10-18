@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Awaitable, Callable, Mapping, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +35,7 @@ class LocalProcessAdapter:
         timeout_seconds: float | None = 3_600,
         max_output_chars: int = 1_048_576,
         on_output: Callable[[str], None] | None = None,
+        on_rpc: Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]] | None = None,
     ) -> ProcessExecutionResult:
         command = tuple(str(item) for item in argv if str(item))
         if not command:
@@ -45,6 +46,7 @@ class LocalProcessAdapter:
             env=dict(env) if env is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if on_rpc is not None else asyncio.subprocess.DEVNULL,
         )
         self._processes[invocation_id] = process
         streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
@@ -54,6 +56,36 @@ class LocalProcessAdapter:
         async def collect_stream(name: str, stream: asyncio.StreamReader | None) -> None:
             if stream is None:
                 return
+            if name == "stdout" and on_rpc is not None:
+                while True:
+                    chunk = await stream.readline()
+                    if not chunk:
+                        return
+                    text = chunk.decode("utf-8", errors="replace")
+                    if text.startswith("\x1eDEVICE_TUI_RPC:"):
+                        try:
+                            import json
+
+                            request = json.loads(text[len("\x1eDEVICE_TUI_RPC:"):])
+                            if not isinstance(request, Mapping):
+                                raise ValueError("device RPC request must be an object")
+                            response = dict(await on_rpc(request))
+                        except Exception as exc:
+                            response = {"ok": False, "error": str(exc)}
+                        if process.stdin is not None:
+                            import json
+
+                            process.stdin.write((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
+                            await process.stdin.drain()
+                        continue
+                    streams[name].append(text)
+                    stream_lengths[name] += len(text)
+                    if stream_lengths[name] > output_limit:
+                        streams[name] = ["".join(streams[name])[-output_limit:]]
+                        stream_lengths[name] = len(streams[name][0])
+                    if on_output is not None:
+                        on_output(text)
+
             while True:
                 chunk = await stream.read(16_384)
                 if not chunk:

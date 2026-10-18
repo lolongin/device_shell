@@ -1,6 +1,6 @@
 """Desktop composition of framework contracts and shipped Workflow plugins."""
 
-from device_tui.application.device_control import DeviceControlService, DeviceTarget
+from device_tui.application.device_control import ControlContext, DeviceControlService, DeviceTarget
 from device_tui.application.tasking.execution import DeviceExecutionTool
 from device_tui.application.workflow_runtime.output_contract import COMMAND_OUTPUT_SCHEMA
 from device_tui.framework import (
@@ -115,7 +115,70 @@ def build_default_activity_executor(
                 },
             },
         ))
-        executor.register_handler(ProcessActivityHandler(activity_id))
+        def invocation_device_id(invocation, activity_context):
+            values = dict(invocation.context.get("target") or {})
+            for key in ("device_id", "session_id", "protocol", "host", "port"):
+                if key in invocation.inputs:
+                    values[key] = invocation.inputs[key]
+            return str(values.get("device_id") or activity_context.workflow_run.device_id or "")
+
+        async def device_connections(invocation, activity_context):
+            return control.list_device_sessions(invocation_device_id(invocation, activity_context))
+
+        async def device_command(invocation, activity_context, command, timeout, connection):
+            values = dict(invocation.context.get("target") or {})
+            for key in ("device_id", "session_id", "protocol", "host", "port"):
+                if key in invocation.inputs:
+                    values[key] = invocation.inputs[key]
+            device_id = invocation_device_id(invocation, activity_context)
+            session_id = str(values.get("session_id") or "")
+            protocol = str(values.get("protocol") or "auto")
+            if connection:
+                available = control.list_device_sessions(device_id)
+                connected = [item for item in available if item.get("status") == "connected"]
+                exact = [item for item in connected if item.get("session_id") == connection]
+                if exact:
+                    selected = exact
+                else:
+                    selected = [
+                        item for item in connected
+                        if item.get("connection", "").casefold() == connection.casefold()
+                        or item.get("title", "").casefold() == connection.casefold()
+                    ]
+                if not selected:
+                    raise ValueError(f"No connected session named {connection!r} exists for this device")
+                if len(selected) > 1:
+                    options = ", ".join(f"{item['connection']}:{item['session_id']}" for item in selected)
+                    raise ValueError(f"Connection {connection!r} is ambiguous; choose a session id: {options}")
+                session_id = selected[0]["session_id"]
+                protocol = selected[0]["connection"]
+            target = DeviceTarget(
+                device_id=device_id,
+                session_id=session_id,
+                protocol=protocol,
+                host=str(values.get("host") or ""),
+                port=int(values.get("port") or 0),
+            )
+            control_context = ControlContext(
+                source=str(invocation.context.get("source") or "workflow"),
+                request_id=str(invocation.context.get("request_id") or invocation.invocation_id),
+                task_id=str(invocation.context.get("task_id") or ""),
+                step_id=str(invocation.context.get("step_id") or invocation.activity_id),
+                lease_token=str(invocation.context.get("lease_token") or ""),
+                actor=str(invocation.context.get("actor") or ""),
+            )
+            return await execution.execute_operation(
+                target,
+                "command",
+                {"command": command, "timeout_seconds": max(1, int(timeout))},
+                context=control_context,
+            )
+
+        executor.register_handler(ProcessActivityHandler(
+            activity_id,
+            device_command=device_command if execution is not None and control is not None and activity_id == "script.run" else None,
+            device_connections=device_connections if execution is not None and control is not None and activity_id == "script.run" else None,
+        ))
     executor.register_definition(ActivityDefinition(
         id="shell.command",
         output_schema=COMMAND_OUTPUT_SCHEMA,

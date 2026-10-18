@@ -25,6 +25,14 @@ export const workflowScriptTemplates: WorkflowScriptTemplate[] = [
     input_schema: []
   },
   {
+    id: 'python-device-command',
+    name: 'Python 设备命令',
+    description: '查看当前设备连接，并指定 SSH、Telnet 等连接发送命令。',
+    language: 'python',
+    script: 'def main(device):\n    connections = device.connections\n    result = device.run("display version", timeout=30, connection="ssh")\n    return {"connections": connections, "result": result}',
+    input_schema: []
+  },
+  {
     id: 'python-async',
     name: 'Python 异步函数',
     description: '适合需要异步调用的脚本，自动等待 main 返回结果。',

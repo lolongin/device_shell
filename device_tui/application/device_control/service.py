@@ -433,6 +433,22 @@ class DeviceControlService:
             "value": status,
         }
 
+    def list_device_sessions(self, device_id: str) -> list[dict[str, str]]:
+        """List sessions for one device without exposing connection credentials."""
+        normalized_device_id = str(device_id or "").strip()
+        if not normalized_device_id:
+            return []
+        return [
+            {
+                "connection": str(session.kind),
+                "session_id": str(session.id),
+                "title": str(session.title or ""),
+                "status": str(session.status or "unknown").casefold(),
+            }
+            for session in self._sessions.list_sessions()
+            if session.device_id == normalized_device_id
+        ]
+
     def list_operations(self, *, kind: str = "", limit: int = 200) -> list[OperationView]:
         return [self._operation_view(item) for item in self._operations.list(kind=kind, limit=limit)]
 

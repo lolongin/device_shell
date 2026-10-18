@@ -68,6 +68,81 @@ def test_script_run_invokes_python_main_with_typed_inputs() -> None:
     assert result.outputs["result"] == {"message": "okok"}
 
 
+def test_script_run_device_rpc_returns_command_result_to_main() -> None:
+    calls: list[tuple[str, float]] = []
+
+    async def device_command(invocation, context, command, timeout, connection):
+        calls.append((command, timeout))
+        assert connection is None
+        return {"output": "version 1.2", "status": "completed", "execution_id": "exec-1"}
+
+    handler = ProcessActivityHandler("script.run", device_command=device_command)
+    invocation = ActivityInvocation(
+        handler.activity_id,
+        "inv-rpc",
+        "run-rpc",
+        inputs={
+            "language": "python",
+            "entrypoint": "main",
+            "script": "def main(device):\n    return device.run('display version', timeout=12)",
+        },
+        context={"target": {"device_id": "router-1", "session_id": "session-1"}},
+    )
+    context = ActivityContext(WorkflowRun("run-rpc", "wf", "1", "router-1"), invocation)
+    result = asyncio.run(handler.execute(invocation, context, lambda _event: None))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert calls == [("display version", 12.0)]
+    assert result.outputs["result"] == {
+        "output": "version 1.2",
+        "status": "completed",
+        "execution_id": "exec-1",
+    }
+
+
+def test_script_run_can_list_connections_and_select_one_by_protocol() -> None:
+    calls: list[str | None] = []
+
+    async def device_command(invocation, context, command, timeout, connection):
+        calls.append(connection)
+        return {"output": f"via {connection}", "status": "completed"}
+
+    async def device_connections(invocation, context):
+        return [
+            {"connection": "ssh", "session_id": "ssh-1", "title": "Primary", "status": "connected"},
+            {"connection": "telnet", "session_id": "telnet-1", "title": "Backup", "status": "connected"},
+        ]
+
+    handler = ProcessActivityHandler(
+        "script.run",
+        device_command=device_command,
+        device_connections=device_connections,
+    )
+    invocation = ActivityInvocation(
+        handler.activity_id,
+        "inv-connections",
+        "run-connections",
+        inputs={
+            "language": "python",
+            "entrypoint": "main",
+            "script": (
+                "def main(device):\n"
+                "    available = device.connections\n"
+                "    result = device.run('display version', connection='ssh')\n"
+                "    return {'connections': available, 'result': result}\n"
+            ),
+        },
+        context={"target": {"device_id": "router-1", "session_id": "default"}},
+    )
+    context = ActivityContext(WorkflowRun("run-connections", "wf", "1", "router-1"), invocation)
+    result = asyncio.run(handler.execute(invocation, context, lambda _event: None))
+
+    assert result.status == ActivityStatus.SUCCEEDED
+    assert calls == ["ssh"]
+    assert result.outputs["result"]["connections"][1]["session_id"] == "telnet-1"
+    assert result.outputs["result"]["result"]["output"] == "via ssh"
+
+
 def test_script_run_rejects_invalid_json_before_execution() -> None:
     result, _ = _run(ProcessActivityHandler("script.run"), {
         "language": "python",

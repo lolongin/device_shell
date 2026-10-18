@@ -90,3 +90,101 @@
 .workflow-script-test-result pre { box-sizing: border-box; max-height: 220px; margin: 0; padding: 8px; overflow: auto; border: 1px solid rgba(148,163,184,.18); border-radius: 4px; color: #dbeafe; background: rgba(2,6,23,.58); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-gutter: stable; }
 .workflow-script-no-selection { display: grid; place-items: center; color: var(--workflow-muted); }
 .workflow-right-rail .workflow-script-test-button { min-height: 34px; }
+
+/* Script creation: a compact, scannable template picker with a real code preview. */
+.workflow-script-template-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 32px));
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  gap: 16px;
+  padding: 22px;
+  overflow: auto;
+  border-color: color-mix(in srgb, var(--workflow-border) 72%, #6684ad);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--workflow-surface) 94%, #111827);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .56), 0 0 0 1px rgba(255, 255, 255, .025);
+}
+.workflow-script-template-dialog > header {
+  min-height: 30px;
+  color: var(--workflow-text);
+  font-size: 15px;
+  letter-spacing: .01em;
+}
+.workflow-script-template-dialog > header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--workflow-muted);
+  background: transparent;
+}
+.workflow-script-template-dialog > header button:hover { color: var(--workflow-text); background: rgba(148, 163, 184, .1); }
+.workflow-script-template-dialog > label { gap: 7px; color: var(--workflow-muted); font-size: 11px; font-weight: 600; }
+.workflow-script-template-dialog > label input,
+.workflow-script-template-dialog > label textarea {
+  min-height: 38px;
+  padding: 9px 11px;
+  border-color: rgba(148, 163, 184, .2);
+  border-radius: 7px;
+  color: var(--workflow-text);
+  font-size: 12px;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+.workflow-script-template-dialog > label textarea { min-height: 62px; resize: vertical; }
+.workflow-script-template-dialog > label input:focus,
+.workflow-script-template-dialog > label textarea:focus {
+  border-color: #5792f5;
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, .14);
+}
+.workflow-script-template-section { display: grid; gap: 10px; min-height: 0; }
+.workflow-script-template-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workflow-script-template-heading > div { display: grid; gap: 3px; }
+.workflow-script-template-heading strong { color: var(--workflow-text); font-size: 12px; }
+.workflow-script-template-heading small,
+.workflow-script-template-heading > span { color: var(--workflow-muted); font-size: 10px; }
+.workflow-script-template-heading > span { padding: 4px 8px; border: 1px solid rgba(148, 163, 184, .14); border-radius: 999px; background: rgba(148, 163, 184, .05); }
+.workflow-script-template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.workflow-script-template-dialog .workflow-script-template-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 78px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, .15);
+  border-radius: 9px;
+  color: var(--workflow-text);
+  background: color-mix(in srgb, var(--workflow-surface-muted) 74%, transparent);
+  text-align: left;
+  transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease;
+}
+.workflow-script-template-dialog .workflow-script-template-card:hover { transform: translateY(-1px); border-color: rgba(125, 165, 226, .45); background: rgba(71, 97, 139, .16); }
+.workflow-script-template-dialog .workflow-script-template-card.active {
+  border-color: rgba(91, 151, 255, .84);
+  background: linear-gradient(135deg, rgba(37, 99, 235, .18), rgba(37, 99, 235, .07));
+  box-shadow: inset 0 0 0 1px rgba(91, 151, 255, .2), 0 4px 14px rgba(15, 50, 110, .14);
+}
+.workflow-script-template-icon { display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid rgba(96, 165, 250, .2); border-radius: 8px; color: #8bb8ff; background: rgba(59, 130, 246, .11); }
+.workflow-script-template-copy { display: grid; gap: 5px; min-width: 0; }
+.workflow-script-template-copy strong { color: var(--workflow-text); font-size: 11px; line-height: 1.35; }
+.workflow-script-template-copy small { color: var(--workflow-muted); font-size: 10px; line-height: 1.5; }
+.workflow-script-template-dialog .workflow-script-template-card em { align-self: start; padding: 3px 6px; border-radius: 5px; color: #9fb3d0; background: rgba(148, 163, 184, .08); font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.workflow-script-template-preview { display: grid; gap: 8px; min-width: 0; padding: 11px 12px 12px; border: 1px solid rgba(148, 163, 184, .14); border-radius: 9px; background: rgba(2, 8, 20, .3); }
+.workflow-script-template-preview > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workflow-script-template-preview > div strong { color: var(--workflow-text); font-size: 10px; }
+.workflow-script-template-preview > div span { color: var(--workflow-muted); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.workflow-script-template-preview pre { max-height: 112px; margin: 0; padding: 10px 11px; overflow: auto; border: 1px solid rgba(148, 163, 184, .1); border-radius: 6px; color: #c9d8ed; background: rgba(2, 6, 18, .62); scrollbar-width: thin; }
+.workflow-script-template-preview code { font: 10px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-script-template-dialog > footer { gap: 8px; margin-top: 0; padding-top: 13px; border-top: 1px solid rgba(148, 163, 184, .12); }
+.workflow-script-template-dialog > footer button { min-height: 36px; padding: 7px 13px; border-radius: 7px; font-size: 11px; }
+.workflow-script-template-dialog > footer .primary-action { box-shadow: 0 4px 12px rgba(37, 99, 235, .22); }
+@media (max-width: 560px) {
+  .workflow-script-template-dialog { gap: 13px; padding: 17px; }
+  .workflow-script-template-grid { grid-template-columns: 1fr; }
+  .workflow-script-template-dialog .workflow-script-template-card { min-height: 68px; }
+}

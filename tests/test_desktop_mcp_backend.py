@@ -75,6 +75,39 @@ def test_qt_free_mcp_facade_runs_device_session_and_terminal_tools() -> None:
     assert status["data"]["approval_mode"] == "disabled"
 
 
+def test_mcp_exposes_workflow_script_authoring_and_validation() -> None:
+    with _client() as client:
+        contract = _call(client, "workflow.authoring.describe")["data"]
+        capabilities = _call(client, "app.capabilities")["data"]["resources"]["workflows"]
+        assert "script.delete" in capabilities["write"]
+        script = _call(client, "workflow.script.create", {
+            "name": "AI generated version check",
+            "language": "python",
+            "script": (
+                "def main(device, command: str = 'display version'):\n"
+                "    return device.run(command, connection='ssh')\n"
+            ),
+        })["data"]["script"]
+        validation = _call(client, "workflow.script.validate", {
+            "language": "python",
+            "script": "def main(device, count: int = 2):\n    return count",
+        })["data"]
+        workflow = _call(client, "workflow.definition.create", {
+            "workflow": {
+                "name": "AI generated workflow",
+                "nodes": [{"id": "script", "action_id": "script.run", "config": {"script_id": script["id"]}}],
+                "edges": [],
+            },
+        })["data"]["workflow"]
+        flow_validation = _call(client, "workflow.definition.validate", {"workflow_id": workflow["id"]})["data"]
+
+    assert "device.run" in contract["script_runtime"]["api"]["run"]["signature"]
+    assert script["input_schema"] == [{"name": "command", "type": "string", "required": False, "default": "display version"}]
+    assert validation["valid"] is True
+    assert validation["input_schema"] == [{"name": "count", "type": "number", "required": False, "default": 2}]
+    assert flow_validation["valid"] is True
+
+
 def test_qt_free_mcp_facade_runs_parallel_terminal_batches() -> None:
     with _client() as client:
         devices = _call(client, "device_list")["data"]["devices"]
@@ -419,6 +452,9 @@ def test_mcp_application_control_plane_discovers_and_controls_app_resources() ->
 
     assert capabilities["data"]["resources"]["workflows"]["write"] == [
         "run", "plan.validate", "plan.approve", "replan",
+        "script.create", "script.update", "script.delete", "script.validate", "script.test",
+        "definition.create", "definition.update", "definition.validate",
+        "definition.publish", "definition.run",
     ]
     assert sources["data"]["active_source"]
     assert denied_response.status_code == 400

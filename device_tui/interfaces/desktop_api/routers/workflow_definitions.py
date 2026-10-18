@@ -515,6 +515,16 @@ def _compile_task_plan(version: Any, device_id: str, source_overrides: Mapping[s
             return None
         first = candidates[0]
         if any(candidate != first for candidate in candidates[1:]):
+            # A node reached from both outcomes of the same condition is an
+            # unconditional join point.  The branch work may differ, but
+            # once either path completes the join node must be runnable.
+            without_expected = [
+                {key: value for key, value in candidate.items() if key != "expected"}
+                for candidate in candidates
+            ]
+            expected_values = {candidate.get("expected") for candidate in candidates}
+            if len(set(map(repr, without_expected))) == 1 and expected_values == {True, False}:
+                return None
             raise UnsupportedOperationError(f"node {node_id} merges incompatible condition branches")
         return first
 
@@ -1085,6 +1095,8 @@ def _python_main_input_schema(
     fallback_by_name = {str(item.get("name")): item for item in fallback_schema}
     schema: list[dict[str, Any]] = []
     for argument, default in zip(args, defaults, strict=True):
+        if argument.arg == "device":
+            continue
         item: dict[str, Any] = {
             "name": argument.arg,
             "type": _python_annotation_type(argument.annotation),

@@ -86,9 +86,11 @@ function setRuleValue(rule: ConditionRule, key: 'field' | 'value', value: unknow
   setValue('rules', props.conditionRules)
 }
 function removeConditionRule(index: number): void {
-  const rules = [...props.conditionRules]
-  rules.splice(index, 1)
-  setValue('rules', rules)
+  // `conditionRules` is also owned by the workflow editor. Keep the shared
+  // array in sync when removing a rule; replacing only `node.config.rules`
+  // leaves the editor's stale array to restore the deleted rule on save.
+  props.conditionRules.splice(index, 1)
+  setValue('rules', props.conditionRules)
 }
 
 function updateConfig(key: string, event: Event): void {

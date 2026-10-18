@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from types import SimpleNamespace
 import threading
 from typing import Any
 
@@ -34,6 +35,14 @@ from device_tui.application.terminal.orchestration import (
 )
 from device_tui.application.terminal.outcome import classify_terminal_prompt
 from .terminal_executor import BackendTerminalExecutor
+
+
+def _workflow_api() -> Any:
+    # Import lazily because the desktop context imports this MCP service while
+    # the workflow router imports the same context for request dependencies.
+    from .routers import workflow_definitions
+
+    return workflow_definitions
 
 
 class DesktopMcpService:
@@ -120,7 +129,7 @@ class DesktopMcpService:
             "resources": {
                 "devices": {"read": ["list", "get", "select"], "write": ["open", "action"]},
                 "sessions": {"read": ["list", "status"], "write": ["open", "reconnect", "disconnect", "close"]},
-                "workflows": {"read": ["list", "plan.get"], "write": ["run", "plan.validate", "plan.approve", "replan"]},
+                "workflows": {"read": ["list", "plan.get", "authoring.describe", "script.list", "script.get", "definition.list", "definition.get"], "write": ["run", "plan.validate", "plan.approve", "replan", "script.create", "script.update", "script.delete", "script.validate", "script.test", "definition.create", "definition.update", "definition.validate", "definition.publish", "definition.run"]},
                 "tasks": {"read": ["list", "get", "decision.get", "framework.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply", "framework.start", "framework.execute"]},
                 "terminal": {"read": ["read", "execution.get", "interact.get"], "write": ["execute", "batch", "parallel", "interact", "interact.start", "interact.send", "interact.resume", "interact.cancel", "execution.cancel"]},
                 "profiles": {"read": ["list"], "write": ["save", "delete"]},
@@ -690,6 +699,180 @@ class DesktopMcpService:
                 "max_replans": self._plan_compiler.MAX_REPLANS,
             },
         }
+
+    def _workflow_authoring_context(self) -> SimpleNamespace:
+        return SimpleNamespace(desktop=self.desktop)
+
+    async def _tool_workflow_authoring_describe(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """Return the current Workflow Studio authoring contract for Agents."""
+        from device_tui.application.workflow_studio import build_action_catalog
+
+        return {
+            "script_runtime": {
+                "entrypoint": "def main(device, ...): ...",
+                "device": "Injected by the runtime; omit it from script inputs.",
+                "api": {
+                    "connections": "device.connections -> list of {connection, session_id, title, status}",
+                    "run": {
+                        "signature": "device.run(command: str, timeout: float = 30, connection: str | None = None) -> dict",
+                        "connection": "Protocol name (ssh, telnet, serial, simulated) or a session id belonging to the selected device. If omitted, use the workflow's selected session.",
+                        "result": "Command result mapping including output, status, and execution metadata.",
+                    },
+                    "example": "def main(device):\\n    result = device.run('display version', connection='ssh')\\n    return {'output': result.get('output', ''), 'status': result.get('status', '')}",
+                },
+                "inputs": "Other main parameters become typed JSON workflow inputs based on annotations and defaults.",
+            },
+            "workflow_schema": {
+                "workflow": ["id", "name", "description", "inputs", "outputs", "nodes", "edges"],
+                "node": ["id", "action_id", "config", "input_mapping", "position"],
+                "edge": ["source", "target", "condition", "source_handle"],
+                "script_node": {"action_id": "script.run", "config": {"script_id": "<script resource id>"}},
+            },
+            "actions": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "category": item.category,
+                    "input_schema": item.input_schema,
+                    "output_schema": item.output_schema,
+                    "risk": item.risk,
+                }
+                for item in build_action_catalog().list()
+            ],
+            "authoring_flow": [
+                "Read workflow.authoring.describe.",
+                "Create or update a workflow.script draft.",
+                "Validate the script and test only with an explicitly selected device after confirmation.",
+                "Create or update a workflow.definition draft that references script_id.",
+                "Validate the whole workflow; publish or run only after user approval.",
+            ],
+        }
+
+    async def _tool_workflow_script_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return await _workflow_api().list_workflow_scripts(self._workflow_authoring_context())
+
+    async def _tool_workflow_script_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        script_id = self._text(params, "script_id")
+        scripts = _workflow_api()._load_workflow_scripts(self.desktop.settings)
+        script = next((item for item in scripts if str(item.get("id") or "") == script_id), None)
+        if script is None:
+            raise ResourceNotFoundError(f"script resource not found: {script_id}")
+        return {"script": script}
+
+    async def _tool_workflow_script_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await _workflow_api().create_workflow_script(params, self._workflow_authoring_context())
+
+    async def _tool_workflow_script_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        script_id = self._text(params, "script_id")
+        scripts = _workflow_api()._load_workflow_scripts(self.desktop.settings)
+        current = next((item for item in scripts if str(item.get("id") or "") == script_id), None)
+        if current is None:
+            raise ResourceNotFoundError(f"script resource not found: {script_id}")
+        updates = {
+            key: value
+            for key, value in params.items()
+            if key != "script_id" and value is not None and not (isinstance(value, str) and not value.strip())
+        }
+        payload = {**current, **updates}
+        return await _workflow_api().save_workflow_script(script_id, payload, self._workflow_authoring_context())
+
+    async def _tool_workflow_script_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        script_id = self._text(params, "script_id")
+        await _workflow_api().delete_workflow_script(script_id, self._workflow_authoring_context())
+        return {"deleted": True, "script_id": script_id}
+
+    async def _tool_workflow_script_validate(self, params: dict[str, Any]) -> dict[str, Any]:
+        language = str(params.get("language") or "python").casefold()
+        if language not in {"python", "powershell", "bash"}:
+            raise UnsupportedOperationError("language must be python, powershell, or bash")
+        source = str(params.get("script") or "")
+        supplied = _workflow_api()._normalize_workflow_script_input_schema(params.get("input_schema") or [])
+        schema, entrypoint, error = _workflow_api()._analyze_workflow_script(language, source, supplied)
+        return {"valid": not bool(error), "language": language, "entrypoint": entrypoint, "input_schema": schema, "errors": ([error] if error else [])}
+
+    async def _tool_workflow_script_test(self, params: dict[str, Any]) -> dict[str, Any]:
+        script_id = self._text(params, "script_id")
+        device_id = self._text(params, "device_id")
+        confirmed = bool(params.get("confirmed_risks"))
+        connection = str(params.get("connection") or "").strip()
+        session_id = ""
+        protocol = "auto"
+        if connection:
+            session_id, protocol = self._resolve_authoring_connection(device_id, connection)
+        return await _workflow_api().test_workflow_script(
+            script_id,
+            {**params, "device_id": device_id, "session_id": session_id, "protocol": protocol, "confirmed_risks": confirmed},
+            self._workflow_authoring_context(),
+        )
+
+    def _resolve_authoring_connection(self, device_id: str, connection: str) -> tuple[str, str]:
+        sessions = [
+            item for item in self.desktop.sessions.list_sessions()
+            if item.device_id == device_id and str(item.status).casefold() == "connected"
+        ]
+        exact = [item for item in sessions if item.id == connection]
+        matches = exact or [
+            item for item in sessions
+            if item.kind.casefold() == connection.casefold() or item.title.casefold() == connection.casefold()
+        ]
+        if not matches:
+            raise ResourceNotFoundError(f"no connected session named {connection!r} exists for device {device_id!r}")
+        if len(matches) > 1:
+            options = ", ".join(f"{item.kind}:{item.id}" for item in matches)
+            raise UnsupportedOperationError(f"connection {connection!r} is ambiguous; choose a session id: {options}")
+        return matches[0].id, matches[0].kind
+
+    async def _tool_workflow_definition_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return await _workflow_api().list_workflow_definitions(self._workflow_authoring_context())
+
+    async def _tool_workflow_definition_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await _workflow_api().get_workflow_definition(self._text(params, "workflow_id"), self._workflow_authoring_context())
+
+    async def _tool_workflow_definition_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        payload = params.get("workflow")
+        if not isinstance(payload, dict):
+            payload = {key: value for key, value in params.items() if key != "workflow"}
+        return await _workflow_api().create_workflow_definition(payload, self._workflow_authoring_context())
+
+    async def _tool_workflow_definition_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        workflow_id = self._text(params, "workflow_id")
+        payload = params.get("workflow")
+        if not isinstance(payload, dict):
+            payload = {key: value for key, value in params.items() if key not in {"workflow_id", "workflow"}}
+        return await _workflow_api().save_workflow_definition(workflow_id, payload, self._workflow_authoring_context())
+
+    async def _tool_workflow_definition_validate(self, params: dict[str, Any]) -> dict[str, Any]:
+        workflow_id = self._text(params, "workflow_id")
+        payload = params.get("workflow")
+        return await _workflow_api().validate_workflow_definition(
+            workflow_id,
+            payload if isinstance(payload, dict) else None,
+            self._workflow_authoring_context(),
+        )
+
+    async def _tool_workflow_definition_publish(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not bool(params.get("confirmed")):
+            raise UnsupportedOperationError("workflow.definition.publish requires confirmed=true after user approval")
+        return await _workflow_api().publish_workflow_definition(self._text(params, "workflow_id"), self._workflow_authoring_context())
+
+    async def _tool_workflow_definition_run(self, params: dict[str, Any]) -> dict[str, Any]:
+        workflow_id = self._text(params, "workflow_id")
+        if not str(params.get("device_id") or "").strip() and not params.get("device_ids"):
+            raise UnsupportedOperationError("workflow.definition.run requires device_id or device_ids")
+        if not bool(params.get("dry_run")) and not bool(params.get("confirmed_risks")):
+            raise UnsupportedOperationError("workflow.definition.run requires confirmed_risks=true after user approval")
+        payload = dict(params)
+        connection = str(params.get("connection") or "").strip()
+        device_ids = params.get("device_ids") if isinstance(params.get("device_ids"), list) else []
+        device_ids = [str(item) for item in device_ids if str(item).strip()]
+        if not device_ids and payload.get("device_id"):
+            device_ids = [str(payload["device_id"])]
+        if connection:
+            payload["session_ids"] = {
+                target_id: self._resolve_authoring_connection(target_id, connection)[0]
+                for target_id in device_ids
+            }
+        return await _workflow_api().run_workflow_definition(workflow_id, payload, self._workflow_authoring_context())
 
     async def _tool_workflow_run(self, params: dict[str, Any]) -> dict[str, Any]:
         """Start a workflow as a Task; the Agent never receives an Engine."""

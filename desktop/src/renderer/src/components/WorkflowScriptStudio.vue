@@ -74,13 +74,17 @@ const { selectedDeviceId, controller, availableDevices, deviceLabel } = props
         <header><strong>新建脚本</strong><button type="button" title="关闭" @click="controller.showScriptTemplateDialog.value = false"><X :size="16" /></button></header>
         <label>脚本名称<input v-model="controller.scriptCreateName.value" autofocus maxlength="120" placeholder="例如：检查设备状态" /></label>
         <label>脚本说明<textarea v-model="controller.scriptCreateDescription.value" rows="2" maxlength="400" placeholder="可选，说明脚本用途" /></label>
-        <section class="workflow-script-template-grid" aria-label="脚本模板">
-          <button v-for="template in workflowScriptTemplates" :key="template.id" type="button" class="workflow-script-template-card" :class="{ active: controller.selectedScriptTemplateId.value === template.id }" @click="controller.selectedScriptTemplateId.value = template.id">
+        <section class="workflow-script-template-section" aria-label="脚本模板">
+          <div class="workflow-script-template-heading"><div><strong>选择一个起点</strong><small>创建后仍可自由修改脚本</small></div><span>{{ workflowScriptTemplates.length }} 个模板</span></div>
+          <div class="workflow-script-template-grid">
+          <button v-for="template in workflowScriptTemplates" :key="template.id" type="button" class="workflow-script-template-card" :class="{ active: controller.selectedScriptTemplateId.value === template.id }" :aria-pressed="controller.selectedScriptTemplateId.value === template.id" @click="controller.selectedScriptTemplateId.value = template.id">
             <span class="workflow-script-template-icon"><Code2 :size="15" /></span>
-            <span><strong>{{ template.name }}</strong><small>{{ template.description }}</small><em>{{ template.language }}</em></span>
+            <span class="workflow-script-template-copy"><strong>{{ template.name }}</strong><small>{{ template.description }}</small></span>
+            <em>{{ template.language }}</em>
           </button>
+          </div>
         </section>
-        <div class="workflow-script-template-preview"><span>预置内容</span><code>{{ controller.selectedScriptTemplate.value.script ? `${controller.selectedScriptTemplate.value.script.split('\n').slice(0, 3).join('\n')}${controller.selectedScriptTemplate.value.script.split('\n').length > 3 ? '\n…' : ''}` : '空白脚本' }}</code></div>
+        <div class="workflow-script-template-preview"><div><strong>{{ controller.selectedScriptTemplate.value.name }}</strong><span>代码预览</span></div><pre><code>{{ controller.selectedScriptTemplate.value.script || '空白脚本，从零开始编写。' }}</code></pre></div>
         <footer><button type="button" @click="controller.showScriptTemplateDialog.value = false">取消</button><button type="submit" class="primary-action" :disabled="controller.scriptCreating.value || !controller.scriptCreateName.value.trim()">{{ controller.scriptCreating.value ? '创建中…' : '使用模板创建' }}</button></footer>
       </form>
     </div>

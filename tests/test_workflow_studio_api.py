@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from device_tui.device_sources.sample import SampleDeviceRepository
 from device_tui.interfaces.desktop_api.app import create_app
+from device_tui.interfaces.desktop_api.session_hub import SessionHub
 from device_tui.application.workflow_studio import build_action_catalog
 from device_tui.application.workflow_studio.models import WorkflowDraft, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowVersion
 from device_tui.interfaces.desktop_api.routers.workflow_definitions import (
@@ -188,7 +189,7 @@ def test_workflow_custom_command_action_crud() -> None:
 
 
 def test_workflow_script_resource_crud_and_language_validation() -> None:
-    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository(), session_hub=SessionHub())) as client:
         rejected = client.post(
             "/api/v1/workflow-definitions/scripts",
             json={"name": "Invalid", "language": "ruby", "script": "puts 'no'"},
@@ -236,7 +237,7 @@ def test_workflow_script_resource_crud_and_language_validation() -> None:
 
 
 def test_workflow_script_main_signature_generates_input_schema() -> None:
-    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository(), session_hub=SessionHub())) as client:
         created = client.post(
             "/api/v1/workflow-definitions/scripts",
             json={
@@ -263,8 +264,27 @@ def test_workflow_script_main_signature_generates_input_schema() -> None:
         ]
 
 
+def test_workflow_script_device_parameter_is_injected_not_an_input() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository(), session_hub=SessionHub())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions/scripts",
+            json={
+                "name": "Device API",
+                "language": "python",
+                "script": "def main(device, command: str = 'display version'):\n    return device.run(command)",
+            },
+        )
+
+    assert created.status_code == 200
+    script = created.json()["script"]
+    assert script["entrypoint"] == "main"
+    assert script["input_schema"] == [
+        {"name": "command", "type": "string", "required": False, "default": "display version"},
+    ]
+
+
 def test_workflow_script_reference_validates_publishes_and_resolves_for_dry_run() -> None:
-    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository(), session_hub=SessionHub())) as client:
         script = client.post(
             "/api/v1/workflow-definitions/scripts",
             json={"name": "Referenced", "language": "python", "script": "print('ok')"},
@@ -322,7 +342,7 @@ def test_workflow_script_reference_reports_missing_resource() -> None:
 
 
 def test_workflow_script_test_requires_confirmation_and_creates_task() -> None:
-    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository(), session_hub=SessionHub())) as client:
         script = client.post(
             "/api/v1/workflow-definitions/scripts",
             json={
@@ -354,7 +374,7 @@ def test_workflow_script_test_requires_confirmation_and_creates_task() -> None:
 
 
 def test_workflow_script_test_enforces_input_schema_and_applies_defaults() -> None:
-    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository(), session_hub=SessionHub())) as client:
         script = client.post(
             "/api/v1/workflow-definitions/scripts",
             json={
@@ -1487,6 +1507,36 @@ def test_workflow_definition_compiles_visual_condition_branches() -> None:
     }
     assert plan.nodes[2].run_if["expected"] is False
     assert plan.nodes[2].input_mapping["value"] == "${info}"
+
+
+def test_workflow_definition_allows_join_after_both_condition_branches() -> None:
+    version = WorkflowVersion(
+        workflow_id="wf",
+        version=1,
+        name="conditional-join",
+        nodes=(
+            WorkflowNode("info", "device.info", {"fields": ["software_version"]}),
+            WorkflowNode(
+                "condition",
+                "utility.condition",
+                {"rules": [{"field": "software_version", "operator": "小于", "value": "8.200"}]},
+            ),
+            WorkflowNode("fallback", "result.save", {"key": "fallback", "value": "fallback"}),
+            WorkflowNode("join", "result.save", {"key": "joined", "value": "joined"}),
+        ),
+        edges=(
+            WorkflowEdge("info", "condition"),
+            WorkflowEdge("condition", "join", condition="true"),
+            WorkflowEdge("condition", "fallback", condition="false"),
+            WorkflowEdge("fallback", "join"),
+        ),
+    )
+
+    plan = _compile_task_plan(version, "router-1")
+    join = next(node for node in plan.nodes if node.id == "join")
+
+    assert join.run_if is None
+    assert join.depends_on == ("info", "fallback")
 
 
 def test_workflow_definition_rejects_expression_only_condition_until_visual_rules_exist() -> None:
