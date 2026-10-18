@@ -29,8 +29,6 @@ MOCK_DEVICE_TELNET_PORT = 0 if MOCK_PROTOCOL_FAILURE else 2323
 ENSP_AR_TELNET_IP = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_IP", "192.168.40.20").strip()
 ENSP_AR_TELNET_USER = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_USER", "appadmin").strip()
 ENSP_AR_TELNET_PASSWORD = os.getenv("DEVICE_TUI_ENSP_AR_TELNET_PASSWORD", "").strip()
-# Keep the lab credential out of source control. The custom connection dialog
-# can supply it for a one-time session when this is empty.
 
 SAMPLE_NOW = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
 
