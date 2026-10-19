@@ -132,6 +132,7 @@ const taskResultOutputs = computed(() => {
 type WorkflowOutputDefinition = {
   name: string
   value?: unknown
+  resolvedValue?: unknown
   type?: string
   primitiveType?: string
   semanticType?: string
@@ -139,40 +140,69 @@ type WorkflowOutputDefinition = {
   presentation?: string
   renderer?: { id?: string; props?: Record<string, unknown> }
 }
-function resolveWorkflowOutputValue(value: unknown, outputs: Record<string, unknown>): unknown {
-  if (typeof value !== 'string') return value
-  const match = value.match(/^\$\{(?:outputs\.)?([^}]+)\}$/)
-  if (!match) return value
-  return match[1].split('.').reduce<unknown>((current, part) => (
-    current && typeof current === 'object' ? (current as Record<string, unknown>)[part] : undefined
-  ), outputs)
-}
-const workflowResultValues = computed<Record<string, unknown>>(() => {
+const workflowRuntimeOutputs = computed<Record<string, unknown>>(() => {
   const task = selectedTask.value
   if (!task) return {}
   return { ...(task.checkpoint?.outputs || {}), ...(task.result?.outputs || {}) }
 })
-function looksLikeTable(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some((item) => Boolean(item && typeof item === 'object' && !Array.isArray(item)))
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && Array.isArray((value as Record<string, unknown>).rows)
-    && Array.isArray((value as Record<string, unknown>).columns))
+// Tasks created before output declarations were snapshotted can still show the
+// published contract. Cache by workflow id + version so switching tasks is free.
+const publishedOutputDefinitions = ref<Record<string, WorkflowOutputDefinition[]>>({})
+const publishedOutputLookups = new Set<string>()
+
+function taskWorkflowVersion(task: TaskRecord): string {
+  return String(task.workflow_view?.version || '')
 }
+
+async function hydratePublishedOutputs(task: TaskRecord | null): Promise<void> {
+  if (!task || (task.workflow_view?.outputs || []).length) return
+  const key = `${task.workflow_id}@${taskWorkflowVersion(task)}`
+  if (publishedOutputLookups.has(key)) return
+  publishedOutputLookups.add(key)
+  try {
+    const response = await desktopApi.workflowVersions(task.workflow_id)
+    const match = response.versions.find((item) => String(item.version) === taskWorkflowVersion(task))
+      || response.versions.find((item) => Boolean((item.output_contract || []).length || (item.outputs || []).length))
+    const outputs = (match?.output_contract || match?.outputs || []) as WorkflowOutputDefinition[]
+    if (outputs.length) publishedOutputDefinitions.value = { ...publishedOutputDefinitions.value, [key]: outputs }
+  } catch {
+    // The definition may have been deleted; fall back to raw node outputs.
+  }
+}
+
+watch(() => selectedTask.value?.id, () => { void hydratePublishedOutputs(selectedTask.value) }, { immediate: true })
+
+const workflowResultValues = computed<Record<string, unknown>>(() => {
+  const task = selectedTask.value
+  if (!task) return {}
+  const values: Record<string, unknown> = { ...workflowRuntimeOutputs.value }
+  // The projection resolves declared output expressions; expose them under the
+  // output name so the renderer presents business fields rather than node ids.
+  for (const item of task.workflow_view?.outputs || []) {
+    if (Object.prototype.hasOwnProperty.call(item, 'resolvedValue')) values[item.name] = item.resolvedValue
+  }
+  return values
+})
 const workflowResultDefinitions = computed<WorkflowOutputDefinition[]>(() => {
   const task = selectedTask.value
   if (!task) return []
-  const outputs = workflowResultValues.value
   const declared = task.workflow_view?.outputs || []
-  const definitions: WorkflowOutputDefinition[] = declared.length
-    ? declared.map((item): WorkflowOutputDefinition => ({ ...item, value: resolveWorkflowOutputValue(item.value, outputs) }))
-    : Object.entries(outputs).map(([name, value]): WorkflowOutputDefinition => ({ name, value, type: Array.isArray(value) || (value && typeof value === 'object') ? 'object' : typeof value }))
-  return definitions.map((item) => {
-    const runtimeValue = Object.prototype.hasOwnProperty.call(outputs, item.name) ? outputs[item.name] : item.value
-    const presentation = String(item.presentation || '').toLowerCase()
-    if (!item.renderer?.id && (!presentation || presentation === 'text') && looksLikeTable(runtimeValue)) {
-      return { ...item, presentation: 'table' }
+  if (declared.length) return declared.map((item) => ({ ...item }))
+  const published = publishedOutputDefinitions.value[`${task.workflow_id}@${taskWorkflowVersion(task)}`]
+  if (published?.length) return published.map((item) => ({ ...item }))
+  // Records created before output declarations travelled with the task only
+  // expose raw node outputs; show them as diagnostic records rather than as
+  // promised business fields. Loop envelopes still read best as a table.
+  return Object.entries(workflowRuntimeOutputs.value).map(([name, value]): WorkflowOutputDefinition => {
+    const envelope = value && typeof value === 'object' && !Array.isArray(value)
+      && ['results', 'rows', 'items', 'records'].some((key) => Array.isArray((value as Record<string, unknown>)[key]))
+    return {
+      name,
+      value,
+      description: '运行节点输出（该任务未记录输出定义）',
+      presentation: envelope ? 'table' : value && typeof value === 'object' ? 'json' : 'text',
+      type: Array.isArray(value) || (value && typeof value === 'object') ? 'object' : typeof value
     }
-    return item
   })
 })
 const taskOutcomeDetail = computed(() => {
@@ -547,7 +577,7 @@ watch(() => workspace.tasks.map((task) => ({ id: task.id, status: task.status })
       <section class="task-outcome" :data-status="selectedTask.status" aria-label="执行结果摘要">
         <div class="task-outcome-mark"><Check v-if="selectedTask.status === 'completed' || selectedTask.status === 'success'" :size="18" /><CircleAlert v-else-if="selectedTask.status === 'failed'" :size="18" /><CirclePlay v-else :size="18" /></div>
         <div class="task-outcome-copy"><span>执行结果</span><strong>{{ taskStatusLabel(selectedTask) }}</strong><p>{{ taskOutcomeDetail }}</p></div>
-        <div class="task-outcome-metrics"><b>{{ completedStepCount }}/{{ taskSteps.length }}</b><small>步骤完成</small><b v-if="failedStepCount" class="task-outcome-failed">{{ failedStepCount }}</b><small v-if="failedStepCount">步骤失败</small></div>
+        <div class="task-outcome-metrics"><b>{{ completedStepCount }}/{{ taskSteps.length }}</b><small>步骤完成</small><b v-if="failedStepCount" class="task-outcome-failed">{{ failedStepCount }}</b><small v-if="failedStepCount">步骤失败</small><template v-if="workflowResultDefinitions.length"><b>{{ workflowResultDefinitions.length }}</b><small>输出</small></template></div>
       </section>
       <section v-if="selectedTask" class="task-workflow-results" aria-label="Workflow 输出结果">
         <WorkflowOutputRenderer v-if="workflowResultDefinitions.length" :key="selectedTask.id" :definitions="workflowResultDefinitions" :values="workflowResultValues" />

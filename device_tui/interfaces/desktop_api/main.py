@@ -28,6 +28,12 @@ def main() -> None:
     listener.bind((args.host, args.port))
     listener.listen(128)
     port = int(listener.getsockname()[1])
+    config = uvicorn.Config(
+        create_app(token=token),
+        host=args.host,
+        port=port,
+        log_level=os.getenv("DEVICE_TUI_BACKEND_LOG_LEVEL", "warning"),
+    )
     print(
         json.dumps(
             {
@@ -38,12 +44,6 @@ def main() -> None:
             }
         ),
         flush=True,
-    )
-    config = uvicorn.Config(
-        create_app(token=token),
-        host=args.host,
-        port=port,
-        log_level=os.getenv("DEVICE_TUI_BACKEND_LOG_LEVEL", "warning"),
     )
     server = uvicorn.Server(config)
     server.run(sockets=[listener])

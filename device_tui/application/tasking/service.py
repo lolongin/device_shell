@@ -1091,10 +1091,14 @@ class LegacyTaskManager:
     @staticmethod
     def _framework_workflow_view(definition: FrameworkWorkflowDefinition) -> dict[str, Any]:
         """Build the non-executable workflow metadata consumed by generic UIs."""
+        metadata = dict(getattr(definition, "metadata", {}) or {})
         return {
             "id": definition.id,
             "version": definition.version,
             "name": str(getattr(definition, "name", "") or ""),
+            # Declared outputs travel with the run snapshot so results can be
+            # presented as business fields instead of raw node records.
+            "outputs": list(metadata.get("workflow_outputs") or ()),
             "states": [
                 {
                     "id": state.id,

@@ -815,6 +815,42 @@ def test_workflow_run_uses_latest_published_version_and_marks_reference() -> Non
         assert task.json()["task"]["plan_revision"] == published["version"]
 
 
+def test_workflow_run_resolves_declared_outputs_for_presentation() -> None:
+    with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
+        created = client.post(
+            "/api/v1/workflow-definitions",
+            json={
+                "name": "Resolved outputs",
+                "nodes": [{"id": "wait", "action_id": "utility.wait", "config": {"seconds": 0}}],
+                "outputs": [
+                    {"name": "wait_status", "value": "${wait.status}", "type": "string", "presentation": "text"},
+                ],
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+        published = client.post(f"/api/v1/workflow-definitions/{workflow_id}/publish").json()
+        assert published["published"] is True
+
+        started = client.post(
+            f"/api/v1/workflow-definitions/{workflow_id}/run",
+            json={"device_id": "sim-1", "protocol": "simulated"},
+        )
+        assert started.status_code == 200
+        task_id = started.json()["task"]["id"]
+
+        deadline = time.time() + 15
+        task = started.json()["task"]
+        while time.time() < deadline:
+            task = client.get(f"/api/v1/tasks/{task_id}").json()["task"]
+            if task["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.05)
+
+        declared = task["workflow_view"]["outputs"]
+        assert declared[0]["value"] == "${wait.status}"
+        assert declared[0]["resolvedValue"] == "completed"
+
+
 def test_workflow_run_merges_input_defaults_into_task_context() -> None:
     with TestClient(create_app(token="", repository=SampleDeviceRepository())) as client:
         created = client.post(

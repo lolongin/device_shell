@@ -12,4 +12,5 @@ desktop/release/
 desktop/resources/backend/
 desktop/.pyinstaller-work/
 desktop/.pyinstaller-spec/
+.odyterm-dev-user-data/
 *.tsbuildinfo

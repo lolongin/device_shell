@@ -338,6 +338,7 @@ export interface TaskWorkflowView {
   outputs?: Array<{
     name: string
     value?: unknown
+    resolvedValue?: unknown
     type?: string
     primitiveType?: string
     semanticType?: string

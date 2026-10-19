@@ -61,6 +61,19 @@ def test_resolve_workflow_value_preserves_exact_reference_types_and_renders_embe
     assert resolve_workflow_value("status=${step.output}", context) == "status=ready"
 
 
+def test_resolve_workflow_value_indexes_sequences_and_raises_for_missing_strict_paths() -> None:
+    context = {"each": {"results": [{"device_id": "r1"}, {"device_id": "r2"}]}}
+
+    assert resolve_workflow_value("${each.results.1.device_id}", context) == "r2"
+    assert resolve_workflow_value("${each.missing}", context) == ""
+    try:
+        resolve_workflow_value("${each.missing}", context, strict=True)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("strict resolution must raise for a missing path")
+
+
 def test_control_registry_maps_legacy_types_to_semantic_controls() -> None:
     registry = build_control_registry()
 

@@ -26,6 +26,7 @@ from device_tui.framework import (
 )
 
 from device_tui.application.errors import ApplicationConflictError, ApplicationError
+from device_tui.application.workflow_studio.contract import resolve_workflow_value
 from .models import DecisionContext, TaskCreate, TaskRecord
 from .models import Action, Decision, DecisionActor, TaskStatus
 from .projection import TaskRunProjector
@@ -424,6 +425,7 @@ class TaskService:
             workflow=request.workflow,
             plan=self._framework_plans.get(task_id),
         )
+        workflow_view = self._resolve_view_outputs(workflow_view, dict(run.outputs))
         record = self.project_run(
             run,
             workflow_id=request.workflow.id,
@@ -588,6 +590,32 @@ class TaskService:
             "outputs": list(metadata.get("workflow_outputs") or ()),
             "states": states,
         }
+
+    @staticmethod
+    def _resolve_view_outputs(workflow_view: Mapping[str, Any], outputs: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach the value each declared output resolves to for this run.
+
+        Declared outputs carry expressions such as ``${inspect.result.version}``.
+        Clients should not re-implement the reference language, so the projection
+        resolves them against the run outputs and keeps the expression for
+        diagnostics when it cannot be resolved yet.
+        """
+        declared = workflow_view.get("outputs")
+        if not declared:
+            return dict(workflow_view)
+        resolved: list[dict[str, Any]] = []
+        for item in declared:
+            if not isinstance(item, Mapping):
+                continue
+            entry = dict(item)
+            try:
+                entry["resolvedValue"] = resolve_workflow_value(entry.get("value"), outputs, strict=True)
+            except (KeyError, TypeError, ValueError):
+                # The run has not produced this reference yet; keep the declared
+                # expression so the client can show it as pending.
+                entry.pop("resolvedValue", None)
+            resolved.append(entry)
+        return {**dict(workflow_view), "outputs": resolved}
 
     @staticmethod
     def _loop_body_view_states(node: WorkflowNode) -> list[dict[str, Any]]:

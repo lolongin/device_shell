@@ -133,6 +133,8 @@ def resolve_workflow_value(value: Any, context: Mapping[str, Any], *, strict: bo
         for part in path.strip().split("."):
             if isinstance(current, Mapping) and part in current:
                 current = current[part]
+            elif isinstance(current, (list, tuple)) and part.isdigit() and int(part) < len(current):
+                current = current[int(part)]
             else:
                 if strict:
                     raise KeyError(path.strip())
