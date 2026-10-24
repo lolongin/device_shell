@@ -8,6 +8,8 @@ from typing import Any
 
 from device_tui.application import AiApplicationService, DesktopApplication
 from device_tui.application.ai.agent import AgentContext, DeviceAgent
+from device_tui.application.ai.agent.runtime import ApplicationAgentExecutor
+from device_tui.application.ai.llm.configuration import AiModelConfiguration
 from device_tui.device_sources.import_parser import ParsedDeviceImport
 from device_tui.device_sources.service import DeviceSourceService
 from device_tui.interfaces.desktop_api.data_migration import PersistenceMigrationStatus
@@ -32,6 +34,7 @@ class BackendContext:
     terminal_executor: BackendTerminalExecutor
     ai_service: AiApplicationService
     ai_agent: DeviceAgent
+    ai_model: AiModelConfiguration
     mcp_service: DesktopMcpService
     ticket_store: WebSocketTicketStore
     access_token: str
@@ -45,3 +48,5 @@ class BackendContext:
     log_policy: dict[str, int] = field(default_factory=dict)
     data_root: Path | None = None
     ai_conversations: dict[str, AgentContext] = field(default_factory=dict)
+    ai_runtime: ApplicationAgentExecutor | None = None
+    ai_busy_conversations: set[str] = field(default_factory=set)

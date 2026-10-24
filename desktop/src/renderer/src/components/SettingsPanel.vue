@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Globe2,
   KeyRound,
+  Bot,
   LoaderCircle,
   Moon,
   Plug,
@@ -48,7 +49,18 @@ const emit = defineEmits<{
   deviceSourcesChanged: []
 }>()
 
-const activeTab = ref<'general' | 'sources'>('general')
+const activeTab = ref<'general' | 'sources' | 'ai'>('general')
+type AiModelSettings = { base_url: string; model: string; timeout: number; has_api_key: boolean; key_source: string }
+const aiSettings = ref<AiModelSettings | null>(null)
+const aiBaseUrl = ref('')
+const aiModel = ref('')
+const aiTimeout = ref(60)
+const aiSaving = ref(false)
+const aiTesting = ref(false)
+const aiError = ref('')
+const aiNotice = ref('')
+const aiProvider = computed(() => aiBaseUrl.value.includes('api.deepseek.com') ? 'deepseek' : aiBaseUrl.value.includes('api.openai.com') ? 'openai' : 'custom')
+const aiDirty = computed(() => !!aiSettings.value && (aiBaseUrl.value.trim() !== aiSettings.value.base_url || aiModel.value.trim() !== aiSettings.value.model || aiTimeout.value !== aiSettings.value.timeout))
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -140,6 +152,87 @@ async function loadSettings(): Promise<void> {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
     loading.value = false
+  }
+}
+
+async function loadAiSettings(): Promise<void> {
+  aiError.value = ''
+  try {
+    const settings = await desktopApi.aiModelSettings()
+    aiSettings.value = settings
+    aiBaseUrl.value = settings.base_url
+    aiModel.value = settings.model
+    aiTimeout.value = settings.timeout
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+function selectAiProvider(provider: string): void {
+  if (provider === 'deepseek') {
+    aiBaseUrl.value = 'https://api.deepseek.com'
+    aiModel.value = 'deepseek-flash'
+  } else if (provider === 'openai') {
+    aiBaseUrl.value = 'https://api.openai.com/v1'
+    aiModel.value = 'gpt-4o-mini'
+  } else {
+    aiBaseUrl.value = ''
+    aiModel.value = ''
+  }
+}
+
+async function saveAiSettings(): Promise<boolean> {
+  if (!aiBaseUrl.value.trim() || !aiModel.value.trim() || !Number.isFinite(aiTimeout.value) || aiTimeout.value < 1 || aiTimeout.value > 300) {
+    aiError.value = '请填写 API 地址、模型名称和 1–300 秒超时'
+    return false
+  }
+  aiSaving.value = true
+  aiError.value = ''
+  aiNotice.value = ''
+  try {
+    aiSettings.value = await desktopApi.updateAiModelSettings({ base_url: aiBaseUrl.value.trim(), model: aiModel.value.trim(), timeout: aiTimeout.value })
+    aiBaseUrl.value = aiSettings.value.base_url
+    aiModel.value = aiSettings.value.model
+    aiTimeout.value = aiSettings.value.timeout
+    aiNotice.value = '模型配置已保存并生效'
+    return true
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : String(cause)
+    return false
+  } finally {
+    aiSaving.value = false
+  }
+}
+
+async function manageAiKey(): Promise<void> {
+  aiError.value = ''
+  try {
+    const changed = await window.desktopApi.manageAiKey({
+      profileName: aiProvider.value === 'deepseek' ? 'DeepSeek' : aiProvider.value === 'openai' ? 'OpenAI' : 'AI 模型',
+      endpoint: aiBaseUrl.value,
+      hasPassword: aiSettings.value?.has_api_key || false
+    })
+    if (changed) {
+      aiSettings.value = await desktopApi.aiModelSettings()
+      aiNotice.value = aiSettings.value?.has_api_key ? '密钥已保存并生效' : '密钥已删除'
+    }
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function testAiSettings(): Promise<void> {
+  if (aiDirty.value && !(await saveAiSettings())) return
+  aiTesting.value = true
+  aiError.value = ''
+  aiNotice.value = ''
+  try {
+    await desktopApi.testAiModel()
+    aiNotice.value = '连接成功'
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    aiTesting.value = false
   }
 }
 
@@ -303,7 +396,7 @@ function updateTerminalFontSize(value: number): void {
 
 watch(() => props.open, async (open) => {
   if (!open) return
-  await loadSettings()
+  await Promise.all([loadSettings(), loadAiSettings()])
 })
 </script>
 
@@ -329,7 +422,7 @@ watch(() => props.open, async (open) => {
         </button>
       </header>
 
-      <nav v-if="allowPluginManagement" class="settings-tabs" aria-label="设置类别">
+      <nav class="settings-tabs" aria-label="设置类别">
         <button
           type="button"
           :class="{ active: activeTab === 'general' }"
@@ -337,6 +430,13 @@ watch(() => props.open, async (open) => {
           @click="activeTab = 'general'"
         >常规</button>
         <button
+          type="button"
+          :class="{ active: activeTab === 'ai' }"
+          :aria-current="activeTab === 'ai' ? 'page' : undefined"
+          @click="activeTab = 'ai'"
+        >AI 模型</button>
+        <button
+          v-if="allowPluginManagement"
           type="button"
           :class="{ active: activeTab === 'sources' }"
           :aria-current="activeTab === 'sources' ? 'page' : undefined"
@@ -441,6 +541,32 @@ watch(() => props.open, async (open) => {
         </div>
         </template>
 
+        <template v-else-if="activeTab === 'ai'">
+          <div class="ai-config">
+            <div class="ai-config-heading"><Bot :size="19" /><h3>模型接入</h3></div>
+            <fieldset>
+              <legend>供应商</legend>
+              <div class="theme-options ai-provider-options" role="group" aria-label="AI 供应商">
+                <button type="button" :class="{ active: aiProvider === 'deepseek' }" :aria-pressed="aiProvider === 'deepseek'" @click="selectAiProvider('deepseek')">DeepSeek</button>
+                <button type="button" :class="{ active: aiProvider === 'openai' }" :aria-pressed="aiProvider === 'openai'" @click="selectAiProvider('openai')">OpenAI</button>
+                <button type="button" :class="{ active: aiProvider === 'custom' }" :aria-pressed="aiProvider === 'custom'" @click="selectAiProvider('custom')">自定义</button>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>连接参数</legend>
+              <label class="settings-field"><span>API Base URL</span><input v-model.trim="aiBaseUrl" type="url" placeholder="https://api.example.com/v1" spellcheck="false" /></label>
+              <label class="settings-field"><span>模型名称</span><input v-model.trim="aiModel" type="text" placeholder="model-name" spellcheck="false" /></label>
+              <label class="settings-field compact"><span>请求超时（秒）</span><input v-model.number="aiTimeout" type="number" min="1" max="300" step="1" /></label>
+            </fieldset>
+            <fieldset>
+              <legend>API Key</legend>
+              <div class="ai-key-row"><span :class="['ai-key-state', { configured: aiSettings?.has_api_key }]"><KeyRound :size="14" />{{ aiSettings?.has_api_key ? (aiSettings.key_source === 'environment' ? '由环境变量提供' : '已保存在系统凭据库') : '未配置' }}</span><button type="button" @click="manageAiKey">{{ aiSettings?.has_api_key ? '管理密钥' : '设置密钥' }}</button></div>
+            </fieldset>
+            <button class="plugin-test-button" type="button" :disabled="aiSaving || aiTesting || !aiSettings?.has_api_key" @click="testAiSettings"><LoaderCircle v-if="aiTesting" class="spinning-icon" :size="14" /><RefreshCw v-else :size="14" />{{ aiTesting ? '正在测试…' : '测试连接' }}</button>
+            <p v-if="aiError" class="settings-status error" role="alert">{{ aiError }}</p>
+            <p v-else-if="aiNotice" class="settings-status success" role="status">{{ aiNotice }}</p>
+          </div>
+        </template>
         <template v-else>
           <div v-if="loading && !pluginResponse" class="plugin-loading" role="status">
             <LoaderCircle class="spinning-icon" :size="16" />正在发现插件…
@@ -618,15 +744,19 @@ watch(() => props.open, async (open) => {
       <footer class="settings-action-bar">
         <p
           class="settings-dirty-state"
-          :data-dirty="activeTab === 'general' ? logSettingsDirty : pluginDirty"
-          :data-state="activeTab === 'general' ? (error ? 'error' : loading ? 'loading' : saving ? 'saving' : notice ? 'success' : logSettingsDirty ? 'dirty' : 'saved') : (pluginError ? 'error' : pluginSaving || pluginTesting ? 'saving' : pluginNotice ? 'success' : pluginDirty ? 'dirty' : 'saved')"
-          :role="activeTab === 'general' ? (error ? 'alert' : 'status') : (pluginError ? 'alert' : 'status')"
+          :data-dirty="activeTab === 'general' ? logSettingsDirty : activeTab === 'ai' ? aiDirty : pluginDirty"
+          :data-state="activeTab === 'general' ? (error ? 'error' : loading ? 'loading' : saving ? 'saving' : notice ? 'success' : logSettingsDirty ? 'dirty' : 'saved') : activeTab === 'ai' ? (aiError ? 'error' : aiSaving || aiTesting ? 'saving' : aiNotice ? 'success' : aiDirty ? 'dirty' : 'saved') : (pluginError ? 'error' : pluginSaving || pluginTesting ? 'saving' : pluginNotice ? 'success' : pluginDirty ? 'dirty' : 'saved')"
+          :role="activeTab === 'general' ? (error ? 'alert' : 'status') : activeTab === 'ai' ? (aiError ? 'alert' : 'status') : (pluginError ? 'alert' : 'status')"
         >
-          <LoaderCircle v-if="activeTab === 'general' ? loading || saving : pluginSaving || pluginTesting" class="spinning-icon" :size="13" aria-hidden="true" />
+          <LoaderCircle v-if="activeTab === 'general' ? loading || saving : activeTab === 'ai' ? aiSaving || aiTesting : pluginSaving || pluginTesting" class="spinning-icon" :size="13" aria-hidden="true" />
           <i v-else aria-hidden="true"></i>
           <span v-if="activeTab === 'general'">
             <strong>{{ error ? '日志设置操作失败' : loading ? '正在读取日志设置' : saving ? '正在保存日志设置' : notice || (logSettingsDirty ? '日志设置有未保存修改' : '日志设置已保存') }}</strong>
             <small>{{ error || (logSettingsDirty ? '保存后目录和分卷大小才会生效' : '外观、窗口和终端字体即时生效') }}</small>
+          </span>
+          <span v-else-if="activeTab === 'ai'">
+            <strong>{{ aiError ? '模型配置操作失败' : aiSaving ? '正在保存模型配置' : aiTesting ? '正在测试连接' : aiNotice || (aiDirty ? '模型配置有未保存修改' : '模型配置已同步') }}</strong>
+            <small>{{ aiError || '更改将用于下一次 Agent 对话' }}</small>
           </span>
           <span v-else>
             <strong>{{ pluginError ? '插件操作失败' : pluginSaving ? '正在保存插件设置' : pluginTesting ? '正在验证插件' : pluginNotice || (pluginDirty ? '插件设置有未保存修改' : '插件设置已同步') }}</strong>
@@ -641,6 +771,13 @@ watch(() => props.open, async (open) => {
           @click="saveLogSettings"
         ><LoaderCircle v-if="saving" class="spinning-icon" :size="15" /><Save v-else :size="15" />{{ saving ? '正在保存…' : '保存日志设置' }}</button>
         <button
+          v-else-if="activeTab === 'ai'"
+          class="settings-save"
+          type="button"
+          :disabled="!aiDirty || aiSaving || aiTesting"
+          @click="saveAiSettings"
+        ><LoaderCircle v-if="aiSaving" class="spinning-icon" :size="15" /><Save v-else :size="15" />{{ aiSaving ? '正在保存…' : '保存模型设置' }}</button>
+        <button
           v-else
           class="settings-save"
           type="button"
@@ -653,6 +790,14 @@ watch(() => props.open, async (open) => {
 </template>
 
 <style scoped>
+.ai-config { display: grid; gap: 14px; max-width: 620px; }
+.ai-config-heading { display: flex; align-items: center; gap: 11px; color: var(--blue); }
+.ai-config-heading h3 { margin: 0 0 3px; color: var(--text); font-size: 15px; }
+.ai-provider-options { flex-wrap: wrap; }
+.ai-key-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.ai-key-row button { min-height: 31px; }
+.ai-key-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.ai-key-state.configured { color: var(--accent); }
 .settings-backdrop {
   position: fixed;
   inset: 0;

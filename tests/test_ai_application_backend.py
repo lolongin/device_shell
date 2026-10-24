@@ -161,11 +161,11 @@ def test_ai_chat_persists_device_and_session_context(monkeypatch) -> None:
     assert response.json()["session_id"] == "session-from-ui"
 
 
-def test_ai_chat_requires_a_device_or_session_target() -> None:
+def test_ai_chat_can_discover_resources_without_a_terminal_target() -> None:
     class FakeAgent:
         async def run(self, message: str, context) -> str:
             del message, context
-            raise AssertionError("agent should not run without a target")
+            return "可以先发现设备和任务"
 
     with _client() as client:
         client.app.state.context.ai_agent = FakeAgent()
@@ -175,8 +175,8 @@ def test_ai_chat_requires_a_device_or_session_target() -> None:
             json={"conversation_id": "c-no-target", "message": "检查 CPU"},
         )
 
-    assert response.status_code == 400
-    assert "device_id or session_id is required" in response.text
+    assert response.status_code == 200
+    assert response.json()["message"] == "可以先发现设备和任务"
 
 
 def test_parallel_batches_run_independent_targets_concurrently_and_serialize_same_target() -> None:

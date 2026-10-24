@@ -2,7 +2,7 @@ import { BrowserWindow } from 'electron'
 
 export function createCredentialWindow(
   parent: BrowserWindow,
-  mode: 'connect' | 'manage' | 'custom' | 'internal',
+  mode: 'connect' | 'manage' | 'custom' | 'internal' | 'ai',
   theme: 'dark' | 'light',
   preload: string,
 ): BrowserWindow {

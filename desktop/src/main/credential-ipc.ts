@@ -1,7 +1,7 @@
 import type { IpcMain, WebContents } from 'electron'
 import type { BackendResponse, BackendRuntime } from './backend-client.js'
 import { backendError, fetchBackend } from './backend-client.js'
-import type { CredentialDialogResult, DeviceConnectionRequest, InternalLoginPromptRequest, ProfileCredentialRequest } from './credential-types.js'
+import type { AiKeyPromptRequest, CredentialDialogResult, DeviceConnectionRequest, InternalLoginPromptRequest, ProfileCredentialRequest } from './credential-types.js'
 
 export interface TemporaryProfileSaveRequest {
   profileId?: string
@@ -13,7 +13,7 @@ export interface CredentialIpcDependencies {
   ipcMain: IpcMain
   getRenderer: () => WebContents | null
   getRuntime: () => BackendRuntime
-  prompt: (request: InternalLoginPromptRequest | DeviceConnectionRequest | ProfileCredentialRequest, mode: 'internal' | 'connect' | 'custom' | 'manage', initialPassword?: string) => Promise<CredentialDialogResult>
+  prompt: (request: InternalLoginPromptRequest | DeviceConnectionRequest | ProfileCredentialRequest | AiKeyPromptRequest, mode: 'internal' | 'connect' | 'custom' | 'manage' | 'ai', initialPassword?: string) => Promise<CredentialDialogResult>
   hasSensitiveKey: (value: unknown) => boolean
   resolveDeviceDefaults?: (request: DeviceConnectionRequest) => Promise<{ username: string; password: string }>
 }
@@ -127,5 +127,23 @@ export function registerInternalCredentialIpc(dependencies: CredentialIpcDepende
       body = ''
       for (const protocol of allowedProtocols) backendPayload[`${protocol}_password`] = ''
     }
+  })
+}
+
+export function registerAiCredentialIpc(dependencies: CredentialIpcDependencies): void {
+  dependencies.ipcMain.handle('ai:manage-key', async (event, request: AiKeyPromptRequest): Promise<boolean> => {
+    assertRenderer(event, dependencies)
+    if (!request || typeof request.profileName !== 'string' || request.profileName.length > 128
+      || typeof request.endpoint !== 'string' || request.endpoint.length > 2048
+      || typeof request.hasPassword !== 'boolean') throw new Error('Invalid AI key prompt')
+    let result = await dependencies.prompt(request, 'ai')
+    if (result.action === 'cancel') return false
+    const method = result.action === 'remove' ? 'DELETE' : 'PUT'
+    const body = result.action === 'submit' ? JSON.stringify({ api_key: result.password }) : undefined
+    try {
+      const response = await fetchBackend(dependencies.getRuntime(), '/api/v1/ai/model-key', method, body)
+      if (response.status < 200 || response.status >= 300) throw backendError(response)
+      return true
+    } finally { result = { action: 'cancel', password: '', save: false } }
   })
 }

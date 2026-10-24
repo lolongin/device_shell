@@ -78,6 +78,7 @@ interface LocalTerminalSummary {
 interface DesktopApi {
   getRuntimeConfig(): Promise<BackendRuntime>
   request(request: BackendRequest): Promise<BackendResponse>
+  openExternalLink(url: string): Promise<void>
   listLocalTerminals(): Promise<LocalTerminalSummary[]>
   openLocalTerminal(request?: { shell?: string; cwd?: string }): Promise<LocalTerminalSummary>
   subscribeLocalTerminal(sessionId: string): Promise<{ session: LocalTerminalSummary; output: string }>
@@ -91,6 +92,7 @@ interface DesktopApi {
   openProfileSession(request: ProfileCredentialRequest): Promise<import('./types').SessionSummary | null>
   openDeviceSession(request: DeviceConnectionRequest): Promise<import('./types').SessionSummary | null>
   manageProfileCredential(request: ProfileCredentialRequest): Promise<boolean>
+  manageAiKey(request: { profileName: string; endpoint: string; hasPassword: boolean }): Promise<boolean>
   saveTemporaryProfile(request: TemporaryProfileSaveRequest): Promise<BackendResponse>
   loginInternalService(request: InternalLoginPromptRequest): Promise<import('./types').InternalAuthStatus | null>
   chooseDeviceImport(): Promise<import('./types').DeviceImportPreview | null>

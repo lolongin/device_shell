@@ -51,6 +51,29 @@ import type {
   AiChatResponse
 } from '../types'
 
+export interface AgentEventRecord {
+  sequence: number
+  type: string
+  data: Record<string, unknown>
+  created_at: number
+}
+export interface AgentApproval {
+  id: string
+  tool: string
+  status: string
+  arguments: Record<string, unknown>
+  preview: Record<string, unknown>
+  content_hash: string
+  expires_at: number
+  result?: Record<string, unknown>
+}
+export interface AgentConversationState {
+  cursor: number
+  busy: boolean
+  events: AgentEventRecord[]
+  approvals: AgentApproval[]
+}
+
 export interface WorkflowDefinitionResponse { workflows: Array<Record<string, unknown>> }
 export interface WorkflowActionCatalogResponse { actions: WorkflowActionCatalogEntry[] }
 export interface WorkflowCustomActionResponse { actions: Array<Record<string, unknown>> }
@@ -147,6 +170,11 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
 }
 
 export const desktopApi = {
+  aiModelSettings: (): Promise<{ base_url: string; model: string; timeout: number; has_api_key: boolean; key_source: string }> =>
+    request('/api/v1/ai/model'),
+  updateAiModelSettings: (value: { base_url: string; model: string; timeout: number }): Promise<{ base_url: string; model: string; timeout: number; has_api_key: boolean; key_source: string }> =>
+    request('/api/v1/ai/model', { method: 'PUT', body: JSON.stringify(value) }),
+  testAiModel: (): Promise<{ success: boolean }> => request('/api/v1/ai/model/test', { method: 'POST' }),
   deviceSource: (): Promise<DeviceSourceStatus> => request('/api/v1/device-source'),
   deviceSourcePlugins: (): Promise<DeviceSourcePluginListResponse> =>
     request('/api/v1/device-source/plugins'),
@@ -341,6 +369,10 @@ export const desktopApi = {
   }): Promise<AiChatResponse> =>
     request('/api/v1/ai/chat', { method: 'POST', body: JSON.stringify(payload) }),
   aiApprovals: (): Promise<AiApprovalListResponse> => request('/api/v1/ai/approvals'),
+  aiAgentState: (conversationId: string, after = 0): Promise<AgentConversationState> =>
+    request(`/api/v1/ai/agent/conversations/${encodeURIComponent(conversationId)}?after=${after}`),
+  aiAgentResolve: (conversationId: string, approvalId: string, decision: 'approve' | 'reject'): Promise<{ approval: AgentApproval }> =>
+    request(`/api/v1/ai/agent/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(approvalId)}/${decision}`, { method: 'POST' }),
   aiApprove: (approvalId: string): Promise<{ approval: AiApproval }> =>
     request(`/api/v1/ai/approvals/${encodeURIComponent(approvalId)}/approve`, { method: 'POST' }),
   aiReject: (approvalId: string): Promise<{ approval: AiApproval }> =>

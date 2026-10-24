@@ -125,7 +125,8 @@ def test_product_profile_hides_developer_source_controls() -> None:
     assert "workspace.deviceSourceStatus.allow_source_switch" in app
     assert "!workspace.deviceSourceStatus.allow_source_switch && workspace.deviceSourceStatus.allow_import" in app
     assert ':allow-plugin-management="workspace.deviceSourceStatus.allow_plugin_management"' in app
-    assert 'v-if="allowPluginManagement" class="settings-tabs"' in settings
+    assert 'class="settings-tabs"' in settings
+    assert 'v-if="allowPluginManagement"' in settings
     assert "if (props.allowPluginManagement)" in settings
     assert "allow_plugin_management: boolean" in types
     assert "product-profile.json" in backend
@@ -151,14 +152,14 @@ def test_terminal_automation_surface_is_removed() -> None:
         assert "quick-send" not in source
 
 
-def test_electron_activity_rail_does_not_expose_ai_tab() -> None:
+def test_electron_activity_rail_opens_ai_workspace() -> None:
     app = read_renderer_app_source()
 
-    assert "import AiWorkspace" not in app
-    assert "<AiWorkspace" not in app
-    assert "toggleAiPanel" not in app
-    assert 'title="AI助手"' not in app
-    assert "<Bot" not in app
+    assert "import AiWorkspace" in app
+    assert "<AiWorkspace" in app
+    assert 'title="AI 操作助手"' in app
+    assert "workspace.aiPanelOpen = !workspace.aiPanelOpen" in app
+    assert "<Bot" in app
 
 
 def test_electron_side_layout_uses_hierarchical_session_manager() -> None:

@@ -23,6 +23,12 @@ export interface InternalLoginPromptRequest {
   autoLogin: boolean
 }
 
+export interface AiKeyPromptRequest {
+  profileName: string
+  endpoint: string
+  hasPassword: boolean
+}
+
 export interface CredentialDialogResult {
   action: 'submit' | 'remove' | 'cancel'
   password: string

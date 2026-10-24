@@ -25,8 +25,9 @@ from device_tui.application import (
     build_desktop_application,
 )
 from device_tui.application.settings import MemorySettingsStore, SettingsStore
-from device_tui.application.ai.agent import AgentToolExecutor, DeviceAgent
-from device_tui.application.ai.llm import OpenAiCompatibleClient
+from device_tui.application.ai.agent import DeviceAgent
+from device_tui.application.ai.agent.runtime import ApplicationAgentExecutor
+from device_tui.application.ai.llm.configuration import AiModelConfiguration
 from device_tui.device_sources.import_parser import ParsedDeviceImport
 from device_tui.device_sources.imported import ImportedDeviceStore, MemoryImportedDeviceStore
 from device_tui.device_sources.plugins import DeviceSourcePlugin
@@ -44,6 +45,7 @@ from device_tui.infrastructure.persistence.sqlite_workflows import (
 from .session_hub import SessionHub
 from .terminal_executor import BackendTerminalExecutor
 from .mcp_service import DesktopMcpService
+from .agent_tools import LocalAgentTools
 from .data_migration import PersistenceMigrationStatus, prepare_persistent_data, sqlite_user_version
 from .session_logging import FileSessionLogSink
 from .ws_tickets import WebSocketTicketStore
@@ -356,18 +358,23 @@ def create_app(
         agent_max_iterations = int(os.getenv("DEVICE_AI_MAX_ITERATIONS", "30"))
     except ValueError:
         agent_max_iterations = 30
-    ai_agent = DeviceAgent(
-        OpenAiCompatibleClient.from_env(),
-        AgentToolExecutor(ai_service),
-        max_iterations=agent_max_iterations,
-        event_callback=lambda event: desktop.events.publish(event.type, data=event.data),
-    )
     mcp_service = DesktopMcpService(
         desktop,
         terminal_executor,
         ai_service,
         plan_store=desktop_store,
         source_service=repo,
+    )
+    agent_tools = LocalAgentTools(mcp_service)
+    ai_runtime = ApplicationAgentExecutor(
+        agent_tools,
+        audit=ai_service.record_mcp_audit,
+        event_callback=lambda event: desktop.events.publish(event.type, data=event.data),
+    )
+    ai_model = AiModelConfiguration(desktop.settings, desktop.secrets)
+    ai_agent = DeviceAgent(
+        ai_model.client(), ai_runtime,
+        max_iterations=agent_max_iterations, event_callback=ai_runtime.record,
     )
     legacy_import = (
         desktop.profiles.import_legacy_state(legacy_state_path)
@@ -399,6 +406,8 @@ def create_app(
         terminal_executor=terminal_executor,
         ai_service=ai_service,
         ai_agent=ai_agent,
+        ai_model=ai_model,
+        ai_runtime=ai_runtime,
         mcp_service=mcp_service,
         ticket_store=ticket_store,
         access_token=access_token,
@@ -410,6 +419,7 @@ def create_app(
         log_policy=log_policy,
         data_root=data_root,
     )
+    agent_tools.context = context
 
     app = FastAPI(
         title="OdyTerm Desktop API",

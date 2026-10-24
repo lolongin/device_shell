@@ -78,6 +78,8 @@ const desktopApi = {
   getRuntimeConfig: (): Promise<RendererRuntime> => ipcRenderer.invoke('runtime:get'),
   request: (request: BackendRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('backend:request', request),
+  openExternalLink: (url: string): Promise<void> =>
+    ipcRenderer.invoke('external:open-link', url),
   listLocalTerminals: (): Promise<LocalTerminalSummary[]> => ipcRenderer.invoke('local-terminal:list'),
   openLocalTerminal: (request?: { shell?: string; cwd?: string }): Promise<LocalTerminalSummary> =>
     ipcRenderer.invoke('local-terminal:open', request),
@@ -117,6 +119,8 @@ const desktopApi = {
     ipcRenderer.invoke('credential:open-device-session', request),
   manageProfileCredential: (request: ProfileCredentialRequest): Promise<boolean> =>
     ipcRenderer.invoke('credential:manage-profile', request),
+  manageAiKey: (request: { profileName: string; endpoint: string; hasPassword: boolean }): Promise<boolean> =>
+    ipcRenderer.invoke('ai:manage-key', request),
   saveTemporaryProfile: (request: TemporaryProfileSaveRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('credential:create-temporary-profile', request),
   loginInternalService: (request: InternalLoginPromptRequest): Promise<unknown | null> =>

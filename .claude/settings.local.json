@@ -14,7 +14,8 @@
       "Bash(C:/Python313/python.exe *)",
       "Bash(claude mcp *)",
       "mcp__device_tui__workflow_authoring_describe",
-      "mcp__device_tui__device_list"
+      "mcp__device_tui__device_list",
+      "mcp__device_tui__app_status"
     ]
   }
 }

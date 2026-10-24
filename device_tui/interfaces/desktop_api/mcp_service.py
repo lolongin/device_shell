@@ -28,12 +28,17 @@ from device_tui.application import (
     PlanStore,
 )
 from device_tui.application.profiles import ConnectionProfileDraft, ProfileEndpoint
-from device_tui.application.errors import ResourceNotFoundError, UnsupportedOperationError
+from device_tui.application.errors import (
+    ApplicationConflictError,
+    ResourceNotFoundError,
+    UnsupportedOperationError,
+)
 from device_tui.application.terminal.orchestration import (
     TerminalPlanError,
     parse_terminal_plan,
 )
 from device_tui.application.terminal.outcome import classify_terminal_prompt
+from device_tui.application.tasking.observation import TaskObserver
 from .terminal_executor import BackendTerminalExecutor
 
 
@@ -60,6 +65,7 @@ class DesktopMcpService:
         self.terminal_executor = terminal_executor
         self.ai = ai
         self.source_service = source_service
+        self._task_observer = TaskObserver(desktop.task_service)
         self._selected_device_id = ""
         self._plan_compiler = WorkflowPlanCompiler(catalog=desktop.workflows)
         self._plans: dict[str, tuple[WorkflowPlan, Any]] = {}
@@ -77,8 +83,13 @@ class DesktopMcpService:
         self._lock = threading.RLock()
 
     async def invoke(self, tool: str, params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        handler_name = tool.replace(".", "_")
         idempotency_key = str(params.get("idempotency_key") or "").strip()
-        cache_key = f"{tool}\0{idempotency_key}" if idempotency_key else ""
+        live_reads = {"task_get", "task_wait", "task_list", "decision_get", "task_framework_get"}
+        cache_key = (
+            f"{handler_name}\0{idempotency_key}"
+            if idempotency_key and handler_name not in live_reads else ""
+        )
         if cache_key:
             with self._lock:
                 cached = self._idempotency.get(cache_key)
@@ -87,13 +98,12 @@ class DesktopMcpService:
         # Public MCP names use namespaces (task.create, decision.get, ...),
         # while handlers stay ordinary Python identifiers.  Keep the legacy
         # underscore names working and normalize only at this boundary.
-        handler_name = tool.replace(".", "_")
         handler = getattr(self, f"_tool_{handler_name}", None)
         if not callable(handler):
             return self._error(404, "tool_not_found", f"Unsupported MCP tool: {tool}")
         try:
             data = await handler(dict(params))
-        except ApplicationError as exc:
+        except (ApplicationError, ApplicationConflictError) as exc:
             return self._error(409 if exc.code == "conflict" else 400, exc.code, exc.message, exc.details)
         except TerminalPlanError as exc:
             status = 409 if exc.code in {
@@ -130,7 +140,7 @@ class DesktopMcpService:
                 "devices": {"read": ["list", "get", "select"], "write": ["open", "action"]},
                 "sessions": {"read": ["list", "status"], "write": ["open", "reconnect", "disconnect", "close"]},
                 "workflows": {"read": ["list", "plan.get", "authoring.describe", "script.list", "script.get", "definition.list", "definition.get"], "write": ["run", "plan.validate", "plan.approve", "replan", "script.create", "script.update", "script.delete", "script.validate", "script.test", "definition.create", "definition.update", "definition.validate", "definition.publish", "definition.run"]},
-                "tasks": {"read": ["list", "get", "decision.get", "framework.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply", "framework.start", "framework.execute"]},
+                "tasks": {"read": ["list", "get", "wait", "decision.get", "framework.get"], "write": ["create", "resume", "pause", "cancel", "decision.apply", "framework.start", "framework.execute"]},
                 "terminal": {"read": ["read", "execution.get", "interact.get"], "write": ["execute", "batch", "parallel", "interact", "interact.start", "interact.send", "interact.resume", "interact.cancel", "execution.cancel"]},
                 "profiles": {"read": ["list"], "write": ["save", "delete"]},
                 "connections": {"write": ["open"]},
@@ -138,6 +148,21 @@ class DesktopMcpService:
                 "transfers": {"read": ["settings", "files", "operation.get", "operation.wait"], "write": ["settings", "service.start", "service.stop", "service.log.clear", "start", "operation.cancel"]},
                 "device_sources": {"read": ["status", "plugins"], "write": ["switch", "plugin.update", "plugin.test"]},
                 "ai": {"read": ["skills", "result", "approval", "audit"], "write": ["execute", "approval"]},
+            },
+            "orchestration": {
+                "discovery": ["device.list", "workflow.list", "workflow.authoring.describe"],
+                "plan_execution": ["workflow.plan.validate", "workflow.run"],
+                "observation": {
+                    "tools": ["task.get", "task.wait"],
+                    "max_tasks": TaskObserver.MAX_TASKS,
+                    "max_wait_seconds": TaskObserver.MAX_WAIT_SECONDS,
+                    "cursor": "opaque task-and-decision content hash",
+                    "wake_on": ["change", "terminal", "attention", "timeout"],
+                    "task_id_kind": "TaskRecord; use task.framework.get for TaskRun IDs",
+                },
+                "recovery": ["decision.get", "decision.apply", "task.resume", "task.replan"],
+                "decision_conflicts": "refresh context and use its checkpoint_revision as expected_revision",
+                "device_filters": ["query", "device_ids", "owner", "status", "protocol", "limit", "offset"],
             },
             "boundaries": {
                 "workflow_engine": "task_only",
@@ -337,11 +362,51 @@ class DesktopMcpService:
     async def _tool_transfer_start(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._tool_file_transfer_start(params)
 
-    async def _tool_device_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+    async def _tool_device_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        offset = params.get("offset", 0)
+        limit = params.get("limit")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000):
+            raise ValueError("limit must be between 1 and 1000")
+        device_ids = params.get("device_ids")
+        if device_ids is not None and (
+            not isinstance(device_ids, list) or any(not isinstance(item, str) for item in device_ids)
+        ):
+            raise ValueError("device_ids must be a list of strings")
+        ids = set(device_ids) if device_ids is not None else None
+        query = str(params.get("query") or "").strip().casefold()
+        owner = str(params.get("owner") or "").casefold()
+        status = str(params.get("status") or "").casefold()
+        protocol = str(params.get("protocol") or "").casefold()
+        if protocol and protocol not in {"ssh", "telnet", "serial", "simulated"}:
+            raise ValueError("Unsupported device protocol filter")
         inventory = self.desktop.devices.list_inventory()
+        devices = []
+        for item in inventory.devices:
+            device = self._device_payload(item)
+            if ids is not None and device["id"] not in ids:
+                continue
+            if owner and str(device.get("owner", "")).casefold() != owner:
+                continue
+            if status and str(device.get("status", "")).casefold() != status:
+                continue
+            if protocol and protocol not in device["protocols"]:
+                continue
+            searchable = " ".join(str(device.get(key) or "") for key in (
+                "id", "name", "domain", "device_type", "ssh_endpoint", "telnet_endpoint",
+                "serial_endpoint", "site", "rack", "vendor", "model",
+            ))
+            if query and query not in searchable.casefold():
+                continue
+            devices.append(device)
+        end = len(devices) if limit is None else offset + limit
+        page = devices[offset:end]
+        next_offset = offset + len(page) if offset + len(page) < len(devices) else None
         return {
             "current_user": inventory.current_user,
-            "devices": [self._device_payload(item) for item in inventory.devices],
+            "devices": page, "total": len(devices), "offset": offset,
+            "next_offset": next_offset, "truncated": next_offset is not None,
         }
 
     async def _tool_device_get(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -630,7 +695,13 @@ class DesktopMcpService:
             return None
 
     async def _tool_task_get(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"task": self._task_payload(self.desktop.task_service.get(self._text(params, "task_id")))}
+        return self._task_observer.observe(self._text(params, "task_id"))
+
+    async def _tool_task_wait(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._task_observer.wait(
+            params.get("task_ids"), params.get("after_cursors"),
+            float(params.get("timeout_seconds", 20)),
+        )
 
     async def _get_decision(self, params: dict[str, Any]) -> dict[str, Any]:
         decision = self.desktop.task_service.get_decision(self._text(params, "task_id"))
@@ -660,11 +731,31 @@ class DesktopMcpService:
         else:
             action = Action(str(action_value or ""), target_step=str(params.get("target_step") or ""), parameters=dict(params.get("parameters") or {}))
         task_id = self._text(params, "task_id")
+        context = self.desktop.task_service.get_decision(task_id)
+        if context is None:
+            raise UnsupportedOperationError("Task has no pending decision.")
+        if "agent" not in context.decision_modes:
+            raise UnsupportedOperationError("This decision requires user input.")
+        supplied_revisions = [
+            value for value in (
+                params.get("expected_revision"),
+                action_value.get("expected_revision") if isinstance(action_value, dict) else None,
+            )
+            if value is not None
+        ]
+        for revision in supplied_revisions:
+            if isinstance(revision, bool) or not isinstance(revision, int):
+                raise ValueError("expected_revision must be an integer.")
+            if revision != context.checkpoint_revision:
+                raise ApplicationConflictError(
+                    "Decision checkpoint changed; read the current decision before retrying.",
+                    details={"expected_revision": revision, "current_revision": context.checkpoint_revision},
+                )
         decision = Decision(
             decision_id=str(params.get("decision_id") or f"mcp-{task_id}"),
-            actor=DecisionActor(type=str(params.get("actor_type") or "agent"), id=str(params.get("actor_id") or "agent")),
+            actor=DecisionActor(type="agent", id=str(params.get("actor_id") or "agent")),
             action=action, reason=str(params.get("reason") or ""), task_id=task_id,
-            expected_revision=(int(params["expected_revision"]) if params.get("expected_revision") is not None else None),
+            expected_revision=context.checkpoint_revision,
         )
         return {"task": self._task_payload(self.desktop.task_service.apply_decision(task_id, decision))}
 

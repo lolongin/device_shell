@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import {
+  Bot,
   Cable,
   ChevronDown,
   ChevronRight,
@@ -45,6 +46,7 @@ import CommandWorkspace from './components/CommandWorkspace.vue'
 import CompactSelect from './components/CompactSelect.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import AiWorkspace from './components/AiWorkspace.vue'
 import SessionManager from './components/SessionManager.vue'
 import SessionContextMenus from './components/SessionContextMenus.vue'
 import TerminalSplitWorkspace from './components/TerminalSplitWorkspace.vue'
@@ -1491,6 +1493,7 @@ const sessionWorkspaceContext = {
         <MonitorDot :size="19" /><span class="sr-only">设备与终端</span>
       </button>
       <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Studio" :aria-pressed="workflowPanelOpen" @click="toggleWorkflowPanel"><Workflow :size="19" /><span class="sr-only">Workflow Studio</span></button>
+      <button class="rail-button" :class="{ active: workspace.aiPanelOpen }" type="button" title="AI 操作助手" :aria-pressed="workspace.aiPanelOpen" @click="workspace.aiPanelOpen = !workspace.aiPanelOpen"><Bot :size="19" /><span class="sr-only">AI 操作助手</span></button>
       <button
         class="rail-button"
         :class="{ active: workspace.transferPanelOpen }"
@@ -1690,6 +1693,7 @@ const sessionWorkspaceContext = {
       @close="workspace.cancelDeviceImport"
       @commit="workspace.commitDeviceImport"
     />
+    <AiWorkspace />
     <SettingsPanel
       :open="settingsPanelOpen"
       :theme-mode="themeMode"

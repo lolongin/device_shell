@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import time
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from device_tui.interfaces.desktop_api.app import create_app
@@ -516,8 +518,65 @@ def test_agent_plan_is_validated_before_running() -> None:
         })
         task_id = started["data"]["task"]["id"]
         task = _call(client, "task.get", {"task_id": task_id})
+        for _ in range(10):
+            waited = _call(client, "task.wait", {
+                "task_ids": [task_id],
+                "after_cursors": {task_id: task["data"]["cursor"]},
+                "timeout_seconds": 2,
+            })["data"]
+            observation = waited["observations"][0]
+            if observation["terminal"]:
+                break
+            task = {"data": observation}
+        assert observation["terminal"] is True
+        assert observation["next_action"]["kind"] == "complete"
+        assert "SimOS V1.0" in str(observation["task"]["result"])
 
     assert task["data"]["task"]["workflow_id"] == "agent-version-check"
+
+
+def test_device_discovery_filters_intersect_before_pagination() -> None:
+    with _client() as client:
+        inventory = _call(client, "device.list")["data"]
+        devices = inventory["devices"]
+        assert inventory["total"] == len(devices)
+        first = _call(client, "device.list", {"limit": 1})["data"]
+        assert first["devices"] == devices[:1]
+        assert first["next_offset"] == 1
+        second = _call(client, "device.list", {"limit": 1, "offset": 1})["data"]
+        assert second["devices"] == devices[1:2]
+        target = devices[0]
+        filtered = _call(client, "device.list", {
+            "device_ids": [target["id"]], "query": target["name"].upper(),
+            "owner": target["owner"], "status": target["status"],
+            "protocol": target["protocols"][0], "limit": 1,
+        })["data"]
+        assert filtered["devices"] == [target]
+        assert filtered["total"] == 1
+        assert filtered["next_offset"] is None
+        assert _call(client, "device.list", {"device_ids": []})["data"]["total"] == 0
+        assert _call(client, "device.list", {"query": "missing-device-xyz"})["data"]["devices"] == []
+        capabilities = _call(client, "app.capabilities")["data"]
+        assert "wait" in capabilities["resources"]["tasks"]["read"]
+        assert capabilities["orchestration"]["observation"]["max_tasks"] == 32
+
+
+@pytest.mark.parametrize("tool,payload,status", [
+    ("device.list", {"limit": 0}, 400),
+    ("device.list", {"offset": -1}, 400),
+    ("device.list", {"limit": True}, 400),
+    ("device.list", {"protocol": "ftp"}, 400),
+    ("task.wait", {"task_ids": []}, 400),
+    ("task.wait", {"task_ids": ["missing"], "timeout_seconds": 21}, 400),
+    ("task.wait", {"task_ids": ["missing"], "timeout_seconds": 0}, 400),
+])
+def test_discovery_and_wait_errors(tool: str, payload: dict, status: int) -> None:
+    with _client() as client:
+        response = client.post(
+            f"/api/v1/mcp/{tool}", headers={"Authorization": f"Bearer {TOKEN}"}, json=payload,
+        )
+        assert response.status_code == status
+        assert response.json()["ok"] is False
 
 
 def test_agent_replan_creates_linked_task_revision() -> None:

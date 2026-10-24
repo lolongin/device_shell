@@ -4,14 +4,15 @@ import type { BackendRuntime } from './backend-client.js'
 import { fetchBackend } from './backend-client.js'
 import type {
   CredentialDialogResult,
+  AiKeyPromptRequest,
   DeviceConnectionRequest,
   InternalLoginPromptRequest,
   ProfileCredentialRequest
 } from './credential-types.js'
 import { createCredentialWindow } from './credential-window.js'
 
-type CredentialRequest = ProfileCredentialRequest | DeviceConnectionRequest | InternalLoginPromptRequest
-type CredentialMode = 'connect' | 'manage' | 'custom' | 'internal'
+type CredentialRequest = ProfileCredentialRequest | DeviceConnectionRequest | InternalLoginPromptRequest | AiKeyPromptRequest
+type CredentialMode = 'connect' | 'manage' | 'custom' | 'internal' | 'ai'
 
 interface CredentialDialogDependencies {
   mainWindow: BrowserWindow

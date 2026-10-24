@@ -20,7 +20,7 @@ export function credentialDialogPath(): string {
 
 export function hasSensitiveKey(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
-  return Object.entries(value).some(([key, child]) => /password|secret|token/i.test(key) || hasSensitiveKey(child))
+  return Object.entries(value).some(([key, child]) => /password|secret|token|api[_-]?key/i.test(key) || hasSensitiveKey(child))
 }
 
 export function validateTransferSettingsSaveRequest(value: unknown): asserts value is TransferSettingsSaveRequest {

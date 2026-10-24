@@ -14,6 +14,7 @@ import { backendError, fetchBackend } from './backend-client.js'
 import type { BackendResponse } from './backend-client.js'
 import type {
   CredentialDialogResult,
+  AiKeyPromptRequest,
   DeviceConnectionRequest,
   InternalLoginPromptRequest,
   ProfileCredentialRequest
@@ -27,7 +28,8 @@ import { registerClipboardIpc } from './clipboard-ipc.js'
 import { registerTransferIpc } from './transfer-ipc.js'
 import { registerLogIpc } from './log-ipc.js'
 import { registerFileIpc } from './file-ipc.js'
-import { registerInternalCredentialIpc, registerSessionCredentialIpc } from './credential-ipc.js'
+import { registerExternalLinkIpc } from './external-link-ipc.js'
+import { registerAiCredentialIpc, registerInternalCredentialIpc, registerSessionCredentialIpc } from './credential-ipc.js'
 import {
   credentialDialogPath as credentialDialogPathImpl,
   hasSensitiveKey as hasSensitiveKeyImpl,
@@ -85,6 +87,7 @@ function validateBackendRequest(request: BackendRequest): void {
     || request.path === '/api/v1/internal-auth/login'
     || request.path === '/api/v1/device-source/import/preview'
     || request.path === '/api/v1/file-transfer/password'
+    || request.path.startsWith('/api/v1/ai/model-key')
   ) {
     throw new Error('This endpoint requires an isolated main-process bridge')
   }
@@ -132,8 +135,8 @@ async function resolveDeviceCredentialDefaults(
 }
 
 async function promptForCredential(
-  request: ProfileCredentialRequest | DeviceConnectionRequest | InternalLoginPromptRequest,
-  mode: 'connect' | 'manage' | 'custom' | 'internal',
+  request: ProfileCredentialRequest | DeviceConnectionRequest | InternalLoginPromptRequest | AiKeyPromptRequest,
+  mode: 'connect' | 'manage' | 'custom' | 'internal' | 'ai',
   initialPassword = ''
 ): Promise<CredentialDialogResult> {
   if (!mainWindow) return { action: 'cancel', password: '', save: false }
@@ -342,6 +345,7 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('credential:open-profile-session')
   ipcMain.removeHandler('credential:open-device-session')
   ipcMain.removeHandler('credential:manage-profile')
+  ipcMain.removeHandler('ai:manage-key')
   ipcMain.removeHandler('credential:create-temporary-profile')
   ipcMain.removeHandler('internal-auth:login')
   ipcMain.removeHandler('device-source:choose-import')
@@ -358,6 +362,7 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('window:set-always-on-top')
   ipcMain.removeHandler('window:set-native-theme')
   ipcMain.removeHandler('window:show-application-menu')
+  ipcMain.removeHandler('external:open-link')
   registerRuntimeIpc({
     ipcMain,
     getRenderer: () => mainWindow?.webContents || null,
@@ -370,6 +375,7 @@ async function createWindow(): Promise<void> {
     setTheme: (mode) => { nativeTheme.themeSource = mode },
     applicationMenu
   })
+  registerExternalLinkIpc(ipcMain, () => mainWindow?.webContents || null)
   registerLocalTerminalIpc({
     ipcMain,
     getWebContents: () => mainWindow?.webContents || null,
@@ -414,6 +420,7 @@ async function createWindow(): Promise<void> {
   })
   Menu.setApplicationMenu(applicationMenu)
   mainWindow.setMenuBarVisibility(false)
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
   mainWindow.once('ready-to-show', () => {
     const window = mainWindow
@@ -453,6 +460,13 @@ async function createWindow(): Promise<void> {
     prompt: (request, mode, initialPassword) => promptForCredential(request, mode, initialPassword),
     hasSensitiveKey,
     resolveDeviceDefaults: resolveDeviceCredentialDefaults
+  })
+  registerAiCredentialIpc({
+    ipcMain,
+    getRenderer: () => mainWindow?.webContents || null,
+    getRuntime: () => backend.config,
+    prompt: (request, mode) => promptForCredential(request, mode),
+    hasSensitiveKey
   })
   /* Credential IPC contract markers:
   credential:open-profile-session

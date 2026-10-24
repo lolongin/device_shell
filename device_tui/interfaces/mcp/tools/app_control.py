@@ -23,9 +23,21 @@ def register_app_control_tools(mcp: Any, gateway: McpGateway) -> None:
         return _call(gateway, "system_status")
 
     @mcp.tool(name="device.list")
-    def device_list() -> dict[str, Any]:
-        """List devices visible to the active OdyTerm source."""
-        return _call(gateway, "device_list")
+    def device_list(
+        query: str = "", device_ids: list[str] | None = None,
+        owner: str = "", status: str = "", protocol: str = "",
+        limit: int | None = None, offset: int = 0,
+    ) -> dict[str, Any]:
+        """Discover credential-free devices using intersected filters and pagination.
+
+        Query searches identity, type, addresses and location; owner/status match
+        exactly (case-insensitive). Protocol is ssh/telnet/serial/simulated.
+        limit is 1-1000 or omitted for all; continue using next_offset.
+        """
+        return _call(
+            gateway, "device_list", query=query, device_ids=device_ids,
+            owner=owner, status=status, protocol=protocol, limit=limit, offset=offset,
+        )
 
     @mcp.tool(name="device.get")
     def device_get(device_id: str) -> dict[str, Any]:

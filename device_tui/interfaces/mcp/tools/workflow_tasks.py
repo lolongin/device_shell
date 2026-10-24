@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..gateway import McpGateway
+from ..schemas import DecisionActionInput, WorkflowPlanInput
 
 
 def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
@@ -38,8 +39,25 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
 
     @mcp.tool(name="task.get")
     def task_get(task_id: str) -> dict[str, Any]:
-        """Read a Task, checkpoint, step results, and current status."""
+        """Read task, decision context, cursor, and recovery guidance. Does not execute actions."""
         return gateway.call("mcp_tool", "task.get", task_id=task_id)
+
+    @mcp.tool(name="task.wait")
+    def task_wait(
+        task_ids: list[str],
+        after_cursors: dict[str, str] | None = None,
+        timeout_seconds: float = 20,
+    ) -> dict[str, Any]:
+        """Observe 1-32 tasks until any changes, ends, or needs attention (0-20s).
+
+        Omit cursors for an initial snapshot; pass each observation's cursor on
+        subsequent waits. Remove terminal/attention tasks before waiting again.
+        This observes TaskRecord IDs, not task.framework TaskRun IDs.
+        """
+        return gateway.call(
+            "mcp_tool", "task.wait", task_ids=task_ids,
+            after_cursors=after_cursors, timeout_seconds=timeout_seconds,
+        )
 
     @mcp.tool(name="task.list")
     def task_list(limit: int = 200) -> dict[str, Any]:
@@ -193,9 +211,9 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
         return gateway.call("mcp_tool", "workflow.definition.run", workflow_id=workflow_id, device_id=device_id, device_ids=device_ids or [], inputs=inputs or {}, draft=draft, dry_run=dry_run, confirmed_risks=confirmed_risks, connection=connection)
 
     @mcp.tool(name="workflow.plan.validate")
-    def workflow_plan_validate(plan: dict[str, Any]) -> dict[str, Any]:
+    def workflow_plan_validate(plan: WorkflowPlanInput) -> dict[str, Any]:
         """Validate and compile an Agent-authored declarative workflow plan."""
-        return gateway.call("mcp_tool", "workflow.plan.validate", plan=plan, source="agent")
+        return gateway.call("mcp_tool", "workflow.plan.validate", plan=plan.model_dump(exclude_unset=True), source="agent")
 
     @mcp.tool(name="workflow.plan.get")
     def workflow_plan_get(plan_id: str) -> dict[str, Any]:
@@ -238,10 +256,10 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
     @mcp.tool(name="task.replan")
     def task_replan(
         parent_task_id: str,
-        plan: dict[str, Any],
+        plan: WorkflowPlanInput,
     ) -> dict[str, Any]:
         """Validate and run a new plan linked to a failed or completed task."""
-        return gateway.call("mcp_tool", "task.replan", parent_task_id=parent_task_id, plan=plan, source="agent")
+        return gateway.call("mcp_tool", "task.replan", parent_task_id=parent_task_id, plan=plan.model_dump(exclude_unset=True), source="agent")
 
     @mcp.tool(name="decision.get")
     def decision_get(task_id: str) -> dict[str, Any]:
@@ -251,7 +269,7 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
     @mcp.tool(name="decision.apply")
     def decision_apply(
         task_id: str,
-        action: dict[str, Any],
+        action: DecisionActionInput,
         reason: str = "",
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
@@ -260,7 +278,7 @@ def register_workflow_task_tools(mcp: Any, gateway: McpGateway) -> None:
             "mcp_tool",
             "decision.apply",
             task_id=task_id,
-            action=action,
+            action=action.model_dump(exclude_unset=True),
             reason=reason,
             expected_revision=expected_revision,
             actor_type="agent",

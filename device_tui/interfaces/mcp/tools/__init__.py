@@ -1,10 +1,7 @@
 """Public MCP tool registration.
 
-The stdio MCP server intentionally exposes one small, namespaced surface for
-Agent/Operator use.  Device/session/terminal/transfer helpers remain backend
-implementation and HTTP compatibility details; exposing all of them here made
-the same capability appear under several names and encouraged Agents to bypass
-the Task/Decision boundary.
+The stdio server exposes namespaced discovery, terminal, transfer, task,
+workflow and decision tools. All execution goes through backend policy.
 """
 
 from __future__ import annotations

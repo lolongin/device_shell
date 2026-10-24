@@ -30,7 +30,9 @@ Electron Main or Python backend boundaries.
 - Command history plus reusable Workflow command actions with variables and result handling
 - Backend-managed FTP transfer and guarded package upgrade workflows
 - Product-specific device sources: website-only, spreadsheet-only, or universal
-- Local MCP tools for device, session, terminal, transfer, and upgrade operations
+- Local MCP tools for device, session, terminal, transfer, and upgrade operations;
+  [AI task orchestration](docs/README_MCP_ORCHESTRATION.md) with structured plans,
+  filtered discovery, fleet observation, and checkpoint-aware recovery
 
 ## Requirements
 

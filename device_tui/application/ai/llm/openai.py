@@ -82,6 +82,8 @@ class OpenAiCompatibleClient:
                 body = response.read().decode("utf-8")
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if self.api_key:
+                detail = detail.replace(self.api_key, "***")
             raise LlmClientError(f"LLM request failed ({exc.code}): {detail[:1_000]}") from exc
         except URLError as exc:
             raise LlmClientError(f"LLM request failed: {exc.reason}") from exc
@@ -110,13 +112,20 @@ class OpenAiCompatibleClient:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
             raise LlmClientError("LLM tool_calls must be a list")
+        if len(raw_calls) > 32:
+            raise LlmClientError("LLM returned too many tool calls")
+        seen_ids: set[str] = set()
         for index, raw_call in enumerate(raw_calls):
             if not isinstance(raw_call, dict):
                 raise LlmClientError("LLM returned an invalid tool call")
             function = raw_call.get("function")
-            if not isinstance(function, dict) or not function.get("name"):
+            if not isinstance(function, dict) or not isinstance(function.get("name"), str) or not function.get("name"):
                 raise LlmClientError("LLM tool call is missing a function name")
-            arguments = function.get("arguments") or "{}"
+            call_id = raw_call.get("id") or f"tool-call-{index}"
+            if not isinstance(call_id, str) or call_id in seen_ids:
+                raise LlmClientError("LLM returned an invalid or duplicate tool call id")
+            seen_ids.add(call_id)
+            arguments = function.get("arguments", "{}")
             if isinstance(arguments, str):
                 try:
                     arguments = json.loads(arguments)
@@ -126,7 +135,7 @@ class OpenAiCompatibleClient:
                 raise LlmClientError("LLM tool arguments must be an object")
             calls.append(
                 ToolCall(
-                    id=str(raw_call.get("id") or f"tool-call-{index}"),
+                    id=call_id,
                     name=str(function["name"]),
                     arguments=dict(arguments),
                 )
