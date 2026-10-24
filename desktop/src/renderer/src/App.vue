@@ -10,6 +10,7 @@ import {
   CircleCheck,
   CircleHelp,
   Database,
+  ExternalLink,
   FileUp,
   FileSpreadsheet,
   FileArchive,
@@ -100,6 +101,14 @@ const UpgradeWorkspace = defineAsyncComponent(() => import('./components/Upgrade
 const PackageBuildWorkspace = defineAsyncComponent(() => import('./components/PackageBuildWorkspace.vue'))
 
 const workspace = useWorkspaceStore()
+
+async function openAgentWorkspace(): Promise<void> {
+  try {
+    await window.desktopApi.openAgentWindow()
+    workspace.aiPanelOpen = false
+  }
+  catch (cause) { workspace.error = cause instanceof Error ? cause.message : String(cause) }
+}
 const deviceDomainFilterOptions = computed(() => [
   { value: '', label: '全部领域' },
   ...workspace.deviceDomains.map((domain) => ({ value: domain, label: domain }))
@@ -1494,6 +1503,7 @@ const sessionWorkspaceContext = {
       </button>
       <button class="rail-button" :class="{ active: workflowPanelOpen }" type="button" title="Workflow Studio" :aria-pressed="workflowPanelOpen" @click="toggleWorkflowPanel"><Workflow :size="19" /><span class="sr-only">Workflow Studio</span></button>
       <button class="rail-button" :class="{ active: workspace.aiPanelOpen }" type="button" title="AI 操作助手" :aria-pressed="workspace.aiPanelOpen" @click="workspace.aiPanelOpen = !workspace.aiPanelOpen"><Bot :size="19" /><span class="sr-only">AI 操作助手</span></button>
+      <button class="rail-button" type="button" title="Agent 独立工作区" @click="openAgentWorkspace"><ExternalLink :size="19" /><span class="sr-only">Agent 独立工作区</span></button>
       <button
         class="rail-button"
         :class="{ active: workspace.transferPanelOpen }"

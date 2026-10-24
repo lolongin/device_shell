@@ -2,7 +2,7 @@
 
 AI 面板通过 Python 后端调用应用业务能力。对话不再要求先选择终端：Agent 可以先发现设备、读取状态，再创建连接、编写 Workflow 或执行其他已接入的操作。
 
-当前目录包含 128 个明确命名的工具：70 个复用 MCP 工具契约，58 个绑定现有桌面后端业务入口。工具清单由实际注册项生成，通过 `GET /api/v1/ai/agent/capabilities` 和模型工具 `app_capabilities` 查询。未提供任意 HTTP 请求、Python 函数或通用分发器工具。
+当前目录包含 130 个明确命名的工具：70 个复用 MCP 工具契约，58 个绑定现有桌面后端业务入口，2 个用于设备知识查询。工具清单由实际注册项生成，通过 `GET /api/v1/ai/agent/capabilities` 和模型工具 `app_capabilities` 查询。未提供任意 HTTP 请求、Python 函数或通用分发器工具。
 
 ## 能力覆盖
 
@@ -17,6 +17,7 @@ AI 面板通过 Python 后端调用应用业务能力。对话不再要求先选
 | Workflow | 能力说明、动作目录、脚本草稿与验证/测试；定义创建、编辑、验证、预演、发布与运行；导入/导出、模板、自定义动作、版本查询/恢复/删除 |
 | Task 与 Decision | Task 创建、编排、查询、等待、暂停、恢复、取消、重新规划、报告与删除；Decision 查询和用户审批后的应用 |
 | 应用状态 | 应用状态与诊断、会话日志读取/轮转、日志目录与轮转设置、AI 执行结果及审计记录 |
+| 设备知识 | 查询用户导入的文档片段、来源及厂商/型号/软件版本；按文档 ID 读取原文 |
 
 连接、构建器、插件和设备实际支持的协议仍由现有业务服务决定。工具已接入不代表每种外部系统都已完成实机验证。
 
@@ -39,12 +40,47 @@ AI 面板通过 Python 后端调用应用业务能力。对话不再要求先选
 
 AI 面板展示对话、工具事件、审批预览及 Task 状态，并提供任务暂停、恢复和取消入口。审批后继续对话以观察结果。
 
+## 独立 Agent 工作区
+
+主窗口导航栏的“Agent 独立工作区”和 AI 侧栏的独立窗口按钮可打开完整工作区。重复打开会聚焦同一个窗口；从侧栏打开时可带入当前对话。独立窗口单独记住所选对话，并提供会话列表、历史记录、审批和任务暂停、恢复、取消入口。
+
+关闭独立窗口只关闭界面：主应用和后端仍在运行时，已提交的请求与后台任务继续执行。重新打开会恢复所选对话并读取执行结果。退出整个应用会停止后端，不保证正在运行的请求继续执行。
+
+工作区复用现有 Agent 服务。Electron 主进程校验窗口身份和 API 白名单；独立窗口仅能访问 Agent 对话、审批及任务控制接口。后端鉴权令牌保留在主进程，不传入渲染器。
+
 ## 生命周期与边界
 
-- 对话、审批和工具调用去重记录保存在当前后端进程内；重启不会恢复 Agent 对话。
+- 有桌面持久化存储时，对话快照保存到 `odyterm.sqlite3`，保留 30 天、最多 200 个，每个最多 512 KB；无桌面存储时使用内存替代。读取状态或继续对话时按需恢复。进程内最多保留 200 个对话，达到上限返回 429。
+- 恢复内容包含脱敏消息、摘要、设备标识、协议、最近审批历史和执行记录。会话句柄不恢复，待处理/执行中的审批过期；缺失的工具结果标记为未知，Agent 应先检查 Task/Operation。恢复不会重放设备命令，也不提供跨进程的恰好一次执行保证。
+- 上下文默认保留最近 4 个用户轮次，消息预算为 48000 字符，旧轮次压缩成最多 6000 字符的摘录；过大的工具结果会缩减，同时保留工具调用配对和合法 JSON。摘要作为不可信用户内容加入。这是有损、确定性的裁剪，并非模型 tokenizer 计数；工具 schema 和模型输出预算尚未纳入。
 - 事件保留最近 500 条，调用去重缓存最多 2000 条；审批达到 500 条后需要重启后端。既有 Task/Workflow 的持久化继续由业务服务负责。
 - 新 Agent 审批入口位于 `/api/v1/ai/agent/conversations/...`，与既有 `/api/v1/ai/approvals/...` API 分开。
-- 模型客户端延续现有 OpenAI/DeepSeek 环境配置；未添加新的密钥录入界面。
+- 模型接入沿用现有模型配置 API 和配置界面；密钥由后端管理。
+
+## 本地设备知识
+
+知识库由用户显式导入文档，不自动抓取 URL 或读取任意本地路径。当前使用英文关键词及中文二元词匹配，不依赖向量服务。最多 200 篇、总计 2 MB，单篇正文最多 12000 字符；导入时拒绝可检测到的凭据。尚未提供知识管理界面。
+
+带应用鉴权调用 `PUT /api/v1/ai/knowledge/{document_id}`，正文示例：
+
+```json
+{
+  "title": "设备命令参考",
+  "content": "在此填写已核实的设备操作说明。",
+  "source": "厂商手册第 3 章",
+  "vendor": "example-vendor",
+  "model": "example-model",
+  "software_version": "1.0"
+}
+```
+
+`GET /api/v1/ai/knowledge/search?query=接口状态&vendor=example-vendor&model=example-model&software_version=1.0` 返回命中文档的片段、来源、元数据和偏移量。元数据过滤为忽略大小写的精确匹配，缺少该字段的文档不会命中过滤条件。用 `GET` 或 `DELETE /api/v1/ai/knowledge/{document_id}` 读取或删除文档。
+
+Agent 可调用只读工具 `knowledge_search`、`knowledge_get`；提示词要求涉及厂商/版本的操作先检索并说明来源。文档视为不可信静态资料，设备实时状态仍需调用设备工具验证。
+
+## 对话和执行记录
+
+`GET /api/v1/ai/agent/conversations` 列出快照，`GET /api/v1/ai/agent/conversations/{conversation_id}/trace` 返回最近 30 次运行的模型耗时、上下文字符数、工具耗时和结果状态。它们用于诊断延迟与失败，不保存完整模型推理。
 
 ## 验证范围
 
@@ -52,10 +88,16 @@ AI 面板展示对话、工具事件、审批预览及 Task 状态，并提供�
 
 `tests/test_agent_desktop_tools.py` 覆盖新增能力清单、敏感参数拒绝、凭据保留、设备导入、命令配置、Workflow 导入/导出/模板/版本/自定义动作、并行模拟命令和接口参数约束。下载与包构建使用替身服务验证审批及适配调用，未执行真实网络下载或外部构建器。
 
+`tests/test_agent_context_knowledge.py` 覆盖上下文预算与工具配对、JSON 脱敏、内存/SQLite 容量和过期清理、重启恢复且不重放命令、执行记录、中文知识检索与来源/版本筛选，以及鉴权后的知识和恢复 API。
+
 后端回归命令：
 
 ```powershell
-python -m pytest tests/test_agent_desktop_tools.py tests/test_application_agent.py tests/test_ai_agent.py tests/test_ai_application_backend.py tests/test_desktop_mcp_backend.py tests/test_mcp_server.py tests/test_mcp_decision_boundary.py tests/test_task_observation.py -q
+python -m pytest tests/test_agent_context_knowledge.py tests/test_agent_desktop_tools.py tests/test_application_agent.py tests/test_ai_agent.py tests/test_ai_model_configuration.py tests/test_ai_application_backend.py tests/test_desktop_mcp_backend.py tests/test_mcp_server.py tests/test_mcp_decision_boundary.py tests/test_task_observation.py -q
 ```
 
-桌面检查：在 `desktop/` 运行 `npm run typecheck` 和 `npm run build`。测试结果及当前环境中的构建限制以交付记录为准。
+桌面检查：在 `desktop/` 运行 `npm run typecheck` 和 `npm run build`。
+
+独立工作区冒烟测试：在 `desktop/` 运行 `npm run smoke:agent-workspace`。测试使用真实 Electron 窗口、预加载桥和页面，以及确定性的本地 HTTP/模型替身，覆盖单例窗口、IPC 限制、审批、任务控制、会话切换、关闭后完成与恢复、会话管理和最小窗口布局；截图输出到 `desktop/out/smoke/`。它不验证真实外部模型或设备。
+
+若测试主机无法启动 Chromium 沙箱，可在完成构建后运行 `node scripts/smoke-agent-workspace.mjs --no-sandbox` 诊断界面流程；此模式不验证操作系统沙箱，生产窗口仍启用沙箱与上下文隔离。测试结果及当前环境中的构建限制以交付记录为准。

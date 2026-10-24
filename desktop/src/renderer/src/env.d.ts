@@ -76,6 +76,8 @@ interface LocalTerminalSummary {
 }
 
 interface DesktopApi {
+  openAgentWindow(conversationId?: string): Promise<void>
+  onAgentConversation(callback: (conversationId: string) => void): () => void
   getRuntimeConfig(): Promise<BackendRuntime>
   request(request: BackendRequest): Promise<BackendResponse>
   openExternalLink(url: string): Promise<void>

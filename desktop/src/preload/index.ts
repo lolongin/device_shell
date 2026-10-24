@@ -75,6 +75,14 @@ interface LocalTerminalSummary {
 }
 
 const desktopApi = {
+  openAgentWindow: (conversationId?: string): Promise<void> => ipcRenderer.invoke('agent:open-window', conversationId),
+  onAgentConversation: (callback: (conversationId: string) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value)) callback(value)
+    }
+    ipcRenderer.on('agent:conversation', listener)
+    return () => ipcRenderer.removeListener('agent:conversation', listener)
+  },
   getRuntimeConfig: (): Promise<RendererRuntime> => ipcRenderer.invoke('runtime:get'),
   request: (request: BackendRequest): Promise<BackendResponse> =>
     ipcRenderer.invoke('backend:request', request),

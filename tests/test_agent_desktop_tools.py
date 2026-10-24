@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from device_tui.application.ai.agent import AgentContext
+from device_tui.application.ai.agent.storage import snapshot
 from device_tui.application.ai.llm import ToolCall
 from device_tui.application.secrets import MemorySecretStore
 from device_tui.device_sources.sample import SampleDeviceRepository
@@ -50,13 +51,16 @@ def agent(tmp_path, monkeypatch):
 
 def test_capability_catalog_covers_management_and_exposes_unavailable_ui(agent) -> None:
     catalog = agent.call("app_capabilities")["data"]
-    assert len(catalog["tools"]) == 128
-    assert len(set(catalog["tools"])) == 128
+    assert len(catalog["tools"]) == 130
+    assert {"knowledge_search", "knowledge_get"} <= set(catalog["tools"])
+    assert len(set(catalog["tools"])) == 130
     assert {"source_plugin_configure", "source_import_commit", "profile_create", "transfer_managed_start", "package_build_start", "settings_session_logs_update", "command_broadcast", "workflow_export", "workflow_template_create", "terminal_parallel"} <= set(catalog["tools"])
     assert all(item["status"] == "unavailable" and item["reason"] for item in catalog["unavailable"])
     assert "ui.appearance_and_window" in {item["capability"] for item in catalog["unavailable"]}
     response = agent.client.get("/api/v1/ai/agent/capabilities")
     assert response.status_code == 200, response.text
+
+
     api = response.json()
     schemas = {item["function"]["name"]: item["function"]["parameters"] for item in api["tools"]}
     assert set(schemas) == set(catalog["tools"])
@@ -66,6 +70,38 @@ def test_capability_catalog_covers_management_and_exposes_unavailable_ui(agent) 
     assert api["unavailable"] == catalog["unavailable"]
     assert "tool_execute" not in catalog["tools"]
     assert "workflow_plan_approve" not in catalog["tools"]
+
+
+def test_agent_bypass_policy_is_persisted_and_updates_runtime(agent) -> None:
+    response = agent.client.get("/api/v1/ai/agent/approval-policy")
+    assert response.status_code == 200 and response.json() == {"bypass_approval": False}
+    response = agent.client.put("/api/v1/ai/agent/approval-policy", json={"bypass_approval": True})
+    assert response.status_code == 200 and response.json() == {"bypass_approval": True}
+    assert agent.ctx.ai_runtime.bypass_approval is True
+    assert agent.client.get("/api/v1/ai/agent/approval-policy").json() == {"bypass_approval": True}
+
+
+def test_agent_conversation_management_lists_renames_and_deletes(agent) -> None:
+    context = AgentContext("managed", title="原始标题", messages=[
+        {"role": "user", "content": "检查设备版本"},
+        {"role": "assistant", "content": "我来检查。"},
+    ])
+    agent.ctx.ai_conversations[context.conversation_id] = context
+    agent.ctx.ai_snapshot_store.put(context.conversation_id, snapshot(context, []))
+
+    listed = agent.client.get("/api/v1/ai/agent/conversations").json()["conversations"]
+    item = next(value for value in listed if value["conversation_id"] == "managed")
+    assert item["title"] == "原始标题"
+    assert item["last_message"] == "检查设备版本"
+    assert item["message_count"] == 1
+
+    renamed = agent.client.put("/api/v1/ai/agent/conversations/managed", json={"title": "设备版本巡检"})
+    assert renamed.status_code == 200
+    assert agent.client.get("/api/v1/ai/agent/conversations").json()["conversations"][0]["title"] == "设备版本巡检"
+
+    deleted = agent.client.delete("/api/v1/ai/agent/conversations/managed")
+    assert deleted.status_code == 200 and deleted.json() == {"deleted": True}
+    assert agent.client.get("/api/v1/ai/agent/conversations/managed").json()["context_available"] is False
 
 
 @pytest.mark.parametrize("name,arguments", [

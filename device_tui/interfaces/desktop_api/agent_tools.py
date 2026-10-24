@@ -9,6 +9,7 @@ from pydantic import ConfigDict, create_model
 
 from device_tui.interfaces.mcp.tools import register_all_tools
 from .agent_desktop_tools import DesktopAgentTools, UNAVAILABLE_CAPABILITIES
+from .agent_knowledge_tools import AgentKnowledgeTools
 
 
 AGENT_TOOLS = frozenset("""
@@ -39,6 +40,7 @@ class LocalAgentTools:
         self.entries: dict[str, tuple[str, Any, Any]] = {}
         register_all_tools(self, self)
         self.desktop_tools = DesktopAgentTools(lambda: self.context)
+        self.knowledge_tools = AgentKnowledgeTools(lambda: self.context)
 
     def tool(self, *, name: str):
         def register(function):
@@ -60,17 +62,19 @@ class LocalAgentTools:
             "name": key,
             "description": (inspect.getdoc(function) or name) + " Mutations may return needs_approval; only the user can approve in the application.",
             "parameters": model.model_json_schema(),
-        }} for key, (name, function, model) in self.entries.items()] + self.desktop_tools.definitions
+        }} for key, (name, function, model) in self.entries.items()] + self.desktop_tools.definitions + self.knowledge_tools.definitions
 
     @property
     def read_only_tools(self) -> frozenset[str]:
-        return self.desktop_tools.read_only_tools | frozenset({"source_status", "source_plugins", "command_workspace", "transfer_settings"})
+        return self.desktop_tools.read_only_tools | frozenset(self.knowledge_tools.entries) | frozenset({"source_status", "source_plugins", "command_workspace", "transfer_settings"})
 
     @property
     def unavailable_capabilities(self) -> list[dict[str, str]]:
         return list(UNAVAILABLE_CAPABILITIES)
 
     def validate(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name in self.knowledge_tools.entries:
+            return self.knowledge_tools.validate(name, arguments)
         if name in self.desktop_tools.entries:
             return self.desktop_tools.validate(name, arguments)
         if name not in self.entries:
@@ -84,6 +88,8 @@ class LocalAgentTools:
         return response
 
     async def invoke(self, name: str, arguments: dict[str, Any], *, approved: bool = False) -> dict[str, Any]:
+        if name in self.knowledge_tools.entries:
+            return await self.knowledge_tools.invoke(name, arguments)
         if name in self.desktop_tools.entries:
             return await self.desktop_tools.invoke(name, arguments)
         canonical, function, model = self.entries[name]

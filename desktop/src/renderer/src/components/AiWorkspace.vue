@@ -1,15 +1,33 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { Activity, Bot, Check, ChevronRight, CircleAlert, Clock3, ListTodo, Maximize2, MessageSquare, Minimize2, Pause, Play, Send, ShieldCheck, Square, TerminalSquare, X } from 'lucide-vue-next'
+import { Activity, Bot, Check, ChevronRight, CircleAlert, Clock3, ExternalLink, History, ListTodo, Maximize2, MessageSquare, Minimize2, Pause, Pencil, Play, Plus, Search, Send, ShieldCheck, Square, TerminalSquare, Trash2, X } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useApplicationAgent } from '../composables/useApplicationAgent'
 import type { TaskRecord } from '../types'
 
+const props = defineProps<{ standalone?: boolean; initialConversationId?: string }>()
 const workspace = useWorkspaceStore()
-const agent = useApplicationAgent(toRef(workspace, 'aiPanelOpen'))
+const visible = computed(() => props.standalone || workspace.aiPanelOpen)
+const agent = useApplicationAgent(visible, {
+  initialConversationId: props.initialConversationId,
+  storageKey: props.standalone ? 'odyterm.agent.window-conversation' : undefined
+})
 const draft = ref('')
+const drafts = new Map<string, string>()
+watch(agent.conversationId, (id, previous) => {
+  drafts.set(previous, draft.value)
+  draft.value = drafts.get(id) || ''
+}, { flush: 'sync' })
+const stopConversationListener = props.standalone
+  ? window.desktopApi.onAgentConversation(id => { void agent.switchConversation(id) })
+  : undefined
 const linkError = ref('')
+const showConversationManager = ref(false)
+const conversationSearch = ref('')
+const renamingConversationId = ref('')
+const renameDraft = ref('')
+const conversationActionError = ref('')
 const view = ref<'conversation' | 'tasks'>('conversation')
 const scrollArea = ref<HTMLElement | null>(null)
 const expanded = ref(false)
@@ -93,6 +111,7 @@ function startResize(event: PointerEvent): void {
 
 onMounted(() => window.addEventListener('resize', syncViewportWidth))
 onBeforeUnmount(() => {
+  stopConversationListener?.()
   stopResize()
   window.removeEventListener('resize', syncViewportWidth)
 })
@@ -103,8 +122,14 @@ const timeline = computed(() => agent.events.value.filter(event =>
 const tasks = computed(() => Object.values(agent.tasks.value))
 const pendingApprovals = computed(() => agent.approvals.value.filter(item => item.status === 'pending'))
 const resolvedApprovals = computed(() => agent.approvals.value.filter(item => item.status !== 'pending').slice(-5).reverse())
-const target = computed(() => workspace.activeSession?.device_id || workspace.selectedDeviceId || '全部设备')
+const target = computed(() => props.standalone ? '会话上下文 · 可在消息中指定设备' : workspace.activeSession?.device_id || workspace.selectedDeviceId || '全部设备')
 const statusLabel = computed(() => agent.busy.value ? '正在处理' : pendingApprovals.value.length ? '等待审批' : '就绪')
+const activeConversationTitle = computed(() => agent.conversations.value.find(item => item.conversation_id === agent.conversationId.value)?.title || '新会话')
+const filteredConversations = computed(() => {
+  const query = conversationSearch.value.trim().toLocaleLowerCase()
+  if (!query) return agent.conversations.value
+  return agent.conversations.value.filter(item => `${item.title} ${item.last_message}`.toLocaleLowerCase().includes(query))
+})
 
 const approvalStatus: Record<string, string> = {
   completed: '已执行', failed: '执行失败', rejected: '已拒绝', expired: '已过期', stale: '内容已变更'
@@ -134,17 +159,76 @@ function canControl(task: TaskRecord): boolean {
   return !['completed', 'success', 'failed', 'cancelled'].includes(task.status)
 }
 
+async function openConversationManager(): Promise<void> {
+  showConversationManager.value = true
+  conversationActionError.value = ''
+  await agent.loadConversations()
+}
+
+async function createConversation(): Promise<void> {
+  await agent.newConversation()
+  showConversationManager.value = false
+  conversationSearch.value = ''
+}
+
+async function selectConversation(id: string): Promise<void> {
+  if (renamingConversationId.value) return
+  await agent.switchConversation(id)
+  showConversationManager.value = false
+}
+
+function beginRename(conversationId: string, title: string): void {
+  renamingConversationId.value = conversationId
+  renameDraft.value = title
+  conversationActionError.value = ''
+}
+
+async function saveRename(conversationId: string): Promise<void> {
+  const title = renameDraft.value.trim()
+  if (!title) { conversationActionError.value = '请输入会话名称'; return }
+  try {
+    await agent.renameConversation(conversationId, title)
+    renamingConversationId.value = ''
+  } catch (cause) {
+    conversationActionError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function removeConversation(conversationId: string): Promise<void> {
+  if (!window.confirm('删除该会话及其本地历史记录？此操作无法撤销。')) return
+  try {
+    await agent.deleteConversation(conversationId)
+    conversationActionError.value = ''
+  } catch (cause) {
+    conversationActionError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
 async function send(): Promise<void> {
   const message = draft.value.trim()
   if (!message || agent.busy.value || pendingApprovals.value.length) return
   linkError.value = ''
   draft.value = ''
   view.value = 'conversation'
-  await agent.send(message, {
+  const conversationId = agent.conversationId.value
+  await agent.send(message, props.standalone ? {} : {
     device_id: workspace.activeSession?.device_id || workspace.selectedDeviceId || undefined,
     session_id: workspace.activeSessionId || undefined
   })
-  if (agent.error.value) draft.value = message
+  if (agent.conversationId.value === conversationId && agent.error.value && !draft.value) draft.value = message
+}
+
+async function openWindow(): Promise<void> {
+  linkError.value = ''
+  try {
+    await window.desktopApi.openAgentWindow(agent.conversationId.value)
+    workspace.aiPanelOpen = false
+  }
+  catch (cause) { linkError.value = cause instanceof Error ? cause.message : String(cause) }
+}
+
+function dismissPanel(): void {
+  if (!props.standalone) workspace.aiPanelOpen = false
 }
 
 function handleComposerKeydown(event: KeyboardEvent): void {
@@ -170,18 +254,52 @@ watch(() => pendingApprovals.value.length, async (count, previous) => {
 </script>
 
 <template>
-  <aside v-if="workspace.aiPanelOpen" class="agent-shell" :style="panelStyle" aria-label="AI 操作助手" @keydown.esc="workspace.aiPanelOpen = false">
-    <div v-if="!expanded" class="agent-resize-handle" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整助手宽度" :aria-valuenow="panelWidth" aria-valuemin="560" :aria-valuemax="maxPanelWidth" @pointerdown="startResize" @keydown.left.prevent="resizeBy(40)" @keydown.right.prevent="resizeBy(-40)"></div>
+  <aside v-if="visible" class="agent-shell" :class="{ 'agent-workspace': standalone }" :style="standalone ? undefined : panelStyle" aria-label="AI 操作助手" @keydown.esc="dismissPanel">
+    <div v-if="!standalone && !expanded" class="agent-resize-handle" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整助手宽度" :aria-valuenow="panelWidth" aria-valuemin="560" :aria-valuemax="maxPanelWidth" @pointerdown="startResize" @keydown.left.prevent="resizeBy(40)" @keydown.right.prevent="resizeBy(-40)"></div>
     <header class="agent-header">
       <div class="agent-identity">
         <span class="agent-mark"><Bot :size="18" /></span>
-        <div><h2>AI 操作助手</h2><span>OdyTerm Agent</span></div>
+        <div><h2>{{ standalone ? 'Agent 工作区' : 'AI 操作助手' }}</h2><span>{{ standalone ? '关闭窗口后，后台任务继续运行' : 'OdyTerm Agent' }}</span></div>
       </div>
       <div class="agent-header-actions">
-        <button class="agent-icon-button" type="button" :title="expanded ? '还原宽度' : '展开助手'" :aria-label="expanded ? '还原宽度' : '展开助手'" :aria-pressed="expanded" @click="expanded = !expanded"><Minimize2 v-if="expanded" :size="17" /><Maximize2 v-else :size="17" /></button>
-        <button class="agent-icon-button" type="button" title="关闭助手" aria-label="关闭助手" @click="workspace.aiPanelOpen = false"><X :size="17" /></button>
+        <span v-if="standalone" class="agent-current-title">{{ activeConversationTitle }}</span>
+        <button v-else class="agent-session-button" type="button" @click="openConversationManager"><History :size="15" /><span>{{ activeConversationTitle }}</span><ChevronRight :size="13" /></button>
+        <button class="agent-icon-button" type="button" title="新建会话" aria-label="新建会话" @click="createConversation"><Plus :size="17" /></button>
+        <button v-if="!standalone" class="agent-icon-button" type="button" title="在独立窗口打开" aria-label="在独立窗口打开" @click="openWindow"><ExternalLink :size="17" /></button>
+        <button v-if="!standalone" class="agent-icon-button" type="button" :title="expanded ? '还原宽度' : '展开助手'" :aria-label="expanded ? '还原宽度' : '展开助手'" :aria-pressed="expanded" @click="expanded = !expanded"><Minimize2 v-if="expanded" :size="17" /><Maximize2 v-else :size="17" /></button>
+        <button v-if="!standalone" class="agent-icon-button" type="button" title="关闭助手" aria-label="关闭助手" @click="dismissPanel"><X :size="17" /></button>
       </div>
     </header>
+
+    <section v-if="standalone || showConversationManager" class="agent-session-manager" :role="standalone ? 'region' : 'dialog'" :aria-modal="standalone ? undefined : true" aria-labelledby="agent-session-title" @keydown.esc.stop="showConversationManager = false">
+      <header class="agent-session-manager-header">
+        <div><h3 id="agent-session-title">会话</h3><p>管理你的 Agent 对话记录</p></div>
+        <button v-if="!standalone" class="agent-icon-button" type="button" aria-label="关闭会话管理" @click="showConversationManager = false"><X :size="17" /></button>
+      </header>
+      <button class="agent-session-create" type="button" @click="createConversation"><Plus :size="16" />新建会话</button>
+      <label class="agent-session-search"><Search :size="15" /><input v-model="conversationSearch" type="search" placeholder="搜索会话" aria-label="搜索会话" /></label>
+      <p v-if="conversationActionError" class="agent-error" role="alert"><CircleAlert :size="14" />{{ conversationActionError }}</p>
+      <div v-if="!filteredConversations.length" class="agent-session-empty"><History :size="22" /><strong>{{ conversationSearch ? '没有匹配的会话' : '还没有历史会话' }}</strong><span>{{ conversationSearch ? '换个关键词试试' : '发送第一条消息后，会话会出现在这里' }}</span></div>
+      <ul v-else class="agent-session-list">
+        <li v-for="item in filteredConversations" :key="item.conversation_id" :class="{ active: item.conversation_id === agent.conversationId.value }">
+          <div class="agent-session-item-main">
+            <template v-if="renamingConversationId === item.conversation_id">
+              <input v-model="renameDraft" class="agent-session-rename" maxlength="120" aria-label="会话名称" @keydown.enter.prevent="saveRename(item.conversation_id)" @keydown.esc="renamingConversationId = ''" />
+              <button class="agent-icon-button" type="button" title="保存名称" aria-label="保存名称" @click="saveRename(item.conversation_id)"><Check :size="15" /></button>
+            </template>
+            <template v-else>
+              <button class="agent-session-select" type="button" @click="selectConversation(item.conversation_id)">
+                <strong>{{ item.title || '新会话' }}</strong>
+                <span>{{ item.last_message || '暂无消息' }}</span>
+                <time>{{ new Date(item.updated_at * 1000).toLocaleString() }} · {{ item.message_count }} 条消息</time>
+              </button>
+              <button class="agent-icon-button" type="button" title="重命名" aria-label="重命名会话" @click="beginRename(item.conversation_id, item.title)"><Pencil :size="14" /></button>
+              <button class="agent-icon-button danger" type="button" title="删除" aria-label="删除会话" @click="removeConversation(item.conversation_id)"><Trash2 :size="14" /></button>
+            </template>
+          </div>
+        </li>
+      </ul>
+    </section>
 
     <div class="agent-context">
       <span class="agent-state"><span class="agent-state-dot" :class="{ busy: agent.busy.value, attention: pendingApprovals.length }"></span>{{ statusLabel }}</span>
@@ -211,7 +329,7 @@ watch(() => pendingApprovals.value.length, async (count, previous) => {
         <div v-if="!timeline.length && !pendingApprovals.length" class="agent-empty">
           <span class="agent-empty-icon"><Bot :size="23" /></span>
           <h3>开始一项工作</h3>
-          <p>选择当前设备，或从全部设备中指定目标。</p>
+          <p>{{ standalone ? '描述工作，并在消息中指定设备或任务。' : '选择当前设备，或从全部设备中指定目标。' }}</p>
           <div class="agent-prompts">
             <button type="button" @click="draft = '列出可用设备和当前任务'">查看设备与任务 <ChevronRight :size="14" /></button>
             <button type="button" @click="draft = '创建检查设备版本的 Workflow，先校验并预览'">编排版本检查 <ChevronRight :size="14" /></button>
@@ -225,7 +343,7 @@ watch(() => pendingApprovals.value.length, async (count, previous) => {
               <details class="agent-details"><summary>查看结果 <ChevronRight :size="13" /></summary><pre>{{ format(event.data.output) }}</pre></details>
             </template>
             <template v-else>
-              <div class="agent-entry-meta"><span>{{ event.type === 'agent.started' ? '你' : event.type === 'agent.error' ? '错误' : '助手' }}</span><time>{{ new Date(event.created_at * 1000).toLocaleTimeString() }}</time></div>
+              <div class="agent-entry-meta"><span>{{ event.type === 'agent.started' ? '你' : event.type === 'agent.error' ? '错误' : '助手' }}</span><time v-if="event.created_at">{{ new Date(event.created_at * 1000).toLocaleTimeString() }}</time></div>
               <div v-if="event.type === 'agent.message'" class="agent-markdown" v-html="renderMarkdown(event.data.message || event.data.content)" @click="openMarkdownLink"></div>
               <p v-else>{{ event.data.message || event.data.content || event.data.error }}</p>
             </template>
@@ -275,6 +393,34 @@ watch(() => pendingApprovals.value.length, async (count, previous) => {
 .agent-identity div > span { display: block; margin-top: 2px; color: var(--soft); font-size: 11px; }
 .agent-icon-button { width: 30px; height: 30px; display: grid; place-items: center; flex: none; border: 0; border-radius: 5px; color: var(--muted); background: transparent; cursor: pointer; }
 .agent-icon-button:hover { color: var(--text); background: var(--surface-hover); }
+.agent-icon-button.danger:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); }
+.agent-session-button { max-width: 260px; min-width: 0; height: 32px; display: inline-flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface); cursor: pointer; }
+.agent-session-button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-hover); }
+.agent-session-button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.agent-session-button svg { flex: none; color: var(--muted); }
+.agent-session-manager { position: absolute; z-index: 4; inset: 62px 0 0; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: var(--surface); }
+.agent-session-manager-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.agent-session-manager-header h3 { margin: 0; font-size: 17px; }
+.agent-session-manager-header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.agent-session-create { min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--accent-hover); border-radius: 5px; color: white; background: var(--accent-hover); cursor: pointer; font-size: 12px; font-weight: 650; }
+.agent-session-create:hover:not(:disabled) { background: var(--accent); }
+.agent-session-search { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); background: var(--surface-raised); }
+.agent-session-search input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font: inherit; font-size: 12px; }
+.agent-session-manager > .agent-error { flex: none; }
+.agent-session-list { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.agent-session-list li { min-width: 0; border: 1px solid transparent; border-radius: 6px; }
+.agent-session-list li:hover { background: var(--surface-raised); }
+.agent-session-list li.active { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--surface-raised)); }
+.agent-session-item-main { min-width: 0; display: flex; align-items: center; gap: 2px; padding: 6px; }
+.agent-session-select { min-width: 0; flex: 1; display: grid; gap: 4px; padding: 5px 7px; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.agent-session-select strong, .agent-session-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-session-select strong { font-size: 12px; font-weight: 600; }
+.agent-session-select span { color: var(--muted); font-size: 11px; }
+.agent-session-select time { color: var(--soft); font-size: 10px; }
+.agent-session-rename { min-width: 0; flex: 1; height: 30px; padding: 0 8px; border: 1px solid var(--blue); border-radius: 4px; outline: 0; color: var(--text); background: var(--surface); font: inherit; font-size: 12px; }
+.agent-session-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; }
+.agent-session-empty strong { color: var(--text); font-size: 12px; }
+.agent-session-empty span { font-size: 11px; }
 .agent-context { flex: none; min-height: 39px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 20px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .agent-state, .agent-target { min-width: 0; display: inline-flex; align-items: center; gap: 7px; }
 .agent-target { max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -382,4 +528,19 @@ watch(() => pendingApprovals.value.length, async (count, previous) => {
 button:disabled { cursor: default; opacity: .5; }
 @media (max-width: 620px) { .agent-shell { width: calc(100vw - 52px) !important; } .agent-resize-handle { display: none; } .agent-header, .agent-context, .agent-tabs, .agent-composer { padding-left: 14px; padding-right: 14px; } .agent-scroll { padding-left: 14px; padding-right: 14px; } }
 @media (max-height: 760px) { .agent-empty { padding-top: 28px; } .agent-prompts { margin-top: 16px; } }
+.agent-workspace { inset: 0; width: 100%; display: grid; grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: 62px 39px 43px minmax(0, 1fr) auto; border: 0; box-shadow: none; }
+.agent-workspace > .agent-header { grid-column: 1 / -1; height: auto; }
+.agent-workspace > .agent-session-manager { position: static; grid-column: 1; grid-row: 2 / -1; min-height: 0; min-width: 0; padding: 20px 12px; overflow: hidden; border-right: 1px solid var(--line); background: var(--surface-raised); }
+.agent-workspace .agent-session-manager-header { padding: 0 8px 4px; }
+.agent-workspace .agent-session-manager-header h3 { font-size: 14px; }
+.agent-workspace .agent-session-list { flex: 1; }
+.agent-workspace .agent-session-item-main { flex-wrap: wrap; justify-content: flex-end; }
+.agent-workspace .agent-session-select { flex-basis: 100%; }
+.agent-workspace .agent-session-item-main > .agent-icon-button { width: 26px; height: 24px; }
+.agent-workspace > .agent-context { grid-column: 2; grid-row: 2; }
+.agent-workspace > .agent-tabs { grid-column: 2; grid-row: 3; }
+.agent-workspace > .agent-scroll { grid-column: 2; grid-row: 4; min-width: 0; padding: 28px max(24px, calc((100% - 880px) / 2)); }
+.agent-workspace > .agent-composer { grid-column: 2; grid-row: 5; min-width: 0; padding-left: max(24px, calc((100% - 880px) / 2)); padding-right: max(24px, calc((100% - 880px) / 2)); }
+.agent-current-title { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+@media (max-width: 1000px) { .agent-workspace { grid-template-columns: 240px minmax(0, 1fr); } .agent-current-title { max-width: 220px; } }
 </style>

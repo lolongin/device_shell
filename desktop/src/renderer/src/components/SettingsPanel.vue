@@ -59,6 +59,8 @@ const aiSaving = ref(false)
 const aiTesting = ref(false)
 const aiError = ref('')
 const aiNotice = ref('')
+const agentBypassApproval = ref(false)
+const agentBypassSaving = ref(false)
 const aiProvider = computed(() => aiBaseUrl.value.includes('api.deepseek.com') ? 'deepseek' : aiBaseUrl.value.includes('api.openai.com') ? 'openai' : 'custom')
 const aiDirty = computed(() => !!aiSettings.value && (aiBaseUrl.value.trim() !== aiSettings.value.base_url || aiModel.value.trim() !== aiSettings.value.model || aiTimeout.value !== aiSettings.value.timeout))
 const loading = ref(false)
@@ -163,8 +165,25 @@ async function loadAiSettings(): Promise<void> {
     aiBaseUrl.value = settings.base_url
     aiModel.value = settings.model
     aiTimeout.value = settings.timeout
+    const policy = await desktopApi.agentApprovalPolicy()
+    agentBypassApproval.value = policy.bypass_approval
   } catch (cause) {
     aiError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function updateAgentBypassApproval(event: Event): Promise<void> {
+  const enabled = (event.target as HTMLInputElement).checked
+  agentBypassSaving.value = true
+  aiError.value = ''
+  try {
+    const result = await desktopApi.updateAgentApprovalPolicy(enabled)
+    agentBypassApproval.value = result.bypass_approval
+    aiNotice.value = enabled ? 'Agent 操作审批已关闭' : 'Agent 操作审批已开启'
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    agentBypassSaving.value = false
   }
 }
 
@@ -561,6 +580,11 @@ watch(() => props.open, async (open) => {
             <fieldset>
               <legend>API Key</legend>
               <div class="ai-key-row"><span :class="['ai-key-state', { configured: aiSettings?.has_api_key }]"><KeyRound :size="14" />{{ aiSettings?.has_api_key ? (aiSettings.key_source === 'environment' ? '由环境变量提供' : '已保存在系统凭据库') : '未配置' }}</span><button type="button" @click="manageAiKey">{{ aiSettings?.has_api_key ? '管理密钥' : '设置密钥' }}</button></div>
+            </fieldset>
+            <fieldset>
+              <legend>操作审批</legend>
+              <label class="settings-field"><span>跳过 Agent 操作审批（bypass）</span><input type="checkbox" :checked="agentBypassApproval" :disabled="agentBypassSaving" @change="updateAgentBypassApproval" /></label>
+              <p class="settings-help">开启后，Agent 发起的设备写入、命令和 Workflow 操作会直接执行。仅在可信环境中启用。</p>
             </fieldset>
             <button class="plugin-test-button" type="button" :disabled="aiSaving || aiTesting || !aiSettings?.has_api_key" @click="testAiSettings"><LoaderCircle v-if="aiTesting" class="spinning-icon" :size="14" /><RefreshCw v-else :size="14" />{{ aiTesting ? '正在测试…' : '测试连接' }}</button>
             <p v-if="aiError" class="settings-status error" role="alert">{{ aiError }}</p>

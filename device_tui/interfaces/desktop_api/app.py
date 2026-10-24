@@ -36,6 +36,8 @@ from device_tui.device_sources.service import DeviceSourceService
 from device_tui.domain.devices.repository import DeviceRepository
 from device_tui.infrastructure.persistence.sqlite_desktop import SQLiteDesktopStore
 from device_tui.infrastructure.persistence.sqlite_settings import SQLiteSettingsStore
+from device_tui.infrastructure.persistence.sqlite_agent import SQLiteAgentSnapshotStore
+from device_tui.application.ai.agent.storage import MemoryAgentSnapshotStore, snapshot
 from device_tui.infrastructure.persistence.sqlite_workflows import (
     SQLiteTaskRunStore,
     SQLiteWorkflowDefinitionStore,
@@ -46,6 +48,8 @@ from .session_hub import SessionHub
 from .terminal_executor import BackendTerminalExecutor
 from .mcp_service import DesktopMcpService
 from .agent_tools import LocalAgentTools
+from device_tui.application.ai.knowledge import DeviceKnowledge
+from device_tui.application.ai.agent.context import AgentContext
 from .data_migration import PersistenceMigrationStatus, prepare_persistent_data, sqlite_user_version
 from .session_logging import FileSessionLogSink
 from .ws_tickets import WebSocketTicketStore
@@ -371,10 +375,16 @@ def create_app(
         audit=ai_service.record_mcp_audit,
         event_callback=lambda event: desktop.events.publish(event.type, data=event.data),
     )
+    ai_runtime.bypass_approval = bool(desktop.settings.get("ai.agent.bypass_approval", False))
     ai_model = AiModelConfiguration(desktop.settings, desktop.secrets)
+    ai_snapshot_store = SQLiteAgentSnapshotStore(data_root / "odyterm.sqlite3") if desktop_store is not None else MemoryAgentSnapshotStore()
+    def save_agent_context(agent_context: AgentContext) -> None:
+        approvals = ai_runtime.state(agent_context.conversation_id)["approvals"][-30:]
+        ai_snapshot_store.put(agent_context.conversation_id, snapshot(agent_context, approvals))
     ai_agent = DeviceAgent(
         ai_model.client(), ai_runtime,
         max_iterations=agent_max_iterations, event_callback=ai_runtime.record,
+        checkpoint=save_agent_context,
     )
     legacy_import = (
         desktop.profiles.import_legacy_state(legacy_state_path)
@@ -408,6 +418,8 @@ def create_app(
         ai_agent=ai_agent,
         ai_model=ai_model,
         ai_runtime=ai_runtime,
+        ai_snapshot_store=ai_snapshot_store,
+        ai_knowledge=DeviceKnowledge(settings_store),
         mcp_service=mcp_service,
         ticket_store=ticket_store,
         access_token=access_token,

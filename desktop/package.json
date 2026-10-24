@@ -14,6 +14,7 @@
     "smoke:release": "powershell -ExecutionPolicy Bypass -File scripts/validate-release.ps1",
     "smoke:clean-runtime": "powershell -ExecutionPolicy Bypass -File scripts/validate-clean-runtime.ps1",
     "smoke:ui-parity": "npm run build && node scripts/smoke-ui-parity.mjs",
+    "smoke:agent-workspace": "npm run build && node scripts/smoke-agent-workspace.mjs",
     "smoke:soak": "powershell -ExecutionPolicy Bypass -File scripts/soak-backend.ps1",
     "smoke:app-soak": "powershell -ExecutionPolicy Bypass -File scripts/soak-packaged-app.ps1",
     "soak:app": "powershell -ExecutionPolicy Bypass -File scripts/soak-packaged-app.ps1 -DurationMinutes 480 -PauseSeconds 5",

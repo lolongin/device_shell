@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 from device_tui.application.ai.agent import AgentContext, AgentIterationLimitError
 from device_tui.application.ai.llm import LlmClientError
 from device_tui.application.ai.agent.safety import sanitize
+from device_tui.application.ai.agent.context import ContextBudgetError
+from device_tui.application.ai.agent.storage import restore, snapshot
+from device_tui.application.ai.knowledge import KnowledgeDocument
 
 from ..dependencies import authorize, get_context
 from ..models import (
@@ -36,6 +39,28 @@ class AiModelUpdate(BaseModel):
 
 class AiModelKeyUpdate(BaseModel):
     api_key: str = Field(min_length=1, max_length=4096)
+
+
+class AgentApprovalPolicyUpdate(BaseModel):
+    bypass_approval: bool
+
+
+class AgentConversationRename(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+@router.get("/agent/approval-policy")
+async def get_agent_approval_policy(ctx=Depends(get_context)) -> dict:
+    enabled = bool(ctx.desktop.settings.get("ai.agent.bypass_approval", False))
+    ctx.ai_runtime.bypass_approval = enabled
+    return {"bypass_approval": enabled}
+
+
+@router.put("/agent/approval-policy")
+async def update_agent_approval_policy(request: AgentApprovalPolicyUpdate, ctx=Depends(get_context)) -> dict:
+    ctx.desktop.settings.set("ai.agent.bypass_approval", request.bypass_approval)
+    ctx.ai_runtime.bypass_approval = request.bypass_approval
+    return {"bypass_approval": request.bypass_approval}
 
 
 @router.get("/model")
@@ -91,10 +116,10 @@ async def test_ai_model(ctx=Depends(get_context)) -> dict:
 async def _run_chat(request: AiChatRequest, ctx) -> AiChatResponse:
     if request.conversation_id in ctx.ai_busy_conversations:
         raise HTTPException(status_code=409, detail="This Agent conversation is already running")
-    context = ctx.ai_conversations.get(request.conversation_id)
+    context = _conversation(ctx, request.conversation_id)
     if context is None:
         context = AgentContext(conversation_id=request.conversation_id)
-        ctx.ai_conversations[request.conversation_id] = context
+        _cache_conversation(ctx, context)
     if request.device_id:
         context.device_id = request.device_id.strip()
     if request.session_id:
@@ -106,7 +131,7 @@ async def _run_chat(request: AiChatRequest, ctx) -> AiChatResponse:
         message = await ctx.ai_agent.run(request.message, context)
     except LlmClientError as exc:
         raise HTTPException(status_code=502, detail=sanitize(str(exc))) from exc
-    except AgentIterationLimitError as exc:
+    except (AgentIterationLimitError, ContextBudgetError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:
         ctx.ai_busy_conversations.discard(request.conversation_id)
@@ -133,9 +158,102 @@ async def agent_capabilities(ctx=Depends(get_context)) -> dict:
     return {"tools": ctx.ai_runtime.definitions, "approval_mode": "user_required_for_mutations", "unavailable": ctx.ai_runtime.tools.unavailable_capabilities}
 
 
+@router.get("/knowledge/search")
+async def knowledge_search(query: str = Query(min_length=1, max_length=500), vendor: str = Query(default="", max_length=100), model: str = Query(default="", max_length=100), software_version: str = Query(default="", max_length=100), limit: int = Query(default=5, ge=1, le=10), ctx=Depends(get_context)) -> dict:
+    try:
+        return {"documents": ctx.ai_knowledge.search(query, vendor=vendor, model=model, software_version=software_version, limit=limit)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.put("/knowledge/{document_id}")
+async def knowledge_put(document_id: str, request: KnowledgeDocument, ctx=Depends(get_context)) -> dict:
+    try:
+        return {"document": ctx.ai_knowledge.put(document_id, request)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/knowledge/{document_id}")
+async def knowledge_get(document_id: str, ctx=Depends(get_context)) -> dict:
+    try:
+        return {"document": ctx.ai_knowledge.get(document_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/knowledge/{document_id}")
+async def knowledge_delete(document_id: str, ctx=Depends(get_context)) -> dict:
+    try:
+        ctx.ai_knowledge.delete(document_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"deleted": True}
+
+
 @router.get("/agent/conversations/{conversation_id}")
 async def agent_state(conversation_id: str, after: int = Query(default=0, ge=0), ctx=Depends(get_context)) -> dict:
-    return {**ctx.ai_runtime.state(conversation_id, after), "busy": conversation_id in ctx.ai_busy_conversations}
+    context = _conversation(ctx, conversation_id)
+    return {**ctx.ai_runtime.state(conversation_id, after), "busy": conversation_id in ctx.ai_busy_conversations, "context_available": context is not None, "history": context.messages if context else []}
+
+
+@router.get("/agent/conversations")
+async def agent_conversations(ctx=Depends(get_context)) -> dict:
+    return {"conversations": ctx.ai_snapshot_store.list() if ctx.ai_snapshot_store else []}
+
+
+@router.put("/agent/conversations/{conversation_id}")
+async def rename_agent_conversation(conversation_id: str, request: AgentConversationRename, ctx=Depends(get_context)) -> dict:
+    context = _conversation(ctx, conversation_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Unknown conversation")
+    context.title = sanitize(request.title.strip())[:120]
+    if not context.title:
+        raise HTTPException(status_code=422, detail="Conversation title is required")
+    approvals = ctx.ai_runtime.state(conversation_id)["approvals"][-30:]
+    ctx.ai_snapshot_store.put(conversation_id, snapshot(context, approvals))
+    return {"conversation": {"conversation_id": conversation_id, "title": context.title}}
+
+
+@router.delete("/agent/conversations/{conversation_id}")
+async def delete_agent_conversation(conversation_id: str, ctx=Depends(get_context)) -> dict:
+    if conversation_id in ctx.ai_busy_conversations:
+        raise HTTPException(status_code=409, detail="Cannot delete a conversation while its Agent turn is running")
+    context = _conversation(ctx, conversation_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Unknown conversation")
+    ctx.ai_conversations.pop(conversation_id, None)
+    ctx.ai_runtime.forget_conversation(conversation_id)
+    if ctx.ai_snapshot_store:
+        ctx.ai_snapshot_store.delete(conversation_id)
+    return {"deleted": True}
+
+
+@router.get("/agent/conversations/{conversation_id}/trace")
+async def agent_trace(conversation_id: str, ctx=Depends(get_context)) -> dict:
+    context = _conversation(ctx, conversation_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Unknown conversation")
+    return sanitize({"conversation_id": conversation_id, "runs": context.traces[-30:]})
+
+
+def _conversation(ctx, conversation_id: str) -> AgentContext | None:
+    context = ctx.ai_conversations.get(conversation_id)
+    if context is None and ctx.ai_snapshot_store is not None:
+        saved = ctx.ai_snapshot_store.get(conversation_id)
+        if saved:
+            context = restore(conversation_id, saved)
+            ctx.ai_runtime.restore_approvals(conversation_id, saved.get("approvals", []))
+            _cache_conversation(ctx, context)
+    return context
+
+
+def _cache_conversation(ctx, context: AgentContext) -> None:
+    # Do not evict live approval/session state and later confuse a cache miss
+    # with a backend restart. Persisted history remains separately bounded.
+    if context.conversation_id not in ctx.ai_conversations and len(ctx.ai_conversations) >= 200:
+        raise HTTPException(status_code=429, detail="Agent conversation capacity reached; restart the backend to reload persisted history")
+    ctx.ai_conversations[context.conversation_id] = context
 
 
 @router.post("/agent/conversations/{conversation_id}/approvals/{approval_id}/{decision}")
@@ -144,7 +262,7 @@ async def agent_resolve_approval(conversation_id: str, approval_id: str, decisio
         raise HTTPException(status_code=400, detail="decision must be approve or reject")
     if conversation_id in ctx.ai_busy_conversations:
         raise HTTPException(status_code=409, detail="Wait for the active Agent turn to finish")
-    context = ctx.ai_conversations.get(conversation_id)
+    context = _conversation(ctx, conversation_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Unknown conversation")
     ctx.ai_busy_conversations.add(conversation_id)
@@ -153,7 +271,11 @@ async def agent_resolve_approval(conversation_id: str, approval_id: str, decisio
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:
-        ctx.ai_busy_conversations.discard(conversation_id)
+        try:
+            if ctx.ai_snapshot_store:
+                ctx.ai_snapshot_store.put(conversation_id, snapshot(context, ctx.ai_runtime.state(conversation_id)["approvals"][-30:]))
+        finally:
+            ctx.ai_busy_conversations.discard(conversation_id)
 
 
 @router.post("/plan", response_model=AiPlanResponse)

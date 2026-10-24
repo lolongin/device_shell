@@ -67,6 +67,19 @@ def test_mutations_require_user_approval_even_with_model_confirmation(name, argu
     asyncio.run(run())
 
 
+def test_explicit_bypass_executes_mutation_without_creating_approval() -> None:
+    async def run():
+        facade = Facade()
+        executor = ApplicationAgentExecutor(LocalAgentTools(facade))
+        executor.bypass_approval = True
+        context = AgentContext("bypass")
+        result = await executor.execute(ToolCall("call", "terminal_execute", {"command": "reboot", "device_id": "d"}), context)
+        assert result.get("status") != "needs_approval"
+        assert any(tool == "terminal.execute" for tool, _ in facade.calls)
+        assert executor.state("bypass")["approvals"] == []
+    asyncio.run(run())
+
+
 def test_rejection_expiry_and_changed_workflow_never_execute() -> None:
     async def run():
         facade = Facade()

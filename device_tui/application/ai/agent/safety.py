@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 
 from device_tui.infrastructure.audit import redact_text
@@ -17,5 +18,14 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [sanitize(item) for item in value]
     if isinstance(value, str):
-        return _SECRET_TEXT.sub(r"\1***", redact_text(value))[:100_000]
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                structured = json.loads(value)
+            except (ValueError, RecursionError):
+                pass
+            else:
+                return json.dumps(sanitize(structured), ensure_ascii=False)
+        text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", value)
+        text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "***", text)
+        return _SECRET_TEXT.sub(r"\1***", redact_text(text))[:100_000]
     return value

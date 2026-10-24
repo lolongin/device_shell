@@ -72,6 +72,7 @@ export interface AgentConversationState {
   busy: boolean
   events: AgentEventRecord[]
   approvals: AgentApproval[]
+  history: Array<Record<string, unknown>>
 }
 
 export interface WorkflowDefinitionResponse { workflows: Array<Record<string, unknown>> }
@@ -175,6 +176,8 @@ export const desktopApi = {
   updateAiModelSettings: (value: { base_url: string; model: string; timeout: number }): Promise<{ base_url: string; model: string; timeout: number; has_api_key: boolean; key_source: string }> =>
     request('/api/v1/ai/model', { method: 'PUT', body: JSON.stringify(value) }),
   testAiModel: (): Promise<{ success: boolean }> => request('/api/v1/ai/model/test', { method: 'POST' }),
+  agentApprovalPolicy: (): Promise<{ bypass_approval: boolean }> => request('/api/v1/ai/agent/approval-policy'),
+  updateAgentApprovalPolicy: (bypass_approval: boolean): Promise<{ bypass_approval: boolean }> => request('/api/v1/ai/agent/approval-policy', { method: 'PUT', body: JSON.stringify({ bypass_approval }) }),
   deviceSource: (): Promise<DeviceSourceStatus> => request('/api/v1/device-source'),
   deviceSourcePlugins: (): Promise<DeviceSourcePluginListResponse> =>
     request('/api/v1/device-source/plugins'),
@@ -371,6 +374,9 @@ export const desktopApi = {
   aiApprovals: (): Promise<AiApprovalListResponse> => request('/api/v1/ai/approvals'),
   aiAgentState: (conversationId: string, after = 0): Promise<AgentConversationState> =>
     request(`/api/v1/ai/agent/conversations/${encodeURIComponent(conversationId)}?after=${after}`),
+  aiAgentConversations: (): Promise<{ conversations: Array<{ conversation_id: string; title: string; last_message: string; message_count: number; updated_at: number }> }> => request('/api/v1/ai/agent/conversations'),
+  renameAiAgentConversation: (conversationId: string, title: string): Promise<{ conversation: { conversation_id: string; title: string } }> => request(`/api/v1/ai/agent/conversations/${encodeURIComponent(conversationId)}`, { method: 'PUT', body: JSON.stringify({ title }) }),
+  deleteAiAgentConversation: (conversationId: string): Promise<{ deleted: boolean }> => request(`/api/v1/ai/agent/conversations/${encodeURIComponent(conversationId)}`, { method: 'DELETE' }),
   aiAgentResolve: (conversationId: string, approvalId: string, decision: 'approve' | 'reject'): Promise<{ approval: AgentApproval }> =>
     request(`/api/v1/ai/agent/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(approvalId)}/${decision}`, { method: 'POST' }),
   aiApprove: (approvalId: string): Promise<{ approval: AiApproval }> =>

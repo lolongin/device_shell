@@ -1,9 +1,9 @@
 import { shell } from 'electron'
 import type { IpcMain, WebContents } from 'electron'
 
-export function registerExternalLinkIpc(ipcMain: IpcMain, getRenderer: () => WebContents | null): void {
+export function registerExternalLinkIpc(ipcMain: IpcMain, getRenderer: () => WebContents | null, getAgentRenderer?: () => WebContents | null): void {
   ipcMain.handle('external:open-link', async (event, value: unknown): Promise<void> => {
-    if (event.sender !== getRenderer()) throw new Error('Untrusted external link caller')
+    if (event.sender !== getRenderer() && event.sender !== getAgentRenderer?.()) throw new Error('Untrusted external link caller')
     if (typeof value !== 'string' || value.length > 2048) throw new Error('Invalid external link')
     let url: URL
     try { url = new URL(value) }

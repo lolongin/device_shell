@@ -9,7 +9,9 @@ from typing import Any
 from device_tui.application import AiApplicationService, DesktopApplication
 from device_tui.application.ai.agent import AgentContext, DeviceAgent
 from device_tui.application.ai.agent.runtime import ApplicationAgentExecutor
+from device_tui.application.ai.agent.storage import AgentSnapshotStore
 from device_tui.application.ai.llm.configuration import AiModelConfiguration
+from device_tui.application.ai.knowledge import DeviceKnowledge
 from device_tui.device_sources.import_parser import ParsedDeviceImport
 from device_tui.device_sources.service import DeviceSourceService
 from device_tui.interfaces.desktop_api.data_migration import PersistenceMigrationStatus
@@ -50,3 +52,5 @@ class BackendContext:
     ai_conversations: dict[str, AgentContext] = field(default_factory=dict)
     ai_runtime: ApplicationAgentExecutor | None = None
     ai_busy_conversations: set[str] = field(default_factory=set)
+    ai_snapshot_store: AgentSnapshotStore | None = None
+    ai_knowledge: DeviceKnowledge | None = None

@@ -6,6 +6,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme } fro
 import type { WebContents } from 'electron'
 import { spawn as spawnPty } from 'node-pty'
 import { PythonBackend } from './python-backend.js'
+import { AgentWindow, registerAgentWindowIpc } from './agent-window.js'
 import { buildApplicationMenu, titleBarOverlayForTheme } from './application-menu.js'
 import { localShellCommand, localTerminalPayload } from './local-terminal.js'
 import type { LocalTerminalProcess, LocalTerminalSummary } from './local-terminal.js'
@@ -38,6 +39,7 @@ import {
 import type { TransferSettingsSaveRequest as TransferSettingsSaveRequestContract } from './security-validation.js'
 
 let mainWindow: BrowserWindow | null = null
+const agentWindow = new AgentWindow()
 
 const localTerminals = new Map<string, LocalTerminalProcess>()
 
@@ -45,8 +47,10 @@ const applicationMenu = buildApplicationMenu()
 
 const backend = new PythonBackend((details) => {
   mainWindow?.webContents.send('backend:exit', details)
+  agentWindow.webContents?.send('backend:exit', details)
 }, (details) => {
   mainWindow?.webContents.send('backend:recovered', details)
+  agentWindow.webContents?.send('backend:recovered', details)
 })
 
 interface DeviceCredentialDefaults {
@@ -363,9 +367,11 @@ async function createWindow(): Promise<void> {
   ipcMain.removeHandler('window:set-native-theme')
   ipcMain.removeHandler('window:show-application-menu')
   ipcMain.removeHandler('external:open-link')
+  registerAgentWindowIpc(ipcMain, () => mainWindow?.webContents || null, agentWindow)
   registerRuntimeIpc({
     ipcMain,
     getRenderer: () => mainWindow?.webContents || null,
+    getAgentRenderer: () => agentWindow.webContents,
     getRuntime: () => backend.config,
     validateRequest: validateBackendRequest
   })
@@ -375,7 +381,7 @@ async function createWindow(): Promise<void> {
     setTheme: (mode) => { nativeTheme.themeSource = mode },
     applicationMenu
   })
-  registerExternalLinkIpc(ipcMain, () => mainWindow?.webContents || null)
+  registerExternalLinkIpc(ipcMain, () => mainWindow?.webContents || null, () => agentWindow.webContents)
   registerLocalTerminalIpc({
     ipcMain,
     getWebContents: () => mainWindow?.webContents || null,

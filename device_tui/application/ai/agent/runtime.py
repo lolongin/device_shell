@@ -56,6 +56,7 @@ class ApplicationAgentExecutor:
         self._event_callback = event_callback
         self.timeout_seconds = timeout_seconds
         self.approval_ttl = approval_ttl
+        self.bypass_approval = False
         self._approvals: dict[str, dict[str, Any]] = {}
         self._calls: dict[tuple[str, str, str], tuple[str, dict[str, Any]]] = {}
         self._events: deque[dict[str, Any]] = deque(maxlen=500)
@@ -82,6 +83,23 @@ class ApplicationAgentExecutor:
             "cursor": self._sequence,
             "approvals": [self._public(item) for item in self._approvals.values() if item["conversation_id"] == conversation_id],
         }
+
+    def restore_approvals(self, conversation_id: str, items: list[dict[str, Any]]) -> None:
+        """Restore history only. Never reauthorize side effects from disk."""
+        for original in items[-30:]:
+            item = sanitize(deepcopy(original))
+            if item.get("conversation_id") != conversation_id or not item.get("id"):
+                continue
+            if item.get("status") in {"pending", "executing"}:
+                item["status"] = "expired"
+                item["recovery_reason"] = "Backend restarted; inspect state and prepare a new approval"
+            if len(self._approvals) < 500:
+                self._approvals[item["id"]] = item
+
+    def forget_conversation(self, conversation_id: str) -> None:
+        self._approvals = {key: item for key, item in self._approvals.items() if item.get("conversation_id") != conversation_id}
+        self._calls = {key: value for key, value in self._calls.items() if key[0] != conversation_id}
+        self._events = deque((item for item in self._events if item["data"].get("conversation_id") != conversation_id), maxlen=500)
 
     @staticmethod
     def _public(approval: dict[str, Any]) -> dict[str, Any]:
@@ -115,7 +133,7 @@ class ApplicationAgentExecutor:
                     params["session_id"] = context.session_id or ""
             if sanitize(params) != params:
                 raise ValueError("Secret values must use saved backend credentials or secret_ref")
-            if name not in getattr(self.tools, "read_only_tools", ()) and self.needs_approval(name, params):
+            if name not in getattr(self.tools, "read_only_tools", ()) and self.needs_approval(name, params) and not self.bypass_approval:
                 preview = await asyncio.wait_for(self.tools.preview(name, params), self.timeout_seconds)
                 snapshot = await asyncio.wait_for(self.tools.snapshot(name, params), self.timeout_seconds)
                 preview = {**preview, "resources": {key: value for key, value in snapshot.items() if key not in {"workflow.list", "studio_versions"}}}
